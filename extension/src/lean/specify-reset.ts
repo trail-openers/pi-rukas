@@ -1,14 +1,11 @@
 /**
  * lean/specify-reset — the RESET of CAPTURE / RESET / REWRITE, the submodule
- * re-initialisation that reset makes necessary, and the verification of the
- * COMMIT that follows it.
+ * re-initialisation that reset makes necessary, and the verification of the COMMIT
+ * that follows it.
  *
- * Both halves exist because the step's claims are git claims, and a git claim
- * nobody checked is a claim. Restoring each undeclared path from `HEAD` was the
- * defect this closes: a child that committed its test plus a stray source edit
- * turned the revert into a silent no-op, because the stray edit was in the commit
- * the revert restored from. This module does not consult HEAD at all — it names the
- * base sha, discards everything else, and then proves the tree actually got there.
+ * Both halves exist because the step's claims are git claims, and a git claim nobody
+ * checked is a claim. This module does not consult HEAD at all — it names the base
+ * sha, discards everything else, and then proves the tree actually got there.
  *
  * `clean -fdx` (not `-fd`) is deliberate: `-x` also removes ignored files, and a
  * child that wrote a `.gitignore` hiding a stray file would otherwise keep that file
@@ -62,7 +59,7 @@ export const GIT_MAX_BUFFER = 16 * 1024 * 1024;
  *
  * The shared shape — the `NO_HOOKS` prefix, the 120s bound, the buffer cap, the
  * swallow-to-`undefined` — that every lean step except `build` wants; `build` keeps
- * its own because it needs a per-call timeout and a different cap.
+ * its own for a per-call timeout and a different cap.
  *
  * A refusal is `undefined` rather than a throw by design: callers decide what a
  * failed read means, and the review step's reads distinguish "git could not run"
@@ -215,13 +212,12 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
  * Reset `wt` completely to `baseSha`: child commits, staged changes, untracked
  * files, ignore tricks AND the provisioned dependency links all go, and the run's
  * branch is pointed at the base. A caller whose tree owns no branch passes `""` for
- * `branch` and is checked out detached, since git refuses to `-B` a name onto a tree
- * whose branch somebody else holds.
+ * `branch` and is checked out detached, since git refuses to `-B` a name onto a
+ * tree whose branch somebody else holds.
  *
  * Both checkout forms carry `-f`. Without it git refuses to move a tree whose
- * tracked files are dirty — "Your local changes ... would be overwritten by
- * checkout", exit 1 — which is exactly what a build child leaves behind when it
- * committed a file and then kept editing it, so a routine budget stop would hand
+ * tracked files are dirty (exit 1) — exactly what a build child leaves behind when
+ * it committed a file and then kept editing it, so a routine budget stop would hand
  * the run back as a reset failure. Nothing here is worth protecting: the bytes a
  * caller keeps were read into memory before this ran, and the `reset --hard` and
  * `clean -fdx` below discard everything the forced checkout walked past anyway.
@@ -230,18 +226,17 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
  * tree kept whatever links its first provisioning made, with nothing checking they
  * still pointed anywhere; now the tree is emptied and re-provisioned, so a link is
  * always the one built at this reset. The clean-tree assertion runs AFTER the
- * submodule re-initialisation rather than before it, because the tree the reset
- * actually produces — the one every caller hands its child — is the populated one:
- * proof and product then describe the same bytes.
+ * submodule re-initialisation, because the tree the reset actually produces — the one
+ * every caller hands its child — is the populated one: proof and product then
+ * describe the same bytes.
  *
  * `git clean -fdx` de-populates every submodule the base carries, and a test that
  * imports from one then fails before collection — so a runner that cannot collect is
  * blamed on the adversary. `initSubmodules` runs inside this function rather than in
- * one caller after it, because every reset has to restore them and the resets are
- * made in six places — which is also why `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` is
- * honoured HERE rather than at any caller: the one place that makes no reset ask git
- * to populate anything, so the switch-off state holds for build's fold and the
- * review fix round too, not only for specify.
+ * one caller after it, because every reset has to restore them. It is also why
+ * `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` is honoured HERE rather than at any caller:
+ * the one place that makes no reset ask git to populate anything, so the switch-off
+ * state holds for build's fold and the review fix round too.
  *
  * Throws `SpecifyResetError` unless `rev-parse HEAD` equals `baseSha` and
  * `status --porcelain` reports nothing — that confirmation is the function: the
@@ -306,25 +301,20 @@ export async function resetWorktreeToBase(
 /**
  * Populate the worktree's submodules, when its commit has any.
  *
- * The question "does this base have submodules" is answered by the working tree and
- * by git rather than by a heuristic. `.gitmodules` absent means there are none, and
- * that is the normal case — it costs one `existsSync` and no spawn, so a
- * submodule-free repository pays nothing for this step. A tracked `.gitmodules` is
- * then asked what it lists: `git config --file .gitmodules --get-regexp path` exits
- * 1 on a file that lists nothing and non-zero-but-1 on a file it could not read, so
- * "could not tell" refuses the run instead of skipping the initialisation it was
- * asked for.
+ * "Does this base have submodules" is answered by the working tree and by git rather
+ * than a heuristic. `.gitmodules` absent means none — the normal case, costing one
+ * `existsSync` and no spawn. A tracked `.gitmodules` is then asked what it lists:
+ * `git config --file .gitmodules --get-regexp path` exits 1 on a file that lists
+ * nothing and non-zero-but-1 on a file it could not read, so "could not tell"
+ * refuses the run rather than skipping an initialisation it was asked for.
  *
  * `git submodule update --init --recursive` is bounded, because it may reach the
  * network — and a clone with no network, or a submodule whose remote is gone, is the
- * same infrastructure handback as a runner that cannot collect: nothing downstream
- * can judge the work without those files.
+ * same infrastructure handback as a runner that cannot collect.
  *
  * `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` returns before any of that, so no lean reset
- * asks git to populate anything and none can fail that way — v0.14.71 issued no
- * submodule call at all. The test-only `beforeInit` seam fires only when the real
- * command would have: a case sabotaging a submodule the step never populates would
- * be watching a git call that does not exist.
+ * asks git to populate anything. The test-only `beforeInit` seam fires only when the
+ * real command would have.
  */
 async function initSubmodules(
   exec: ExecFn,
@@ -375,12 +365,11 @@ async function initSubmodules(
  * here would let a `file`-protocol URL in the base's `.gitmodules`, at any depth of
  * `--recursive`, clone an arbitrary repository that already exists on this host into
  * the worktree the run then tests and commits. A tracked `.gitmodules` is reviewed as
- * code, but a submodule's own `.gitmodules` is content of ANOTHER repository, fetched
- * from wherever the first one points — so "the URL is tracked content" does not hold
- * past the first level. A base whose submodule genuinely lives on a local path is
- * served by the operator's own `protocol.allow`/`protocol.file.allow` configuration,
- * which git reads as usual: the step adds no licence of its own. Hooks stay refused,
- * whatever the repository carries.
+ * code, but a submodule's own `.gitmodules` is content of ANOTHER repository, so "the
+ * URL is tracked content" does not hold past the first level. A base whose submodule
+ * genuinely lives on a local path is served by the operator's own
+ * `protocol.allow`/`protocol.file.allow` configuration; the step adds no licence of
+ * its own. Hooks stay refused, whatever the repository carries.
  */
 function submoduleArgv(...argv: string[]): string[] {
   return [...NO_HOOKS, ...argv];

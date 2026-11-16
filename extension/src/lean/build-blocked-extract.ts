@@ -1,23 +1,18 @@
 /**
- * lean/build-blocked-extract — reads the build child's `report_blocked` call,
- * if it made one.
+ * lean/build-blocked-extract — reads the build child's `report_blocked` call, if it
+ * made one.
  *
- * Pure: it takes the child's `toolUses` array and returns what it can read,
- * plus a count of the calls it had to skip. Mirrors `extractSubmitTests` — the
- * schema is validated by Pi inside the child, so anything that reaches here
- * with the wrong shape is a call the model faked rather than one Pi accepted,
- * and it is skipped rather than trusted.
+ * Pure: takes the child's `toolUses` array and returns what it can read, plus a count
+ * of calls it had to skip. Mirrors `extractSubmitTests` — Pi validates the schema inside
+ * the child, so anything reaching here with the wrong shape is a call the model faked
+ * rather than one Pi accepted, and it is skipped rather than trusted.
  *
- * NOTHING HERE JUDGES whether the report is true. Whether a named path is in
- * the run's frozen map, and whether the named test is actually red, are facts
- * about the run's contract and its tree, and the anti-forgery gate in
- * `build.ts` owns them. This module's job ends at "is this a readable
- * report_blocked call, and what did it say".
+ * NOTHING HERE JUDGES whether the report is true. Whether a named path is in the run's
+ * frozen map, and whether the named test is red, are facts about the contract and the
+ * tree, and the anti-forgery gate in `build.ts` owns them.
  *
- * The entry cap is the WHOLE extraction's, not one call's: a child may call the
- * tool several times, and the durable record holds one bounded `blockedBy` map.
- * Rows past the bound are dropped and counted in `skipped`, which every reader
- * already reads as "entries the report carried that this run could not keep".
+ * The entry cap is the WHOLE extraction's, not one call's: the durable record holds one
+ * bounded `blockedBy` map, and rows past the bound are dropped and counted in `skipped`.
  */
 
 /** One reported conflict: a frozen path and the child's stated contradiction. */
@@ -54,12 +49,11 @@ import { RECORD_MAX_ENTRIES, RECORD_REASON_MAX_CHARS } from "./state-outcome-map
 
 /**
  * How many entries the whole extraction may hold and how long one reason may be.
- * Both are the DURABLE record's bounds, read from the module that enforces them
- * at load — the tool's own TypeBox ceiling is the same number because the tool
- * may not accept what the record would refuse, and a fourth literal here is one
- * that no gate pins. The entry bound is the EXTRACTION's, not one call's: the
- * loader refuses a `blockedBy` map past it, so a child that spread one report
- * across several calls would otherwise pay for a proof the record then refuses.
+ * Both are the DURABLE record's bounds, read from the module that enforces them at
+ * load: the tool's own TypeBox ceiling is the same number because the tool may not
+ * accept what the record would refuse, and a fourth literal here is one no gate
+ * pins. The entry bound is the EXTRACTION's, so a child that spread one report
+ * across several calls does not pay for a proof the loader then refuses.
  */
 const MAX_ENTRIES = RECORD_MAX_ENTRIES;
 const MAX_REASON_CHARS = RECORD_REASON_MAX_CHARS;
@@ -87,18 +81,15 @@ export function extractBlockedReport(toolUses: unknown[]): BlockedExtraction {
     // bound would report nothing at all.
     const usable = raw.filter(isBlockedRow);
     total += usable.length;
-    // The cap is the EXTRACTION's, so a call is taken up to the room the record
-    // still has and the entries past it are dropped: taking the whole call would
-    // build a list the durable loader then refuses, and the run would pay for a
-    // proof it cannot keep.
+    // The cap is the EXTRACTION's, so a call is taken up to the room the record still
+    // has and the entries past it are dropped.
     for (const e of usable.slice(0, MAX_ENTRIES - rows.length)) {
       rows.push({ path: e.path.trim(), reason: clipReason(e.reason) });
       took++;
     }
-    // A call that lost every entry is not an empty report: `rows: []` would
-    // read as "the child named nothing", which is a verdict it did not give. It
-    // is a malformed call, and it is counted — as is one whose usable entries all
-    // fell past the cap.
+    // A call that lost every entry is not an empty report: `rows: []` would read as
+    // "the child named nothing", a verdict it did not give. It is a malformed call,
+    // and it is counted — as is one whose usable entries all fell past the cap.
     if (took === 0) skipped++;
   }
   // A child may call the tool more than once; the entries it named past the

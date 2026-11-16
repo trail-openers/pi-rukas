@@ -1,45 +1,41 @@
 /**
- * lean/build — the step that dispatches ONE developer to make the frozen
- * acceptance tests pass.
+ * lean/build — the step that dispatches ONE developer to make the frozen acceptance
+ * tests pass.
  *
- * Where `specify` is an adversary writing tests nobody has implemented, `build`
- * is a builder writing the implementation against tests that already exist and
- * are already committed. The step itself writes no code and runs no tests:
- * `verify` is a separate step and re-runs the frozen files itself, so a build
- * that claimed "green" would be a builder grading its own homework. What build
- * owns is the boundary around the child — the tree it hands the child, the
- * prompt it gets, and the single commit that comes out the other side.
+ * Where `specify` is an adversary writing tests nobody has implemented, `build` is a
+ * builder writing the implementation against tests that already exist and are already
+ * committed. The step writes no code and runs no tests: `verify` is a separate step
+ * that re-runs the frozen files itself, so a build claiming "green" would be a
+ * builder grading its own homework. What build owns is the boundary around the child —
+ * the tree it hands the child, the prompt it gets, and the single commit that comes
+ * out the other side.
  *
- * The whole handler is: read the record, prove the tree, dispatch, normalise,
- * commit. In order, because each stage exists so the next one cannot be fooled:
+ * The whole handler is: read the record, prove the tree, dispatch, normalise, commit.
+ * In order, because each stage exists so the next one cannot be fooled:
  *
- *   1. **The frozen map comes from the step log**, not from a closure: the
- *      union, in order, of the `frozen` maps of every decided `specify:ok` and
- *      `challenge:new-tests` step. A resumed run sees what a crashed run froze,
- *      and a challenge round's new tests join the contract rather than sitting
- *      beside it.
- *   2. **The worktree must be the run's own** — registered, on the run's branch,
- *      and sitting at the head the frozen records were hashed at, not the base:
- *      the commit `specify` put on top of it IS the contract now.
- *   3. **The preconditions run before the dispatch**, so a model is never paid to
- *      work in a tree the step cannot account for: the frozen map is non-empty and
- *      every frozen blob at that head still hashes to its record.
- *   4. **One child**, role `developer`, fenced to the worktree. A child that
- *      died mid-work is infrastructure and throws; a killed or quota-stopped one
- *      is never re-dispatched, and only a child that died before its first turn
- *      gets the one free re-dispatch (`build-dispatch.ts`).
+ *   1. **The frozen map comes from the step log**, not a closure: the union, in order,
+ *      of the `frozen` maps of every decided `specify:ok` and `challenge:new-tests`
+ *      step. A resumed run sees what a crashed run froze.
+ *   2. **The worktree must be the run's own** — registered, on the run's branch, and
+ *      sitting at the head the frozen records were hashed at, not the base: the commit
+ *      `specify` put on top of it IS the contract now.
+ *   3. **The preconditions run before the dispatch**, so a model is never paid to work
+ *      in a tree the step cannot account for: the frozen map is non-empty and every
+ *      frozen blob at that head still hashes to its record.
+ *   4. **One child**, role `developer`, fenced to the worktree. A child that died
+ *      mid-work is infrastructure and throws; a killed or quota-stopped one is never
+ *      re-dispatched, and only a child that died before its first turn gets the one
+ *      free re-dispatch (`build-dispatch.ts`).
  *   5. **Normalise and commit** (`build-normalise.ts`): CAPTURE the child's files,
- *      RESET the tree to `headBefore` — undoing its commits, its staging, every
- *      frozen and protected-path edit — then REWRITE the captured bytes and make
- *      one provable commit.
- *   6. A child that produced nothing is `exhausted`, which the table routes —
- *      not a throw, and not a green. A child its OWN ceiling stopped is
- *      `budget`: its work is folded and committed, and the step retries it in place
- *      while the round budget allows.
+ *      RESET the tree to `headBefore` — undoing its commits, staging, every frozen and
+ *      protected-path edit — then REWRITE the captured bytes and make one provable
+ *      commit.
+ *   6. A child that produced nothing is `exhausted`, which the table routes — not a
+ *      throw, not a green. A child its OWN ceiling stopped is `budget`: its work is
+ *      folded and committed, and the step retries it in place while the round budget
+ *      allows.
  *
- * The re-entry context comes from the log too, clipped to 4 KB: the newest decided
- * `verify:red`, else `ci:red`, else the newest `build:budget` — what its ceiling
- * cut off and the frozen files that step re-ran red.
+ * The re-entry context comes from the log too, clipped to 4 KB.
  */
 
 import { existsSync } from "node:fs";
@@ -114,9 +110,9 @@ export function frozenFromLog(steps: Step[]): Record<string, string> {
 
 /**
  * The criterion -> tests map, unioned over every step that recorded one. The
- * run-level file quota seeds from here: `MAX_TEST_FILES_PER_CRITERION` bounds
- * what a criterion ENDS UP WITH across the run, and only this map knows what an
- * earlier round already froze for it. Same decided outcomes as `frozenFromLog`.
+ * run-level file quota seeds from here: `MAX_TEST_FILES_PER_CRITERION` bounds what
+ * a criterion ENDS UP WITH across the run, and only this map knows what an earlier
+ * round already froze for it.
  */
 export function testsFromLog(steps: Step[]): Record<string, string[]> {
   const tests: Record<string, string[]> = {};

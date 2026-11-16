@@ -1,21 +1,20 @@
 /**
  * lean/publish-body — the PR description the publish step opens with.
  *
- * The body is the run's OWN claim about itself, written from the step log
- * rather than from a model's recollection: one row per acceptance criterion,
- * with the frozen test that answers for it and the verdict the run's own gate
- * recorded for it. A reviewer reading it can tell which criteria were executed
- * and which were never run, which is the question a prose PR description lets
- * a writer blur.
+ * The body is the run's OWN claim about itself, written from the step log rather
+ * than a model's recollection: one row per acceptance criterion, with the frozen
+ * test that answers for it and the verdict the run's own gate recorded. A reviewer
+ * can tell which criteria were executed and which were never run — the question a
+ * prose PR description lets a writer blur.
  *
  * Everything untrusted goes through `text-fence`: criterion text is whatever the
- * issue author typed, and the verify reason is the tail of a build log. Both
- * arrive as markdown in the same document as the structure above them, so
- * without the fence a `\n### ` inside either is a section of the PR body.
+ * issue author typed, and the verify reason is the tail of a build log. Both arrive
+ * as markdown in the same document as the structure above them, so without the fence
+ * a `\n### ` inside either becomes a section of the PR body.
  *
- * Every line is emitted unconditionally except where the brief says otherwise:
- * a reader should be able to tell "not run" apart from "not applicable", and a
- * run that has no evidence should print that rather than print nothing.
+ * Every line is emitted unconditionally except where the brief says otherwise: a
+ * reader must tell "not run" apart from "not applicable", and a run with no evidence
+ * prints that rather than printing nothing.
  */
 
 import type { PiSpec } from "./spec.ts";
@@ -28,14 +27,12 @@ import { fenceText, oneLine } from "./text-fence.ts";
 /** The marker that says which renderer produced this body, for a later reader. */
 const BODY_MARKER = "<!-- work-lean v1 -->";
 
-/** What a path must look like to be printed at all; anything else is dropped. */
 /**
- * A path the body may print. The brief's filter, character for character: it is
- * a PRINT filter (no whitespace, no shell or markdown metacharacters, no
- * newline that could end the table row), not the pipeline's traversal rule —
- * `specify-tree`'s `pathProblem` is what refuses a test file at capture time,
- * and by the time a path is in the step log it passed that gate. Tightening it
- * again here would drop the paths the record says cover a criterion.
+ * A path the body may print: a PRINT filter (no whitespace, no shell or markdown
+ * metacharacters, no newline that could end the table row), not the pipeline's
+ * traversal rule — `specify-tree`'s `pathProblem` refuses a test file at capture
+ * time, and a path in the step log passed that gate. Tightening it here would drop
+ * the paths the record says cover a criterion. Anything else is dropped.
  */
 const SAFE_PATH = /^[A-Za-z0-9._/-]+$/;
 
@@ -106,15 +103,13 @@ function rowCells(kind: "green" | "red" | undefined): string {
  * The result cell for one criterion.
  *
  * A `command` criterion NEVER prints the gate's verdict: `verify` runs the frozen
- * tests and the project's configured tiers, and a criterion's own `command` is a
- * third thing, executed separately and recorded separately. So the cell reads the
- * gate's `commandCriteria` record — `passed (command)` for one the gate ran and
- * that exited 0, `not executed (command): <reason>` for one it declined (the
- * gate's own per-criterion reason: the file is absent at base, is a symlink, or
- * changed since base), and `not executed (command)` for one it declined without
- * recording a reason. A declined criterion is treated like `manual`, so publish
- * opens a draft. Printing the overall verdict here would be the body claiming an
- * execution that never happened.
+ * tests and the configured tiers, and a criterion's own `command` is a third thing,
+ * executed and recorded separately. So the cell reads the gate's `commandCriteria`
+ * record — `passed (command)` for one the gate ran that exited 0, `not executed
+ * (command): <reason>` for one it declined (absent at base, a symlink, or changed
+ * since base), and `not executed (command)` when no reason was recorded. A declined
+ * criterion is treated like `manual`, so publish opens a draft. Printing the overall
+ * verdict here would be the body claiming an execution that never happened.
  */
 function resultCell(
   c: PiSpec["criteria"][number],
@@ -164,13 +159,12 @@ function modelsLine(models: Record<string, string>): string {
 /**
  * The challenge round's ceiling, read off the step log, or `undefined`.
  *
- * Lives beside the renderer rather than in `publish.ts` because it is the body's
- * own claim: it decides whether the "challenge stopped at its … budget" line is
- * printed, and the test drives the renderer. Only the NEWEST decided challenge
- * round decides: a later round that found new tests means the optional round did
- * not end on its ceiling, so an earlier stop says nothing the body may state. A
- * `budget` outcome missing its typed trio ({@link budgetTrio}) is no evidence the
- * body may state, so it prints nothing rather than a half-sentence.
+ * Lives beside the renderer rather than in `publish.ts` because it is the body's own
+ * claim: it decides whether the "challenge stopped at its … budget" line prints, and the
+ * test drives the renderer. Only the NEWEST decided challenge round decides — a later
+ * round that found new tests means the round did not end on its ceiling, so an earlier
+ * stop says nothing the body may state. A `budget` outcome missing its typed trio
+ * ({@link budgetTrio}) prints nothing rather than a half-sentence.
  */
 export function challengeBudgetFromLog(
   steps: Step[],
@@ -187,16 +181,16 @@ export function challengeBudgetFromLog(
 /**
  * The `## Pre-existing test failures` section, built from the recorded field.
  *
- * A green over a tier that exited non-zero is a claim a reviewer is entitled to
- * see spelled out: which tier, which command, which base commit, which tests and
- * how many. The heading and the one-line explanation are the SAME words the
- * /work commit-pr body uses (`preExistingFailuresSectionOf`), so one reader-facing
- * name means one thing across the two drivers. Prints nothing when the record is
- * empty — an absent section means "no tier was excused", never an empty list.
+ * A green over a tier that exited non-zero is a claim a reviewer is entitled to see
+ * spelled out: which tier, which command, which base commit, which tests and how many.
+ * The heading and explanation are the SAME words the /work commit-pr body uses
+ * (`preExistingFailuresSectionOf`), so one reader-facing name means one thing across
+ * the drivers. Prints nothing when the record is empty — an absent section means "no
+ * tier was excused", never an empty list.
  *
- * The names printed are the record's capped list; `N total` is the record's true
- * count, so a suite with more pre-existing failures than the cap is disclosed
- * honestly rather than read as twenty.
+ * The names printed are the record's capped list; `N total` is the true count, so a
+ * suite with more failures than the cap is disclosed honestly rather than read as
+ * twenty.
  */
 export function leanPreexistingFailuresSection(
   records: Record<string, PreexistingTierRecord> | undefined,

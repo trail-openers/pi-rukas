@@ -1,51 +1,46 @@
 /**
  * lean/verify-commands — the `command` criteria tier of the verify gate.
  *
- * A `command` criterion is the only place a `pi-spec` carries text the pipeline is meant
- * to RUN, and the only kind whose pass condition is GREEN: it states behaviour that already
+ * A `command` criterion is the only place a `pi-spec` carries text the pipeline is meant to
+ * RUN, and the only kind whose pass condition is GREEN: it states behaviour that already
  * holds, so it can never be red on the base and belongs at the gate, not at the freeze.
  *
- * **A residual the reader must not misread as isolation.** The test FILE is pinned to the
- * base commit — same entry, mode, oid and bytes on disk — but the CODE it loads is HEAD's,
- * by design: a preservation criterion asks "does the new code still hold the old contract?"
- * and answering that with the base's own source would prove nothing. `verify.ts` re-checks
- * the tree after this tier precisely because the code under test may have been rewritten
- * underneath it.
+ * **A residual the reader must not misread as isolation.** The test FILE is pinned to the base
+ * commit — same entry, mode, oid and bytes on disk — but the CODE it loads is HEAD's, by
+ * design: a preservation criterion asks whether the new code still holds the old contract, and
+ * answering that with the base's own source would prove nothing.
  *
  * Six rules make running text out of an issue body safe enough to try:
  *
- *   1. **A `command` is a FILE, never a command line.** Accepted only as a plain
- *      repo-relative path, checked by the frozen tests' own path rule
- *      (`normaliseRelPath` + `pathProblem`) plus a no-whitespace/no-shell-metacharacter
- *      test, then handed to `verify.test` through `runTestFile` in **argv form** — so no
- *      shell ever parses it and a traversal, an absolute path, `.git`, `.pi` or
- *      `node_modules` is refused before anything is spawned.
- *   2. **A `command` names an EXISTING test that has not changed since the base — in the
- *      commit AND on disk.** The criterion claims behaviour that already held, so the only
- *      file that can evidence it is one the base already held, byte for byte. `git ls-tree`
- *      answers for both trees and `git hash-object` for the working file: a blob that
- *      differs from the base's is not the test the base had, whatever the index says
- *      (`--assume-unchanged` keeps `git status` quiet about exactly that). Checking the
- *      working tree with `existsSync` FOLLOWS symlinks, and checking HEAD alone would let a
- *      developer author a destructive script, exit 0, and have it recorded as a preservation
- *      criterion.
- *   3. **Not-runnable is not a verdict.** A criterion refused by any rule above is absent
- *      from the record — no throw, no red — with its own reason in `notRunnable[id]`: it is
- *      treated like `manual`, `publish` keeps the PR a draft, and the body prints the reason
- *      on the criterion's row. Reading it as red would punish the developer for the spec's
- *      own defect; reading it as passed would be the lie this module exists to prevent.
+ *   1. **A `command` is a FILE, never a command line.** Accepted only as a plain repo-relative
+ *      path, checked by the frozen tests' own path rule (`normaliseRelPath` + `pathProblem`)
+ *      plus a no-whitespace/no-shell-metacharacter test, then handed to `verify.test` through
+ *      `runTestFile` in **argv form** — so no shell ever parses it and a traversal, an absolute
+ *      path, `.git`, `.pi` or `node_modules` is refused before anything is spawned.
+ *   2. **A `command` names an EXISTING test that has not changed since the base — in the commit
+ *      AND on disk.** The criterion claims behaviour that already held, so the only file that
+ *      can evidence it is one the base already held, byte for byte. `git ls-tree` answers for
+ *      both trees and `git hash-object` for the working file: a blob that differs from the
+ *      base's is not the test the base had, whatever the index says (`--assume-unchanged` keeps
+ *      `git status` quiet about exactly that). Checking the working tree with `existsSync`
+ *      FOLLOWS symlinks, and checking HEAD alone would let a developer author a destructive
+ *      script, exit 0, and have it recorded as a preservation criterion.
+ *   3. **Not-runnable is not a verdict.** A criterion refused by any rule above is absent from
+ *      the record — no throw, no red — with its own reason in `notRunnable[id]`: treated like
+ *      `manual`, `publish` keeps the PR a draft, and the body prints the reason on the
+ *      criterion's row. Reading it as red would punish the developer for the spec's own defect;
+ *      reading it as passed would be the lie this module exists to prevent.
  *   4. **An unrunnable runner is infrastructure.** A killed, timed-out or un-startable run
- *      THROWS, exactly as `frozenTestFailure` does — a verdict nobody observed is not
- *      evidence the code is wrong. So is a tier that cannot finish inside its budget.
- *   5. **The tier is bounded.** At {@link COMMAND_CRITERION_MAX} criteria run per gate and
- *      the whole tier shares {@link COMMAND_TIER_BUDGET_MS}; each run's timeout is the time
- *      the budget still has. A run given no share gets one millisecond and dies on it.
- *   6. **The `command` text is untrusted.** Every reason interpolates the clipped
- *      {@link quoted} form, and the assembled reason is clipped again by {@link reason}: a
- *      reason reaches the durable record and then the PR body. The second clip is not
- *      redundant — a path can be long while each segment stays short, so a legal path can
- *      overshoot the record's bound and refuse the whole outcome rather than decline one
- *      criterion.
+ *      THROWS, exactly as `frozenTestFailure` does. So is a tier that cannot finish inside its
+ *      budget.
+ *   5. **The tier is bounded.** At {@link COMMAND_CRITERION_MAX} criteria run per gate and the
+ *      whole tier shares {@link COMMAND_TIER_BUDGET_MS}; each run's timeout is the time the
+ *      budget still has.
+ *   6. **The `command` text is untrusted.** Every reason interpolates the clipped {@link
+ *      quoted} form, and the assembled reason is clipped again by {@link reason}: the second
+ *      clip is not redundant — a path can be long while each segment stays short, so a legal
+ *      path can overshoot the record's bound and refuse the whole outcome rather than decline
+ *      one criterion.
  */
 
 import { trace } from "../trace.ts";
@@ -63,14 +58,16 @@ import {
 } from "./verify-tree.ts";
 import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 
-/** The outcome of one executed `command` criterion, kept for the record. */
+/**
+ * The outcome of one executed `command` criterion, kept for the record.
+ */
 interface CommandCriterionRecord {
   /** `passed` — the criterion ran through the gate's own runner and exited 0. */
   kind: "passed";
   /**
    * The base blob the pre-run check accepted, kept so the post-run re-check has its own
-   * expectation: read from the tree again afterwards, an oid would agree with itself
-   * whatever the tier did.
+   * expectation: read from the tree again afterwards, an oid would agree with itself whatever
+   * the tier did.
    */
   oid: string;
   /** The repo-relative path, so the re-check can find the file by more than its id. */
@@ -86,20 +83,20 @@ const COMMAND_TIER_BUDGET_MS = 600_000;
 /**
  * How much of a `command` a refusal may quote. The `command` is untrusted text out of the
  * issue body and every refusal quotes it, so the bound lives here rather than at each
- * interpolation — well under the record's own cap on a not-runnable reason, so the clip
- * happens at the SOURCE: a criterion declined for a reason too long to store is declined
- * for a reason nobody can read.
+ * interpolation: a criterion declined for a reason too long to store is declined for a reason
+ * nobody can read.
  */
 const COMMAND_QUOTE_MAX = 80;
+
 /** The `command` as this module may quote it: one line, at most {@link COMMAND_QUOTE_MAX}. */
 const quoted = (command: string): string => oneLine(command, COMMAND_QUOTE_MAX);
 
 /**
  * The longest reason either tier below may produce for one criterion. Over
  * `state-outcome-maps.ts`'s `RECORD_REASON_MAX_CHARS` — the bound the durable record enforces —
- * does not merely clip the reason: it makes the whole verify outcome unloadable, so the run
- * loses every verdict it earned. Each interpolation of `rel` is already clipped and the
- * assembled reason is clipped again, because a path can be long while every segment stays short.
+ * does not merely clip the reason: it makes the whole verify outcome unloadable. Each
+ * interpolation of `rel` is already clipped and the assembled reason is clipped again, because
+ * a path can be long while every segment stays short.
  */
 const REASON_MAX = 280;
 
@@ -126,14 +123,11 @@ export interface CommandCriteriaOutcome {
 }
 
 /**
- * Why this `command` criterion's file is not an unchanged regular test of the base,
- * or `undefined` when it is. A `VerifyInfraError` instead whenever a read could not
- * answer — "could not tell" must never read as "the test is not there", since the
- * first is a machine to re-run and the second an issue to fix.
- *
- * Three reads, because the bytes can differ in three places: the base commit, HEAD, and the
- * working file. The third is what an index trick hides — `--assume-unchanged` keeps `git
- * status` silent about a file somebody rewrote on disk.
+ * Why this `command` criterion's file is not an unchanged regular test of the base, or `undefined`
+ * when it is. A `VerifyInfraError` instead whenever a read could not answer — "could not tell" must
+ * never read as "the test is not there". Three reads, because the bytes can differ in three places:
+ * the base commit, HEAD, and the working file — the last is what `--assume-unchanged` hides from
+ * `git status`.
  */
 async function unchangedFileProblem(
   exec: VerifyExec,
@@ -157,26 +151,22 @@ async function unchangedFileProblem(
     if (entryUnreadable(atHead)) throw unreadableEntry(rel, wt);
     return reason(entryRefusal(atHead));
   }
-  // Same mode, same oid: the bytes the base held are the bytes HEAD holds, which is the
-  // whole claim a preservation criterion makes.
+  // Same mode, same oid: the bytes the base held are the bytes HEAD holds.
   if (atBase.oid !== atHead.oid) return reasonPath(`${rel} changed since base`);
   // git vouched for the COMMITTED entry; nothing above the commit is vouched for.
   if ((await workingOid(exec, wt, rel)) !== atBase.oid)
     return reasonPath(`${rel} differs on disk from the base commit`);
-  // Remember which blob that was, so the re-check compares against this observation rather
-  // than a fresh read.
+  // Remember which blob that was, so the re-check compares against this observation.
   accepted.oid = atBase.oid;
   return undefined;
 }
 
 /**
- * Why a `command` criterion's `command` is not a path this gate may execute, or
- * `undefined` when it is one.
+ * Why a `command` criterion's `command` is not a path this gate may execute, or `undefined` when
+ * it is one.
  *
- * The raw string is validated BEFORE trimming: a command padded with whitespace is a string
- * someone meant to be run as something other than a path. A shell metacharacter, a space or
- * a newline is refused HERE rather than left to the existence check: `pathProblem` alone
- * would pass `sh -c 'exit 1'` (`sh` is a plain segment) before existence dropped it.
+ * The raw string is validated BEFORE trimming. A shell metacharacter, a space or a newline is
+ * refused HERE: `pathProblem` alone would pass `sh -c 'exit 1'` before existence dropped it.
  */
 export function commandCriterionProblem(command: string | undefined): string | undefined {
   if (command === undefined || command === "") return "a command criterion carries no command";
@@ -194,9 +184,8 @@ export function commandCriterionProblem(command: string | undefined): string | u
     return `command is not a plain repo-relative file path: ${quoted(command)}`;
   const rel = normaliseRelPath(command);
   if (rel !== command) return `command is not in normalised git-relative form: ${quoted(command)}`;
-  // `pathProblem` interpolates the path it refused, and that path is untrusted text of any
-  // length: the refusal is re-worded around the clipped command rather than trusting the
-  // callee's bound.
+  // `pathProblem` interpolates the path it refused, and that path is untrusted text of any length:
+  // the refusal is re-worded around the clipped command rather than trusting the callee's bound.
   const shape = pathProblem(rel);
   if (shape !== undefined) return `command is not a path this gate may execute: ${quoted(command)}`;
   return undefined;
@@ -205,16 +194,12 @@ export function commandCriterionProblem(command: string | undefined): string | u
 /**
  * Execute every `command` criterion through the project's per-file runner.
  *
- * Every runnable criterion runs, in spec order, because a gate that stopped at the first
- * failure would report a different reason tomorrow for a different criterion. Each must exit
- * **0**: green is the pass condition for a preservation criterion.
+ * Every runnable criterion runs, in spec order: a gate that stopped at the first failure would
+ * report a different reason tomorrow for a different criterion. Each must exit **0**.
  *
- * Bounded twice over: at `COMMAND_CRITERION_MAX` criteria, and the whole tier shares
- * `COMMAND_TIER_BUDGET_MS` so thirty slow files cannot add up to an hour the gate never
- * agreed to wait.
- *
- * The runner gets the driver's SCRUBBED env (`verifyChildEnv()`) exactly as the project
- * tiers do: the thing under test is the project's own test file.
+ * Bounded twice over — at `COMMAND_CRITERION_MAX` criteria, and the whole tier shares
+ * `COMMAND_TIER_BUDGET_MS`. The runner gets the driver's SCRUBBED env (`verifyChildEnv()`) exactly
+ * as the project tiers do: the thing under test is the project's own test file.
  */
 export async function commandCriteriaOutcome(
   criteria: Criterion[],
@@ -274,8 +259,8 @@ export async function commandCriteriaOutcome(
       limits: {
         // Always a share of what the tier's budget still has, never the runner's default: a
         // caller that gave no timeout is not licence for the last run to sit out the full
-        // default past the budget. With no time left the run gets 1ms and dies on the
-        // timeout, which `runTestFile` classifies as infra.
+        // default past the budget. With no time left the run gets 1ms and dies on the timeout,
+        // which `runTestFile` classifies as infra.
         timeoutMs: Math.max(1, Math.min(timeoutMs ?? TEST_TIMEOUT_MS, left)),
         ...(env === undefined ? {} : { env }),
       },
@@ -288,9 +273,9 @@ export async function commandCriteriaOutcome(
       executed[c.id] = { kind: "passed", oid: accepted.oid, rel };
       continue;
     }
-    // `red` and `unclear` both mean the file did not exit 0. Unlike a frozen test, this
-    // file was never proven red at freeze time, so a non-zero exit is the regression the
-    // criterion states against.
+    // `red` and `unclear` both mean the file did not exit 0. Unlike a frozen test, this file
+    // was never proven red at freeze time, so a non-zero exit is the regression the criterion
+    // states against.
     failed ??= reason(`criterion ${c.id} (command ${quoted(rel)}) failed: ${proof.detail}`);
   }
   return {
@@ -303,9 +288,9 @@ export async function commandCriteriaOutcome(
 /**
  * Re-read the checks that licensed a run, after the runner has had the tree.
  *
- * A test file is code, and code may write: a criterion whose own script rewrote the file it
- * was named for would otherwise leave the gate recording a preservation criterion about
- * bytes it never observed. The same reads as before the run, and any difference is a RED.
+ * A test file is code, and code may write: a criterion whose own script rewrote the file it was
+ * named for would otherwise be recorded as a preservation criterion about bytes the gate never
+ * observed. Same reads as before the run; any difference is a RED.
  */
 export async function commandCriteriaTouched(
   executed: Record<string, CommandCriterionRecord>,
@@ -326,8 +311,8 @@ export async function commandCriteriaTouched(
       if (entryUnreadable(entry)) throw unreadableEntry(rel, wt);
       return reason(`command criteria changed the tree: ${entryRefusal(entry)}`);
     }
-    // Compared against the oid the PRE-run check accepted, not a freshly-read one: a tier
-    // that rewrote the base tree itself must not have its own change serve as the expectation.
+    // Compared against the oid the PRE-run check accepted, not a freshly-read one: a tier that
+    // rewrote the base tree itself must not have its own change serve as the expectation.
     if (entry.oid !== record.oid)
       return reasonPath(`command criteria changed the tree: ${rel} changed since base`);
     if ((await workingOid(exec, wt, rel)) !== record.oid)

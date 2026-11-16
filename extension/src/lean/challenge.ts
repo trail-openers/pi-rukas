@@ -1,39 +1,35 @@
 /**
  * lean/challenge — one adversary round after build, against the current head.
  *
- * `specify` proves a spec is falsifiable before anybody codes. `challenge` asks
- * the sharper question afterwards: the builder says it is done, the frozen tests
- * pass, and is there a case the frozen tests never thought of that still fails?
- * A round that finds one has bought the run a second build against a real gap;
- * a round that finds nothing has cost one dispatch and confirmed nothing was
- * found by an adversary paid to look. That asymmetry is why `none` is a VERDICT
- * and not an error — and why the step commits nothing in that case: there is
- * nothing that was proved to fail.
+ * `specify` proves a spec is falsifiable before anybody codes. `challenge` asks the
+ * sharper question afterwards: the builder says it is done, the frozen tests pass,
+ * and is there a case the frozen tests never thought of that still fails? A round
+ * that finds one buys a second build against a real gap; a round that finds nothing
+ * cost one dispatch and confirmed nothing was found by an adversary paid to look.
+ * That asymmetry is why `none` is a VERDICT and not an error — and why the step
+ * commits nothing in that case: nothing was proved to fail.
  *
- * The machinery is `specify`'s, unchanged: validate the submitted rows at the
- * boundary, CAPTURE the bytes through one descriptor each, RESET the tree to the
- * commit the proof runs against, REWRITE, prove each file red, COMMIT with a
- * pathspec and hash the committed blobs. It lives in `specify-run.ts` for both
- * steps. The one thing `challenge` passes differently is the ref: `specify`
- * resets to the run's base sha (its claim is red-on-nothing), `challenge` resets
- * to the current head (its claim is red-on-the-code-that-claims-to-be-done).
+ * The machinery is `specify`'s, unchanged, and lives in `specify-run.ts` for both
+ * steps. The one thing `challenge` passes differently is the ref: `specify` resets
+ * to the run's base sha (red-on-nothing), `challenge` to the current head
+ * (red-on-the-code-that-claims-to-be-done).
  *
  * The differences that ARE challenge's own:
  *
- *   1. **Preconditions before the dispatch** — the frozen map is non-empty and
- *      every frozen blob still hashes to its record AT THE HEAD (build's
+ *   1. **Preconditions before the dispatch** — the frozen map is non-empty and every
+ *      frozen blob still hashes to its record AT THE HEAD (build's
  *      `assertFrozenIntact`, the same claim build refuses to build without), the
- *      worktree is this run's and sits at that head, and the runner template
- *      exists. A child is never paid to work in a tree the step cannot account
- *      for, and never paid to attack an implementation whose tests were edited.
- *   2. **The adversary may not replace a frozen test.** It is shown the frozen
- *      paths and asked for NEW files, and a submission naming a frozen path is
- *      refused at the boundary (`frozenPaths` into `validateSubmitRows`) — the
- *      child is not trusted to obey its own prompt about the one file that would
- *      rewrite the contract.
- *   3. **The red proof is the round's verdict.** Green or unclear means the
- *      builder already handles that case, so the file is dropped; infra throws.
- *      Nothing survives the proof and nothing is committed ⇒ `none`.
+ *      worktree is this run's and sits at that head, and the runner template exists.
+ *      A child is never paid to work in a tree the step cannot account for, nor to
+ *      attack an implementation whose tests were edited.
+ *   2. **The adversary may not replace a frozen test.** It is shown the frozen paths
+ *      and asked for NEW files, and a submission naming a frozen path is refused at
+ *      the boundary (`frozenPaths` into `validateSubmitRows`) — the child is not
+ *      trusted to obey its own prompt about the one file that would rewrite the
+ *      contract.
+ *   3. **The red proof is the round's verdict.** Green or unclear means the builder
+ *      already handles that case, so the file is dropped; infra throws. Nothing
+ *      survives the proof and nothing is committed ⇒ `none`.
  *
  * `frozenFromLog` unions a `challenge:new-tests` map into what build and verify
  * hold, so the new tests join the contract rather than sitting beside it.
@@ -177,13 +173,12 @@ async function resetAndProvision(
 }
 
 /**
- * The tree, the head, and the two claims that must hold before a child is paid:
- * this worktree is ours at THIS commit, and the frozen contract still matches it.
+ * The tree, the head, and the two claims that must hold before a child is paid: this
+ * worktree is ours at THIS commit, and the frozen contract still matches it.
  *
- * Both are the checks `build` makes for exactly the same reason, from the same
- * functions: an adversary is expensive and proves neither, and paying one to
- * attack an implementation whose tests were quietly edited would produce a round
- * that reports `none` — a certification, from a tree nobody verified.
+ * Both are the checks `build` makes, from the same functions: an adversary is expensive
+ * and proves neither, and paying one to attack an implementation whose tests were
+ * quietly edited would report `none` — a certification from a tree nobody verified.
  *
  * `frozen` is passed IN rather than read here: the map is the step log's, and a
  * precondition that re-derived it would be a second reader of the record.

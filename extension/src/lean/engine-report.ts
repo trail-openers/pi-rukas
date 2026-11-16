@@ -1,20 +1,16 @@
 /**
  * lean/engine-report — the reporting step a stopped run is routed into.
  *
- * The split from `engine.ts` is by concern, not by size: `engine.ts` owns the runner (load, loop,
- * save); this module owns the one move the runner makes that is not a step the table routes — the
- * clock stopping a working step, and what the run becomes because of it. `stopForDeadline` is that
- * whole decision: the plain stamp, or the routing into the report and the stamp it falls back to.
- * `deadline-handback.ts` decides WHETHER the routing happens (`deadlineStopShouldReport`); this
- * module performs it and stamps the run either way, so the two records a stopped run can leave are
- * written by one reader and cannot drift apart.
+ * The split from `engine.ts` is by concern: `engine.ts` owns the runner; this module owns the one
+ * move the runner makes that is not a step the table routes — the clock stopping a working step,
+ * and what the run becomes because of it. `deadline-handback.ts` decides WHETHER the routing
+ * happens; this module performs it and stamps the run either way, so the two records a stopped run
+ * can leave are written by one reader.
  *
- * `HandbackHandler` is the injectable report step, injected rather than reached around: the
- * runner holds the injected `now`, and the report step is the runner's `handback` handler,
- * passed in so this module never reads the handler table itself and a test can
- * drive it with a reporting step that only records. The three helpers it needs to write a step —
- * the visit's key, the outcome attach, the terminal stamp — arrive on the request, so the definitions
- * stay private to `engine.ts` and this module writes a step exactly the way the runner does.
+ * `HandbackHandler` is injected rather than reached around, so this module never reads the handler
+ * table itself. The three helpers it needs to write a step — the visit's key, the outcome attach,
+ * the terminal stamp — arrive on the request, so this module writes a step exactly the way the
+ * runner does.
  */
 import { traceWarn } from "../trace.ts";
 import { deadlineStopShouldReport } from "./deadline-handback.ts";
@@ -38,44 +34,26 @@ export type HandbackHandler = (ctx: {
 /**
  * The routed report's own wall: the handoff allowance plus a fraction of headroom.
  *
- * The routing fires when the clock comes inside `handoffAllowanceMs()`, so the allowance is
- * the time the run was already told the report owns. It is not the time the report needs:
- * every git and forge call on the reporting path carries its own per-call ceiling, and
- * summed they are well past the allowance — 570 s against the 480 s default. A bound equal
- * to the allowance therefore cuts a report in which nothing hung, each call answering just
- * inside its own ceiling, and what the cut loses is the rewind: the one thing the routing
- * exists to perform. So the bound is the allowance PLUS {@link REPORT_BOUND_HEADROOM_RATIO}
- * of it — a 20 % headroom: the smallest multiple of the allowance that covers the sum (480 s
- * × 1.2 = 576 s ≥ 570 s) and still fires strictly before the grace.
+ * The allowance is the time the run was already told the report owns, but not the time it needs:
+ * the per-call git and forge ceilings on the reporting path sum past it (570 s against the 480 s
+ * default), so a bound equal to the allowance cuts a report in which nothing hung and loses the
+ * rewind. The bound is therefore allowance × (1 + {@link REPORT_BOUND_HEADROOM_RATIO}) — 480 s ×
+ * 1.2 = 576 s covers that sum and still fires strictly before the grace. `handoffAllowanceMs()` is
+ * what the bound multiplies; {@link REPORT_BOUND_HEADROOM_RATIO} is the one place the ratio is read.
+ * The headroom is a RATIO of the allowance because the allowance is the knob an operator moves
+ * (`PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`).
  *
- * The headroom is a ratio of the allowance rather than a fixed extra because the allowance is
- * the number an operator moves (`PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`) and the bound is derived
- * from it: a fixed term would either be lost in the noise at a small allowance or dwarf it at
- * a large one, and a bound that is not proportional to the time the routing already reserved
- * is a bound nobody can reason about from the knob they set.
- *
- * The headroom is added rather than taken from the path's per-call ceilings because those
- * ceilings are shared: the `git` and forge timeouts on this path are read by the non-lean
- * callers too, and shrinking them to fit a lean bound would bind callers this change has no
- * business constraining.
- *
- * The limit on the headroom is the outer wall the bound exists to beat: the child-bound grace
- * (`PI_ENSEMBLE_CHILD_BOUND_GRACE_MS`), the wrap past the deadline at which the run is killed
- * and the kill — not the handback — is what gets recorded. The report can start no earlier
- * than `deadline − allowance` and the kill comes `grace` after the deadline, so a bound under
- * the grace fires first. `test-lean-report-bound-ceiling.ts` reads both numbers from the
- * shipped constants and holds the bound strictly inside the grace.
+ * The limit on it is the child-bound grace (`PI_ENSEMBLE_CHILD_BOUND_GRACE_MS`), past which the
+ * run is killed and the kill — not the handback — is what gets recorded.
+ * `test-lean-report-bound-ceiling.ts` is the witness: it reads both shipped constants and holds the
+ * bound strictly inside that grace.
  */
 export function handoffReportBoundMs(): number {
   return Math.round(handoffAllowanceMs() * (1 + REPORT_BOUND_HEADROOM_RATIO));
 }
 
-/** What the bound adds to the allowance, as a fraction of it — 20 %. At the default 480 s
- *  allowance that is 96 s, enough to cover the 570 s the reporting path's awaits sum to
- *  (480 + 96 = 576 ≥ 570) and still fire 24 s before the 600 s child-bound grace at which the
- *  run would be killed instead. `test-lean-report-bound-ceiling.ts` reads the ratio against
- *  both the summed per-call ceilings and the grace: below 18.75 % the bound cuts a progressing
- *  report, at or above 25 % it meets the grace and turns cuts into kills. */
+/** What the bound adds to the allowance, as a fraction of it; sized by
+ *  `test-lean-report-bound-ceiling.ts` against the path's summed ceilings and the grace. */
 export const REPORT_BOUND_HEADROOM_RATIO = 0.2;
 
 /** Everything the runner passes to the report, so this module reads none of the runner's state. */
@@ -88,83 +66,45 @@ export interface ReportRequest {
   now: () => number;
   handler: HandbackHandler;
   /**
-   * The report's own wall, in ms, or `undefined` for no wall.
-   *
-   * The runner supplies it — it is `handoffReportBoundMs()`, the allowance the stop test one
-   * boundary earlier compared against plus the headroom that wall needs — so this module's
-   * callers read the deadline module, not this one. Present, the handler is raced against it
-   * and an overrun ends the run as the plain deadline stop it would have been without the
-   * routing; absent, the handler is awaited and nothing else.
+   * The report's own wall in ms, or `undefined` for none. Present, the handler is raced against
+   * it and an overrun ends the run as the plain deadline stop.
    */
   boundMs?: number;
-  /** Set by THIS module to the bound it ran out at, and ONLY on that arm.
-   *
-   * The overrun changes the run's outcome — it loses the report it was routed to make — so the
-   * runner has to be able to say so on the stamp it falls back to. A field on the request rather
-   * than a sentinel return value because `undefined` already means "the report threw", and a
-   * record that cannot tell those two apart is the record that hides a hung forge post behind a
-   * routine stop. Read back by `routed-report.ts`, which pairs it with the ended run. */
+  /** Set by THIS module to the bound it ran out at, and ONLY on that arm: the overrun changes the
+   * run's outcome, so the runner says so on the stamp it falls back to. A field rather than a
+   * sentinel because `undefined` already means "the report threw". */
   boundFiredMs?: number;
-  /** `<issue>:<state>:<n>` for a visit — the runner's `stepKey`, injected so the key is written once. */
+  /** `<issue>:<state>:<n>` for a visit — the runner's `stepKey`. */
   keyFor: (state: LeanState, n: number) => string;
   /** Attach an outcome to one step — the runner's `withOutcome`. */
   attach: (run: LeanRun, key: string, outcome: Outcome, endedAt: number) => LeanRun;
-  /** Stamp the terminal result and persist — the runner's `endRun`, the one writer of `result`. */
+  /** Stamp the terminal result and persist — the runner's `endRun`. */
   finish: (run: LeanRun, state: LeanState, reason: string) => LeanRun;
 }
 
 /**
  * Run the report for a run the clock stopped over an uncertified head, and end the run with it.
  *
- * The reporting step runs for real — the rewind, the head fields, the comment — because those are the
- * things the deadline used to make unreachable, which is the whole point of the routing. Its visit goes
- * on the log, keyed and stamped the way the runner writes one, and the run ends with its verdict beside a
- * stamped result, so the durable record reads like any other handback's: newest step the report, result
- * stamped from its verdict.
+ * The step runs for real — the rewind, the head fields, the comment — because those are the things
+ * the deadline made unreachable, and its visit is written the way the runner writes one.
  *
- * The visit needs the fold's one exemption, and that need is what the routing costs. The rule is
- * `isReportRoute`'s jsdoc in `resume.ts` — why the fold cannot reproduce this log on its own, why a
- * refusal there outranks the bug this branch fixes (it comes from `loadRun`/`verifiedPosition`, which run
- * before the routing's switch is read, so `PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK=0` recovers nothing), and
- * how narrow the admitted shape is. The routing's side of the seam — what it writes, below — is what has
- * to keep agreeing with that rule.
+ * The visit needs the fold's one exemption, and that is what the routing costs: see `isReportRoute`
+ * in `resume.ts`. The record deliberately does NOT put the report's verdict on the gate entry the
+ * clock left unanswered: that would stamp `verify` with a kind its table has no arrow for, and
+ * `handback-heads.ts` would read it as "the gate has spoken".
  *
- * What the record deliberately does NOT do is put the report's verdict on the gate entry the clock left
- * unanswered. That fold-legal-looking shortcut stamps `verify` with a kind its table has no arrow for, and
- * `handback-heads.ts` reads any DECIDED `verify` after the review as "the gate has spoken" — so a resumed
- * run would stop rewinding and its next comment would lose the head fields, silencing the very rule this
- * run reports under. An unanswered entry is also the truth: the gate was entered and never answered, which
- * is the premise the report acts on.
- *
- * Returns the ended run, or `undefined` when the report threw or overran its bound, so
- * the caller falls back to the plain deadline stamp rather than a run with no result.
- * (The caller has already established the handler exists; a missing handler is the
- * caller's decision, not this function's.)
- *
- * The bound is the report's own wall, and it is what the exemption above makes
- * necessary: the step the clock cannot refuse is a step nothing else bounds. On
- * overrun the handler's result is discarded — no visit, no verdict, no stamp from this
- * function — and the run takes the plain deadline stamp in `stopForDeadline` below, exactly
- * the record it would have been given without the routing. A handler that settles after
- * the bound fired may still run (an in-flight `git push` cannot be recalled) but writes
- * nothing: the only writers of the record are the two `req` calls below, both reached on
- * the settled arm alone.
+ * Returns the ended run, or `undefined` when the report threw or overran, so the caller falls back
+ * to the plain deadline stamp. On overrun the result is discarded; a handler that settles after the
+ * bound fired may still run but writes nothing — the only writers of the record are the two `req`
+ * calls below, both reached on the settled arm alone.
  */
 export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | undefined> {
   const { run, stoppedAt, now, handler, boundMs } = req;
   const key = req.keyFor("handback", nextAttempt(run, "handback"));
   const startedAt = now();
-  // Two enforcement points, deliberately: the per-call timeouts inside the handler bound
-  // its own `git` and forge calls, and only this race frees the RUN. A wedged in-process
-  // await — a comment-poster seam, a call that never returns — leaves the handler pending
-  // whatever those timeouts say, which is the shape that outlived both the deadline and
-  // the child-bound grace. The timer is REF'd and cleared. Ref'd because a bound the event
-  // loop ignores is not a bound: a hung handler that holds no ref'd handle of its own
-  // leaves an unref'd bound timer the only pending work in the process, the loop empties,
-  // and the run exits carrying no result at all — strictly worse than the hang the bound
-  // replaced. Cleared, in the race's `finally`, because that is the only thing that keeps
-  // a ref'd timer from outliving a run that has stopped waiting on it
-  // (`work-driver-handoff-ops.ts` is the precedent for that half).
+  // Two enforcement points: the per-call timeouts inside the handler bound its own calls, and only
+  // this race frees the RUN. The timer is REF'd (an unref'd bound lets the loop exit with no result)
+  // and cleared in the `finally`.
   let boundTimer: ReturnType<typeof setTimeout> | undefined;
   let outcome: Outcome;
   try {
@@ -182,16 +122,10 @@ export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | u
       const overrun = new Promise<{ overrun: true }>((resolve) => {
         boundTimer = setTimeout(() => resolve({ overrun: true }), boundMs);
       });
-      // Branded object rather than a sentinel string: `Outcome.kind` is an open `string`,
-      // so a `"bound"` marker would type-check against a handler's own verdict and the
-      // overrun arm could be silently skipped.
+      // Branded object rather than a sentinel string: `Outcome.kind` is an open `string`.
       const settled = await Promise.race([call, overrun]);
       if ("overrun" in settled) {
-        // The report's wall ran out. Disclosed on the same UNGATED channel as the throw
-        // arm beside it, for the same reason: the run loses its report, and an operator
-        // who was promised a handback has to be able to see that this one is a deadline
-        // stop that timed out on the way out rather than a clean report or a kill. The
-        // runner is told on the same arm, so the stamp it falls back to says the same.
+        // Disclosed on the same UNGATED channel as the throw arm beside it: the run loses its report.
         traceWarn(
           `lean #${String(req.issue)} ${key} bound reached: ${reportBoundSentence(boundMs)} — the run takes the plain deadline stamp`,
         );
@@ -201,29 +135,23 @@ export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | u
       outcome = settled;
     }
   } catch (err) {
-    // The step's contract is that it answers; a throw is a handler bug, and the run gets the stamp it
-    // would have got without the routing rather than one built on a verdict nobody returned.
-    // `traceWarn`, not `trace`: the throw changes the run's outcome (it loses its report and
-    // takes the plain deadline stamp), so the operator has to see it without `PI_ENSEMBLE_DEBUG`.
+    // A throw is a handler bug: the run gets the stamp it would have got without the routing.
+    // `traceWarn`, not `trace` — the outcome changed, so it must show without `PI_ENSEMBLE_DEBUG`.
     traceWarn(`lean #${String(req.issue)} ${key} threw: ${String((err as Error)?.message ?? err)}`);
     return undefined;
   } finally {
     if (boundTimer) clearTimeout(boundTimer);
   }
-  // The visit, then its verdict, then the result — one save, one record. `startedAt` is the instant the
-  // routing took the decision, which is the step's real start; the runner is not asked to re-run it.
+  // The visit, then its verdict, then the result — one save, one record.
   const visit: Step = { key, state: "handback", startedAt };
   const reported = req.attach({ ...run, steps: [...run.steps, visit] }, key, outcome, now());
   return req.finish(reported, "handed-back", reportReason(stoppedAt, outcome));
 }
 
 /**
- * The reason line a routed run carries: what the report said, and where the clock had stopped it.
- *
- * The report's own reason answers the question an operator asks of a handed-back run — why what they were
- * sent is not what the gate approved — so it leads. The deadline is nevertheless what ended the run, and a
- * reader comparing this record with a plain deadline stop has to be able to see that this one was stopped
- * at the same boundary and reported on the way out, so the step the clock refused is named verbatim.
+ * The reason line a routed run carries: the report's own reason leads (it answers why what the
+ * operator was sent is not what the gate approved), and the refused step is named so a reader can
+ * tell this from a plain deadline stop.
  */
 function reportReason(stoppedAt: LeanState, outcome: Outcome): string {
   const said =
@@ -254,31 +182,15 @@ export interface DeadlineStop {
 /**
  * Stop a run whose deadline refused a working step, and return the ended run.
  *
- * Most such runs have nothing further to say and are stamped where they stand, as they always
- * were — but a run whose newest work step is a `fixed` review is holding origin over bytes no
- * gate certified, and the step that says so (and moves origin back) is `handback`. Stamping
- * there made that step unreachable, so the run is routed to the report rather than ended. The
- * predicate reads the same log the reporting step reads, so the two cannot disagree about the
- * shape, and the handler table is the runner's to consult: a run with no reporting step built
- * cannot be routed and takes the plain stamp too.
+ * Most such runs are stamped where they stand — but a run whose newest work step is a `fixed`
+ * review holds origin over bytes no gate certified, and the step that says so (and moves origin
+ * back) is `handback`, so the run is routed to the report. The predicate reads the same log the
+ * reporting step reads, and a run with no reporting step built takes the plain stamp.
  *
- * The report runs through the handler, exactly as `runLean`'s crash-resume path would, and
- * lands its verdict on the run through `end` — the writer every terminal stamp already uses —
- * rather than through `apply()` on an entry the table never routed. The rewind, the head fields
- * and the comment therefore run on the shape they were written for. The log keeps the entry the
- * loop wrote ahead for the refused step: the run DID enter the re-verification and came back
- * with no answer, which is the honest record and the premise `handback-heads.ts` acts on — which
- * is why the verdict is not written onto that entry. The fold consequence of writing the report's
- * own record — why `resume.ts` needs its one exemption, and why a loader refusal there outranks
- * the bug this branch fixes — is `isReportRoute`'s jsdoc in `resume.ts`.
- *
- * Nothing here starts WORK: the only handler reached is the reporting one, which the stop test
- * exempts, and every arm ends the run, so there is no path back into the walk.
- *
- * The bound on the report's wall is read here for the same reason the helpers are injected:
- * `handoffReportBoundMs()` is the allowance the stop test one boundary earlier compared against,
- * plus the headroom the reporting path's own per-call ceilings need. `undefined` is the switch's
- * off arm — the handler is awaited and nothing else, as before the bound existed.
+ * The report lands its verdict through `end` — the writer every terminal stamp uses — not through
+ * `apply()` on an entry the table never routed. The log keeps the unanswered entry the loop wrote
+ * ahead, which is the premise `handback-heads.ts` acts on; the fold consequence is `isReportRoute`
+ * in `resume.ts`. Nothing here starts WORK: the only handler reached is the reporting one.
  */
 export async function stopForDeadline(stop: DeadlineStop): Promise<LeanRun> {
   const { run, stoppedAt, deadline, now } = stop;
@@ -301,8 +213,7 @@ export async function stopForDeadline(stop: DeadlineStop): Promise<LeanRun> {
       runHandbackReport,
     );
     // The report could not be run at all, or could not be run IN TIME. Either way the run is
-    // stamped where it stands, as it always was — and when the bound is what stopped it, the
-    // stamp says so (`routed-report.ts` says why the bound travels with the run).
+    // stamped where it stands, and when the bound is what stopped it, the stamp says so.
     if (routed.run === undefined) {
       return stop.end(
         run,

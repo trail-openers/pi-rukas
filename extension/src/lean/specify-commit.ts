@@ -1,29 +1,25 @@
 /**
  * lean/specify-commit — the COMMIT half of specify's freeze, and the blob it hashes.
  *
- * Split from `specify-reset.ts` (AGENTS §12): the reset and its submodule
- * re-initialisation are one concern — discard, then prove the tree got there — and the
- * frozen commit is another: add, commit, and prove the commit is what it claims. The
- * seam is the commit itself, and `changedPaths` is the shared primitive both halves
- * prove against.
+ * Split from `specify-reset.ts`: the reset and its submodule re-initialisation are one
+ * concern — discard, then prove the tree got there — and the frozen commit is another:
+ * add, commit, and prove the commit is what it claims. The seam is the commit itself,
+ * and `changedPaths` is the shared primitive both halves prove against.
  *
- * `commitTestFiles` takes the pathspec on the COMMIT as well as the add, and
- * afterwards asserts four things: HEAD moved, HEAD's tree differs from the base by
- * exactly the committed paths, nothing was skipped by a hook, and the tree is clean.
- * A mismatch throws rather than handing the run a commit nobody verified — which is
- * what makes the reset's clean-tree claim mean anything downstream.
+ * `commitTestFiles` takes the pathspec on the COMMIT as well as the add, and afterwards
+ * asserts four things: HEAD moved, HEAD's tree differs from the base by exactly the
+ * committed paths, nothing was skipped by a hook, and the tree is clean. A mismatch
+ * throws rather than handing the run a commit nobody verified.
  *
  * `committedBlob` hashes the COMMITTED bytes rather than the file on disk, so the
- * recorded hash is a fact about the commit and not a race with whatever the tree
- * looked like a moment earlier.
+ * recorded hash is a fact about the commit and not a race with the tree.
  */
 
 import type { ExecFn } from "../worktree.ts";
 import { SpecifyCommitError as CommitError, NO_HOOKS } from "./specify-reset.ts";
 
 // The one name the commit half's callers and its tests know the error by: the class
-// lives in `specify-reset.ts` beside the reset's own error, and nothing outside this
-// module should have to know that.
+// lives in `specify-reset.ts` beside the reset's own error.
 export { SpecifyCommitError } from "./specify-reset.ts";
 import { changedPaths } from "./specify-tree.ts";
 
@@ -31,23 +27,21 @@ import { changedPaths } from "./specify-tree.ts";
 const QUICK_GIT_MS = 30_000;
 
 /**
- * Commit exactly `paths` on top of `baseSha`, and prove the commit is what it
- * claims to be. Throws `SpecifyCommitError` on any mismatch.
+ * Commit exactly `paths` on top of `baseSha`, and prove the commit is what it claims
+ * to be. Throws `SpecifyCommitError` on any mismatch.
  *
- * The pathspec rides on the COMMIT and not only the add: without it the commit
- * takes whatever the index holds, and the index also holds anything a child
- * staged for itself. `git add` is bounded to the kept paths too, so the index
- * cannot be loaded with anything else in the first place.
+ * The pathspec rides on the COMMIT and not only the add: without it the commit takes
+ * whatever the index holds, and the index also holds anything a child staged for
+ * itself. `git add` is bounded to the kept paths too.
  *
- * Both git calls run with `core.hooksPath=/dev/null` and `core.fsmonitor=false`: the
- * hooks a repository carries are somebody else's policy, and a pre-commit hook that
- * rewrites the index would put bytes in the frozen commit the step never captured.
+ * Both git calls run with `core.hooksPath=/dev/null` and `core.fsmonitor=false`: a
+ * repository's hooks are somebody else's policy, and a pre-commit hook that rewrites
+ * the index would put bytes in the frozen commit the step never captured.
  *
  * `--literal-pathspecs` is a TOP-LEVEL git option and rides on all three calls that
- * name paths, the same way `build-normalise.ts` puts it ahead of the subcommand. It
- * is load-bearing for the diff as much as the writes: a submitted test named
- * `tests/[a]x.test.sh` is one file to this step but a glob to git, and without the
- * flag the add and commit could sweep in a tracked `tests/ax.test.sh` while the
+ * name paths. It is load-bearing for the diff as much as the writes: a submitted test
+ * named `tests/[a]x.test.sh` is one file to this step but a glob to git, and without
+ * the flag the add and commit could sweep in a tracked `tests/ax.test.sh` while the
  * un-literal diff still reported the pair as "exactly the paths we meant".
  */
 export async function commitTestFiles(
@@ -118,9 +112,8 @@ export async function commitTestFiles(
 }
 
 /**
- * `git show HEAD:<path>` — the committed bytes, which are what the freeze hashes.
- * Hashing the blob rather than the file on disk is what makes the recorded hash a
- * fact about the commit rather than a race with whatever the tree looked like a
+ * `git show HEAD:<path>` — the committed bytes, which are what the freeze hashes:
+ * a fact about the commit rather than a race with whatever the tree looked like a
  * moment earlier.
  */
 export async function committedBlob(exec: ExecFn, wt: string, rel: string): Promise<Buffer> {

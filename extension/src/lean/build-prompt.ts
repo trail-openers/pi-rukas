@@ -3,36 +3,30 @@
  *
  * The step's contract with the child is narrow and every sentence below is
  * load-bearing for it: the acceptance tests already exist, they were proved red
- * before anybody wrote the feature, and the child's ONE job is to make them
- * pass. That asymmetry is what the rest of the run depends on — a child that
- * edits a test to green it has destroyed the only evidence the run has, which
- * is why the frozen paths are named individually and named as untouchable
- * rather than summarised.
+ * before anybody wrote the feature, and the child's ONE job is to make them pass. A
+ * child that edits a test to green it has destroyed the only evidence the run has,
+ * which is why the frozen paths are named individually and as untouchable rather than
+ * summarised.
  *
- * The spec's problem and criteria go in VERBATIM, as in `specify-prompt`: a
- * paraphrase would be a second spec, and the child would be working toward the
- * paraphrase rather than the contract the gate reads.
+ * The spec's problem and criteria go in VERBATIM, as in `specify-prompt`: a paraphrase
+ * would be a second spec, and the child would work toward the paraphrase rather than
+ * the contract the gate reads.
  *
- * The re-entry block is the second most important part. A build that follows a
- * red `verify` or a red CI is a FIX round, and a child that is not told what
- * failed says "make it work" and re-derives a solution from scratch — usually
- * re-producing the same failure. The reason text is pasted rather than
- * summarised because the gate's own words are the evidence.
+ * The re-entry block is the second most important part. A build following a red
+ * `verify` or red CI is a FIX round, and a child not told what failed re-derives a
+ * solution from scratch — usually re-producing the same failure. The reason text is
+ * pasted rather than summarised because the gate's own words are the evidence.
  *
- * "Do not commit" is a courtesy, not a guarantee: the step folds, unstages,
- * restores and re-commits whatever the child does anyway (see
- * `build-normalise.ts`). It is said because a child that leaves a clean working
- * tree is easier to reason about than one that made three commits, and because
- * a child that commits tends to commit its own edits to the frozen tests, which
- * the step then has to undo.
+ * "Do not commit" is a courtesy, not a guarantee: the step folds, unstages, restores
+ * and re-commits whatever the child does anyway (`build-normalise.ts`). It is said
+ * because a clean tree is easier to reason about than three commits, and a child that
+ * commits tends to commit its own edits to the frozen tests.
  *
- * The `report_blocked` sentence is the child's ONLY exit valve for a contract it
- * cannot satisfy. Without it a builder that finds two frozen assertions in
- * conflict has nothing to do but probe them until the turn ceiling kills the
- * step — which is what one run did: 401 turns, 200 scratch probe files, no
- * commit, and a handback that named no cause. The tool's report is a claim the
- * driver verifies for itself (`build-blocked.ts`), which is why the prompt can
- * tell the child to stop after making it.
+ * The `report_blocked` sentence is the child's ONLY exit valve for a contract it cannot
+ * satisfy: without it a builder that finds two frozen assertions in conflict has
+ * nothing to do but probe them until the turn ceiling kills the step. The tool's report
+ * is a claim the driver verifies for itself (`build-blocked.ts`), which is why the
+ * prompt can tell the child to stop after making it.
  */
 
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
@@ -48,14 +42,13 @@ import type { PiSpec } from "./spec.ts";
  * The builder's scope contract, stated in one paragraph and pinned by
  * `test-lean-build-wiring.ts`.
  *
- * The first lean trial's builder produced a correct PR that was not minimal:
- * it added a defensive guard for a caller that does not exist, wrapped in a
- * comment narrating the change's history, and then spent 15+ minutes running
- * the project's whole offline suite even though the `verify` step runs the
- * tiers. Each of those is a sentence here, and the last two bound what the
- * child may execute. It lives in the prompt rather than in a gate because the
- * cost is the child's own time and the reviewer's attention, neither of which
- * a step can measure afterwards.
+ * A lean trial's builder produced a correct PR that was not minimal: a defensive guard
+ * for a caller that does not exist, wrapped in a comment narrating the change's
+ * history, then 15+ minutes running the whole offline suite even though `verify` runs
+ * the tiers. Each of those is a sentence here, and the last two bound what the child
+ * may execute. It lives in the prompt rather than a gate because the cost is the
+ * child's time and the reviewer's attention, neither of which a step measures
+ * afterwards.
  */
 export const BUILD_SCOPE_CONTRACT =
   "**Make the smallest change that makes the frozen tests pass and satisfies the issue.** Change nothing the issue does not ask for: no guards, validation or handling for callers, inputs or states that cannot occur (if you think one exists, say so in your reply instead of coding for it). Comments say why the code is the way it is, in a line or two — never the history of the change. To check your own work, run only the frozen tests and the project's fast typecheck and lint. **Do not run the project's full test suite** — the verify step runs it, and a long suite here is time the run pays twice.";
@@ -81,10 +74,9 @@ export interface BuildPromptOpts {
   reentry?: string;
   /**
    * The issue body the step read for its own spec parse. The frozen tests were
-   * written from this text and the criteria below are a summary of it, so a
-   * requirement stated only in prose — a fixed exception message, a non-obvious
-   * "never do X" — is otherwise invisible to the one seat that writes the code.
-   * Absent, blank, stripped to the spec block alone, stripped to a restatement of
+   * written from this text and the criteria are a summary of it, so a requirement
+   * stated only in prose is otherwise invisible to the one seat that writes the
+   * code. Absent, blank, stripped to the spec block alone or to a restatement of
    * `spec.problem`, or with either `PI_ENSEMBLE_LEAN_ISSUE_PROSE` or
    * `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE` at `"0"`, no section is rendered and the
    * brief is the pre-section shape byte for byte.

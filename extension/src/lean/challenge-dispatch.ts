@@ -1,17 +1,15 @@
 /**
- * lean/challenge-dispatch — the one adversary the challenge step pays for, and
- * the throw a dead child deserves.
+ * lean/challenge-dispatch — the one adversary the challenge step pays for, and the
+ * throw a dead child deserves.
  *
- * Same shape as `build-dispatch.ts`: a single `developer` fenced to the run's
- * worktree, given the reporter companion that lets it declare what it wrote, and
- * a child that died mid-stream is infrastructure. It is never reported as `none`
- * — `none` is the verdict "I looked and the builder closed every case I could
- * find", and a child that never ran looked at nothing. Reading a dead dispatch as
- * that verdict would let an outage certify an implementation, which is the exact
- * claim the round exists to make expensive.
+ * Same shape as `build-dispatch.ts`: a single `developer` fenced to the run's worktree,
+ * given the reporter companion that lets it declare what it wrote, and a child that died
+ * mid-stream is infrastructure. It is never reported as `none` — `none` is the verdict "I
+ * looked and the builder closed every case I could find", so reading a dead dispatch as
+ * that would let an outage certify an implementation.
  *
- * The prompt is assembled in `challenge-prompt.ts`; this module owns only the
- * seam and the failure taxonomy.
+ * The prompt is assembled in `challenge-prompt.ts`; this module owns only the seam and
+ * the failure taxonomy.
  */
 
 import path from "node:path";
@@ -29,8 +27,8 @@ import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
 /**
  * An adversary we could not run. The engine turns this into handed-back 10.
  *
- * Carries the rows of the dispatch it died on (see `BuildInfraError`): the
- * child spent tokens before it died and the throw is the only path back.
+ * Carries the rows of the dispatch it died on (see `BuildInfraError`): the child
+ * spent tokens before it died and the throw is the only path back.
  */
 export class ChallengeInfraError extends Error {
   override readonly name = "ChallengeInfraError";
@@ -72,8 +70,7 @@ export interface ChallengeDispatchOpts {
  * throw; any other dead child is still infrastructure.
  *
  * The row this dispatch cost travels on every path that RECEIVED a
- * `DispatchResult` — the ok path, the budget stop and the infra throw built
- * from that result; a throw from before the result arrived carries none. See
+ * `DispatchResult`; a throw from before the result arrived carries none. See
  * `dispatchBuilder`.
  */
 export async function dispatchAdversary(

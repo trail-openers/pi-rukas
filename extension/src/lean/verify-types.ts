@@ -1,22 +1,19 @@
 /**
- * lean/verify-types — the two seams the verify step reaches the outside world
- * through, and the error it throws when the machine, not the code, is wrong.
+ * lean/verify-types — the two seams the verify step reaches the outside world through, and the
+ * error it throws when the machine, not the code, is wrong.
  *
- * Its own module for the same reason `build-errors.ts` exists: `verify-steps.ts`
- * runs the tiers and `verify-frozen.ts` runs the frozen files, and both must be
- * able to refuse without importing the orchestrator that owns them. An import
- * cycle between the three would be the only reason they could not be read alone.
+ * Its own module for the same reason `build-errors.ts` exists: `verify-steps.ts` runs the tiers
+ * and `verify-frozen.ts` runs the frozen files, and both must be able to refuse without importing
+ * the orchestrator that owns them.
  */
 
 import type { VerifyExecFn } from "../work-driver-git.ts";
 import type { ExecFn } from "../worktree.ts";
 
 /**
- * The executor this step's git probes need. `ExecFn` (the shape the ownership
- * and blob probes take) carries `stdoutEncoding`, which `VerifyExecFn` does not
- * declare, and `VerifyExecFn` carries `killGroup`, which `ExecFn` does not.
- * The production executor (`execp`) satisfies both, so the step's seam is the
- * intersection — asking for either one alone would drop the other.
+ * The executor this step's git probes need. `ExecFn` carries `stdoutEncoding`, which
+ * `VerifyExecFn` does not declare, and `VerifyExecFn` carries `killGroup`, which `ExecFn` does
+ * not. The production executor (`execp`) satisfies both, so the step's seam is the intersection.
  */
 export type VerifyExec = ExecFn & VerifyExecFn;
 

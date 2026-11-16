@@ -1,17 +1,15 @@
 /**
- * lean/publish-deps — the outside world `lean/publish` reaches, in production
- * form, plus the error its throws are instances of.
+ * lean/publish-deps — the outside world `lean/publish` reaches, in production form,
+ * plus the error its throws are instances of.
  *
- * Split from `publish.ts` along the seam the file already had: the step body is
- * the algorithm and its preconditions; this file is the wiring to git, the forge
- * and the issue. A phase that swaps the forge adapter for an API client, or adds
- * a retry to the push, changes this file and leaves the step's decisions alone —
- * which is the same reason `io.ts` is separate from `command.ts`.
+ * Split from `publish.ts` along the seam the file already had: the step body is the
+ * algorithm and its preconditions; this file is the wiring to git, the forge and the
+ * issue. Swapping the forge adapter or adding a push retry changes this file and
+ * leaves the step's decisions alone — as `io.ts` is separate from `command.ts`.
  *
- * `PublishInfraError` lives here because both halves raise it: the step raises
- * it for a claim it could not verify, and a dependency raises it for a machine
- * that would not answer. The engine turns either into a handed-back run, which
- * is the honest answer to "nobody looked".
+ * `PublishInfraError` lives here because both halves raise it: the step for a claim it
+ * could not verify, a dependency for a machine that would not answer. The engine turns
+ * either into a handed-back run.
  */
 
 import { execp } from "../exec.ts";
@@ -38,16 +36,14 @@ export class PublishInfraError extends Error {
 type PublishExec = VerifyExec;
 
 /**
- * The forge in the shape the step uses: list, read, (re)draft, then create.
- * Nothing else.
+ * The forge in the shape the step uses: list, read, (re)draft, then create. Nothing
+ * else.
  *
- * `prDraft` is here because a REUSED PR carries the draft state the previous run
- * left on it: `prCreate`'s `draft` option only ever applies to a PR this step
- * opens. Without it a run whose verify went red would attach a fresh unverified
- * head to a PR that reads READY — the one thing this step's whole design
- * refuses. `prView` exists because `gh pr list --json` does not carry `isDraft`
- * (only `gh pr view --json …,isDraft,…` does), so the list reply alone cannot
- * tell a reused PR's state.
+ * `prDraft` is here because a REUSED PR carries the draft state the previous run left
+ * on it — `prCreate`'s `draft` option only applies to a PR this step opens. Without
+ * it, a run whose verify went red would attach a fresh unverified head to a PR that
+ * reads READY. `prView` exists because `gh pr list --json` does not carry `isDraft`,
+ * so the list reply alone cannot tell a reused PR's state.
  */
 export type PublishForge = Pick<Forge, "prList" | "prView" | "prDraft" | "prCreate">;
 
@@ -61,21 +57,21 @@ export interface PublishDeps {
 /**
  * The push target must be a lean branch, and never the mainline.
  *
- * `branch` arrives from the run's persisted state file, so it is data a stale or
- * edited file supplies rather than a name this cycle chose. Pushing it raw is
- * how a run whose state named `main` writes unreviewed work onto the mainline:
- * `assertSafeRef` says the string is a legal ref, which `main` is.
+ * `branch` arrives from the run's persisted state file, so it is data a stale or edited
+ * file supplies rather than a name this cycle chose. Pushing it raw is how a run whose
+ * state named `main` writes unreviewed work onto the mainline: `assertSafeRef` says
+ * only that the string is a legal ref, which `main` is.
  *
- * Rule 1 is the load-bearing one — a lean run's branch is `lean/…` by
- * construction (`specifyBranch`), so requiring that prefix also rejects a
- * `refs/heads/` or `origin/` prefix that would otherwise reach
- * `refs/heads/refs/heads/…`. Rule 2 catches a mainline that does not spell
- * `main` (`trunk`, a fork's default); when it cannot be read we fall back to
- * `exec` is the caller's own executor, and that is a requirement rather than a
- * convenience: the probes that decide whether a force-push happens have to be made
- * over the transport the push will use, so a step that read its mainline off one
- * seam and pushed over another had its guard answered by a different machine than
- * its git. Every caller hands the guard the executor it hands its own git calls.
+ * Rule 1 is the load-bearing one — a lean run's branch is `lean/…` by construction
+ * (`specifyBranch`), so requiring that prefix also rejects a `refs/heads/` or
+ * `origin/` prefix that would otherwise reach `refs/heads/refs/heads/…`. Rule 2
+ * catches a mainline that does not spell `main` (`trunk`, a fork's default); when it
+ * cannot be read the guard asks origin instead of assuming.
+ *
+ * `exec` is the caller's own executor, a requirement rather than a convenience: the
+ * probes that decide whether a force-push happens must be made over the transport the
+ * push will use, or the guard is answered by a different machine than the git it
+ * guards. Every caller hands the guard the executor it hands its own git calls.
  *
  * Throws `PublishInfraError`, which the engine turns into a handed-back run.
  */
@@ -132,9 +128,7 @@ export type MainlineExec = (
  * calling the executor directly: the probe crosses the network, and the wrapper is
  * what gives a network git call its non-interactive env, its process-group kill and
  * its bound — the three things that make a wedged probe a refusal rather than a
- * publish step that never answers. `MAINLINE_PROBE_COMMANDS` and the refusal's cause
- * list both quote this, so a probe whose text drifted from its own name would be
- * caught by the suites that assert on the list.
+ * publish step that never answers.
  */
 export const ORIGIN_PROBE_COMMAND = "git ls-remote --symref origin HEAD";
 
@@ -180,23 +174,18 @@ function mainlineRefusal(branch: string): PublishInfraError {
  * The non-interactive env a publish push runs with, in the production seam only.
  *
  * This IS the driver's env — `netGitEnv` from `work-driver-net-git.ts`, imported
- * directly at the executor below rather than wrapped. Every other network git
- * call in the harness already goes through that seam, so a publish push cannot
- * drift from a driver push on what makes ssh fail instead of reading a passphrase
- * from /dev/tty (`GIT_TERMINAL_PROMPT=0` + `-o BatchMode=yes`). The
- * earlier argument for composing our own here was that `work-driver-net-git.ts`
- * would drag the driver graph into a lean step; the review showed this file
- * already pulls in ~390 driver modules through `command.ts`, so the reason was
- * gone and the duplication was all that was left.
+ * directly at the executor rather than wrapped. Every other network git call in the
+ * harness already goes through that seam, so a publish push cannot drift from a
+ * driver push on what makes ssh fail instead of reading a passphrase from /dev/tty
+ * (`GIT_TERMINAL_PROMPT=0` + `-o BatchMode=yes`).
  */
 
 /**
  * The three command lines the guard asks its executor, in the order it asks them.
  *
- * Exported for the suites: what makes a "no push" claim mean something is that the
- * probes the case scripted are the probes the guard actually makes, and a case that
- * hard-coded its own guesses would keep passing after the guard's probes changed
- * shape. The guard suites derive their fakes and their tallies from this list.
+ * Exported for the suites: a "no push" claim means something only if the probes the
+ * case scripted are the probes the guard actually makes — a case that hard-coded its
+ * own guesses would keep passing after the probes changed shape.
  */
 export const MAINLINE_PROBE_COMMANDS = [
   "git symbolic-ref --short refs/remotes/origin/HEAD",

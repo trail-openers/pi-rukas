@@ -7,35 +7,32 @@
  *
  *   1. `ensureSpecifyWorktree` — a path nobody has to guess (`<repoRoot>/
  *      .worktrees/lean-<issue>`), created at the run's base sha, plus
- *      `assertSpecifyWorktreeOwned`, which refuses a path at that location
- *      that the step does not own. A directory someone else made is not the
- *      step's to `reset --hard`.
+ *      `assertSpecifyWorktreeOwned`, which refuses a path at that location the
+ *      step does not own. A directory someone else made is not the step's to
+ *      `reset --hard`.
  *   2. `validateSubmitRows` (in submit-tests-cap.ts, re-exported here) — the
- *      boundary a `submit_tests` row has to pass before the step believes a file
- *      is a test the child wrote (see submit-tests-extract.ts for the reading
- *      half), including the filesystem check that a kept path is an ordinary
- *      file of the worktree. The size rules it applies live in `test-size.ts`
- *      and the boundary imports them from there directly: the facade re-exports
- *      only what its callers actually import through it, because a re-export
- *      nothing uses is a second public surface that drifts.
- *   3. `captureTestBytes` (in specify-capture.ts) — the ONLY thing that
- *      survives from the child: the bytes of each kept file, read into memory
- *      through one descriptor per file, so a link swapped in after validation
- *      is refused rather than followed.
- *   4. `resetWorktreeToBase` — discard child commits, staged changes,
- *      untracked files and ignore tricks, re-initialise the submodules that
- *      `clean -fdx` de-populated, then PROVE the tree is at base and clean, or
- *      throw. A reset nobody confirmed is a claim, not a fact, and a reset that
- *      emptied a submodule hands the child a test it cannot collect: both are
- *      this module's job rather than each caller's.
+ *      boundary a `submit_tests` row must pass before the step believes a file is
+ *      a test the child wrote, including the check that a kept path is an ordinary
+ *      file of the worktree. The size rules it applies live in `test-size.ts`,
+ *      imported there directly: the facade re-exports only what callers import
+ *      through it, because an unused re-export is a second public surface that
+ *      drifts.
+ *   3. `captureTestBytes` (in specify-capture.ts) — the ONLY thing that survives the
+ *      child: the bytes of each kept file, read into memory through one descriptor
+ *      per file, so a link swapped in after validation is refused rather than
+ *      followed.
+ *   4. `resetWorktreeToBase` — discard child commits, staged changes, untracked
+ *      files and ignore tricks, re-initialise the submodules `clean -fdx`
+ *      de-populated, then PROVE the tree is at base and clean, or throw. A reset
+ *      nobody confirmed is a claim, not a fact, and a reset that emptied a
+ *      submodule hands the child a test it cannot collect.
  *
- * The worktree itself is created through `worktreeCreate` from ../worktree.ts
- * — so it gets the driver's pre-add guards and its dependency provisioning,
- * which is what lets the project's own runner execute inside a tree that is
- * otherwise only tracked files.
+ * The worktree is created through `worktreeCreate` from ../worktree.ts, so it gets
+ * the driver's pre-add guards and dependency provisioning — what lets the project's
+ * runner execute in a tree that is otherwise only tracked files.
  *
- * Every git call here is argv form: the worktree path and the base sha come
- * from the run, and neither is allowed to become a word a shell re-parses.
+ * Every git call here is argv form: the worktree path and the base sha come from the
+ * run, and neither is allowed to become a word a shell re-parses.
  */
 
 import { existsSync, realpathSync } from "node:fs";
@@ -95,30 +92,28 @@ async function registeredWorktreePaths(
 }
 
 /**
- * The precondition for a worktree that is ALREADY there: this step owns it, or
- * the step does not touch it.
+ * The precondition for a worktree that is ALREADY there: this step owns it, or the
+ * step does not touch it.
  *
- * `.worktrees/lean-<issue>` is a name another tool — or a human — can also
- * use. `reset --hard` and `clean -fdx` in a tree the step does not own destroys
- * somebody else's work, so ownership is PROVEN rather than inferred from the
- * directory existing: the path appears in `git worktree list --porcelain` of
- * this repo, and its HEAD sits at the required commit — on the run's branch or
- * detached there — or, with `allowAheadOfBase`, on the run's branch and
- * descending from it. Anything else, including an unreadable listing, throws
- * before a single mutation, and the foreign tree is left exactly as found.
+ * `.worktrees/lean-<issue>` is a name another tool — or a human — can also use.
+ * `reset --hard` and `clean -fdx` in a tree the step does not own destroys somebody
+ * else's work, so ownership is PROVEN rather than inferred from the directory
+ * existing: the path appears in `git worktree list --porcelain` of this repo, and
+ * its HEAD sits at the required commit — on the run's branch or detached there —
+ * or, with `allowAheadOfBase`, on the run's branch and descending from it. Anything
+ * else, including an unreadable listing, throws before a single mutation, and the
+ * foreign tree is left exactly as found.
  *
- * `headMustBe` is what a step other than `specify` asks the tree to be sitting
- * at. `specify` requires the base, because its whole claim is that it froze the
- * tests ON the base; `build` runs after that commit exists and would refuse
- * every legitimate run if it demanded the base too, so it passes the head the
- * step log's frozen records were hashed at. The registration check and the
- * branch check are unchanged either way — only the commit HEAD must equal moves.
+ * `headMustBe` is what a step other than `specify` asks the tree to sit at.
+ * `specify` requires the base, because its claim is that it froze the tests ON the
+ * base; `build` runs after that commit exists and would refuse every legitimate run
+ * demanding the base, so it passes the head the frozen records were hashed at.
  *
- * `allowAheadOfBase` is for the caller that resets HEAD itself next: a tree on
- * the run's branch that descends from the base is then its own to reset — ON
- * that branch, because a HEAD the reset would move must be one the run named:
- * detached or unreadable is refused. The probe only ADDS a refusal: one that
- * could not answer throws.
+ * `allowAheadOfBase` is for the caller that resets HEAD itself next: a tree on the
+ * run's branch descending from the base is then its own to reset — ON that branch,
+ * since a HEAD the reset would move must be one the run named; detached or
+ * unreadable is refused. The probe only ADDS a refusal: one that could not answer
+ * throws.
  */
 export async function assertSpecifyWorktreeOwned(
   exec: ExecFn,

@@ -2,38 +2,35 @@
  * lean/specify-run — the CAPTURE / RESET / REWRITE / PROVE / COMMIT pipeline
  * `specify` and `challenge` share.
  *
- * Both steps pay one adversary to write test files, and both then have to turn
- * whatever it submitted into frozen, committed, provably-red tests. They differ in
- * TWO inputs, not two algorithms:
+ * Both steps pay one adversary to write test files, and both must turn whatever it
+ * submitted into frozen, committed, provably-red tests. They differ in TWO inputs,
+ * not two algorithms:
  *
  *   - what the child is shown and asked for (`specifyPrompt` vs `challengePrompt`,
  *     assembled by the caller, which also owns the dispatch);
- *   - **`headBefore`** — the commit the tree is reset back to and the commit the
- *     red proof runs against. For `specify` that is the run's base sha (its claim is
- *     that the tests are red on code nobody has written); for `challenge` the current
- *     head (a new test is only worth freezing if it is red against it).
+ *   - **`headBefore`** — the commit the tree is reset back to and the red proof runs
+ *     against. For `specify` the run's base sha (the claim is the tests are red on
+ *     code nobody wrote); for `challenge` the current head (a new test is worth
+ *     freezing only if red against it).
  *
- * Everything downstream of the dispatch is identical, so it lives here once: each of
- * the eleven stages below is a response to a way a child can lie about what it wrote
- * (a symlink swapped in after validation, a commit of its own, a green file reported
- * as red, a commit that quietly contains a stray edit), and the copy that drifts is
- * the one nobody is testing. `noteClause` is exported so `challenge`'s sweep shares
- * its cap with these.
+ * Everything downstream of the dispatch is identical, so it lives here once: each
+ * stage is a response to a way a child can lie about what it wrote (a symlink
+ * swapped in after validation, a commit of its own, a green file reported as red, a
+ * commit that quietly contains a stray edit), and the copy that drifts is the one
+ * nobody is testing. `noteClause` is exported so `challenge`'s sweep shares its cap
+ * with these.
  *
  * The ref is a parameter and nothing else may vary by step: `resetWorktreeToBase`
  * is named for the base but takes any commit, and it verifies the tree got there
  * and is clean, so `challenge`'s reset to a head is exactly as proven as
  * `specify`'s reset to a base.
  *
- * The return type the two callers route on is deliberately distinct
- * (`PipelineVerdict`), and so is the COVERAGE RULE each one passes. `specify`
- * passes `"all-criteria"`: one criterion left without a red test refuses the whole
- * run. `challenge` passes `"any-red"`: an adversary that found one red edge for AC1
- * and nothing for AC2 has done its job, and refusing that run would throw away the
- * one genuine finding because the round was not exhaustive. Under `"any-red"` every
- * proven-red file is committed and the verdict is `committed` when at least one is
- * red, `empty` when none is. That judgement belongs to the caller, which is why the
- * rule is an argument and this module returns `committed` / `uncovered` / `empty`.
+ * The COVERAGE RULE is an argument, not a branch: `specify` passes `"all-criteria"`
+ * (one criterion without a red test refuses the run); `challenge` passes
+ * `"any-red"` — an adversary that found one red edge for AC1 and nothing for AC2 has
+ * done its job, and refusing that run would throw away the one genuine finding. The
+ * judgement belongs to the caller, which is why this module returns `committed` /
+ * `uncovered` / `empty`.
  */
 
 import { existsSync, rmSync } from "node:fs";
@@ -210,11 +207,11 @@ function noteFor(cand: DeclaredPath, proof: Proof): string {
  * Why a runner the step cannot trust is infrastructure and not a verdict.
  *
  * `runTestFile` never throws — a kill, a timeout and a runner that could not be
- * started all come back as `kind: "infra"` — and the caller is the thing that
- * decides throwing is right. It is, here: `specify`'s whole claim is that these
- * tests are red, and a red nobody executed proves nothing. Reading an
- * unrunnable runner as "this file was not red" would hand the run a `no-red-test`
- * VERDICT about work the toolchain never got to judge.
+ * started all come back as `kind: "infra"` — and the caller decides whether
+ * throwing is right. It is, here: `specify`'s whole claim is that these tests are
+ * red, and a red nobody executed proves nothing. Reading an unrunnable runner as
+ * "this file was not red" would hand the run a `no-red-test` VERDICT about work the
+ * toolchain never got to judge.
  */
 function assertRan(proof: Proof, file: string): void {
   if (proof.kind === "infra")

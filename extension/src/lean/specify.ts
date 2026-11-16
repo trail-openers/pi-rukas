@@ -1,52 +1,46 @@
 /**
- * lean/specify — the step that proves the acceptance tests are red before
- * anybody writes the implementation.
+ * lean/specify — the step that proves the acceptance tests are red before anybody
+ * writes the implementation.
  *
- * The order is the design, and each stage exists because the one before it
- * cannot be trusted on its own:
+ * The order is the design, and each stage exists because the one before it cannot
+ * be trusted on its own:
  *
- *   1. re-read the spec from the forge — an issue body can change between
- *      `ready` and here, and a test frozen against a spec nobody re-read is
- *      frozen against a fiction;
- *   2. refuse the run on anything the step can settle WITHOUT an adversary: a
- *      spec with test criteria but no runner configured, an unhealthy base, and
- *      a directory at the worktree path the step does not own. An adversary is
+ *   1. re-read the spec from the forge — an issue body can change between `ready`
+ *      and here, and a test frozen against a spec nobody re-read is frozen against
+ *      a fiction;
+ *   2. refuse the run on anything the step can settle WITHOUT an adversary: a spec
+ *      with test criteria but no runner configured, an unhealthy base, and a
+ *      directory at the worktree path the step does not own. An adversary is
  *      expensive and proves none of these;
- *   3. put a clean worktree at the run's base sha (create, or reset a leftover
- *      the step owns);
+ *   3. put a clean worktree at the run's base sha (create, or reset a leftover the
+ *      step owns);
  *   4. dispatch ONE adversary that writes the tests and submits them;
  *   5. validate every submitted row at the boundary — criterion, path shape,
  *      existence, and that the path is an ordinary file of this worktree (not a
  *      symlink, not a hard link, not a path that resolves outside it);
- *   6. CAPTURE the bytes of every kept file into memory. That is the only thing
- *      that survives the child;
- *   7. RESET the worktree completely to the base — child commits, staged
- *      changes, untracked files and ignore tricks all go — and prove it;
+ *   6. CAPTURE the bytes of every kept file into memory — the only thing that
+ *      survives the child;
+ *   7. RESET the worktree completely to the base — child commits, staged changes,
+ *      untracked files and ignore tricks all go — and prove it;
  *   8. REWRITE the captured bytes to their paths, so what gets run, hashed and
  *      committed is exactly what was captured, whatever the child did next;
- *   9. prove red on exactly those bytes, per file, with the runner template.
- *      Every `verify: "test"` criterion must have at least one red file, or the
- *      step refuses the run;
- *  10. COMMIT the kept files and assert the commit contains exactly them; then
- *      HASH the committed blobs, so the record later steps check against
- *      describes the commit rather than a momentary state of the tree.
+ *   9. prove red on exactly those bytes, per file, with the runner template. Every
+ *      `verify: "test"` criterion must have at least one red file, or the step
+ *      refuses the run;
+ *  10. COMMIT the kept files and assert the commit contains exactly them; then HASH
+ *      the committed blobs, so the record later steps check against describes the
+ *      commit rather than a momentary state of the tree.
  *
- * The two kinds are deliberately apart. `no-red-test` is a VERDICT about the
- * work — the spec or the child's tests are not good enough, and the run ends
- * `not-ready` with named rules. A THROW is infrastructure — an unhealthy base, a
- * worktree the step does not own, a dispatch that died, a commit that did not
- * contain what it was told to — and the engine turns it into handed-back exit 10
- * without blaming the issue.
+ * The two kinds are deliberately apart. `no-red-test` is a VERDICT about the work —
+ * the run ends `not-ready` with named rules. A THROW is infrastructure — an
+ * unhealthy base, a worktree the step does not own, a dispatch that died, a commit
+ * that did not contain what it was told to — and the engine turns it into
+ * handed-back exit 10 without blaming the issue.
  *
- * The CAPTURE / RESET / REWRITE / PROVE / COMMIT pipeline is shared with
- * `challenge` through `specifyRun.ts`: `specify` calls it with the run's base
- * sha as the ref it resets to, and `challenge` with the current head. That is
- * the only difference between the two steps at this layer, so it is a parameter
- * rather than a second copy — see the module header there for what the ref
- * changes and what it must not.
- *
- * Everything outside the pure parts is injected, so the test drives a real
- * temp git repo through the same seams production uses.
+ * The pipeline is shared with `challenge` through `specifyRun.ts`; the ref it resets
+ * to is the only difference, so it is a parameter rather than a second copy.
+ * Everything outside the pure parts is injected, so the test drives a real temp git
+ * repo through the same seams production uses.
  */
 
 import { traceWarn } from "../trace.ts";
@@ -99,32 +93,31 @@ export interface SpecifyDeps {
   /** Preflight for the reporter companion; `statReporterPath` in production. */
   statReporter?: (p: string) => Promise<unknown>;
   /**
-   * Reads the kept test files into memory; `captureTestBytes` in production. A
-   * seam because every other filesystem fact here is one: the smoke test proves
-   * the step commits the bytes it captured rather than whatever the child leaves
-   * on disk, and that needs a read the test can place against the child's own
-   * last write. The `owners` map tells the capture which criterion claimed each
-   * path, so a file it cannot read through one descriptor drops as that
-   * criterion's row, not as an unattributed line in the reason.
+   * Reads the kept test files into memory; `captureTestBytes` in production. A seam
+   * because every other filesystem fact here is one: the smoke test proves the step
+   * commits the bytes it captured rather than whatever the child leaves on disk, and
+   * that needs a read the test can place against the child's last write. The `owners`
+   * map tells the capture which criterion claimed each path, so a file it cannot read
+   * drops as that criterion's row, not an unattributed line in the reason.
    */
   capture?: (wt: string, paths: string[], owners: Map<string, string>) => CaptureResult;
   /** Per-run runner limits; a test injects a short timeout to prove a hang is infra. */
   testLimits?: TestRunLimits;
   /**
-   * The runner preflight's own limits, so a case can shrink the bound and watch
-   * a hanging probe end as an infrastructure handback. Its own field rather than
-   * a second use of {@link testLimits}: the probe bounds ONE runner call made
-   * before the child exists, and a case that shortens the red proof's bound to
-   * prove a hung frozen test is infra must not thereby shorten the probe's.
+   * The runner preflight's own limits, so a case can shrink the bound and watch a
+   * hanging probe end as an infrastructure handback. Its own field rather than a
+   * second use of {@link testLimits}: the probe bounds ONE runner call made before
+   * the child exists, and shortening the red proof's bound must not shorten the
+   * probe's.
    */
   preflightLimits?: TestRunLimits;
   /**
-   * Called with a worktree the step has just reset to the base, immediately
-   * before the reset asks git to populate that tree's submodules. Supplied only
-   * by smoke tests, which use it to break a submodule between the clean and the
-   * `submodule update --init` that has to recover it — the only way to observe
-   * git actually failing that command instead of asserting what it would do.
-   * Threaded to {@link resetWorktreeToBase}, which owns the initialisation.
+   * Called with a worktree the step has just reset to the base, immediately before
+   * the reset asks git to populate that tree's submodules. Supplied only by smoke
+   * tests, which use it to break a submodule between the clean and the
+   * `submodule update --init` that has to recover it — the only way to observe git
+   * actually failing that command. Threaded to {@link resetWorktreeToBase}, which
+   * owns the initialisation.
    */
   beforeSubmoduleInit?: (wt: string) => void | Promise<void>;
   /**
@@ -143,8 +136,8 @@ export interface SpecifyDeps {
 /**
  * A base, a tree or a child we cannot trust. The engine turns this into 10.
  *
- * Re-exported from `specify-run.ts`, where the shared pipeline raises it, so
- * that module owns the throw without importing this step back: the class is
+ * Re-exported from `specify-run.ts`, where the shared pipeline raises it, so that
+ * module owns the throw without importing this step back: the class is
  * `instanceof`-tested by the specify and challenge smoke suites, and two copies
  * would make `err instanceof SpecifyInfraError` quietly false.
  */
@@ -158,18 +151,18 @@ function specRules(body: string): { spec?: PiSpec; rules: string[] } {
 }
 
 /**
- * Base health: the compiler canary (when the tier uses it), then the project's
- * fast verify tier. Both run BEFORE the adversary is dispatched.
+ * Base health: the compiler canary (when the tier uses it), then the project's fast
+ * verify tier. Both run BEFORE the adversary is dispatched.
  *
- * A red test is only evidence when the base builds, and a red is a VERDICT —
- * so the question "does the toolchain work at all" must be answered somewhere
- * that cannot be confounded with what a test prints. That place is here, and
- * it is the only place: a failure throws rather than dropping rows.
+ * A red test is only evidence when the base builds, and a red is a VERDICT — so the
+ * question "does the toolchain work at all" must be answered somewhere that cannot
+ * be confounded with what a test prints. That place is here, and it is the only
+ * place: a failure throws rather than dropping rows.
  *
  * The canary runs in the directory the tier runs the pinned compiler in
- * (`packageDirFor`), and the tier itself runs with the driver's knobs scrubbed,
- * exactly as every other verify child does. When provisioning could not give
- * the tree its dependencies, that is said in the message.
+ * (`packageDirFor`), and the tier runs with the driver's knobs scrubbed, as every
+ * other verify child does. When provisioning could not give the tree its
+ * dependencies, that is said in the message.
  */
 async function assertBaseHealthy(
   exec: ExecFn,

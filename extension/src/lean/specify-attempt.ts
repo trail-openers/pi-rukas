@@ -1,14 +1,13 @@
 /**
  * lean/specify-attempt — one attempt of the `specify` step: one adversary
- * dispatch under the state's budget, then the shared test pipeline
- * (extract, validate, capture, reset to the base, rewrite, prove red, commit).
+ * dispatch under the state's budget, then the shared test pipeline (extract,
+ * validate, capture, reset to the base, rewrite, prove red, commit).
  *
  * `specify.ts` runs it once, and again on its one retry — with the previous
- * attempt's drop reasons, or with a fixed note when that attempt submitted
- * nothing at all. It returns the outcome the attempt reached, the drop labels
- * the boundary made, and whether the attempt was silent — no `submit_tests`
- * call it could read and nothing dropped — so the caller can decide whether a
- * retry is worth it; it never decides that itself. The pipeline itself is
+ * attempt's drop reasons, or with a fixed note when that attempt submitted nothing
+ * at all. It returns the outcome reached, the drop labels the boundary made, and
+ * whether the attempt was silent — no `submit_tests` call it could read and nothing
+ * dropped — so the caller decides whether a retry is worth it. The pipeline is
  * shared with `challenge` through `specify-run.ts`.
  */
 
@@ -97,11 +96,11 @@ interface SpecifyAttemptResult {
   /**
    * What this attempt's dispatch cost, reported SEPARATELY from the outcome.
    *
-   * The caller owns the retry, and the retry owns the step's single outcome —
-   * so if the rows lived only on the outcome, a second attempt would overwrite
-   * the first's and the run would report one child where it paid for two. The
-   * caller folds these; an attempt's own outcome still carries its rows, so a
-   * reader of the log alone sees the same truth as the fold.
+   * The caller owns the retry, and the retry owns the step's single outcome — if
+   * the rows lived only on the outcome, a second attempt would overwrite the
+   * first's and the run would report one child where it paid for two. The caller
+   * folds these; the outcome still carries its own rows, so a reader of the log
+   * alone sees the same truth as the fold.
    */
   dispatched: DispatchUsageRow[];
   /**
@@ -194,18 +193,15 @@ async function dispatchAdversary(
  * Dispatch, extract, validate, CAPTURE, RESET to the base, REWRITE, prove every
  * kept file red ON THE BASE, and commit — once.
  *
- * The ref is the base: `specify`'s claim is that it froze the tests ON the
- * base, so its `headBefore` IS the base and the child's work is undone back to
- * the commit `ready` resolved. The two verdicts the shared pipeline can return
- * are the two this step has always returned: a coverage gap is `no-red-test`,
- * and there is no third one. `uncovered` reports every criterion the run still
- * owes — `specify` has required all of them, so the pipeline's partial-red case
- * is a refusal here, not a partial freeze.
+ * The ref is the base: `specify`'s claim is that it froze the tests ON the base, so
+ * its `headBefore` IS the base and the child's work is undone back to the commit
+ * `ready` resolved. A coverage gap is `no-red-test`, and there is no third verdict:
+ * `uncovered` reports every criterion the run still owes, because `specify` required
+ * all of them and the pipeline's partial-red case is a refusal here, not a partial
+ * freeze.
  *
- * Returns the boundary's drop reasons and whether the attempt submitted nothing
- * at all: those are the two refusals the caller retries on.
- *
- * THROWS on infrastructure (a dispatch that died, a pipeline fault).
+ * Returns the boundary's drop reasons and whether the attempt submitted nothing at
+ * all: the two refusals the caller retries on. THROWS on infrastructure.
  */
 export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<SpecifyAttemptResult> {
   const { deps, config, repoRoot, issue, spec, wt, base, branch, runnerTemplate } = args;
