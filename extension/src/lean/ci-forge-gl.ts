@@ -20,8 +20,10 @@
  *      A red spends a build round on the code; none of these are about the code.
  *   3. **A gate that cannot fail is not green.** Job states are graded by
  *      `gradeGlJobState` in `../forge-gl-grade.ts`, the one table saying what a
- *      GitLab job state means. GitLab rows carry no `bucket`, so gh's bucket-first
- *      grading cannot reach them.
+ *      GitLab job state means: only a blocking job's `success` passes, `skipped`,
+ *      `manual` and `allow_failure: true` are all refused, and a state the table has
+ *      never seen waits rather than passing. GitLab rows carry no `bucket`, so gh's
+ *      bucket-first grading cannot reach them.
  *   4. **The jobs are the head's jobs, and all the jobs there are.** The adapter's
  *      `prChecks` reaches a pipeline through the MR's pipelines LIST, so on a project
  *      that runs tag- or schedule-pipelines its rows can belong to another commit.

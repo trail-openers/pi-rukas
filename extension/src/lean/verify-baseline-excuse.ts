@@ -11,7 +11,10 @@
  * read or not, so a head-only line nobody recognised still has to appear at the base. The
  * rule is DEFAULT-REFUSE in both directions of ignorance: a line past
  * {@link FAILURE_LINE_SCAN_MAX} refuses either side, and a head-only line refuses with no
- * allow-list of shapes that may be head-only. Both sides must be non-empty, every head line
+ * allow-list of shapes that may be head-only. The accepted cost of that: a PR that ADDS PASSING
+ * TESTS to a suite already red at base hands back on its own tally line (`1 failed, 5 passed`
+ * is head-only), as does renumbered TAP output or a timing line whose text moved — each is a
+ * hand-back, never a green. Both sides must be non-empty, every head line
  * must equal a base line verbatim (trimmed, its own tree's prefix out), the two trees must
  * be two trees, and a base red shaped like a missing dependency tree is the probe's
  * provisioning, not the commit's. "Could not tell" is never an excuse; the caller keeps the
@@ -129,9 +132,11 @@ export function stripRoot(line: string, root: string): string {
  * A tree resolved to the spelling its own run would have printed it under.
  *
  * A tree reached through a symlink prints its names under the symlinked spelling while the
- * caller holds the resolved one, and the two never share a prefix. Only the longest
- * existing prefix resolves — the probe's tree is deleted before this comparison runs.
- * Called once per {@link baselineExcuse} per side, never per candidate.
+ * caller holds the resolved one, and the two never share a prefix — macOS makes every temp dir a
+ * symlink, so without this a whole run's lines never match. Only the longest existing prefix
+ * resolves: the probe's tree is deleted before this comparison runs, so resolving its parent still
+ * puts it in the same spelling as every other path here. Called once per {@link baselineExcuse}
+ * per side, never per candidate.
  */
 function treeRoot(dir: string): string {
   const parts = dir
@@ -205,11 +210,12 @@ export function baselineExcuse(opts: {
   const headRoot = treeRoot(opts.headRoot);
   const probeRoot = treeRoot(opts.probeRoot);
   if (headRoot === probeRoot) return { kind: "refused" };
-  // A bare checkout whose dependencies were never linked fails every command: that red
-  // belongs to the probe's provisioning, not to the commit.
+  // A bare checkout whose dependencies were never linked fails every command: that red belongs
+  // to the probe's provisioning, not to the commit. Per FAILURE LINE, not anywhere in the
+  // stream, because a tier's own `sh` trace can print the dependency phrases about a file.
   if (baseRedIsMissingDeps(baseStream)) return { kind: "refused" };
-  // An empty key set excuses nothing; the only residue discounted is the executor's own
-  // writing, which {@link harnessResidue} answers for.
+  // The RAW stream's lines, both sides: the residue discount runs after this, so a head left
+  // with nothing but discounted residue is refused here as an empty key set.
   if (head.length === 0 || base.length === 0) return { kind: "refused" };
   // One key per side: each line with ITS OWN tree's prefix out, so head and base agree on what
   // the check WAS. Each keeps every digit — a moved pass count or a renumbered TAP check is a

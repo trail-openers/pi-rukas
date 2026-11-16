@@ -101,7 +101,10 @@ export function ciDeps(): CiDeps {
  * The check rows are a SEPARATE read, and `--json` is load-bearing: without it
  * `gh pr checks` prints a human table, every row is discarded, and the
  * `skipped`/`neutral` treatment is unreachable from production code. `prChecksCmd`
- * requests only `name,state,bucket`.
+ * requests only `name,state,bucket` — `conclusion` is not a field `gh` supports, and
+ * the field list is pinned by `test-gh-argv.ts` alongside the rule that `isRequired`
+ * must never come back. `mergeable` is the field `gh pr view --json` exposes; there is
+ * no `isMergeable` on that subcommand.
  */
 export function ghReads(prNumber: number): { view: string; checks: string } {
   return {

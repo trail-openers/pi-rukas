@@ -11,7 +11,9 @@
  * No execution logic, and no trust: the parent does the judging — it requires every
  * named path to be in the run's frozen map and RUNS those frozen tests itself on the
  * child's tree, honouring the report only when at least one comes back red. Loaded via
- * `pi --no-skills --extension <path>` from `build-dispatch.ts`; never auto-discovered.
+ * `pi --no-skills --extension <path>` — the two flags this step's dispatch site passes in
+ * `extraArgs` (`build-dispatch.ts`) on top of the shared child argv, which itself carries
+ * `--no-extensions` (`buildChildArgs`); never auto-discovered.
  */
 
 import path from "node:path";

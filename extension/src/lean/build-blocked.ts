@@ -54,7 +54,8 @@ const BLOCKED_CAUSE_CAP = BLOCKED_PATH_CAP + BLOCKED_REASON_CAP + 44;
 
 /**
  * The child's reported conflicts, filtered to entries the record could hold, in the
- * child's own order: `blockedProved` runs them in it and stops at the first red.
+ * child's own order — order is load-bearing, because `blockedProved` runs them in it and
+ * stops at the first red, so a re-sorted list would prove a file the builder never feared.
  * Illegal frozen keys are dropped here, before any `git`/runner call.
  */
 function usableConflicts(rows: Array<{ path: string; reason: string }>): string[] {

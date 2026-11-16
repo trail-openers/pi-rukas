@@ -35,14 +35,18 @@ export type HandbackHandler = (ctx: {
  * The routed report's own wall: the handoff allowance plus a fraction of headroom.
  *
  * The allowance is the time the run was already told the report owns, but not the time it needs:
- * the per-call git and forge ceilings on the reporting path sum past it, so a bound equal to the
- * allowance cuts a report in which nothing hung and loses the rewind. The headroom is a RATIO of
- * the allowance because the allowance is the knob an operator moves
+ * the per-call git and forge ceilings on the reporting path sum past it (570 s against the 480 s
+ * default), so a bound equal to the allowance cuts a report in which nothing hung and loses the
+ * rewind. The bound is therefore allowance × (1 + {@link REPORT_BOUND_HEADROOM_RATIO}) — 480 s ×
+ * 1.2 = 576 s covers that sum and still fires strictly before the grace. `handoffAllowanceMs()` is
+ * what the bound multiplies; {@link REPORT_BOUND_HEADROOM_RATIO} is the one place the ratio is read.
+ * The headroom is a RATIO of the allowance because the allowance is the knob an operator moves
  * (`PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`).
  *
  * The limit on it is the child-bound grace (`PI_ENSEMBLE_CHILD_BOUND_GRACE_MS`), past which the
  * run is killed and the kill — not the handback — is what gets recorded.
- * `test-lean-report-bound-ceiling.ts` holds the bound strictly inside that grace.
+ * `test-lean-report-bound-ceiling.ts` is the witness: it reads both shipped constants and holds the
+ * bound strictly inside that grace.
  */
 export function handoffReportBoundMs(): number {
   return Math.round(handoffAllowanceMs() * (1 + REPORT_BOUND_HEADROOM_RATIO));
@@ -90,8 +94,9 @@ export interface ReportRequest {
  * `handback-heads.ts` would read it as "the gate has spoken".
  *
  * Returns the ended run, or `undefined` when the report threw or overran, so the caller falls back
- * to the plain deadline stamp. On overrun the result is discarded; a handler that settles late may
- * still run but writes nothing.
+ * to the plain deadline stamp. On overrun the result is discarded; a handler that settles after the
+ * bound fired may still run but writes nothing — the only writers of the record are the two `req`
+ * calls below, both reached on the settled arm alone.
  */
 export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | undefined> {
   const { run, stoppedAt, now, handler, boundMs } = req;

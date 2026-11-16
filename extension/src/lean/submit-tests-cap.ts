@@ -100,7 +100,8 @@ export const NEWNESS_REASON =
  *      lines (`MAX_TEST_LINES`). The byte bound is what makes the read bounded per CALL. A NUL byte
  *      is dropped here too, as not a text file;
  *   8. the per-criterion file quota (`MAX_TEST_FILES_PER_CRITERION`) — judged AFTER the size rule, so
- *      an over-long third file is reported as too long rather than as surplus.
+ *      an over-long third file is reported as too long rather than as surplus, and NOT conditional on
+ *      the size rules: a caller that switches them off is still bounded.
  *
  * A stat or read whose error carries `ENOENT`, `ENOTDIR` or `ELOOP` is a DROP — the name does not
  * resolve, a fact about the child's file. Any other failure is infrastructure and THROWS
@@ -286,7 +287,8 @@ export async function validateSubmitRows(
       if (keptRels.get(row.criterionId)?.has(rel) === true) continue;
       // The last two checks. The size rules are the only ones that cost a read, so a row the cheap
       // rules already refused never opens a descriptor; the quota costs nothing and is NOT
-      // conditional on them.
+      // conditional on them — a quota that fired only when the bytes were readable was a quota
+      // switched off by an argument.
       if (opts.sizeRules !== false) {
         // AFTER `fileProblem`, which establishes an ordinary file of this worktree.
         const judgement = sizeJudgement(path.join(opts.wt, rel), rel, opts.statSize ?? statSizeOf);

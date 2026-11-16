@@ -86,8 +86,8 @@ export async function tierFailure(
  * `gh pr checks` exits **8** while checks are still pending (gh 2.103.3:
  * `8: Checks pending`). The shared executor rejects on any non-zero exit, so
  * without this the pending reply — the whole point of the poll — would read as an
- * infra throw. stdout still carries the JSON rows, so the exit is a signal about
- * WHERE the checks are, not whether the read worked.
+ * infra throw. stdout still carries the JSON rows, so the exit is tolerated precisely
+ * because it is a signal about WHERE the checks are, not whether the read worked.
  */
 const GH_CHECKS_PENDING_EXIT = 8;
 

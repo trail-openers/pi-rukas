@@ -12,8 +12,9 @@
  * escapes the worktree, checks the file exists, and PROVES each kept file red on the base commit.
  * Acknowledging the call is enough here.
  *
- * Loaded via `pi --no-extensions --extension <path-to-this-file>` from specify.ts; never
- * auto-discovered.
+ * Loaded via `pi --no-skills --extension <path-to-this-file>` — the two flags both dispatch
+ * sites pass in `extraArgs` (`specify-attempt.ts`, `challenge-dispatch.ts`) on top of the shared
+ * child argv, which itself carries `--no-extensions` (`buildChildArgs`); never auto-discovered.
  */
 
 import path from "node:path";

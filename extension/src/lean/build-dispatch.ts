@@ -67,8 +67,9 @@ export interface BuildDispatchOpts {
  *
  * dispatchBuilder is the only site holding the child's DispatchResult, so it is
  * the only site that can tell a child that did nothing from one that died
- * mid-flight. A kill or a terminal provider fault never becomes this:
- * `providerFaultOf` declines it.
+ * mid-flight — and the caller sees only the row, so the classification that made
+ * that judgement has to ride along on it. A kill or a terminal provider fault never
+ * becomes this: `providerFaultOf` declines it.
  */
 interface NoWorkCrash {
   readonly noWorkCrash: true;
@@ -143,7 +144,9 @@ export async function dispatchBuilder(
   const fired = opts.budget.fired(result);
   if (fired !== undefined) return [budgetStop(fired), row];
   // Before the shared tail: a child that provably did nothing is a re-dispatch, not
-  // a verdict, so it comes back as a row rather than a throw.
+  // a verdict, so it comes back as a row rather than a throw. `providerFaultOf` is
+  // the only answer that declines a cap — a kill and a terminal provider fault (spend
+  // cap, quota window, undated 429, missing model) both come back undefined.
   if (!result.ok || result.killCause !== undefined || result.errorStop !== undefined) {
     const cls = didNoWork(result) ? providerFaultOf(result) : undefined;
     if (cls !== undefined)
