@@ -60,8 +60,19 @@ export const DERIVE_DEFAULT_BUDGET: Budget = Object.freeze({
   minutes: 10,
 });
 
-/** The most bullets the child may return; the mapper embeds at most this many. */
-export const DERIVE_MAX_CRITERIA = 12;
+/**
+ * The most criteria the deriving child may return: {@link SIZE_MEDIUM_MAX}, the
+ * count at which the mapper still calls the change `M`.
+ *
+ * This is NOT the mapper's embedding cap (12) and must not be raised to it.
+ * `size` is the mapper's, counted from the ORIGINAL bullet list, and `readiness`
+ * refuses an `L` — so a brief that invited twelve bullets would be inviting a
+ * contract the run's own gate rejects, and every nine-criterion ticket would
+ * decline. Asking for at most eight makes the brief and the gate agree; a child
+ * that ignores the instruction still gets the honest outcome below (a size-`L`
+ * refusal quoting the block), never a silently truncated list.
+ */
+export const DERIVE_MAX_CRITERIA = 8;
 
 /** How long a reply may be before it is refused unread — a fence flood is not a spec. */
 const REPLY_MAX_CHARS = 64 * 1024;
@@ -113,7 +124,8 @@ export function derivePrompt(input: DeriveInput): string {
     "",
     "ONE fenced block whose info string is exactly `pi-spec v1`, holding JSON with:",
     '- "problem": one neutral sentence saying what is wrong. Do NOT restate or repeat the issue title — the title is already in front of every reader of this field.',
-    `- "criteria": at most ${String(DERIVE_MAX_CRITERIA)} entries, each { "id": "AC1", "text": "…", "verify": "test" } — ids AC1, AC2, … in order, every one "verify": "test". You may not make a criterion a command or a manual check.`,
+    `- "criteria": at most ${String(DERIVE_MAX_CRITERIA)} criteria, each { "id": "AC1", "text": "…", "verify": "test" } — ids AC1, AC2, … in order, every one "verify": "test". You may not make a criterion a command or a manual check.`,
+    `More than ${String(DERIVE_MAX_CRITERIA)} criteria and the change is refused as too large for one run, so if the issue genuinely needs more, keep the ${String(DERIVE_MAX_CRITERIA)} that decide whether it works and leave the rest: a smaller honest contract builds, a padded one is refused.`,
     '- "size": "S", "M" or "L", judged from the criteria you listed.',
     "",
     "Each criterion must be TESTABLE: a sentence an acceptance test can fail on. A requirement you cannot state as a check is not a criterion — leave it out rather than padding.",

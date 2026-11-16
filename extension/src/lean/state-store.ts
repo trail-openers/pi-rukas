@@ -50,12 +50,21 @@ export function loadRun(repoRoot: string, issue: number): LeanRun | undefined {
 }
 
 /**
- * Persist atomically. A failed write cleans up its tmp file and rethrows: the
- * caller keeps the previous good file and learns the save did not happen,
- * rather than believing a step was durable when it was not.
+ * Persist atomically, re-emitting the record through the validator first.
+ *
+ * The re-emit is not a formality: the in-memory `LeanRun` the engine holds is
+ * built once (`createRun`) and then copied field by field, and the ONE field the
+ * engine never passes through `assertRunFile` on the way in is a derived spec a
+ * `ready` handler attaches. Writing it through the validator is what makes
+ * "what is on disk" and "what a resume would accept" the same bytes — a record
+ * this function cannot validate is a record this process must not create, and it
+ * is cheaper to fail at the write than to discover it on the next resume.
+ * Old state files are unaffected: the validator's output for a record without a
+ * derived spec is that record, field for field.
  */
 export function saveRun(repoRoot: string, run: LeanRun): void {
   const file = leanStateFile(repoRoot, run.issue);
+  const validated = assertRunFile(run, file);
   mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try {

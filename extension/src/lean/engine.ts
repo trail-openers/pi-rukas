@@ -144,6 +144,27 @@ function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: numbe
 }
 
 /**
+ * Copy `ready`'s three run-level fields off its verdict and onto the run.
+ *
+ * Field by field, and only on `ready`: each is owned by that step's verdict (see
+ * `OWNER_OF_FIELD`), and a step that cannot own a field on the record cannot put
+ * it there either. A resumed run re-runs `ready` before anything else, so the
+ * fields are re-established from the same source on every entry — the record is
+ * never the only place they were ever written, except for `derivedSpec`, which is
+ * precisely why it is written here.
+ */
+function applyReadyFacts(run: LeanRun, outcome: Outcome): LeanRun {
+  return {
+    ...run,
+    ...(outcome.config === undefined ? {} : { config: outcome.config }),
+    ...(outcome.baseSha === undefined || run.baseSha !== ""
+      ? {}
+      : { baseSha: outcome.baseSha }),
+    ...(outcome.derivedSpec === undefined ? {} : { derivedSpec: outcome.derivedSpec }),
+  };
+}
+
+/**
  * Has this run earned the merge? The newest DECIDED `verify` AND `ci` both green, and no `draft`
  * left standing. Rules live in `engine-facts.ts`, shared with the stamp check.
  */
@@ -214,26 +235,32 @@ async function settle(
     outcome = errorOutcome(state, err);
   }
   const logged = withOutcome(run, key, outcome, now());
+  // `ready` is the one step whose verdict has to land on the RUN and not only on
+  // its step record: `config` is what later steps execute under, `baseSha` is the
+  // commit that config was read at, and `derivedSpec` is the only copy of a
+  // contract that exists on no issue. Without this the run would carry its own
+  // settings to the steps that need them and the process would die holding them.
+  const withFacts = key === "ready" ? applyReadyFacts(logged, outcome) : logged;
   if (outcome.kind === "error") {
-    drive.save(logged);
+    drive.save(withFacts);
     return endRun(
       drive,
-      logged,
+      withFacts,
       "handed-back",
       `handler error at ${state}: ${String(outcome.message ?? "")}`,
     );
   }
   // An outcome the table does not list is a handler bug, whatever the state.
   if (!hasTransition(state, outcome.kind)) {
-    drive.save(logged);
+    drive.save(withFacts);
     return endRun(
       drive,
-      logged,
+      withFacts,
       "handed-back",
       `no transition for ${state} + ${JSON.stringify(outcome.kind)}`,
     );
   }
-  return apply(drive, logged, outcome);
+  return apply(drive, withFacts, outcome);
 }
 
 /**

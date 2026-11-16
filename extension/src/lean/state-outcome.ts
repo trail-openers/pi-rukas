@@ -15,6 +15,7 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import type { DispatchUsage } from "../types.ts";
 import { HANDOFF_CHANNELS, type HandoffChannel } from "../work-driver-handoff-channel.ts";
 import { CRITERION_ID } from "./spec.ts";
+import { derivedSpecProblem } from "./state-derived-spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
 import { reviewBoundProblem, validatedReviewBound } from "./state-dispatches.ts";
 import {
@@ -152,6 +153,15 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // …and the only ones that may name the channel they reported on.
   channel: REPORTING_STATES,
   dispatches: DISPATCH_STATES,
+  // Only `ready` may record a derived contract: it is the one step that reads the
+  // issue, and a derived spec licenses every later step to execute a contract no
+  // author wrote. A step that never ran the deriving child has no evidence for it.
+  derivedSpec: "ready",
+  // …and the same for the settings the run was judged by and the commit they were
+  // read at. A step stamping its own `config` would put settings on the record
+  // that the loader never validated and `ready` never approved.
+  config: "ready",
+  baseSha: "ready",
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",
@@ -257,6 +267,12 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     (!Array.isArray(oc.failedRules) || oc.failedRules.some((x) => typeof x !== "string"))
   )
     return "outcome failedRules must be a string[]";
+  // The derived contract is the document nine steps execute, so it is held to the
+  // contract's own rules on load rather than carried: see `state-derived-spec.ts`.
+  if (oc.derivedSpec !== undefined) {
+    const derived = derivedSpecProblem(oc.derivedSpec);
+    if (derived !== undefined) return `outcome ${derived}`;
+  }
   // `frozen` is the tamper evidence `build` and `verify` read back, so a value that is not
   // a sha256 is refused rather than carried: a mistyped digest would compare unequal
   // forever and the reader could not tell a broken record from an edited test.

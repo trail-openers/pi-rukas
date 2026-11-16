@@ -23,6 +23,7 @@ import {
   SpecDeriveError,
   deriveSpec,
   deriveBudget,
+  derivePrompt,
   extractDerivedSpec,
   parseDerivedBlock,
 } from "../src/lean/spec-derive.ts";
@@ -48,7 +49,7 @@ function reply(text: string): DispatchResult {
 }
 
 /** A child that died. */
-function dead(why = "exit 1"): DispatchResult {
+function dead(why: NonNullable<DispatchResult["killCause"]> = "timeout"): DispatchResult {
   return { role: "explore", ok: false, text: "", toolUses: [], exitCode: 1, ms: 10, killCause: why };
 }
 
@@ -100,19 +101,82 @@ const BULLETS = ["the run declines a no-block issue under require", "a derived s
   }
 }
 
-// ── The cap: at most 12 criteria, and the size band counts the ORIGINAL set.
+// ── The cap the BRIEF carries: at most DERIVE_MAX_CRITERIA, and the child is
+// told the number rather than left to infer it from prose. The number is not
+// free-floating — it is the count at which the mapper still calls the change M,
+// so the brief and `readiness`' size-L refusal cannot disagree.
+{
+  assert(
+    DERIVE_MAX_CRITERIA === 8,
+    `the brief caps at 8, the mapper's M ceiling (got ${String(DERIVE_MAX_CRITERIA)})`,
+  );
+  const brief = derivePrompt({ title: "t", body: "b" });
+  assert(
+    brief.includes(`at most ${String(DERIVE_MAX_CRITERIA)} criteria`),
+    "the brief states the cap in the child's own terms",
+  );
+  assert(
+    brief.includes("too large for one run"),
+    "…and tells the child WHY, so it trims deliberately rather than being truncated",
+  );
+}
+
+// ── A child that ignores the cap: the mapper embeds at most its own 12, and
+// `size` counts the ORIGINAL set, so the run refuses rather than shrinking the
+// contract into one that would pass. Silent truncation to make a gate green is
+// the failure mode this pins: the bullets kept are never a subset that pretends
+// to be the whole contract.
 {
   const many = Array.from({ length: 20 }, (_, i) => `criterion number ${String(i + 1)}`);
   const spec = extractDerivedSpec(deriveReply(many));
-  assert(spec !== undefined, "a 20-bullet reply yields a spec");
+  assert(spec !== undefined, "a 20-bullet reply still maps to a spec");
   assert(
-    spec?.criteria.length === DERIVE_MAX_CRITERIA,
-    `at most ${DERIVE_MAX_CRITERIA} criteria ride in the block (got ${String(spec?.criteria.length)})`,
+    spec?.criteria.length === 12,
+    `the mapper's embedding cap holds, not the brief's (got ${String(spec?.criteria.length)})`,
   );
   assert(
     spec?.size === "L",
-    `…but size counts the original 20, so it is honestly L (got ${String(spec?.size)})`,
+    `…and size counts the original 20, so it is honestly L (got ${String(spec?.size)})`,
   );
+  assert(
+    spec !== undefined && readiness(spec).some((r) => r.includes("L")),
+    `…and readiness refuses it as too large (got ${JSON.stringify(readiness(spec ?? ({} as PiSpec)))})`,
+  );
+}
+
+// ── Eight criteria is the most that survives its own gate: the boundary case
+// between a contract that builds and one that declines.
+for (const [count, expectOk, label] of [
+  [8, true, "eight criteria (the M ceiling)"],
+  [9, false, "nine criteria (one past it)"],
+] as const) {
+  const bullets = Array.from({ length: count }, (_, i) => `criterion number ${String(i + 1)}`);
+  let threw: unknown;
+  try {
+    await deriveSpec({ title: "t", body: "b" }, () =>
+      Promise.resolve(reply(deriveReply(bullets))),
+    );
+  } catch (err) {
+    threw = err;
+  }
+  if (expectOk) {
+    assert(threw === undefined, `${label}: derives (got ${String(threw)})`);
+  } else {
+    assert(threw instanceof SpecDeriveError, `${label}: refused (got ${String(threw)})`);
+    const message = threw instanceof Error ? threw.message : "";
+    assert(
+      message.includes("L"),
+      `…and the refusal is the SIZE-L rule (got ${JSON.stringify(message).slice(0, 160)})`,
+    );
+    assert(
+      message.includes("```pi-spec v1"),
+      "…and quotes the rendered block, so the operator reads what was derived",
+    );
+    assert(
+      !message.includes("truncat"),
+      "…and never claims to have trimmed the list to make it fit",
+    );
+  }
 }
 
 // ── The parser refuses the shapes that are not a contract.
@@ -142,7 +206,7 @@ for (const [text, needle, label] of [
 
 // ── deriveSpec: the four handbacks each name their own cause.
 for (const [child, needle, label] of [
-  [dead("exit 1"), "child", "a dead child"],
+  [dead("timeout"), "child", "a dead child"],
   [reply(""), "no parsable", "an empty reply"],
   [reply("prose only"), "no parsable", "a reply with no block"],
   [reply("```pi-spec v1\n{x\n```"), "no parsable", "a reply whose block is broken JSON"],
@@ -165,7 +229,7 @@ for (const [child, needle, label] of [
 
 // ── The budget arms reach the child, so a ceiling really bounds it (R3).
 {
-  let seenArms: { opts?: Record<string, unknown> } | undefined;
+  let seenArms: Pick<BudgetArms, "opts"> | undefined;
   await deriveSpec({ title: "t", body: "b" }, (_spec, arms) => {
     seenArms = arms;
     return Promise.resolve(reply(deriveReply(BULLETS)));
@@ -221,8 +285,8 @@ for (const [child, needle, label] of [
 
 // ── deriveSpec: a size-L or zero-criteria derivation is refused, block quoted.
 for (const [bullets, needle, label] of [
-  [Array.from({ length: 12 }, (_, i) => `criterion ${String(i)}`.repeat(1) + " ".repeat(0) + i), "size L", "twelve criteria size L"],
-  [[], "no acceptance criteria", "zero criteria"],
+  [Array.from({ length: 12 }, (_, i) => `criterion number ${String(i + 1)}`), "size L", "twelve criteria size L"],
+  [[] as string[], "no acceptance criteria", "zero criteria"],
 ] as const) {
   let threw: unknown;
   try {

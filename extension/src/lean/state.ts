@@ -21,7 +21,8 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { assertDeadline } from "./deadline-record.ts";
-import { parsePiSpec, type PiSpec, readiness, renderPiSpec } from "./spec.ts";
+import type { WorkConfig } from "./config.ts";
+import { assertDerivedSpec, type DerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
 // The verdict SHAPE is re-exported so every caller of the record keeps one
 // import site: `state.ts` says what a run IS, `state-outcome-record.ts` says
 // what a step may report into it, `state-store.ts` says where it lives.
@@ -152,17 +153,13 @@ export interface LeanRun {
    * optional.
    */
   derivedSpec?: DerivedSpec;
-}
-
-/**
- * The persisted derivation: the spec, the model that drafted it, and the epoch
- * ms at which the run derived it. The spec is the parsed-and-validated contract,
- * so what a later step reads is exactly what `ready` accepted.
- */
-export interface DerivedSpec {
-  spec: PiSpec;
-  model: string;
-  at: number;
+  /**
+   * The run's config, as `ready` loaded it at the run's base. Written only from
+   * `ready`'s verdict (see `applyReadyFacts`), so a step reads the settings the
+   * run was JUDGED by rather than whatever `.pi/work.json` says now — which for a
+   * resumed run may be a different commit's file entirely.
+   */
+  config?: WorkConfig;
 }
 
 export const INITIAL_COUNTERS: RunCounters = {
@@ -354,49 +351,15 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
     steps,
     ...(r.result !== undefined ? { result: assertResult(r.result, bad) } : {}),
     ...(r.deadlineMs === undefined ? {} : { deadlineMs: assertDeadline(r.deadlineMs) }),
-    ...(r.derivedSpec === undefined ? {} : { derivedSpec: assertDerivedSpec(r.derivedSpec, bad) }),
+    ...(r.derivedSpec === undefined ? {} : { derivedSpec: assertDerivedSpec(r.derivedSpec) }),
+    // The config is carried so a resumed run executes under the settings `ready`
+    // judged it by. It is NOT re-validated here and is not trusted either: every
+    // consumer goes through the `Config` accessor, which re-reads the committed
+    // file at the run's base and applies the loader's full judgement — so a
+    // hand-edited snapshot here cannot reach a step. It is kept only because the
+    // report reads it, and only written by `ready` (`OWNER_OF_FIELD`).
+    ...(r.config === undefined ? {} : { config: r.config as WorkConfig }),
   };
-}
-
-/**
- * The persisted derivation, validated and RE-EMITTED field by field.
- *
- * A derived spec is the contract nine steps execute, so a record carrying half
- * of one would have those steps build against a document `parsePiSpec` could
- * never have produced. The same two judgements `ready` made before it persisted
- * the spec are made again on read — the file is untrusted input, exactly like
- * the issue body was — so a hand-edited record cannot smuggle in a contract the
- * run never validated.
- */
-function assertDerivedSpec(value: unknown, bad: (msg: string) => never): DerivedSpec {
-  if (typeof value !== "object" || value === null || Array.isArray(value))
-    bad("derivedSpec must be an object");
-  const d = value as Record<string, unknown>;
-  if (typeof d.model !== "string") bad("derivedSpec.model must be a string");
-  if (typeof d.at !== "number" || !Number.isFinite(d.at)) bad("derivedSpec.at must be a number");
-  const spec = d.spec as Record<string, unknown> | undefined;
-  if (spec === undefined || typeof spec !== "object" || spec === null || Array.isArray(spec))
-    bad("derivedSpec.spec must be an object");
-  // Round-trip the candidate through the contract's own reader: the shape check
-  // and the render check are `spec.ts`'s, and restating them here would drift.
-  const rendered = renderPiSpecSafe(spec as unknown as PiSpec);
-  if (rendered === undefined) bad("derivedSpec.spec is not a renderable pi-spec");
-  const back = parsePiSpec(rendered);
-  if (!back.ok) bad(`derivedSpec.spec does not parse: ${back.reason}`);
-  if (JSON.stringify(back.spec) !== JSON.stringify(spec))
-    bad("derivedSpec.spec does not round-trip through its own rendering");
-  const unready = readiness(back.spec);
-  if (unready.length > 0) bad(`derivedSpec.spec is not ready: ${unready.join("; ")}`);
-  return { spec: back.spec, model: d.model as string, at: d.at as number };
-}
-
-/** `renderPiSpec` on a value that may not be one: undefined rather than a throw. */
-function renderPiSpecSafe(spec: PiSpec): string | undefined {
-  try {
-    return renderPiSpec(spec);
-  } catch {
-    return undefined;
-  }
 }
 
 /** The terminal stamp: an int code and a string reason, or nothing. */

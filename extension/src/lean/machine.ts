@@ -18,7 +18,11 @@ import { type Transition, to, viaBuild } from "./transitions.ts";
  * `test-lean-machine.ts` asserts each entry equals the registry's set.
  */
 export const OUTCOME_KINDS = {
-  ready: ["ok", "fail"],
+  // `infra` is `ready`'s only route to `handback` that is not the author's fault:
+  // in `derive` intake mode the contract comes from a model call, and a call that
+  // died, timed out or came back unparsable is a retryable handback — not a
+  // comment on the issue telling someone their ticket is unready.
+  ready: ["ok", "fail", "infra"],
   specify: ["ok", "no-red-test", "budget"],
   // `blocked` is the child's own "these frozen tests cannot all pass together", honoured only after the
   // driver re-ran the named tests itself. It is not `exhausted`: the route must never reach `publish`.
@@ -90,6 +94,10 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
         case "fail":
           // The verdict is `not-ready`; `decline` is how the run says it.
           return to(run, "decline");
+        case "infra":
+          // A derivation could not be completed. The issue is not at fault, so the
+          // run says so on the operator's channel instead of on the ticket.
+          return to(run, "handback");
       }
       break;
 

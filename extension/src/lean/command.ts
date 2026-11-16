@@ -35,6 +35,10 @@ import { reportHandlers } from "./report-handlers.ts";
 import { reviewDeps } from "./review-deps.ts";
 import { reviewOutcome } from "./review.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
+import { type DeriveDeps, deriveDeps } from "./spec-derive.ts";
+import { configAtBase, contractOf, type DerivedRecord } from "./spec-intake.ts";
+import { leanSeed, type LeanSeed } from "./seed.ts";
+import { specFor } from "./spec-for.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Step } from "./state.ts";
 import type { BudgetOpts } from "./step-budget.ts";
@@ -54,15 +58,21 @@ interface ReadyFacts {
   config?: WorkConfig;
   baseSha?: string;
   failedRules: string[];
+  /**
+   * A derivation FAILED — the issue was not at fault, the model call was. The
+   * handler routes this to `handback` (which carries an `infra` outcome) rather
+   * than `decline`, so a transient model problem stays a retryable handback and
+   * the issue is not told its own ticket is unready.
+   */
+  infra?: boolean;
+  /**
+   * The contract the run DERIVED for itself, when its issue carried no block and
+   * intake mode is `derive`. Only `ready` mints one, and only through the
+   * accessor's own gate — so a record can carry a derived spec only because a
+   * `ready` validated it.
+   */
+  derived?: DerivedRecord;
 }
-
-/** What the run is seeded with, and what the seed learned about the base. */
-export type { LeanSeed } from "./seed.ts";
-
-// Re-exported rather than imported-and-returned: the suites that pin the run-start seam reach
-// `leanSeed` through the command module, the way the command itself uses it.
-export { leanSeed } from "./seed.ts";
-import { type LeanSeed, leanSeed } from "./seed.ts";
 
 /**
  * The `ready` verdict: fetch, parse, judge readiness, load config at the base.
@@ -88,6 +98,7 @@ export async function readyOutcome(
   repoRoot: string,
   issue: number,
   base: Pick<LeanSeed, "baseSha" | "why" | "infra">,
+  derive?: DeriveDeps,
 ): Promise<{ kind: "ok" | "fail"; facts: ReadyFacts }> {
   let body: string;
   try {
@@ -98,10 +109,19 @@ export async function readyOutcome(
       facts: { failedRules: [`could not read the issue: ${(err as Error).message}`] },
     };
   }
-  const parsed = parsePiSpec(body);
-  if (!parsed.ok) return { kind: "fail", facts: { failedRules: [parsed.reason] } };
+  const contract = await contractOf(repoRoot, issue, body, base, derive, await configAtBase(repoRoot, base));
+  if ("rule" in contract)
+    return {
+      kind: "fail",
+      facts: {
+        failedRules: [contract.rule],
+        ...(contract.infra === true ? { infra: true } : {}),
+      },
+    };
+  const parsed = { ok: true as const, spec: contract.spec };
   const failed = readiness(parsed.spec);
-  if (failed.length > 0) return { kind: "fail", facts: { spec: parsed.spec, failedRules: failed } };
+  if (failed.length > 0)
+    return { kind: "fail", facts: { spec: parsed.spec, failedRules: failed } };
   // The base is the run's, resolved once by `leanSeed` and pinned on the run record: re-probing
   // here would let a `ready` that ran after origin/HEAD moved judge the run against a commit the
   // rest of it never saw.
@@ -152,7 +172,13 @@ export async function readyOutcome(
     const config = await loadWorkConfig(execp, repoRoot, base.baseSha);
     return {
       kind: "ok",
-      facts: { spec: parsed.spec, config, baseSha: base.baseSha, failedRules: [] },
+      facts: {
+        spec: parsed.spec,
+        config,
+        baseSha: base.baseSha,
+        failedRules: [],
+        ...(contract.derived === undefined ? {} : { derived: contract.derived }),
+      },
     };
   } catch (err) {
     return {
@@ -239,16 +265,33 @@ export function phase1Handlers(
   const seedInfra = opts.seedInfra === true;
   const handlers: LeanHandlers = {};
   handlers.ready = async (ctx) => {
-    const { kind, facts } = await readyOutcome(repoRoot, issue, {
-      baseSha: ctx.run.baseSha,
-      ...(seedWhy ? { why: seedWhy } : {}),
-      ...(seedInfra ? { infra: true } : {}),
-    });
+    const { kind, facts } = await readyOutcome(
+      repoRoot,
+      issue,
+      { baseSha: ctx.run.baseSha, ...(seedWhy ? { why: seedWhy } : {}), ...(seedInfra ? { infra: true } : {}) },
+      // The derivation's one child, wired per run so it carries this run's
+      // headless trust stamp the way every other role's deps do.
+      deriveDeps(headless),
+    );
     // Only the verdict and the rules go on the record. `spec`, `config` and `baseSha` stay out:
     // the step log is the durable record of what a run DECIDED, and a parsed document or a loaded
     // config written into it is a second copy of a file that can change underneath a resume.
     // `failedRules` alone is what `decline` posts.
-    if (kind === "ok") return { kind };
+    //
+    // `derivedSpec` is the one exception, and the reason is that it is the only
+    // copy: an authored contract can be re-read from the issue on a resume, but a
+    // derived contract exists nowhere else, and re-deriving it would pay a second
+    // child for a document that could come back DIFFERENT — every step after that
+    // building against criteria the earlier ones never saw.
+    if (kind === "ok")
+      return {
+        kind,
+        ...(facts.config === undefined ? {} : { config: facts.config }),
+        ...(facts.baseSha === undefined ? {} : { baseSha: facts.baseSha }),
+        ...(facts.derived === undefined ? {} : { derivedSpec: facts.derived }),
+      };
+    if (facts.infra === true)
+      return { kind: "infra", reason: facts.failedRules.join("; ") };
     return { kind, failedRules: facts.failedRules };
   };
   handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps(headless));
