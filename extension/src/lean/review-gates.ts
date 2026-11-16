@@ -154,6 +154,8 @@ export async function adversarialGate(
      * rather than left to re-litigate the whole branch.
      */
     blockingFindings?: string;
+    /** The executed acceptance table, threaded to the reviewer's brief. */
+    acceptanceTable?: string;
     rows: DispatchUsageRow[];
     /** The step's armed budget: the reviewer's bound, abort and progress hook. */
     budget: BudgetArms;
@@ -170,6 +172,7 @@ export async function adversarialGate(
       issueBody: opts.issueBody,
       wave: opts.wave,
       ...(opts.blockingFindings === undefined ? {} : { blockingFindings: opts.blockingFindings }),
+      ...(opts.acceptanceTable === undefined ? {} : { acceptanceTable: opts.acceptanceTable }),
       headless: deps.headless,
       budget: opts.budget,
     });
@@ -263,6 +266,8 @@ export async function lensGate(
      * The lens seam itself takes no body — the context string is what the six
      * children read. */
     issueBody: string;
+    /** The executed acceptance table, appended to the lenses' brief by `lensContext`. */
+    acceptanceTable?: string;
     /** The run's PR number, threaded to the review layer rather than re-derived. */
     pr: number | undefined;
     carried: string | undefined;
@@ -337,6 +342,7 @@ export async function lensGate(
         // rather than the delta section, which `lensFixDelta` reads on both arms.
         full: opts.full,
         issueBody: opts.issueBody,
+        acceptanceTable: opts.acceptanceTable,
       }),
       ...(opts.since === undefined ? {} : { since: opts.since }),
       ...(opts.full === true ? { full: true } : {}),

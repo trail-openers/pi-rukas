@@ -91,6 +91,11 @@ export interface AdversarialArgs {
    * did not touch is not mistaken for one the fix introduced.
    */
   blockingFindings?: string;
+  /** The executed acceptance table, rendered from the run's own step log by
+   * `review-acceptance.ts` and threaded to the reviewer's brief. Absent means the
+   * switch is off or the issue carries no parsable spec block, and the brief is the
+   * pre-feature render. */
+  acceptanceTable?: string;
   headless: boolean;
   /** The step's armed budget: the child's bound, its abort, its progress hook. */
   budget: BudgetArms;
@@ -126,6 +131,11 @@ export interface LensArgs {
   full?: boolean;
   /** Post-change prose and the deterministic claim scan, read from the branch ref. */
   evidence: string | undefined;
+  /** The executed acceptance table, appended to this round's `context` by
+   * `lensContext`. Its own argument rather than folded into `context` at the call
+   * site because both passes carry it and there is exactly one place that composes
+   * the string. */
+  acceptanceTable?: string;
   /**
    * The severity at which a finding blocks this run, resolved ONCE per review
    * step at the run's base commit. Optional only so a stub-lens test need not
@@ -179,10 +189,10 @@ export interface ReviewDeps {
    */
   reviewThreshold: (repoRoot: string, baseSha: string) => Promise<Severity>;
   /** Post one comment on the run's PR: the disclosure of lanes the step never
-   * judged, which only this step can put in front of a human because `publish`
-   * runs BEFORE `review`, so the PR body cannot carry it. Injected like every
-   * other outside world here, so a case can observe the text that reached the
-   * forge. Absent means no disclosure surface; the step still logs and records. */
+   * judged, and the executed acceptance table — both things only this step can put
+   * in front of a human, because `publish` runs BEFORE `review`. Injected like every
+   * other outside world here, so a case can observe the text that reached the forge.
+   * Absent means no disclosure surface; the step still logs and records. */
   prComment?: (repoRoot: string, prNumber: number, body: string) => Promise<void>;
   /**
    * The six-lens engine, defaulting to `runLensReview` in the wiring. Test-only:
