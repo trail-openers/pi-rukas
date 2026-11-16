@@ -2,39 +2,32 @@
  * lean/issue-prose — the issue's own words in front of Lean's three seats.
  *
  * The `specify` and `challenge` oracles and the `build` builder are each given
- * the issue body as a fenced section, between the problem and the criteria. They
- * had the rendered criteria and nothing else: a constraint written as prose in
- * `Context & motivation` — "check the token before the draw", a non-obvious
- * "never do X", an accessibility or perf requirement no AC bullet states — was
- * invisible to all three, so either oracle could call a spec complete while the
- * prose contradicted it and the builder could implement to the problem line alone
- * while the frozen tests enforced the prose.
+ * the issue body as a fenced section, between the problem and the criteria.
+ * Without it a constraint written as prose in `Context & motivation` — a
+ * non-obvious "never do X", an accessibility or perf requirement no AC bullet
+ * states — was invisible to all three, so either oracle could call a spec complete
+ * while the prose contradicted it.
  *
  * Three rules make that safe:
  *
  *   1. the pi-spec block is stripped (`stripPiSpecBlocks`) — the criteria are
  *      already rendered, verbatim, one line below, so repeating the block would
- *      print the same text twice and hand the model a second copy of the contract
- *      to disagree with;
+ *      hand the model a second copy of the contract to disagree with;
  *   2. the body is bounded BEFORE it is fenced (`boundedIssueBody`) — the fence
  *      renders a truncation notice INSIDE the code span, where it is content, not
  *      a marker the model could read as closing the section;
  *   3. the fence itself is rendered by `fencedIssueBody`, the reviewer path's
  *      renderer — every backtick run of 3+ in the body is replaced by a same-width
  *      look-alike (`fenceText`), so no run inside the issue can close the block the
- *      prompt opened and speak as the prompt's own prose. Tildes are deliberately not
- *      in that class — see the jsdoc of `BACKTICK_RUN` in `lean/text-fence.ts`, which is
- *      where the fence's own character (and so what can close it) is decided.
+ *      prompt opened. Tildes are deliberately not in that class — the fence's own
+ *      character is decided by `BACKTICK_RUN` in `lean/text-fence.ts`.
  *
  * `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0` removes the section from all three seats and
- * restores the two oracle prompts' pre-feature bytes byte for byte (the builder
- * has no pre-feature section to restore — the switch is what #2228 added there).
+ * restores the two oracle prompts' pre-feature bytes byte for byte.
  * `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` reaches the builder's seat ONLY: the
- * builder consults both switches at its own call site, so pinning it off leaves
- * `specify` and `challenge` rendering. That per-seat isolation is the point of
- * the knob — an operator A/B-ing the builder's brief must not quietly revert the
- * two oracle prompts as well, which would make the comparison measure two
- * variables and blame the delta on one.
+ * builder consults both switches at its own call site. That per-seat isolation is
+ * the point of the knob — an operator A/B-ing the builder's brief must not quietly
+ * revert the two oracle prompts as well.
  */
 import { fencedIssueBody } from "../adversarial-prompts.ts";
 import { hasSurvivingSpecShapedFence, normalizeProse, stripPiSpecBlocks } from "./spec.ts";
@@ -49,12 +42,10 @@ export const LEAN_ISSUE_LEAD =
 /**
  * The same sentence for the builder's seat, worded for what a builder is doing.
  *
- * The oracle lead tells an adversary it is holding AUTHORITY — the right frame
- * when the job is to write or attack the contract. The builder's job is the
- * opposite: the frozen tests already exist and it may not touch them, so telling
- * it the prose is "the authority" invites it to reconcile a test it cannot edit.
- * This sentence says what the prose is FOR at that seat and where its reach
- * stops.
+ * The oracle lead tells an adversary it is holding AUTHORITY. The builder's job is
+ * the opposite: the frozen tests already exist and it may not touch them, so
+ * telling it the prose is "the authority" invites it to reconcile a test it cannot
+ * edit.
  */
 export const LEAN_BUILD_ISSUE_LEAD =
   "The issue text below is what the acceptance criteria summarise. Where the criteria are silent it states what to build; it never overrides a frozen test.";
@@ -83,14 +74,10 @@ export function leanBuildIssueProseEnabled(): boolean {
  * `pi-spec` block is stripped, or a spec-SHAPED FENCE survived that strip. The
  * builder's seat adds two of its own — the caller's
  * `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0`, which it consults at its own call site
- * and never through here (so the two oracle seats are untouched by it), and the
- * prose being the spec's own `problem` line restated, in which case the section
- * would hand that seat its own heading back and label it the task. `problemFor`
- * is passed only by the builder; the oracles omit it and are byte-unchanged,
- * since for them the problem line and the prose are read for different jobs.
+ * and never through here, and the prose being the spec's own `problem` line
+ * restated. `problemFor` is passed only by the builder.
  *
- * `lead` is the seat's own instruction; it defaults to the oracle's, so the two
- * adversary seats render through here without naming anything new.
+ * `lead` is the seat's own instruction; it defaults to the oracle's.
  */
 export function leanIssueSection(
   issueBody: string | undefined,
@@ -99,17 +86,12 @@ export function leanIssueSection(
 ): string {
   if (!leanIssueProseEnabled()) return "";
   const stripped = stripPiSpecBlocks(issueBody ?? "");
-  // The section's own rule 1 — the spec block never appears here, because the
-  // criteria print it verbatim one heading below — holds only when the strip fired.
   // A fence whose info merely STARTS with `pi-spec v1` is not the block (the exact
   // rule `test-lean-spec.ts` pins, shared with `parsePiSpec`), so it survives the
-  // strip and would reprint the contract. Refuse the whole section rather than
-  // print a second copy: a body whose spec is unreadable is a body whose criteria
-  // were never rendered, and its text is a contract no test enforces. The predicate
-  // is a SURVIVING FENCE LINE, not the substring — prose that quotes the block
-  // format is ordinary text and keeps its section, which is the whole point of
-  // #2177/#2228. The strip is NOT loosened: its exact-info rule belongs to
-  // `lean/spec.ts` and every reader of the same body.
+  // strip and would reprint the contract. Refuse the whole section rather than print
+  // a second copy: a body whose spec is unreadable is a body whose criteria were
+  // never rendered. The predicate is a SURVIVING FENCE LINE, not the substring —
+  // prose that quotes the block format is ordinary text and keeps its section.
   if (hasSurvivingSpecShapedFence(stripped)) return "";
   const prose = fencedIssueBody(stripped);
   if (prose === "") return "";

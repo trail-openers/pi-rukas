@@ -13,10 +13,9 @@
 /**
  * How many lines one kept acceptance test may have.
  *
- * A real trial froze ~1,000 lines of tests for a 15-line change in four files
- * that re-implemented the same harness: correct tests, unmergeable PR. `TEST_SCOPE_CONTRACT`
- * already asks for the smallest test that proves the criterion, and a prompt obeyed
- * in spirit and not in size still ships a thousand lines.
+ * `TEST_SCOPE_CONTRACT` already asks for the smallest test that proves the
+ * criterion, and a prompt obeyed in spirit and not in size still ships a thousand
+ * lines.
  *
  * 150 is a measured distribution with room above it — live adversary tests land at
  * about 130 lines even after the child has been shown the refusal reason, so a
@@ -47,17 +46,13 @@ export const MAX_TEST_FILES_PER_CRITERION = 2;
  * `MAX_TEST_LINES` bounds the count, but the count is only known AFTER the bytes
  * are in memory, and the read that produces them is the one thing this rule should
  * not be paid for on a file it is going to refuse. A line count is not a size, so
- * this bounds a file that is within the line cap at roughly normal line width — a
- * file of wider lines is refused on bytes first.
+ * this bounds a file that is within the line cap at roughly normal line width.
  *
  * Checked on the stat the boundary already has, BEFORE the read, which makes it a
- * bound on the CALL as well as the file: at most
- * `MAX_TEST_FILES_PER_CRITERION` files per criterion are ever read, each at most
- * this many bytes. Per VALIDATION, not per run: the child owns the window between
- * this read and the capture's, so `specify-run.ts` re-checks the bytes it actually
- * holds against this same constant. The capture's own `MAX_CAPTURE_BYTES` is a
- * different, far larger number deliberately — that bounds what a run keeps, this
- * what a rule will even look at.
+ * bound on the CALL as well as the file. Per VALIDATION, not per run: the child owns
+ * the window between this read and the capture's, so `specify-run.ts` re-checks the
+ * bytes it actually holds against this same constant. The capture's own
+ * `MAX_CAPTURE_BYTES` is a different, far larger number deliberately.
  */
 export const MAX_TEST_BYTES = 24_576;
 
@@ -69,8 +64,7 @@ const NOT_TEXT = "is not a text file (NUL byte); an acceptance test is a source 
  *
  * A NUL byte is not a line-break question the rule could answer: no acceptance test
  * the harness commits is NUL-bearing, so the file is refused rather than counted —
- * which is also how a UTF-16 file is refused, since its `0x0A 0x00` breaks would
- * count as far too few lines.
+ * which is also how a UTF-16 file is refused.
  */
 export function testNotTextProblem(rel: string): string {
   return `${rel} ${NOT_TEXT}`;
@@ -85,15 +79,12 @@ export function testNotTextProblem(rel: string): string {
  *
  * Every line break the platforms write ends ONE line — `\r\n`, a lone `\r`, a lone
  * `\n` — so a child cannot dodge the bound by choosing its separator. An empty file
- * is ZERO lines: the capture refuses one on its own size check, but this count must
- * not lie about it.
+ * is ZERO lines.
  *
  * A NUL byte refuses the count rather than guessing at it, and comes back as
  * `{ notText: true }` rather than a throw: the caller must tell "not a text file"
  * (a verdict on the child's work, a drop) from "could not be read at all"
- * (infrastructure, a throw). A rule that reported both by throwing makes the
- * boundary guess, and the guess it would make reports a broken toolchain as an
- * adversary that wrote nothing.
+ * (infrastructure, a throw).
  */
 export function countTestLines(bytes: Buffer): { lines: number } | { notText: true } {
   if (bytes.includes(0)) return { notText: true };
@@ -124,10 +115,8 @@ export function testSizeProblem(rel: string, lines: number): string {
 /**
  * Why an oversized test file is not a kept test.
  *
- * Stated from the stat alone, so the file is refused without a read: the whole
- * point of the byte bound is that a file this big never becomes bytes in
- * memory, and a rule that had to read it to reject it is a rule that costs what
- * it exists to cap.
+ * Stated from the stat alone, so the file is refused without a read — a rule that
+ * had to read it to reject it costs what it exists to cap.
  */
 export function testBytesProblem(rel: string, bytes: number): string {
   return `${rel} is ${bytes} bytes; an acceptance test is at most ${MAX_TEST_BYTES} bytes`;
