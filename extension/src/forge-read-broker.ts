@@ -29,6 +29,14 @@
  * `createForge(detectForge(cwd))` with the PARENT's login. That is what makes
  * the reads authenticated and keeps them off the unauthenticated 60/hour limit.
  *
+ * The parent's own `PI_ENSEMBLE_FORGE=none` stops that: `handleLine` asks
+ * `forgeEnvIsOff` after the line has proved itself and answers the refusal, so an
+ * operator who turned the forge off never has the parent shell `gh`/`glab` — or
+ * `git config --get remote.*` — on a child's behalf. The socket still binds, so
+ * the child still registers `forge_read` and still gets a reason it can read
+ * rather than a tool that was never there. `PI_ENSEMBLE_FORGE_READ_OFF_GUARD=0`
+ * puts the pre-fix behaviour back (`forge-read-off-switch.ts`).
+ *
  * Served in EVERY permission mode, trust included: the socket is not a
  * permission gate (it answers reads, which every mode allows), and a trust
  * child would otherwise have a `forge_read` tool that always fails — the one
@@ -73,8 +81,10 @@ import { type Server, createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { detectForge } from "./forge-detect.ts";
+import { forgeEnvIsOff } from "./forge-off.ts";
 import { newForgeReadNonce, newForgeReadSecret, verifyForgeReadMac } from "./forge-read-auth.ts";
 import { type ForgeReadExecuteOptions, executeForgeRead } from "./forge-read-execute.ts";
+import { FORGE_READ_OFF_REASON, forgeReadOffGuardEnabled } from "./forge-read-off-switch.ts";
 // #2160 — the proof half of the line (the spent-nonce ledger, the request's
 // proof check, the reply's proof) is a module of its own (§12 cap): this file owns
 // the socket and which read to run, that one owns what a line must carry to be
@@ -86,7 +96,8 @@ import {
   parseForgeReadRequest,
   validateForgeRead,
 } from "./forge-read-tool.ts";
-import { trace } from "./trace.ts";
+import type { ForgeExecFn } from "./forge-types.ts";
+import { trace, traceWarn } from "./trace.ts";
 
 /**
  * How the parent resolves and runs one validated read.
@@ -104,10 +115,39 @@ export type RunForgeRead = (
   opts: ForgeReadExecuteOptions,
 ) => Promise<string>;
 
+/**
+ * What the broker may be asked to run a read through.
+ *
+ * `runRead` replaces the whole read half and exists for the offline suites.
+ * `execFn` does NOT: it is the executor the PRODUCTION read uses, so a test can
+ * watch what the parent actually issued. That distinction is the whole point of
+ * the `none` case — a gate that injects `runRead` never reaches `detectForge` and
+ * proves nothing about commands, while one that injects only `execFn` sees every
+ * `gh`/`glab` AND every `git config --get remote.*` the read path made.
+ */
+export interface ForgeReadBrokerOptions {
+  timeoutMs?: number;
+  runRead?: RunForgeRead;
+  execFn?: ForgeExecFn;
+  secret?: string;
+}
+
 /** Resolve the forge the parent reads from and run one read through it. */
-const runForgeRead = (cwd: string, req: ForgeReadRequest, opts: ForgeReadExecuteOptions) =>
-  detectForge(cwd, { allowProbe: false, execTimeoutMs: opts.timeoutMs }).then((det) =>
-    executeForgeRead(det, cwd, req, opts),
+const runForgeRead = (
+  cwd: string,
+  req: ForgeReadRequest,
+  opts: ForgeReadExecuteOptions,
+  execFn?: ForgeExecFn,
+) =>
+  detectForge(cwd, {
+    allowProbe: false,
+    execTimeoutMs: opts.timeoutMs,
+    ...(execFn === undefined ? {} : { execFn: execFn as never }),
+  }).then((det) =>
+    executeForgeRead(det, cwd, req, {
+      ...opts,
+      ...(execFn === undefined ? {} : { execFn }),
+    }),
   );
 
 export interface ForgeReadBrokerHandle {
@@ -162,7 +202,7 @@ const MAX_LINE_BYTES = 64 * 1024;
  */
 export function bindForgeReadSocket(
   cwd: string,
-  opts: { timeoutMs?: number; runRead?: RunForgeRead; secret?: string } = {},
+  opts: ForgeReadBrokerOptions = {},
 ): Promise<ForgeReadBrokerHandle> {
   // One key per broker, minted here (or supplied by the spawn layer, which owns
   // the child and the teardown). A caller-supplied key must be the shape this
@@ -293,7 +333,7 @@ async function handleLine(
   line: string,
   conn: { write(data: string): boolean },
   cwd: string,
-  opts: { timeoutMs?: number; runRead?: RunForgeRead },
+  opts: ForgeReadBrokerOptions,
   secret: string,
   nonces: { serve(nonce: string): boolean },
 ): Promise<void> {
@@ -346,6 +386,29 @@ async function handleLine(
     });
     return;
   }
+  // The forge-off gate sits HERE — after the proof and after the nonce is spent,
+  // never earlier. A refusal this far down is a proved (mac-bearing) answer, so it
+  // tells only the child that earned its way past authentication that the forge is
+  // off; a stranger probing the socket for that word gets the plain auth refusal
+  // instead. The value is read from the PARENT's environment at request time, since
+  // the child's env holds no such variable and the read runs here.
+  if (forgeReadOffGuardEnabled() && forgeEnvIsOff()) {
+    // Traced, not silent: a refusal the operator cannot see in the parent's log is
+    // indistinguishable from a broker that never answered, and the helper child's
+    // report then reads as a forge bug. `traceWarn`, not `trace` — a policy refusal
+    // that changes an outcome is exactly what that primitive is for, and gating it on
+    // `PI_ENSEMBLE_DEBUG` would hide it in every normal run. The reason text is the
+    // same one the child sees, so the two halves of the contract name each other.
+    traceWarn(`forge-read-broker: refused a proved read — ${FORGE_READ_OFF_REASON}`);
+    writeResponse(
+      conn,
+      { type: "forge-read-response", ok: false, reason: FORGE_READ_OFF_REASON },
+      secret,
+      newForgeReadNonce(),
+      requestNonce,
+    );
+    return;
+  }
   const nonce = newForgeReadNonce();
   const req = parseForgeReadRequest(signedRequest);
   if (req === undefined) {
@@ -383,7 +446,12 @@ async function handleLine(
     // `timeoutMs` is the ONLY thing taken from the broker's own options into the
     // executor's options bag, and it is named rather than spread: an options
     // object assembled from a request would carry whatever keys the child sent.
-    const output = await (opts.runRead ?? runForgeRead)(cwd, req, { timeoutMs: opts.timeoutMs });
+    const output = await (opts.runRead ?? runForgeRead)(
+      cwd,
+      req,
+      { timeoutMs: opts.timeoutMs },
+      opts.execFn,
+    );
     writeResponse(
       conn,
       { type: "forge-read-response", ok: true, output },

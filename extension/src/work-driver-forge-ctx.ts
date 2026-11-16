@@ -27,6 +27,7 @@
  */
 
 import { type ForgeDetection, detectForge } from "./forge-detect.ts";
+import { forgeEnvIsOff } from "./forge-off.ts";
 import { type Forge, type ForgeExecFn, createForge } from "./forge.ts";
 import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
@@ -82,7 +83,7 @@ export async function resolveCycleForge(
     traceLabel?: string;
   } = {},
 ): Promise<Forge | undefined> {
-  if ((opts.env ?? process.env).PI_ENSEMBLE_FORGE === "none") return undefined;
+  if (forgeEnvIsOff(opts.env ?? process.env)) return undefined;
   const label = opts.traceLabel ?? "cycle";
   try {
     const det: ForgeDetection = await detectForge(repoRoot, {
