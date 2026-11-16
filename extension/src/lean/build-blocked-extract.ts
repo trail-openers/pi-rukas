@@ -6,9 +6,9 @@
  * skip. Mirrors `extractSubmitTests` — Pi validates the schema inside the child, so anything reaching here
  * with the wrong shape is a call the model faked rather than one Pi accepted.
  *
- * NOTHING HERE JUDGES whether the report is true. Whether a named path is in the run's frozen map, and
- * whether the named test is red, are facts about the contract and the tree, and the anti-forgery gate in
- * `build.ts` owns them.
+ * NOTHING HERE JUDGES whether the report is true. Whether a named path is in the run's frozen map, and whether
+ * the named test is red, are facts about the contract and the tree, and the anti-forgery gate in `build.ts`
+ * owns them.
  *
  * The entry cap is the WHOLE extraction's, not one call's: the durable record holds one bounded `blockedBy`
  * map, and rows past the bound are dropped and counted in `skipped`.
@@ -48,10 +48,8 @@ import { RECORD_MAX_ENTRIES, RECORD_REASON_MAX_CHARS } from "./state-outcome-map
 
 /**
  * How many entries the whole extraction may hold and how long one reason may be. Both are the DURABLE
- * record's bounds, read from the module that enforces them at load — the tool's own TypeBox ceiling is the
- * same number because the tool may not accept what the record would refuse. The entry bound is the
- * EXTRACTION's, so a child that spread one report across several calls does not pay for a proof the loader
- * then refuses.
+ * record's bounds, read from the module that enforces them at load. The entry bound is the EXTRACTION's, so a
+ * child that spread one report across several calls does not pay for a proof the loader then refuses.
  */
 const MAX_ENTRIES = RECORD_MAX_ENTRIES;
 const MAX_REASON_CHARS = RECORD_REASON_MAX_CHARS;
@@ -73,9 +71,8 @@ export function extractBlockedReport(toolUses: unknown[]): BlockedExtraction {
     const a = t.arguments as Record<string, unknown>;
     const raw = Array.isArray(a.conflicts) ? a.conflicts : [];
     let took = 0;
-    // A readable entry this extraction can no longer take is still a readable entry the child named, so it
-    // counts towards the total the cap is measured against — otherwise a call whose usable entries all fell
-    // past the bound would report nothing at all.
+    // A readable entry this extraction can no longer take still counts towards the total the cap is measured
+    // against — otherwise a call whose usable entries all fell past the bound would report nothing at all.
     const usable = raw.filter(isBlockedRow);
     total += usable.length;
     // The cap is the EXTRACTION's, so a call is taken up to the room the record still has.
@@ -87,8 +84,8 @@ export function extractBlockedReport(toolUses: unknown[]): BlockedExtraction {
     // nothing", a verdict it did not give. It is counted as a malformed call.
     if (took === 0) skipped++;
   }
-  // A child may call the tool more than once; the entries it named past the record's bound are not
-  // evidence the run can hold, and silence about them would read as "the child named nothing more".
+  // A child may call the tool more than once; the entries it named past the record's bound are not evidence
+  // the run can hold, and silence about them would read as "the child named nothing more".
   skipped += Math.max(0, total - MAX_ENTRIES);
   return { rows, skipped };
 }
