@@ -227,9 +227,15 @@ const protectedFailure = (f: string[]) => f.find((x) => /protected path/.test(x)
   // string it would be a second protected check with one reader, and this
   // canary would have gone quiet about it.
   const provenance = read("work-driver-verify-develop-provenance.ts");
+  // The voice is asserted on the constant the consumer imports, not on a literal in its own file:
+  // the string lives in `…-provenance-limits.ts` and is written by the disclosure renderer, so a
+  // file-size split can move the literal out of this module without moving the voice. Requiring
+  // the literal here would redden on a refactor that changed nothing about how it reports.
+  const provenanceLimits = read("work-driver-verify-develop-provenance-limits.ts");
   assert(
     /readCommittedProtectedPaths/.test(provenance) &&
-      provenance.includes("data provenance:") &&
+      /PROVENANCE_FAILURE_PREFIX/.test(provenance) &&
+      /export const PROVENANCE_FAILURE_PREFIX = "data provenance:"/.test(provenanceLimits) &&
       !/PROTECTED_FAILURE|protected path/.test(provenance),
     "canary: the provenance consumer speaks only in its own `data provenance:` voice — it is not a second protected check",
   );

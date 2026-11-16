@@ -31,10 +31,14 @@
 
 import type { VerifyDevelopOutcomeOptions } from "../src/work-driver-verify-develop-options.ts";
 import {
-  PROVENANCE_KEYS,
+  PROVENANCE_FAILURE_PREFIX,
   provenanceDisclosureSectionOf,
   runProvenanceGate,
 } from "../src/work-driver-verify-develop-provenance.ts";
+import {
+  PROVENANCE_KEYS,
+  PROVENANCE_KEYS_V0_14_85,
+} from "../src/work-driver-verify-develop-provenance-token.ts";
 import { recordDevelopGateEvents } from "../src/work-driver-verify-events.ts";
 import { verifyStepOutcome } from "../src/work-driver-verify-pr17.ts";
 import { assert, exit } from "./lib/assert-rig.ts";
@@ -148,8 +152,11 @@ const RECORD = renderRecord(FIELD_RECORD_ROWS, ABS);
     "a key outside the exported constant is not judged — extending the set is a source edit, and the constant is the whole rule",
   );
   assert(
-    PROVENANCE_KEYS.includes("source") && PROVENANCE_KEYS.length === 7,
-    "the key set is one exported constant of exactly the seven agreed names",
+    PROVENANCE_KEYS.includes("source") &&
+      PROVENANCE_KEYS.length === 9 &&
+      PROVENANCE_KEYS_V0_14_85.length === 7 &&
+      PROVENANCE_KEYS_V0_14_85.every((k) => PROVENANCE_KEYS.includes(k)),
+    "the key set is one exported constant of exactly the nine agreed names, with the seven v0.14.85 names kept as their own constant for the prose switch's off arm",
   );
 }
 
@@ -194,9 +201,16 @@ const RECORD = renderRecord(FIELD_RECORD_ROWS, ABS);
     provenanceFailures(r.failures).length === 0,
     `an absolute path, a URL, a pipe-table, an HTML comment, prose and a VERDICT marker never fail verify (got: ${provenanceFailures(r.failures).join(" | ")})`,
   );
+  // One disclosure per hostile value. #2295's extractor runs on each and finds nothing to probe:
+  // the absolute path and the URL are host context, and the pipe-table / HTML-comment / VERDICT
+  // strings carry no path-shaped fragment (no slash, no trailing extension), so each value is
+  // offered whole and disclosed whole. No fragment is silently dropped and none is probed, so the
+  // five values are five rows — not the ten an earlier draft guessed by adding a phantom row for
+  // each split value. A prose value only grows past its one row when it yields a fragment that
+  // itself needs a verdict, and none of these does.
   assert(
     r.disclosures.length === 5,
-    `each of the five is DISCLOSED as unverifiable, not skipped (got ${String(r.disclosures.length)})`,
+    `each of the five hostile values is DISCLOSED as unverifiable, not skipped and not failed — one row each (got ${String(r.disclosures.length)})`,
   );
   // The renderer's output, not the structured field: a disclosure is a PR-body row, and the
   // neutralisation that matters is the one between the record's bytes and the section. The
@@ -221,7 +235,7 @@ const RECORD = renderRecord(FIELD_RECORD_ROWS, ABS);
   );
   assert(
     body.split("\n").length === 5,
-    `no token carries a newline into the body: five tokens, five rows (got ${String(body.split("\n").length)})`,
+    `no token carries a newline into the body: five rows, five lines (got ${String(body.split("\n").length)})`,
   );
 }
 

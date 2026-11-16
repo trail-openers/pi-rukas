@@ -18,7 +18,9 @@
 
 import {
   PROVENANCE_KEYS,
+  PROVENANCE_MAX_CANDIDATES_PER_VALUE,
   PROVENANCE_MAX_TOKENS,
+  provenanceFragmentId,
   provenanceTokenId,
 } from "./work-driver-verify-develop-provenance-token.ts";
 
@@ -49,12 +51,25 @@ export interface UnjudgableValue {
   shape: string;
 }
 
+/** A whole string under a provenance key, carried by its key for the caller to render as a
+ * disclosure row. Same field shape as a pair, because it is a (key, raw value) row. */
+export interface UnreportedValue {
+  key: string;
+  token: string;
+}
+
 /** What one file's bytes yielded: the tokens to probe, whether the corpus overflowed the cap,
  * and the keys whose value had no probeable shape. */
 export interface ParsedTokens {
   pairs: ProvenancePair[];
   pastCap: boolean;
   unjudgable: UnjudgableValue[];
+  /** The whole values the extractor split up to its per-value ceiling, so the remainder of each
+   * was not judged. Empty whenever no extractor was handed, which is what keeps the off arm's
+   * disclosure set the shipped one. A value that yielded NO fragment is not carried here: the
+   * walk offered it as a whole-value pair (the shipped behaviour) and the caller's classifier
+   * already discloses it, so a second row would double-report the same claim. */
+  truncated: UnreportedValue[];
   /** The workstream's token charge after this file — feed it to the next file's budget so the
    * cap and the shared dedupe set count the workstream and not each file. */
   chargedInto: number;
@@ -62,11 +77,20 @@ export interface ParsedTokens {
 
 /** Parse one added file's bytes into (key, token) pairs, or say why it cannot be parsed.
  * NDJSON is line-by-line and one bad line makes the WHOLE file unparsable — a partially
- * parsed NDJSON would let a truncated tail read as a complete record set. */
+ * parsed NDJSON would let a truncated tail read as a complete record set.
+ *
+ * `keys` is the set of provenance names this call walks. It is a parameter rather than a read of
+ * {@link PROVENANCE_KEYS} because the prose switch selects between two sets at call time — the
+ * nine current names and the seven v0.14.85 shipped — and a walk that read the constant itself
+ * could not be told which one to use, which is the reason
+ * `test-verify-develop-provenance-prose-v85.ts` would have had no off arm to compare against.
+ * Omit it and the walk uses the current set. */
 export function tokensOf(
   content: string,
   ndjson: boolean,
   budget?: ProvenanceBudget,
+  keys: readonly string[] = PROVENANCE_KEYS,
+  extract?: (value: string) => string[],
 ): ({ ok: true } & ParsedTokens) | { ok: false; why: string } {
   const values: unknown[] = [];
   if (ndjson) {
@@ -88,11 +112,16 @@ export function tokensOf(
     }
   }
   const pairs: ProvenancePair[] = [];
+  // A value the extractor split past its per-value ceiling. The remainder was not judged and the
+  // reader has to be able to tell that from a value whose every fragment was probed. Populated
+  // only when the extractor is handed; with no extractor — the v0.14.85 shape, which is what the
+  // prose switch's off arm passes — this stays empty and the walk is byte-for-byte the shipped one.
+  const truncated: UnreportedValue[] = [];
   // A value under a provenance key that is neither a string nor a container of strings: a
   // half-serialised or hand-edited record. Not a pass — see the row's own comment.
   const unjudgable: UnjudgableValue[] = [];
   let pastCap = false;
-  const keySet = new Set(PROVENANCE_KEYS);
+  const keySet = new Set(keys);
   // Dedupe and the cap live with the CALLER, not with the file. The cap is one workstream's
   // budget for the git probes a review round pays; a set and a counter local to one file made
   // it a per-file allowance, so N added files bought N × the cap and the bound bounded nothing.
@@ -103,22 +132,31 @@ export function tokensOf(
   let offered = 0;
   /** How many tokens this workstream has already been charged, carried in from earlier files. */
   let charged = budget?.chargedInto ?? 0;
-  /** Charge the workstream's budget for one token this walk has never seen. Writes through to
+  /** Charge the workstream's budget for one token this walk has never seen. `id` is the dedupe
+   * identity the caller picked — the (key, value) pair for a whole value, the marker-prefixed
+   * fragment for a fragment — and the two live in DISJOINT namespaces on purpose. Writes through to
    * the caller's object AS WELL AS the local count: the gate threads the budget through the
    * executor-mediated reads between files, and a returned field can be dropped along that path
-   * without any type error — the object is the state. `charged` still starts from the carried-in
-   * number rather than the set size, because a set that deduped a repeated token must not be
-   * charged twice for it.
+   * without any type error — the object is the state. `charged`
+   * still starts from the carried-in number rather than the set size, because a set that deduped a
+   * repeated token must not be charged twice for it.
    *
    * The cap bounds what is JUDGED, not what is reported: the tokens up to the budget are
    * probed and the rest are carried as rows the caller discloses. Refusing to add them here
    * would discard the whole file — and a 300-row record would then leak past the gate that
    * exists for records of exactly that size. */
-  const charge = (): void => {
+  const charge = (id: string): void => {
     charged++;
+    seen.add(id);
     if (budget !== undefined) budget.chargedInto = charged;
   };
   const offer = (key: string, raw: string): void => {
+    // A whole value is judged under its own (key, value) identity and nothing else. It is NOT
+    // deduped against a fragment identity: a fragment in `seen` says some sentence in the corpus
+    // named these bytes, which is not evidence that THIS value was judged, and deduping on it
+    // dropped the claim with no probe, no failure, no note and no row. The one duplication that
+    // costs anything — a value that is nothing but one fragment, which the split offers again as a
+    // fragment — is bounded, cheap, and belongs to the split arm, not here.
     const id = provenanceTokenId(key, raw);
     if (!seen.has(id)) {
       // The budget is the WORKSTREAM's, so the carried-in charge is tested first: an earlier
@@ -128,12 +166,12 @@ export function tokensOf(
         pastCap = true;
         // Charged all the same: an offered-but-not-judged token is one the workstream ran out
         // of budget on, and the set is what makes a repeat of it cheap rather than free.
-        charge();
+        charge(id);
         return;
       }
       seen.add(id);
       offered++;
-      charge();
+      charge(id);
       pairs.push({ key, token: raw });
       return;
     }
@@ -146,6 +184,66 @@ export function tokensOf(
   /** What a non-string value under a provenance key is, in words a reader can act on. */
   const shapeOf = (raw: unknown): string =>
     raw === null ? "null" : Array.isArray(raw) ? "an array" : typeof raw;
+  /** One string under a provenance key, read either whole (no extractor) or split into
+   * fragments (the prose arm). Splitting is what #2295 exists for: a claim wrapped in a
+   * sentence used to be the pass-by-whitespace this gate never saw.
+   *
+   * The fragment identity is {@link provenanceFragmentId} — the fragment under a `frag\0` marker,
+   * not the (key, fragment) pair: two rows of one corpus that cite the same absent file in
+   * different sentences are one claim, and probing it twice buys a duplicate failure. The marker
+   * is what keeps that identity from colliding with a whole value's {@link provenanceTokenId}:
+   * the bare fragment string IS a legal value under some other key, and an unmarked identity made
+   * a prose claim sharing bytes with a sibling bare claim get silently dropped — no probe, no
+   * failure, no row. The whole-value identity keeps the pair, which is what the shipped walk used,
+   * and the two namespaces are tested to stay disjoint by
+   * `test-verify-develop-provenance-prose.ts`.
+   *
+   * A value that yields NO fragment is offered under its key exactly as the shipped walk offered
+   * it, so the caller's classifier reaches the same verdict on it it reached before #2295 — a
+   * sentence with nothing path-shaped in it is disclosed as host provenance, not failed. */
+  const offerString = (key: string, raw: string): void => {
+    if (extract === undefined) {
+      offer(key, raw);
+      return;
+    }
+    const fragments = extract(raw);
+    if (fragments.length === 0) {
+      // The value yielded nothing to split, so it is offered whole exactly as the shipped walk
+      // offered it — and the identity it is tested against is its OWN pair identity, never a
+      // fragment's. A fragment identity in `seen` says some sentence elsewhere in the corpus named
+      // these bytes; it does not say this value was judged, and deduping a whole value against it
+      // dropped the claim with no probe, no failure, no note and no row. `{"source":"run.log",
+      // "input":"elapsed of run.log …"}` is that shape: the second value's only fragment is the
+      // first value's whole self, so the prose claim vanished.
+      offer(key, raw);
+      return;
+    }
+    for (const fragment of fragments) {
+      // The fragment's own identity, and nothing else. Testing it against a whole-value identity
+      // was the bug: `"run.log"` as a value and `run.log` as a fragment of a SIBLING's sentence are
+      // different claims — the first says "I read this file", the second says "this file fed that
+      // number" — and a hit on the pair identity dropped the fragment with no probe, no failure,
+      // no note and no row. The pair namespace and the fragment namespace are disjoint precisely so
+      // neither can swallow the other; a value that is nothing but one fragment is judged twice at
+      // worst, which is one extra git probe on the same answer, not a wrong one.
+      const id = provenanceFragmentId(fragment);
+      if (!seen.has(id)) {
+        if (charged >= PROVENANCE_MAX_TOKENS) {
+          pastCap = true;
+          charge(id);
+          continue;
+        }
+        offered++;
+        charge(id);
+        pairs.push({ key, token: fragment });
+      } else if (charged >= PROVENANCE_MAX_TOKENS) {
+        pastCap = true;
+      }
+    }
+    if (fragments.length >= PROVENANCE_MAX_CANDIDATES_PER_VALUE) {
+      truncated.push({ key, token: raw });
+    }
+  };
   const walk = (value: unknown, depth: number, keyUnderProvenance?: string): boolean => {
     // Depth ceiling: a self-referential structure cannot occur in parsed JSON (JSON.parse
     // rejects cycles), so this bounds cost against a pathological fixture, not an attack.
@@ -157,7 +255,7 @@ export function tokensOf(
         // past it without reading it judged nothing and reported a pass. A nested container is
         // walked, because the strings it holds are the record's own provenance.
         if (typeof item === "string") {
-          if (keyUnderProvenance !== undefined) offer(keyUnderProvenance, item);
+          if (keyUnderProvenance !== undefined) offerString(keyUnderProvenance, item);
           continue;
         }
         if (!walk(item, depth + 1, keyUnderProvenance)) return false;
@@ -167,7 +265,7 @@ export function tokensOf(
     if (value === null || typeof value !== "object") return true;
     for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
       if (typeof raw === "string") {
-        if (keySet.has(key)) offer(key, raw);
+        if (keySet.has(key)) offerString(key, raw);
         continue;
       }
       if (keySet.has(key) && shapeOf(raw) !== "an array") {
@@ -194,7 +292,14 @@ export function tokensOf(
   // The charge lives on the CALLER's object, so the cap survives however the gate threads the
   // budget between files; the returned copy is the same number for a caller that passed no
   // budget at all and needs a count of its own.
-  return { ok: true, pairs, pastCap, unjudgable, chargedInto: charged };
+  return {
+    ok: true,
+    pairs,
+    pastCap,
+    unjudgable,
+    truncated,
+    chargedInto: charged,
+  };
 }
 
 /** The workstream-scoped state a walk shares across the files of one workstream: which

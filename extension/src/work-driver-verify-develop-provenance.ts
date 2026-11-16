@@ -20,9 +20,9 @@
  *      sha BEFORE any other read, and that one value is the `head` of the added-file read
  *      and the ref of every existence probe. A gate that resolved its ref twice could
  *      judge a file list from one commit against a token set from another.
- *   2. **Only an executed `absent` fails.** `existsInCommit` throws for a non-full-sha ref
- *      and for any git fault, and reads an empty tree entry as absence; a probe that could
- *      not answer is a note, never a verdict — the split `specify-path.ts` itself draws.
+ *   2. **Only an executed `absent` fails.** A commit read throws for a non-full-sha ref and
+ *      for any git fault; a probe that could not answer is a note, never a verdict — the split
+ *      the commit-read module draws.
  *   3. **The tokens are untrusted.** Every path, key and reason reaching a failure string
  *      or the PR body goes through `neutraliseMarkdownField`, which collapses newlines and
  *      neutralises marker and heading shapes: this gate reads a file the child authored and
@@ -35,26 +35,47 @@
  *      `sourceFile` is the evasion that constant exists to close: extending the set is a
  *      source edit, never config drift.
  *
- * The module is a leaf by policy: it imports no other develop-gate module, so adding this
- * check cannot widen the develop gate's dependency graph. `test-git-range-1153.ts` lists
- * it — every git read here is argv form under the module's own named bounds.
+ * The commit reads (blob, exact-path entry, tree listing) live in
+ * `work-driver-verify-develop-provenance-commit.ts` and the single host-file read in
+ * `work-driver-verify-develop-provenance-root.ts`; this module is the walk, the classifier call
+ * order, and the verdicts. `test-git-range-1153.ts` lists every git read across them as argv
+ * form under the modules' own named bounds.
  */
 
 import { neutraliseMarkdownField } from "./comment-evidence.ts";
 import { isFullCommitSha } from "./commit-sha.ts";
 import { readCommitOid } from "./git-oid-read.ts";
-import { existsInCommit } from "./lean/specify-path.ts";
-import { trace } from "./trace.ts";
 import type { DriverContext } from "./work-driver-context.ts";
 import { changedPaths, readCommittedProtectedPaths } from "./work-driver-protected-paths-read.ts";
 import type { VerifyDevelopOutcomeOptions } from "./work-driver-verify-develop-options.ts";
 import {
+  type TreePaths,
+  probeCandidate,
+  readAddedFile,
+  readTreePaths,
+} from "./work-driver-verify-develop-provenance-commit.ts";
+import {
+  type HostRootProbe,
+  type HostRootVerdict,
+  VERIFY_PROVENANCE_ROOT_ENV,
+  declaredProvenanceRoot,
+  probeHostRoot,
+} from "./work-driver-verify-develop-provenance-root.ts";
+import {
   PROVENANCE_KEYS,
+  PROVENANCE_KEYS_V0_14_85,
+  PROVENANCE_MAX_CANDIDATES_PER_VALUE,
   PROVENANCE_MAX_TOKENS,
   classifyToken,
   code,
   display,
+  hostContextProblem,
+  proseCandidatesOf,
 } from "./work-driver-verify-develop-provenance-token.ts";
+import {
+  type CandidateReads,
+  judgeCandidate,
+} from "./work-driver-verify-develop-provenance-verdict.ts";
 import {
   NDJSON_SUFFIX,
   type ProvenanceBudget,
@@ -65,11 +86,32 @@ import {
 /** The escape hatch; read at call time, off only for the literal `"0"`. */
 export const VERIFY_PROVENANCE_ENV = "PI_ENSEMBLE_VERIFY_PROVENANCE";
 
+/** The prose arm's switch. Its name is exported rather than inlined so the docs row, the headless
+ * input registration and the tests all name one string. */
+export const VERIFY_PROVENANCE_PROSE_ENV = "PI_ENSEMBLE_VERIFY_PROVENANCE_PROSE";
+
+// The host-root knob's name lives with the seam that reads it (the root module); re-exported
+// here so the gate's two #2295 knobs and the whole-value switch are named from one module, which
+// is where docs/configuration.md, headless/inputs-b.ts and the switch tests all look.
+export { VERIFY_PROVENANCE_ROOT_ENV } from "./work-driver-verify-develop-provenance-root.ts";
+
 /** True unless the operator set {@link VERIFY_PROVENANCE_ENV} to exactly `"0"`. */
 export function verifyProvenanceEnabled(): boolean {
   return !verifySwitchOff(process.env[VERIFY_PROVENANCE_ENV]);
 }
 
+/** The prose arm's own switch, read at call time like the gate's. On unless the operator set
+ * {@link VERIFY_PROVENANCE_PROSE_ENV} to exactly `"0"`, which restores the v0.14.85 walk — the
+ * seven-name key set and no splitting — so the arm can be turned off without turning off the
+ * gate that catches a bare absent path. */
+export function verifyProvenanceProseEnabled(): boolean {
+  return !verifySwitchOff(process.env[VERIFY_PROVENANCE_PROSE_ENV]);
+}
+
+/** The note the prose arm leaves when its switch says off. A disabled arm is never a silent
+ * green: this row is what distinguishes "the sentences were not judged" from "they passed". */
+export const PROVENANCE_PROSE_DISABLED_NOTE =
+  "PI_ENSEMBLE_VERIFY_PROVENANCE_PROSE=0 — prose claims in provenance fields were not judged";
 /** The note {@link verifyProvenanceEnabled} answers with when the gate is off. An off run is
  * never a silent green: this row is what distinguishes it from a judged one. */
 export const PROVENANCE_DISABLED_NOTE =
@@ -100,48 +142,43 @@ export function verifySwitchOff(raw: string | undefined): boolean {
  */
 export {
   PROVENANCE_KEYS,
+  PROVENANCE_KEYS_V0_14_85,
   PROVENANCE_MAX_TOKENS,
 } from "./work-driver-verify-develop-provenance-token.ts";
 
-/** The wall clock on this module's own git reads (the OID pin and the added-file range). */
-export const PROVENANCE_GIT_TIMEOUT_MS = 30_000;
-/** Byte ceiling on one added data file. Past it the file is disclosed, never judged. It is
- * also the ceiling that read's own executor buffer is set from, plus headroom: the bound is
- * what makes an over-large record a disclosure rather than a hang, and there is one number so
- * the two cannot disagree about what the gate is willing to read. */
-export const PROVENANCE_FILE_MAX_BYTES = 1024 * 1024;
-
-/** The leading clause every provenance failure carries, so the gate's own rows are
- * findable in a failure list and no cap router can mistake one for a verify verdict. */
-export const PROVENANCE_FAILURE_PREFIX = "data provenance:";
-
-/** The leading clause of this gate's "could not tell" notes. */
-export const PROVENANCE_NOTE_PREFIX = "data provenance:";
+// The two read ceilings live in the limits module, which both this gate and the commit-read
+// module import, so the disclosure text, the OID-pin timeout and the executor buffer all read one
+// number rather than three that can drift.
+import {
+  PROVENANCE_FILE_MAX_BYTES,
+  PROVENANCE_GIT_TIMEOUT_MS,
+} from "./work-driver-verify-develop-provenance-limits.ts";
+/** The leading clause every provenance failure and every note carries. Re-exported from the limits
+ * module, which the gate and the disclosure renderer both read and neither may import the other
+ * from — a row's prefix and the sentence built around it must not be able to drift. */
+export {
+  PROVENANCE_FAILURE_PREFIX,
+  PROVENANCE_NOTE_PREFIX,
+} from "./work-driver-verify-develop-provenance-limits.ts";
+import { PROVENANCE_NOTE_PREFIX } from "./work-driver-verify-develop-provenance-limits.ts";
 /** The prefix of the note an executed pass leaves behind, carrying what it judged. */
 export const PROVENANCE_CHECKED_NOTE = `${PROVENANCE_NOTE_PREFIX} judged`;
 
 /** The prefix of the note a run that could not judge leaves behind. */
 export const PROVENANCE_NOT_CHECKED_PREFIX = `${PROVENANCE_NOTE_PREFIX} NOT CHECKED`;
 
-/** The worktree-side read this gate issues. Absent = this caller does not route on it. */
-export type ProvenanceDisclosureSink = {
-  /** Filled IN PLACE, as `verifyRecord` is, so the caller reads the same array it handed
-   * in after the gate ran. Each entry is one judgement this gate could not make. */
-  disclosures?: ProvenanceDisclosure[];
-};
-
-/** One judgement the gate declined to make, for the PR body. */
-export interface ProvenanceDisclosure {
-  /** The added data file, repo-relative, as a display field. */
-  file: string;
-  /** The provenance key the value sat under, as a display field; absent for a whole-file
-   * refusal (unparsable bytes, a corpus over the bounds). */
-  key?: string;
-  /** The token as a display field, absent for a whole-file refusal. */
-  token?: string;
-  /** Why the gate declined. Its own words, never an interpolated raw token. */
-  reason: string;
-}
+// The disclosure record and its PR-body renderer live in
+// `work-driver-verify-develop-provenance-disclosure.ts`, re-exported here so callers that name
+// this module for the gate's own API keep resolving, and the section heading lives with its one
+// renderer rather than beside the walk that fills the rows.
+export type {
+  ProvenanceDisclosure,
+  ProvenanceDisclosureSink,
+} from "./work-driver-verify-develop-provenance-disclosure.ts";
+import type {
+  ProvenanceDisclosure,
+  ProvenanceDisclosureSink,
+} from "./work-driver-verify-develop-provenance-disclosure.ts";
 
 /** What one workstream's run produced. `judged` is the count of probes actually asked of
  * git; it is how a test tells an executed pass from a pass that ran nothing. */
@@ -156,52 +193,21 @@ export interface ProvenanceWorkstreamResult {
   judgedLabel: (workstreamId: string) => string;
 }
 
-/** The kinds of read a token probe can decline, kept distinct from "absent". */
-type ProbeVerdict = "present" | "absent" | "unreadable";
-
-/** Read one added file at the pinned commit. Absence of the blob is unreadable, not empty. */
-async function readAddedFile(
-  execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  cwd: string,
-  oid: string,
-  file: string,
-): Promise<{ ok: true; content: string } | { ok: false; why: string }> {
-  try {
-    const ran = await execFn("git", {
-      argv: [
-        "-c",
-        "core.hooksPath=/dev/null",
-        "-c",
-        "core.fsmonitor=false",
-        "show",
-        "--end-of-options",
-        `${oid}:${file}`,
-      ],
-      cwd,
-      timeout: PROVENANCE_GIT_TIMEOUT_MS,
-      maxBuffer: PROVENANCE_FILE_MAX_BYTES + 64 * 1024,
-    });
-    return { ok: true, content: ran.stdout ?? "" };
-  } catch (err) {
-    return {
-      ok: false,
-      why: `could not read the committed blob (${(err as Error).message?.slice(0, 100)})`,
-    };
-  }
-}
-
-async function probeToken(
-  execFn: NonNullable<DriverContext["verifyExecFn"]>,
-  cwd: string,
-  oid: string,
-  probe: string,
-): Promise<ProbeVerdict> {
-  try {
-    return (await existsInCommit(execFn, cwd, oid, probe)) ? "present" : "absent";
-  } catch (err) {
-    trace(`provenance: probe failed for ${probe.slice(0, 80)}: ${(err as Error).message}`);
-    return "unreadable";
-  }
+/** The production {@link HostRootProbe}: consult the operator's declared root, or say the gate
+ * has no root to consult. An unset root is not an unusable one — the claim is simply absent from
+ * the host, which is what a record that named nothing outside the commit gets. */
+function probeHostRootFromEnv(): HostRootProbe {
+  return (fragment: string): HostRootVerdict => {
+    const declared = declaredProvenanceRoot();
+    if (declared.kind === "unset") return { kind: "absent" };
+    if (declared.kind === "invalid") {
+      return {
+        kind: "unusable",
+        why: `${VERIFY_PROVENANCE_ROOT_ENV} is \`${declared.raw.slice(0, 120)}\` and ${declared.why}`,
+      };
+    }
+    return probeHostRoot(declared.raw, fragment);
+  };
 }
 
 /**
@@ -210,6 +216,13 @@ async function probeToken(
  * The OID is resolved FIRST and re-used for every read below; an unresolvable HEAD is a
  * named could-not-tell note (never a pass, never a provenance failure), because a gate
  * that cannot say which commit it is judging has no basis for an absence verdict.
+ *
+ * `prose` selects the arm #2295 added: on, the walk splits a whitespace-bearing value into
+ * fragments and judges each, and the key set is the current nine names; off, the walk is the
+ * v0.14.85 one — seven names, whole values only. `hostRoot` is the seam that consults the
+ * operator's declared root; production passes {@link probeHostRootFor} and a test passes a table.
+ * Both are parameters because the two arms are compared against each other by name, and a gate
+ * that read both from the environment at every layer could not be driven through one of them.
  */
 export async function checkWorktreeProvenance(opts: {
   execFn: NonNullable<DriverContext["verifyExecFn"]>;
@@ -217,8 +230,12 @@ export async function checkWorktreeProvenance(opts: {
   /** The workstream's effective base — the other end of the added-file range. */
   base: string;
   id: string;
+  prose?: boolean;
+  hostRoot?: HostRootProbe;
 }): Promise<ProvenanceWorkstreamResult> {
   const { execFn, cwd, base, id } = opts;
+  const prose = opts.prose ?? verifyProvenanceProseEnabled();
+  const hostRoot = opts.hostRoot ?? probeHostRootFromEnv();
   const failures: string[] = [];
   const notes: string[] = [];
   const disclosures: ProvenanceDisclosure[] = [];
@@ -246,6 +263,14 @@ export async function checkWorktreeProvenance(opts: {
     return result;
   }
   const oid = pinned.oid;
+  // The tree listing a bare-basename probe is answered from, read at most once for this
+  // workstream. Lazy, because the common record names its files by path and never needs it: a
+  // pass that judges only path claims asks exactly the reads the shipped gate asked.
+  let treeCache: Promise<{ ok: true; paths: Set<string> } | { ok: false; why: string }> | undefined;
+  const treePaths: TreePaths = () => {
+    if (treeCache === undefined) treeCache = readTreePaths(execFn, cwd, oid);
+    return treeCache;
+  };
   const changed = await readCommittedProtectedPaths(execFn, cwd, base, oid, {
     timeout: PROVENANCE_GIT_TIMEOUT_MS,
   });
@@ -285,7 +310,13 @@ export async function checkWorktreeProvenance(opts: {
       });
       continue;
     }
-    const parsed = tokensOf(bytes.content, file.toLowerCase().endsWith(NDJSON_SUFFIX), budget);
+    const parsed = tokensOf(
+      bytes.content,
+      file.toLowerCase().endsWith(NDJSON_SUFFIX),
+      budget,
+      prose ? PROVENANCE_KEYS : PROVENANCE_KEYS_V0_14_85,
+      prose ? proseCandidatesOf : undefined,
+    );
     if (!parsed.ok) {
       disclosures.push({ file: displayFile, reason: parsed.why });
       continue;
@@ -313,31 +344,30 @@ export async function checkWorktreeProvenance(opts: {
       });
     }
     for (const { key, token } of parsed.pairs) {
-      const displayKey = display(key);
-      const displayToken = display(token);
-      const classified = classifyToken(token);
-      if (classified.kind === "unverifiable") {
-        disclosures.push({
-          file: displayFile,
-          key: displayKey,
-          token: displayToken,
-          reason: `not a repo-relative path (${classified.why}) — host provenance this gate cannot see`,
-        });
-        continue;
-      }
-      judged++;
-      const verdict = await probeToken(execFn, cwd, oid, classified.probe);
-      if (verdict === "unreadable") {
-        notes.push(
-          `${PROVENANCE_NOTE_PREFIX} could not tell whether ${displayToken} named by ${code(file)}.${displayKey} exists at the pinned commit — not judged`,
-        );
-        continue;
-      }
-      if (verdict === "absent") {
-        failures.push(
-          `${PROVENANCE_FAILURE_PREFIX} ${code(file)}: ${code(key)} names ${code(token)}, which does not exist in commit ${oid} — a measurement record must cite a source that was committed, not synthesised after the fact`,
-        );
-      }
+      const outcome = await judgeCandidate(
+        { execFn, cwd, oid, treePaths, hostRoot, prose },
+        file,
+        key,
+        token,
+      );
+      if (outcome.judged) judged++;
+      failures.push(...outcome.failures);
+      notes.push(...outcome.notes);
+      disclosures.push(...outcome.disclosures);
+    }
+    // No separate row for a value that yielded no fragment: the walk offered such a value as a
+    // whole-value pair exactly as v0.14.85 did, so the loop above already classified and disclosed
+    // it — an extra row here would disclose the same value twice, which a reader cannot tell apart
+    // from the record having two distinct claims. The only NEW disclosure this arm adds is a value
+    // split past its per-value ceiling, below: its un-probed remainder is genuinely unreported by
+    // any other row.
+    for (const { key, token } of parsed.truncated) {
+      disclosures.push({
+        file: displayFile,
+        key: display(key),
+        token: display(token),
+        reason: `the value carries more path-shaped fragments than the ${PROVENANCE_MAX_CANDIDATES_PER_VALUE} this gate probes out of one value — the remainder was not judged`,
+      });
     }
   }
   result.judged = judged;
@@ -402,27 +432,12 @@ export async function runProvenanceGate(opts: {
   }
 }
 
-/**
- * The disclosure section for the PR body. Returns `""` when the run disclosed nothing, so
- * the section is absent rather than empty — the same contract as every sibling section.
- *
- * Only a run that EXECUTED the gate emits disclosures: the caller builds this from the
- * sink the gate filled, never from a state field that could outlive the run.
- */
-export function provenanceDisclosureSectionOf(
-  disclosures: readonly ProvenanceDisclosure[] | undefined,
-): string {
-  if (!disclosures || disclosures.length === 0) return "";
-  return [
-    "",
-    "## Data provenance (warning — not blocking)",
-    "",
-    "The develop gate judged the data files this change adds and could not verify these tokens against the committed tree. The work may well be sound — the gate simply could not see what these values name, so a reviewer should:",
-    "",
-    ...disclosures.map((d) => {
-      const where = d.key === undefined ? `\`${d.file}\`` : `\`${d.file}\` → \`${d.key}\``;
-      const named = d.token === undefined ? "" : ` value \`${d.token}\``;
-      return `- ${where}${named}: ${d.reason}`;
-    }),
-  ].join("\n");
-}
+export {
+  provenanceBasenameDisclosure,
+  provenanceDisclosureSectionOf,
+  provenanceAbsentFailure,
+} from "./work-driver-verify-develop-provenance-disclosure.ts";
+import {
+  provenanceAbsentFailure,
+  provenanceBasenameDisclosure,
+} from "./work-driver-verify-develop-provenance-disclosure.ts";

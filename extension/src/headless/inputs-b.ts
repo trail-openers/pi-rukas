@@ -403,6 +403,17 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // provenance key names a path absent from the workstream's pinned commit fails the step.
   // 0 skips it; tokens this gate cannot see are disclosed on both arms, never failed.
   flag("VERIFY_PROVENANCE", true),
+  // #2295 — the prose arm of that same gate: a whitespace-bearing provenance value is split
+  // into path-shaped fragments and each is judged, so a claim wrapped in a sentence fails like
+  // a bare path. On by default; `0` restores the v0.14.85 walk byte for byte — the seven-name
+  // key set and whole values only — which is what
+  // `test-verify-develop-provenance-prose-v85.ts` compares against a shipped copy.
+  flag("VERIFY_PROVENANCE_PROSE", true),
+  // #2295 — the one host directory this gate may consult, for a bare basename the commit cannot
+  // answer. Absolute or unused; a regular file of that name under it (within the depth the root
+  // module bounds) answers the claim, and a root that cannot be read is a could-not-tell note,
+  // never a verdict. Unset is the shipped behaviour: the gate is git-only.
+  flag("VERIFY_PROVENANCE_ROOT", true),
   // #2282 — the Python arm of `verifyCmdFor`'s discovery: a `pyproject.toml`
   // that names pytest yields `uv run pytest -q` (a `uv.lock` is present) or
   // `python3 -m pytest -q`, each prefixed with its ruff half when ruff is

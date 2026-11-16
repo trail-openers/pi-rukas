@@ -71,6 +71,16 @@ export const LISTED = [
   // gate: it issues no git call of its own, and is listed so a future edit that adds one
   // is checked under the same rule rather than joining the argv discipline by silence.
   "work-driver-verify-develop-provenance-token.ts",
+  // #2295 — the commit reads the provenance gate answers a claim against, split out for the file
+  // cap: the `git show` blob read, the exact-path entry probe and the whole-tree `ls-tree -r`
+  // listing a bare basename is answered from. The recursive listing is the one read in this
+  // subsystem whose cost is the size of the tree rather than of one path, so its argv, its ceiling
+  // and its fail-closed-to-`unreadable` bound are asserted by name in test-git-range-1153.ts.
+  "work-driver-verify-develop-provenance-commit.ts",
+  // #2295 — the per-candidate verdict seam: it issues no git call itself (every read is a callback
+  // the gate hands it) and is listed so a future edit that reaches for `execFn` directly is checked
+  // under the same argv rule rather than joining the discipline by silence.
+  "work-driver-verify-develop-provenance-verdict.ts",
   // #2283 — the classic command-criteria tier's head probe (`git rev-parse --verify
   // HEAD`), argv-form under its own bound, so a moved head is a note rather than a hang.
   "work-driver-verify-develop-command-criteria.ts",

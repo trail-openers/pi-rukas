@@ -100,7 +100,10 @@ import { verifyTimeoutMs } from "../../src/work-driver-verify-budget.ts";
 import { verifyPytestDisabled } from "../../src/work-driver-verify-cmd.ts";
 import { verifyCommandCriteriaEnabled } from "../../src/work-driver-verify-develop-command-criteria.ts";
 import { testDeleteTolerance } from "../../src/work-driver-verify-develop-helpers.ts";
-import { verifyProvenanceEnabled } from "../../src/work-driver-verify-develop-provenance.ts";
+import {
+  verifyProvenanceEnabled,
+  verifyProvenanceProseEnabled,
+} from "../../src/work-driver-verify-develop-provenance.ts";
 import { queueOrderingEnabled } from "../../src/work-queue-scheduler.ts";
 import { queueDeferCapMs, queueHaltOnFailure } from "../../src/work-queue.ts";
 import { tierDefaultReader } from "./verify-tier-pin.ts";
@@ -247,6 +250,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // loop (env deleted) pins "unset means on"; the truth tables and the docs rows are pinned
   // by test-verify-develop-switches.ts.
   ["PI_ENSEMBLE_VERIFY_PROVENANCE", verifyProvenanceEnabled],
+  // #2295 — the prose arm of the same gate. Same reader shape (`!== "0"`), same reason for the
+  // row: the LIVE loop deletes the env and pins that unset means on.
+  ["PI_ENSEMBLE_VERIFY_PROVENANCE_PROSE", verifyProvenanceProseEnabled],
   ["PI_ENSEMBLE_VERIFY_COMMAND_CRITERIA", verifyCommandCriteriaEnabled],
   // #2282 — the Python verify arm. The reader is `=== "0"`, so the gate's LIVE
   // loop (env deleted) pins "unset means on"; the truth table, the docs row and
