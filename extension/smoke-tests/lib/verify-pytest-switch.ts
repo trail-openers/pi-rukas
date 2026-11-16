@@ -11,7 +11,7 @@
  * the defect #2282 is about.
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -39,6 +39,54 @@ export function pythonRepo(
   mkdirSync(path.join(dir, "tests"));
   writeFileSync(path.join(dir, "tests", "test_ok.py"), "def test_ok():\n    assert True\n");
   return dir;
+}
+
+/**
+ * Run `body` with a private directory as the ENTIRE `PATH`, holding one
+ * executable named `python3` — or none at all, when `source` is the empty string.
+ *
+ * Why these cases may not name a host directory. The shape they first took ran
+ * under `PATH=/usr/bin:/bin`, which reads the runner's own interpreter. CI's
+ * runner HAS a `/usr/bin/python`, so the bare-`python` case came back exit 1 with
+ * `No module named pytest` instead of 127 with "not found"; it has no importable
+ * `pytest`, so the collected-nothing case saw that exit 1 where a host with pytest
+ * saw the exit 5 the case was written for; and the green control could not run at
+ * all. Three assertions whose verdict was a property of the machine. What each
+ * case claims is what `execp` does with an exit code, and that is answerable only
+ * against an interpreter the test itself pins: the PATH the case chooses, and
+ * nothing else.
+ *
+ * The stub is written `0o755` because the shell resolves the tool by name off
+ * PATH and execs it; and `execp`'s shell is `/bin/sh` by absolute path, so a
+ * stub-only PATH still starts a shell — the command, not the interpreter, is what
+ * these cases take away.
+ *
+ * `process.env.PATH` is reassigned rather than passed as an `env` option because
+ * the driver's shell executor scrubs the caller's env on its way to the spawn
+ * (`shellExecp` → `verifyChildEnv`): a hand-pinned PATH would be judged by a scrub
+ * built to drop the DRIVER's knobs, which is not what a case is deciding. The
+ * ambient write is read at spawn time. Restoring it in `finally` is load-bearing,
+ * not tidiness: the real-git cases further down resolve `git` off this same PATH.
+ */
+export async function withPath<T>(source: string, body: () => Promise<T>): Promise<T> {
+  const dir = mkdtempSync(path.join(tmpdir(), "verify-pytest-bin-"));
+  if (source !== "") writeFileSync(path.join(dir, "python3"), source, { mode: 0o755 });
+  const saved = process.env.PATH;
+  process.env.PATH = dir;
+  try {
+    return await body();
+  } finally {
+    process.env.PATH = saved;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The fields `execp`'s rejection carries: the reason the gate forwards. */
+export type Rejection = { code?: unknown; stdout?: string; stderr?: string; message?: string };
+
+/** Everything a rejection said, in the one order the cases match against. */
+export function rejectedText(e: Rejection): string {
+  return `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
 }
 
 /** Run `body` with the named env var set to `value` (or absent, for

@@ -32,7 +32,11 @@
  *     never a pass and never a skip. The third is a pinned property of the
  *     executor rather than new behaviour: `execp` resolves only on exit 0, so a
  *     collected-nothing run rejects by construction. Without these, the arm could
- *     close the silent-green hole by opening a wider one.
+ *     close the silent-green hole by opening a wider one. Each of those four is
+ *     produced by a `python3` the test writes (`withPath`), so no case's verdict
+ *     is a fact about the machine: CI's runner has a `/usr/bin/python` and no
+ *     importable `pytest`, and this block read that host as three green runs it
+ *     never earned.
  *
  * The gate-level cases drive the real develop gate over real git, with the
  * project's command executed for real (`/bin/sh`, PATH stripped) — a canned
@@ -40,33 +44,31 @@
  */
 
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { DriverContext } from "../src/work-driver-context.ts";
 import { HEADLESS_INPUTS } from "../src/headless/inputs.ts";
-import { execp, verifyCmdFor, verifyStepOutcome } from "../src/work-driver-verify.ts";
-import { developVerifyLine } from "../src/work-driver-verify-fast.ts";
-import { noVerifyCmdNote } from "../src/work-driver-verify-develop-cmd.ts";
+import type { DriverContext } from "../src/work-driver-context.ts";
 import {
   VERIFY_PYTEST_ENV,
   buildDriverKnobNames,
   verifyChildEnv,
   verifyPytestDisabled,
 } from "../src/work-driver-verify-cmd.ts";
-import {
-  type Counts,
-  ctxFor,
-  makeExec,
-  stateFor,
-} from "./lib/consolidated-verify-exec.ts";
+import { noVerifyCmdNote } from "../src/work-driver-verify-develop-cmd.ts";
+import { developVerifyLine } from "../src/work-driver-verify-fast.ts";
+import { execp, verifyCmdFor, verifyStepOutcome } from "../src/work-driver-verify.ts";
+import { type Counts, ctxFor, makeExec, stateFor } from "./lib/consolidated-verify-exec.ts";
 import { fixture } from "./lib/consolidated-verify-fixture.ts";
 import {
   PY_CMD,
+  type Rejection,
   pythonRepo,
+  rejectedText,
   withEnv,
   withEnvRun,
+  withPath,
 } from "./lib/verify-pytest-switch.ts";
 
 let exit = 0;
@@ -90,7 +92,20 @@ function assert(cond: boolean, msg: string): void {
       `the one disable: PI_ENSEMBLE_VERIFY_PYTEST=${JSON.stringify(raw)} turns the Python arm off`,
     );
   }
-  for (const raw of ["", "  ", "1", "false", "FALSE", "no", "off", "OFF", "maybe", "2", "00 ", " 0 "]) {
+  for (const raw of [
+    "",
+    "  ",
+    "1",
+    "false",
+    "FALSE",
+    "no",
+    "off",
+    "OFF",
+    "maybe",
+    "2",
+    "00 ",
+    " 0 ",
+  ]) {
     assert(
       withEnvRun(VERIFY_PYTEST_ENV, raw, () => verifyPytestDisabled()) === false,
       `not a disable: ${JSON.stringify(raw)} leaves the arm on — a misspelled disable is never a deliberate one`,
@@ -120,8 +135,10 @@ function assert(cond: boolean, msg: string): void {
     "the knob is in the scrub list: the project's own pytest never sees the driver's switch",
   );
   assert(
-    Object.prototype.hasOwnProperty.call(verifyChildEnv({ [VERIFY_PYTEST_ENV]: "0" }), VERIFY_PYTEST_ENV) ===
-      false,
+    Object.prototype.hasOwnProperty.call(
+      verifyChildEnv({ [VERIFY_PYTEST_ENV]: "0" }),
+      VERIFY_PYTEST_ENV,
+    ) === false,
     "verifyChildEnv drops it from a project command's environment",
   );
 
@@ -133,9 +150,7 @@ function assert(cond: boolean, msg: string): void {
   // merely mentions the name: the coupling row of another knob cites it too, and
   // asserting against that row would pass on text that says none of what the
   // switch itself does.
-  const row = docs
-    .split("\n")
-    .find((l) => l.startsWith(`| \`${VERIFY_PYTEST_ENV}\` |`));
+  const row = docs.split("\n").find((l) => l.startsWith(`| \`${VERIFY_PYTEST_ENV}\` |`));
   assert(row !== undefined, "docs/configuration.md carries a row for the switch");
   for (const [needle, why] of [
     ['`"0"`', "names the one off value, so an operator can spell the disable"],
@@ -207,8 +222,7 @@ function assert(cond: boolean, msg: string): void {
     const onPrompt = developVerifyLine(on.plain);
     const offPrompt = developVerifyLine(off.plain);
     assert(
-      onPrompt.includes("`ruff check . && python3 -m pytest -q`") &&
-        !offPrompt.includes("pytest"),
+      onPrompt.includes("`ruff check . && python3 -m pytest -q`") && !offPrompt.includes("pytest"),
       "on: the develop prompt names the discovered pytest command; off: it names none",
     );
     assert(
@@ -226,7 +240,9 @@ function assert(cond: boolean, msg: string): void {
     await withEnv(VERIFY_PYTEST_ENV, undefined, async () => {
       const note = noVerifyCmdNote();
       assert(
-        note.startsWith("no verify command discoverable (.pi/verify-cmd, package.json scripts, Cargo.toml, ") &&
+        note.startsWith(
+          "no verify command discoverable (.pi/verify-cmd, package.json scripts, Cargo.toml, ",
+        ) &&
           note.endsWith(") — diff evidence only") &&
           note.includes("pyproject.toml"),
         `on: the same note names pyproject.toml among the sources it looked at (got ${JSON.stringify(note)})`,
@@ -250,96 +266,91 @@ function assert(cond: boolean, msg: string): void {
 }
 
 // ── a discovered command that cannot judge the tree FAILS, in its own words ──
+
+/** Run `cmd` through the gate's own executor under `withPath`'s stub PATH and
+ * report what the executor said: whether it resolved, and the code / text its
+ * rejection carried. The four cases are one question asked of four exit codes, so
+ * the capture is written once — a hand-typed `try`/`catch` could read the wrong
+ * field and pass. */
+function verdictUnder(
+  source: string,
+  cwd: string,
+  cmd: string,
+): Promise<{ resolved: boolean; code: unknown; text: string }> {
+  return withPath(source, async () => {
+    try {
+      await execp(cmd, { cwd });
+      return { resolved: true, code: undefined, text: "" };
+    } catch (err) {
+      const e = err as Error & Rejection;
+      return { resolved: false, code: e.code, text: rejectedText(e) };
+    }
+  });
+}
+
 {
-  // Three shapes of "the gate ran something that judged nothing", each produced
-  // by the real executor under `/bin/sh` with a PATH that lacks the tool. A
-  // fake that threw a canned message would only prove the fake can throw, and a
-  // harness whose every command fails is indistinguishable from a gate that
-  // correctly reports three red runs — hence the green control at the end.
-    { // The interpreter form the issue forbids, run under a PATH without it.
-      // Measured here rather than faked: `python` is genuinely absent on this
-      // host, which is the whole reason the discovered string is `python3 -m
-      // pytest -q` and not the `python -m pytest -q` the spec first drafted.
-      const cwd = pythonRepo();
-      let rejected = false;
-      let text = "";
-      let code: unknown;
-      try {
-        await execp("python -m pytest -q", { cwd, env: { PATH: "/usr/bin:/bin" } });
-      } catch (err) {
-        const e = err as Error & { stdout?: string; stderr?: string; code?: unknown };
-        rejected = true;
-        code = e.code;
-        text = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
-      }
-      assert(
-        rejected && code === 127 && text.includes("not found"),
-        `python-missing: 127 with the executor's own "not found" — ${text.trim().slice(0, 60)}`,
-      );
-    }
-    { // A runner the environment cannot import, spelled the way a real invocation
-      // is spelled (`python3 -m <runner>`). The point is the SHAPE of the failure:
-      // a command that dies before it judges anything still carries its own
-      // reason, and the gate forwards it. `pytest` is installed on this host,
-      // `pytestx` is not, and the distinction the assertion makes is the one the
-      // gate must make — not a canned string from a fake.
-      const cwd = pythonRepo();
-      let rejected = false;
-      let text = "";
-      let code: unknown;
-      try {
-        await execp("python3 -m pytestx -q", { cwd, env: { PATH: "/usr/bin:/bin" } });
-      } catch (err) {
-        const e = err as Error & { stdout?: string; stderr?: string; code?: unknown };
-        rejected = true;
-        code = e.code;
-        text = `${e.stdout ?? ""}\n${e.stderr ?? ""}\n${e.message ?? ""}`;
-      }
-      assert(
-        rejected && code === 1 && text.includes("No module named"),
-        `runner-not-installed: rejected carrying "No module named" (code ${String(code)}) — ${text.trim().slice(0, 60)}`,
-      );
-    }
-    { // Exit 5 — pytest ran and collected nothing. This is a pinned PROPERTY of
-      // the executor, not behaviour this PR builds: `execp` resolves only on exit
-      // 0, so every other pytest status rejects by construction. Pinning it here
-      // is what stops a later "convenience" that treats 5 as a pass.
-      // A manifest with no `testpaths` and no test file: the run gets as far as
-      // "no tests ran" and reports nothing judged.
-      const dir = mkdtempSync(path.join(tmpdir(), "verify-pytest-empty-"));
-      writeFileSync(path.join(dir, "pyproject.toml"), "[tool.pytest.ini_options]\n");
-      let resolved = false;
-      let code: unknown;
-      let out = "";
-      try {
-        await execp("python3 -m pytest -q", { cwd: dir, env: { PATH: "/usr/bin:/bin" } });
-        resolved = true;
-      } catch (err) {
-        const e = err as Error & { stdout?: string; stderr?: string; code?: unknown };
-        code = e.code;
-        out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
-      }
-      assert(
-        !resolved && code === 5 && out.includes("no tests ran"),
-        `collected-nothing: exit 5 with "no tests ran" is a rejection, never a pass (resolved=${String(resolved)}, code=${String(code)}, out=${JSON.stringify(out.trim())})`,
-      );
-      rmSync(dir, { recursive: true, force: true });
-    }
-    { // The green the whole arm exists to produce: a real pytest suite in a real
-      // repo passes through the same executor the gate uses. Without this the
-      // three failures above could be the signature of a broken harness rather
-      // than of three genuinely-red runs.
-      const cwd = pythonRepo();
-      let ok = false;
-      try {
-        await execp("python3 -m pytest -q", { cwd, env: { PATH: "/usr/bin:/bin" } });
-        ok = true;
-      } catch {
-        ok = false;
-      }
-      assert(ok, "control: a discoverable command that DOES pass resolves through execp");
-    }
+  // Four shapes of "the gate ran something", as data: the stub `python3`, the
+  // command, and the exit code and own-words the gate must report. Each runs under
+  // the real executor and `/bin/sh` with a PATH holding only what the case names —
+  // the interpreter itself is a stub `withPath` writes (see its docstring for why
+  // no case may read the host's). A fake that threw a canned message would only
+  // prove the fake can throw, and a harness whose every command fails is
+  // indistinguishable from a gate that correctly reports three red runs — hence
+  // the green `control` last, and no `skip` row: a missing prerequisite is the
+  // failure the arm exists to report.
+  const cases = [
+    {
+      name: "python-missing", // The form the issue forbids, under a PATH without
+      // it: the discovered string is `python3 -m pytest -q` and not the `python
+      // -m pytest -q` the spec drafted, precisely because a host with only
+      // `python3` answers the bare form with 127 and no verdict at all.
+      stub: "",
+      cmd: "python -m pytest -q",
+      code: 127,
+      says: "not found",
+    },
+    {
+      name: "runner-not-installed", // A runner the environment cannot import,
+      // spelled the way a real invocation is (`python3 -m <runner>`). The point is
+      // the SHAPE of the failure: a command that dies before it judges anything
+      // still carries its own reason, and the gate forwards it — the stub prints
+      // the line a real interpreter writes when the package is absent.
+      stub: '#!/bin/sh\necho "$0: No module named $2" >&2\nexit 1\n',
+      cmd: "python3 -m pytestx -q",
+      code: 1,
+      says: "No module named",
+    },
+    {
+      name: "collected-nothing", // Exit 5 — pytest ran and collected nothing: a
+      // pinned PROPERTY of the executor, not behaviour this PR builds. `execp`
+      // resolves only on exit 0, so every other pytest status rejects by
+      // construction; pinning it stops a later "convenience" that treats 5 as a pass.
+      stub: '#!/bin/sh\necho "no tests ran in 0.00s"\nexit 5\n',
+      cmd: PY_CMD,
+      code: 5,
+      says: "no tests ran",
+    },
+    {
+      name: "control", // The green the whole arm exists to produce: a command that
+      // DOES pass resolves through the same executor the gate uses. Without it the
+      // three rejections above could be a broken harness rather than three
+      // genuinely-red runs.
+      stub: "#!/bin/sh\nexit 0\n",
+      cmd: PY_CMD,
+      code: 0,
+      says: "",
+    },
+  ] as const;
+  for (const c of cases) {
+    const cwd = pythonRepo();
+    const { resolved, code, text } = await verdictUnder(c.stub, cwd, c.cmd);
+    assert(
+      c.code === 0 ? resolved : !resolved && code === c.code && text.includes(c.says),
+      `${c.name}: ${c.code === 0 ? "a discoverable command that DOES pass resolves through execp" : `exit ${String(c.code)} with ${JSON.stringify(c.says)} is a rejection, never a pass`} (resolved=${String(resolved)}, code=${String(code)}, out=${JSON.stringify(text.trim().slice(0, 70))})`,
+    );
+    rmSync(cwd, { recursive: true, force: true });
   }
+}
 
 // ── the develop gate: on runs the discovered command, off runs nothing ───────
 {
