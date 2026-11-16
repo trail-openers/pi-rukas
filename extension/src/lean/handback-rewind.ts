@@ -41,10 +41,10 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
-import { leanHandbackNetGitEnabled } from "./handback-net-git-switch.ts";
 import { traceWarn } from "../trace.ts";
 import { netGitEnv, netRefProblem, runNetGit } from "../work-driver-net-git.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { leanHandbackNetGitEnabled } from "./handback-net-git-switch.ts";
 import { PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
 import { leanRewindLeaseBinds } from "./rewind-lease-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
