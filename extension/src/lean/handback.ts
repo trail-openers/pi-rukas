@@ -94,7 +94,8 @@ function budgetCause(steps: Step[]): string | undefined {
   const fired = step === undefined ? undefined : budgetTrio(step.outcome);
   if (step === undefined || fired === undefined) return undefined;
   // The step's own clause about the attempts it spent, kept if it made one.
-  const used = step.outcome?.reason?.match(/after \d+ build attempts/)?.[0];  return used === undefined
+  const used = step.outcome?.reason?.match(/after \d+ build attempts/)?.[0];
+  return used === undefined
     ? budgetSentence(step.state, fired)
     : `${budgetSentence(step.state, fired)} ${used}`;
 }
@@ -216,7 +217,8 @@ function headLines(heads: Heads | undefined): string[] | undefined {
       `Unshipped head: \`${heads.unshippedHead}\` — ${heads.unshippedReason ?? "not shipped"}`,
     );
   // A step that moved nothing still owes the operator why the head it shipped was never certified.
-  if (heads.unshippedHead === undefined && heads.unshippedReason !== undefined)    lines.push(`Why nothing was moved: ${heads.unshippedReason}`);
+  if (heads.unshippedHead === undefined && heads.unshippedReason !== undefined)
+    lines.push(`Why nothing was moved: ${heads.unshippedReason}`);
   if (lines.length === 0) return undefined;
   return [...lines, ""];
 }
