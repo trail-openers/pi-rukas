@@ -133,10 +133,7 @@ const PROBE_CONTENT = "";
  * `_lean_runner_probe.py` would have the runner collect the probe as one of its
  * tests, so this refuses rather than writing a probe the CI would grade.
  */
-function probeRelative(
-  wt: string,
-  testLocation?: TestLocation,
-): { rel: string; py: boolean } {
+function probeRelative(wt: string, testLocation?: TestLocation): { rel: string; py: boolean } {
   // The boundary's own matcher, so "would this project's CI collect the probe?" is
   // answered by the same predicate that refuses a submitted test for it — and asked
   // wherever the probe would go, since a name the CI grades is refused whether it
