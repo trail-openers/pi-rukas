@@ -1,12 +1,11 @@
 /**
  * lean/verify-tier-rerun — the tier re-run whose OUTPUT survives.
  *
- * `verify-baseline.ts` answers "did this tier's second run agree with its first?"
- * and discards what that run printed, because an exit code settles the flake
- * question. The baseline excuse needs a second fact from the same child — WHICH
- * tests it named — and re-spawning the tier a third time to ask would bill the run
- * another full tier for a stream this step already had. So the spawn and the
- * judgement live here, one child call, and the colour rule itself stays in
+ * `verify-baseline.ts` answers "did this tier's second run agree with its first?" and discards
+ * what that run printed, because an exit code settles the flake question. The baseline excuse
+ * needs a second fact from the same child — WHICH tests it named — and re-spawning the tier a
+ * third time to ask would bill the run another full tier for a stream this step already had. So
+ * the spawn and the judgement live here, one child call, and the colour rule itself stays in
  * `verify-baseline.ts` so a kill cannot mean two different things in one pipeline.
  */
 
@@ -16,12 +15,8 @@ import type { VerifyExec } from "./verify-types.ts";
 /**
  * The same tier command, run once more in the same tree, WITH its output.
  *
- * `confirmTierRed` answers the flake question and throws its stream away; the
- * baseline excuse reads which tests the run named, so `verify` spawns the child
- * through here once and asks `confirmTierRedFrom` for the colour. It is the SAME
- * child call `confirmTierRed` makes — same scrubbed env, same bound, same
- * `killGroup` — so a tier this step excused was run by a real process this step
- * observed, never inferred.
+ * It is the SAME child call `confirmTierRed` makes — same scrubbed env, same bound, same
+ * `killGroup` — so a tier this step excused was run by a real process this step observed.
  */
 export async function tierRunStream(
   exec: VerifyExec,

@@ -1,20 +1,16 @@
 /**
  * lean/verify-tree — the tree reads behind the `command` criteria tier.
  *
- * A `command` criterion claims behaviour that already held before this run began,
- * so the only file that can evidence it is one the run's base commit already
- * held, byte for byte — and there are THREE places those bytes can differ: the
- * base commit, HEAD, and the working file the runner is about to load. This module
- * is the only place those three reads are expressed, so the tier that judges
- * preservation and the re-check that audits it after the runs cannot drift into
- * asking different questions of the same file.
+ * A `command` criterion claims behaviour that already held before this run began, so the only file
+ * that can evidence it is one the run's base commit already held, byte for byte — and those bytes
+ * can differ in THREE places: the base commit, HEAD, and the working file the runner is about to
+ * load. This is the only place those three reads are expressed, so the tier that judges
+ * preservation and the re-check that audits it cannot drift into asking different questions of the
+ * same file.
  *
- * Every refusal here is a *reason*, never a verdict: a criterion the tree refuses
- * is treated like `manual` by the caller — absent from the record, its reason
- * carried to the PR body. An "unreadable" arm is different and deliberately not a
- * string: "could not tell" must never read as "the test is not there", because the
- * first is a machine to re-run and the second is an issue to fix, and collapsing
- * them sends an operator to rewrite a spec that was never the problem.
+ * Every refusal here is a *reason*, never a verdict. An "unreadable" arm is different and
+ * deliberately not a string: "could not tell" must never read as "the test is not there", because
+ * the first is a machine to re-run and the second is an issue to fix.
  */
 
 import { NO_HOOKS } from "./specify-reset.ts";
@@ -39,20 +35,14 @@ export function entryUnreadable(entry: TreeEntry): boolean {
 }
 
 /**
- * One `git ls-tree <ref> -- <rel>` in argv form, with the same hook and fsmonitor
- * guard every other lean git read carries.
+ * One `git ls-tree <ref> -- <rel>` in argv form, with the same hook and fsmonitor guard every
+ * other lean git read carries.
  *
- * `-- <rel>` is what makes this a path question rather than a revision question:
- * without the separator a `rel` that also names a ref would answer a different
- * query. An empty string is git answering "this tree holds no such entry" — which
- * is NOT the same fact as a git that refused, and the two are kept apart by
- * throwing for the refusal rather than returning something the caller has to
- * distinguish. Collapsing them would let a broken git read look like an absent
- * test.
- *
- * git's own words travel with the refusal: an operator chasing "the test is not
- * there" needs to see whether git said `not a tree`, `bad object` or nothing, and
- * dropping them would send that operator looking in the wrong tree.
+ * `-- <rel>` makes this a path question rather than a revision question. An empty string is git
+ * answering "this tree holds no such entry" — NOT the same fact as a git that refused, and the two
+ * are kept apart by throwing for the refusal. git's own words travel with the refusal: an operator
+ * chasing "the test is not there" needs to see whether git said `not a tree`, `bad object` or
+ * nothing.
  */
 export async function treeEntry(
   exec: VerifyExec,
@@ -76,14 +66,11 @@ export async function treeEntry(
 /**
  * The ONE parser for a `git ls-tree <ref> -- <rel>` line.
  *
- * git prints `<mode> <type> <oid>\t<path>`, so the fields are read from the text
- * BEFORE the TAB and the path from after it — splitting the whole line on `/\s+/`
- * would read `"…\tmy script.sh"` as several fields and call a legal entry "not an
- * exact path". The MODE is what decides what the entry is: git prints `blob` for a
- * symlink too, so reading the type alone lets a mode-120000 link through, which an
- * existence-only probe would execute. A line this cannot
- * read at all is `unreadable` — a machine to re-run, never a verdict about
- * somebody's test.
+ * git prints `<mode> <type> <oid>\t<path>`, so the fields are read from the text BEFORE the TAB
+ * and the path from after it — splitting the whole line on `/\s+/` would read `"…\tmy script.sh"`
+ * as several fields and call a legal entry "not an exact path". The MODE decides what the entry
+ * is: git prints `blob` for a symlink too, so reading the type alone lets a mode-120000 link
+ * through. A line this cannot read at all is `unreadable`.
  */
 export function parseTreeLine(line: string, rel: string): TreeEntry {
   const tab = line.indexOf("\t");
@@ -111,10 +98,9 @@ export function unreadableEntry(rel: string, wt: string): VerifyInfraError {
 /**
  * The working file's blob oid, or a throw: "could not tell" is never "it differs".
  *
- * `git hash-object` hashes the FILE, not the index, which is the whole point — a
- * tier that trusted `git status` could be shown a file somebody rewrote on disk
- * under `git update-index --assume-unchanged` (a documented way to keep the
- * porcelain quiet about exactly that) and call it the base's own bytes.
+ * `git hash-object` hashes the FILE, not the index — a tier that trusted `git status` could be
+ * shown a file somebody rewrote on disk under `git update-index --assume-unchanged` and call it
+ * the base's own bytes.
  */
 export async function workingOid(exec: VerifyExec, wt: string, rel: string): Promise<string> {
   const r = await exec("git", {
