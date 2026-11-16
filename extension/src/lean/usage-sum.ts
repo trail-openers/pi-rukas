@@ -1,22 +1,16 @@
 /**
  * lean/usage-sum — what a lean run's children cost, in total and per role.
  *
- * The lean step log records one row per dispatch on the three dispatching steps
- * (`Outcome.dispatches`, owned by `specify`/`build`/`challenge`). This folds
- * those rows: `total` and one row per `role`, the same shape the headless `work`
- * result reports as `usage`/`usage.byRole`, so a host comparing the two engines
- * reads one shape and one definition of "cost".
+ * The lean step log records one row per dispatch on the three dispatching steps (`Outcome.dispatches`, owned
+ * by `specify`/`build`/`challenge`). This folds those rows: `total` and one row per `role`, the same shape the
+ * headless `work` result reports as `usage`/`usage.byRole`, so a host comparing the two engines reads one shape
+ * and one definition of "cost".
  *
- * The fold is not restated here: it is `foldUsage` in `../usage-fold.ts`, which
- * `usageOf` in `headless/result.ts` also calls.
- * **A dispatch counts whether or not the child succeeded** — a child the budget
- * stopped or the provider killed spent its tokens before it died, and a sum that
- * skipped it would report a failed run as a cheap one. The rule lives there once,
- * for both readers; the only difference between the callers is where the rows
- * come from.
+ * The fold is not restated here: it is `foldUsage` in `../usage-fold.ts`. **A dispatch counts whether or not
+ * the child succeeded** — a child the budget stopped or the provider killed spent its tokens before it died,
+ * and a sum that skipped it would report a failed run as a cheap one.
  *
- * Leaf module: it imports types only, so anything can fold the log without
- * pulling a step in.
+ * Leaf module: it imports types only, so anything can fold the log without pulling a step in.
  */
 
 import type { DispatchUsage } from "../types.ts";
@@ -33,14 +27,11 @@ type LeanUsage = UsageFold;
 /**
  * Fold every dispatch the step log records into totals, in total and per role.
  *
- * Failed dispatches are counted: a row is attached by the step whether the child finished,
- * was stopped by its budget, or died. That counting, the null-prototype `byRole` and the zero
- * row all come from the shared fold.
+ * Failed dispatches are counted: a row is attached by the step whether the child finished, was stopped by its
+ * budget, or died. That counting, the null-prototype `byRole` and the zero row all come from the shared fold.
  *
- * The row's `usage` is COPIED out rather than handed over whole: `DispatchUsageRow` is not
- * assignable to the fold's `{role, usage}`, so this is where the log's shape meets the fold's.
- * The numbers are read field by field so the copy is the record the loader validated, not an
- * `as never` over a shape mismatch.
+ * The row's `usage` is COPIED out rather than handed over whole: `DispatchUsageRow` is not assignable to the
+ * fold's `{role, usage}`. The numbers are read field by field so the copy is the record the loader validated.
  */
 export function leanUsage(steps: Step[]): LeanUsage {
   const rows: { role: string; usage: DispatchUsage | undefined }[] = [];
