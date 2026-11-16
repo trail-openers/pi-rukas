@@ -131,7 +131,7 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
     // checks the token and every value against the consumer's source (which lives
     // in `VERDICT_STATUSES`, plus the reader this row now points at).
     onAbsence:
-      "no candidate line — the last signature in the reply, excluding fenced/indented/quoted/table lines and any line of a menu run naming 2+ values — → verdictParsed=false → fix round mid-loop, `incomplete` at the terminal round (never pass, never reject)",
+      "no candidate line — the last signature in the reply, which must start at column 0, excluding fenced/indented/quoted/bulleted/table rows and any line of a run of consecutive token lines naming 2+ values — → verdictParsed=false → fix round mid-loop, `incomplete` at the terminal round (never pass, never reject)",
   },
   {
     token: "VERDICT",

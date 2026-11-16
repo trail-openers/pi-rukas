@@ -22,16 +22,18 @@
  * question, answered once, in this module:
  *
  *   - **Candidate lines** are the lines a verdict may be read from. Either the
- *     inline form — at most three leading spaces, optional `**`, the `VERDICT`
- *     token with the shared reader's separator tolerance, then a status value
- *     (trailing text allowed) — or the heading form: `### VERDICT` alone on its
- *     line, whose value is the next non-blank line, which must be exactly one
- *     value after trimming and stripping ``**``.
+ *     inline form — the `VERDICT` token AT COLUMN 0, optionally preceded by up to
+ *     two asterisks of emphasis IMMEDIATELY touching it, with the shared reader's
+ *     separator tolerance, then a status value (trailing text allowed) — or the
+ *     heading form: `### VERDICT` alone on its line at column 0, whose value is
+ *     the next non-blank line, which must be exactly one value after trimming and
+ *     stripping ``**``.
  *   - **Exclusions** remove the shapes that are quotation rather than signature:
  *     a line inside a ``` or ~~~ fence (by fence parity, so an unclosed fence
- *     fences everything below it), a line indented 4+ spaces or by a tab, a
- *     `>` block quote, a `|` table row, and every line of a MENU RUN — adjacent
- *     VERDICT-token lines (blank lines between them ignored) that offer the
+ *     fences everything below it), a line indented by ANY space or by a tab, a
+ *     list marker (`- `, `* `, `+ `, `1. `, `1) `), a `>` block quote, a `|` table
+ *     row, and every line of a MENU RUN — CONSECUTIVE VERDICT-token lines, with no
+ *     blank line between them, that name two or more distinct values and offer the
  *     protocol rather than sign a verdict. See the run walk below for the exact
  *     test and for why it is not simply "two token lines, two values".
  *   - **The verdict is the LAST candidate line**, which keeps today's
@@ -48,6 +50,13 @@
  * recites the menu did not choose, and an unreadable reply is the answer this
  * gate gives when nothing signed it.
  *
+ * Consecutiveness is what keeps a run from eating a real signature. A blank line
+ * breaks the run, so a reviewer that echoes the menu, leaves a gap, and then
+ * closes with `VERDICT: ISSUES_FOUND` is read as closing with it: the echo is one
+ * block and the signature another. A rule that ignored blank lines would fold the
+ * two into one run and report no verdict at all, which is the opposite of what
+ * this module is for.
+ *
  * `readMarker`/`readEnumMarker` are deliberately unchanged. The post-verdict
  * stop's own selector and the /plan gap gate's parser read this token
  * differently and are separate concerns with their own suites; only this one
@@ -55,45 +64,84 @@
  */
 
 import { VERDICT_STATUSES } from "./adversarial-verdict.ts";
+import { escapeRegExpLiteral } from "./open-points-contract.ts";
 import type { AdversarialVerdictStatus } from "./types.ts";
 
-/** At most three leading spaces may sit in front of an inline marker. Four is
- *  an indented code block in markdown, where every line is quotation. */
-const MAX_INLINE_INDENT = 3;
+/** The four verdict values as a regex alternation, most severe first —
+ *  `CRITICAL_ISSUES_FOUND` contains `ISSUES_FOUND`, so the declaration order of
+ *  `VERDICT_STATUSES` is what makes the first alternative the right one. Shared
+ *  by the bare and the inline value matchers below, which differ only in what
+ *  they anchor on either side: two copies is how they would drift.
+ *
+ *  Built lazily (hence the function) because `VERDICT_STATUSES` lives in
+ *  `adversarial-verdict.ts`, which imports THIS module: evaluated at module load
+ *  it would read that const before its own module body has run. */
+let statusAlt: string | undefined;
+function statusAlt_(): string {
+  if (statusAlt === undefined) statusAlt = VERDICT_STATUSES.map(escapeRegExpLiteral).join("|");
+  return statusAlt;
+}
 
 /** A line that opens or closes a ``` or ~~~ fenced block. `~~~` needs three
  *  markers, like CommonMark: `~~x~~` is a strikethrough idiom, and reading two
  *  tildes as a fence would fence half a report. */
 const FENCE_RE = /^ {0,3}(```|~~~)/;
 
-/** A block quote, an indented code block (4 spaces or a tab), or a table row. */
-const QUOTED_OR_TABLE_RE = /^(?:>| {4}|\t|\|)/;
+/** A block quote, a table row, a line with ANY leading whitespace (a tab, one to
+ *  three spaces of markdown list/paragraph slack, or the 4+ spaces that make an
+ *  indented code block), or a markdown list marker. Every one of these is a line
+ *  the reviewer is showing rather than signing — a quoted, tabled, bulleted or
+ *  indented verdict is a quotation of somebody else's line, and the reply's own
+ *  signature sits at column 0. A 4+ space indent cannot be told apart from a code
+ *  block quoting a verdict, so it fails closed with the rest: unparsed, never
+ *  guessed. */
+const QUOTED_OR_TABLE_RE = /^(?:>|[ \t]|\||[-*+] |[0-9]+[.)] )/;
+
+/** A markdown list marker, after any run of spaces or tabs: the line is an item
+ *  of a list, which is structure, not emphasis. `* ` and `- ` at column 0 are how
+ *  a reviewer files a bullet, and a bullet quoting a verdict line is the
+ *  incident's own shape. */
+const LIST_MARKER_RE = /^[ \t]*(?:[-*+] |[0-9]+[.)] )/;
 
 /** `#{1,6} VERDICT` with optional emphasis and nothing else on the line: the
- *  heading form. Its value sits on the next non-blank line. */
-const HEADING_RE = /^ {0,3}#{1,6} +\** *VERDICT *\** *$/i;
+ *  heading form, at column 0. Its value sits on the next non-blank line. */
+const HEADING_RE = /^#{1,6} +\** *VERDICT *\** *$/i;
 
-/** Everything before the status value on an inline candidate: up to three
- *  spaces, optional `**`, the token, then the shared reader's separator
- *  tolerance (optional colon, optional bold, optional colon). Written out here
- *  rather than imported so this reader and `readMarker` cannot drift on what a
- *  marker is spelled like — the one deliberate difference is that this one is
- *  ANCHORED to the start of its line, which is what makes the exclusions
- *  possible at all.
+/** Everything before the status value on an inline candidate: the token at
+ *  column 0, optionally preceded by up to two asterisks of emphasis that touch
+ *  it, then the shared reader's separator tolerance (optional colon, optional
+ *  bold, optional colon). Written out here rather than imported so this reader
+ *  and `readMarker` cannot drift on what a marker is spelled like — the one
+ *  deliberate difference is that this one is ANCHORED to the start of its line,
+ *  which is what makes the exclusions possible at all.
  *
  *  "Start of its line" counts the markdown decorations a line can wear in front
- *  of the marker — a `>` block-quote marker and a `|` table-cell delimiter, each
- *  optionally followed by spaces — as part of the prefix rather than as
- *  something the anchor has to swallow. Both shapes are then
- *  CANDIDATES that the quote/table exclusion refuses, which is the point of
+ *  of the marker — a `>` block-quote marker, a `|` table-cell delimiter, an
+ *  indentation or a list bullet — as part of what this prefix tolerates rather
+ *  than as something the anchor has to swallow. Each shape is then a
+ *  CANDIDATE that the quote/table exclusion refuses, which is the point of
  *  `verdictCandidateLines` marking exclusions instead of dropping lines: a
  *  reviewer whose only verdict line sits in a block quote is the difference
  *  between "said nothing" and "had a verdict, quoted away", and a prefix that
- *  simply failed to match would report the first for the second. A 4+ space
- *  indent is deliberately NOT in the prefix: at most three spaces are allowed
- *  through, so an indented marker stays a candidate its `structural` flag
- *  refuses. */
-const INLINE_PREFIX = /^ {0,3}(?:>[ ]?|\|[ ]?|\**\s*)VERDICT\s*:?\s*\**\s*:?\s*/i;
+ *  simply failed to match would report the first for the second.
+ *
+ *  Emphasis is `\**`, capped at two: `**VERDICT:**` and `VERDICT:** ` are what
+ *  reviewers actually write, while `* VERDICT:` is a bullet — the prefix matches
+ *  it and `LIST_MARKER_RE` refuses it. Every separator is `[ \t]` and never `\s`:
+ *  `\s` matches a newline, and a prefix or separator that could cross one would
+ *  judge a line against text that is not on it.
+ *
+ *  The prefix is deliberately BROAD: it also accepts leading whitespace, a list
+ *  marker or a `|` table delimiter in front of the token, and the narrow column-0
+ *  rule is enforced by `structural` in the candidate pass rather than by failing
+ *  to match here. That is the difference between "this line was refused" and
+ *  "this line never existed" — the refused shapes are what the suites assert on,
+ *  and a prefix that simply did not match them would report a forged verdict as
+ *  silence. `|` is never written unescaped inside this source: an unescaped one
+ *  would swallow the alternation bar of the whole group, so the structural test
+ *  is what carries it. */
+const INLINE_PREFIX =
+  /^(?:>|\||[ \t]*[-*+] |[ \t]*[0-9]+[.)] )?[ \t]*(?:\**[ \t]*)?VERDICT(?:[ \t]*:?[ \t]*\**[ \t]*:?[ \t]*)?/i;
 
 /** The bare value form: exactly one enum value with nothing but optional
  *  emphasis around it — the spelling the heading form's value line takes. The
@@ -109,10 +157,7 @@ const INLINE_PREFIX = /^ {0,3}(?:>[ ]?|\|[ ]?|\**\s*)VERDICT\s*:?\s*\**\s*:?\s*/
 let bareValueRe: RegExp | undefined;
 function bareValueRe_(): RegExp {
   if (bareValueRe === undefined) {
-    bareValueRe = new RegExp(
-      `^\\**\\s*(${VERDICT_STATUSES.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\s*\\**$`,
-      "i",
-    );
+    bareValueRe = new RegExp(`^\\**\\s*(${statusAlt_()})\\s*\\**$`, "i");
   }
   return bareValueRe;
 }
@@ -134,10 +179,7 @@ function bareValueRe_(): RegExp {
 let inlineValueRe: RegExp | undefined;
 function inlineValueRe_(): RegExp {
   if (inlineValueRe === undefined) {
-    inlineValueRe = new RegExp(
-      `^(${VERDICT_STATUSES.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![A-Za-z0-9_])`,
-      "i",
-    );
+    inlineValueRe = new RegExp(`^(${statusAlt_()})(?![A-Za-z0-9_])`, "i");
   }
   return inlineValueRe;
 }
@@ -172,7 +214,9 @@ function headingValue(line: string): AdversarialVerdictStatus | undefined {
 }
 
 /** Does this line carry the token inside marker syntax (inline form) or is it
- *  the heading form? What makes a line a member of a menu run. */
+ *  the heading form? What makes a line a member of a menu run. A list item is not
+ *  a marker line at all — it is a bullet that happens to quote one — so it neither
+ *  signs nor joins a run. */
 function isTokenLine(line: string): boolean {
   return INLINE_PREFIX.test(line) || HEADING_RE.test(line);
 }
@@ -185,10 +229,11 @@ function isTokenLine(line: string): boolean {
  * indentation and fence position therefore govern it (D1b).
  *
  * `fenced` places `valueIndex` inside a ``` or ~~~ block by parity; `structural`
- * marks a block quote, an indented code block or a table row; `menuRun` marks
- * every line of a run of adjacent token lines (blank lines between them
- * ignored) that names two or more distinct values and signs none of them — the
- * protocol laid out and picked from rather than a verdict somebody wrote.
+ * marks a block quote, a list item, a line with any leading whitespace or a
+ * table row; `menuRun` marks every line of a run of CONSECUTIVE token lines (a
+ * blank line breaks the run) that names two or more distinct values and signs
+ * none of them — the protocol laid out and picked from rather than a verdict
+ * somebody wrote.
  */
 export interface VerdictLine {
   status: AdversarialVerdictStatus;
@@ -199,31 +244,35 @@ export interface VerdictLine {
   menuRun: boolean;
 }
 
-/** The line a token line's value sits on: its own line for the inline form, the
- *  next non-blank line for a heading, or undefined when the heading states no
- *  value. One definition, used both by the run walk's eligibility test and by
- *  the candidate pass, so the two cannot disagree about which line to judge. */
-function headingValueIndex(lines: string[], index: number): number | undefined {
-  const line = lines[index] as string;
-  if (inlineValue(line) !== undefined) return index;
-  if (!HEADING_RE.test(line)) return undefined;
-  for (let j = index + 1; j < lines.length; j++) {
-    if ((lines[j] as string).trim() === "") continue;
-    return headingValue(lines[j] as string) === undefined ? undefined : j;
-  }
-  return undefined;
-}
-
-/** The value a token-bearing line states, for the menu-run count: inline form
- *  first, then the heading form's following value line. */
-function tokenLineStatus(lines: string[], index: number): AdversarialVerdictStatus | undefined {
+/** What a token line states, and on which line: `undefined` for a line that
+ *  carries the token but names no value (`VERDICT: <APPROVED|…>`), otherwise the
+ *  value and the line it sits on — the token's own line for the inline form, the
+ *  next non-blank line for a heading, whose indentation and fence position
+ *  therefore govern it.
+ *
+ *  ONE walk, because the run walk's eligibility test and the candidate pass must
+ *  never disagree about which line to judge: they take these fields as given.
+ *  The search for a heading's value stops at the first non-blank line whether or
+ *  not it states one, so a heading whose value line is prose is not a value line
+ *  and the search does not run on to the paragraph below it. */
+/** The value a token line states, or undefined for a line that carries the token
+ *  but signs nothing: a placeholder template (`VERDICT: <APPROVED|…>`), a bullet
+ *  (`* VERDICT: APPROVED` — a bullet is markdown structure, not emphasis, so it
+ *  never signs), or a heading whose value line is prose. The prefix still matches
+ *  these shapes so the candidate pass can MARK them refused rather than let them
+ *  read as a line that was never there. */
+function tokenLineValue(
+  lines: string[],
+  index: number,
+): { status: AdversarialVerdictStatus; valueIndex: number } | undefined {
   const line = lines[index] as string;
   const inline = inlineValue(line);
-  if (inline !== undefined) return inline;
+  if (inline !== undefined) return { status: inline, valueIndex: index };
   if (!HEADING_RE.test(line)) return undefined;
   for (let j = index + 1; j < lines.length; j++) {
     if ((lines[j] as string).trim() === "") continue;
-    return headingValue(lines[j] as string);
+    const status = headingValue(lines[j] as string);
+    return status === undefined ? undefined : { status, valueIndex: j };
   }
   return undefined;
 }
@@ -253,8 +302,8 @@ export function verdictCandidateLines(text: string): VerdictLine[] {
     if (FENCE_RE.test(line)) fences += 1;
   }
 
-  // The menu runs. A run is a maximal group of token-bearing lines separated from
-  // each other by nothing but blank lines — the shape `buildAdversarialPrompt`
+  // The menu runs. A run is a maximal group of token-bearing lines that are
+  // CONSECUTIVE — no blank line between them — the shape `buildAdversarialPrompt`
   // prints its four-line menu in, and the shape a reviewer echoes it in.
   //
   // A run is a RECITATION when it offers two or more distinct values AND still
@@ -276,34 +325,43 @@ export function verdictCandidateLines(text: string): VerdictLine[] {
   //     (nothing is left to save), so this second test never resurrects a shape the
   //     fence or the quote rule refused.
   //
-  // The adjacency test is what keeps this from eating an ordinary review: prose
-  // between two token lines breaks the group, so "This is ISSUES_FOUND rather than
-  // CRITICAL_ISSUES_FOUND …\n\nVERDICT: ISSUES_FOUND" — arguing about two verdicts
-  // and then closing with one — is two runs of one line and parses. It is the same
-  // distinction the live post-verdict stop draws in `blockRefusesVerdict` (#1827),
-  // drawn here for the same reason: a reply that recites the protocol did not
-  // choose, and this gate must not read a choice out of it.
+  // Consecutiveness — blank lines included — is what keeps this from eating an
+  // ordinary review. Anything between two token lines breaks the group: a
+  // paragraph of prose, a heading, or a blank line. "This is ISSUES_FOUND rather
+  // than CRITICAL_ISSUES_FOUND …\n\nVERDICT: ISSUES_FOUND" is two runs of one line
+  // and parses, and so is an echoed menu with a blank line under it and the
+  // signature below that — the reviewer closed the block it was reciting and then
+  // signed, which is a reviewer that chose. It is the same distinction the live
+  // post-verdict stop draws in `blockRefusesVerdict` (#1827), drawn here for the
+  // same reason: a reply that recites the protocol did not choose, and this gate
+  // must not read a choice out of it — but neither must it refuse a choice that
+  // was plainly made after the recitation ended.
   const menuRun = new Set<number>();
+  // Token lines and what each one states, judged once, in one pass: the value
+  // decides the run's distinct count and its `valueIndex`, and the same pair is
+  // what the candidate pass reports below.
   const tokenIdx: number[] = [];
+  const tokenValue = new Map<
+    number,
+    { status: AdversarialVerdictStatus; valueIndex: number } | undefined
+  >();
   for (let i = 0; i < lines.length; i++) {
-    if (isTokenLine(lines[i] as string)) tokenIdx.push(i);
+    if (!isTokenLine(lines[i] as string)) continue;
+    tokenIdx.push(i);
+    tokenValue.set(i, tokenLineValue(lines, i));
   }
-  // Each token line's own value, judged once. A heading reads the next non-blank
-  // line, which is why this cannot simply call `inlineValue`.
-  const ownValue = new Map<number, AdversarialVerdictStatus | undefined>();
-  for (const i of tokenIdx) ownValue.set(i, tokenLineStatus(lines, i));
   // Whether that line would survive the other exclusions on its own — the fence
-  // parity and the quote/indent/table test, decided the same way the candidate
-  // pass below decides them, so the two cannot disagree about what is eligible.
+  // parity and the quote/indent/table/list test, decided from the same pair the
+  // candidate pass below reports, so the two cannot disagree about eligibility.
   const ownEligible = new Map<number, boolean>();
   for (const i of tokenIdx) {
     const line = lines[i] as string;
-    const valueIndex = headingValueIndex(lines, i) ?? i;
     ownEligible.set(
       i,
-      !FENCE_RE.test(line) &&
+      tokenValue.get(i) !== undefined &&
+        !FENCE_RE.test(line) &&
         !QUOTED_OR_TABLE_RE.test(line) &&
-        (fencesAbove[valueIndex] ?? 0) % 2 === 0,
+        (fencesAbove[tokenValue.get(i)?.valueIndex ?? i] ?? 0) % 2 === 0,
     );
   }
   let run: number[] = [];
@@ -311,7 +369,7 @@ export function verdictCandidateLines(text: string): VerdictLine[] {
     const offered = new Set<AdversarialVerdictStatus>();
     const eligible = new Set<AdversarialVerdictStatus>();
     for (const i of run) {
-      const v = ownValue.get(i);
+      const v = tokenValue.get(i)?.status;
       if (v === undefined) continue;
       offered.add(v);
       if (ownEligible.get(i) === true) eligible.add(v);
@@ -322,43 +380,35 @@ export function verdictCandidateLines(text: string): VerdictLine[] {
     run = [];
   };
   for (const i of tokenIdx) {
-    if (run.length > 0) {
-      const prev = run[run.length - 1] as number;
-      if (!lines.slice(prev + 1, i).every((l) => l.trim() === "")) flush();
-    }
+    // A run continues only onto the immediately following line. Anything else —
+    // a blank line included — ends it (F3).
+    if (run.length > 0 && (run[run.length - 1] as number) !== i - 1) flush();
     run.push(i);
   }
   flush();
 
   const out: VerdictLine[] = [];
-  for (let i = 0; i < lines.length; i++) {
+  for (const i of tokenIdx) {
     const line = lines[i] as string;
     // A fence line is never itself a candidate: it is the delimiter, and the
     // parity below is what decides about the lines it delimits.
     if (FENCE_RE.test(line)) continue;
-    let status = inlineValue(line);
-    let valueIndex = i;
-    if (status === undefined && HEADING_RE.test(line)) {
-      let j = i + 1;
-      while (j < lines.length && (lines[j] as string).trim() === "") j++;
-      if (j >= lines.length) continue;
-      status = headingValue(lines[j] as string);
-      if (status === undefined) continue;
-      valueIndex = j;
-    }
-    if (status === undefined) continue;
+    // Already judged, and judged once: `isTokenLine` accepted this line, so the
+    // only reason it carries no value is a placeholder or a prose heading.
+    const value = tokenValue.get(i);
+    if (value === undefined) continue;
     out.push({
-      status,
+      status: value.status,
       index: i,
-      valueIndex,
-      fenced: (fencesAbove[valueIndex] ?? 0) % 2 === 1,
-      // The TOKEN line decides structure: a 4-space indent, a tab or a `>` is
-      // what makes the line a quotation, and for the inline form the token line
-      // IS the value line. For a heading, `>` or `|` around the heading is what
-      // makes the pair a quotation — an indented heading is not, because four
-      // spaces in front of `### VERDICT` is a heading inside an indented block
-      // either way, and the value line's own prose indentation must not silently
-      // decide it.
+      valueIndex: value.valueIndex,
+      fenced: (fencesAbove[value.valueIndex] ?? 0) % 2 === 1,
+      // The TOKEN line decides structure: leading whitespace, a `>` or a list
+      // marker is what makes the line a quotation, and for the inline form the
+      // token line IS the value line. For a heading, `>` or `|` around the
+      // heading is what makes the pair a quotation; an indented heading is refused
+      // by the same test, because a heading that is not at column 0 is nested in
+      // something — a list item or an indented block — and a nested verdict is
+      // indistinguishable from a code block quoting one, so it reads as unparsed.
       structural: QUOTED_OR_TABLE_RE.test(line),
       menuRun: menuRun.has(i),
     });
@@ -371,9 +421,10 @@ export function verdictCandidateLines(text: string): VerdictLine[] {
  *
  * The LAST eligible candidate line wins — the closing-line rule the shared
  * reader has always applied, now applied only to lines that could be signatures.
- * A fenced, quoted, indented, tabled or menu-run line is not a signature, and a
- * reply whose only such lines are a recitation of the protocol states nothing:
- * undefined, which `parseVerdict` reports as `verdictParsed: false`.
+ * A fenced, quoted, indented, bulleted, tabled or menu-run line is not a
+ * signature, and a reply whose only such lines are a recitation of the protocol
+ * states nothing: undefined, which `parseVerdict` reports as
+ * `verdictParsed: false`.
  */
 export function readAdversarialVerdict(text: string): AdversarialVerdictStatus | undefined {
   const candidates = verdictCandidateLines(text);

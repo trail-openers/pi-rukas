@@ -3,11 +3,15 @@
  * assistant message (#1827).
  *
  * The live post-verdict stop in `review-bounds.ts` decides whether a reviewer
- * child has finished. Its first version asked the consumer's own reader
- * (`readEnumMarker`) whether a verdict appeared anywhere in the last eight text
- * blocks of the accumulation. That is the same function `parseVerdict` runs,
- * which was taken as proof the two could not disagree — but "anywhere in the
- * window" is a much looser question than "is this the reply's verdict", and the
+ * child has finished. Its first version asked the consumer's own reader,
+ * `readEnumMarker`, whether a verdict appeared anywhere in the last eight text
+ * blocks of the accumulation. That reader is the one `parseVerdict` ran until
+ * #2312 moved the loop's read to the candidate lines of
+ * `adversarial-verdict-read.ts`, and the identity was taken as proof the two
+ * could not disagree — for a while they genuinely could not, because they ran the
+ * same function. They are separate readers now, and this module has no reason to
+ * adopt the loop's rule. "Anywhere in the window" is a much looser question than
+ * "is this the reply's verdict", and the
  * adversarial review reproduced two ways to exploit it:
  *
  *   - The reviewer's brief (`buildAdversarialPrompt`) hands the model a
@@ -327,14 +331,17 @@ function blockRefusesVerdict(block: string): boolean {
  *      blocks — a reviewer pasting a fence containing `VERDICT: APPROVED` into
  *      its report is showing an example;
  *   5. the value the candidate lines agree on CONTRADICTS the value the block as
- *      a whole reads to (the reader `parseVerdict` runs). A block whose line-level
+ *      a whole reads to (`readEnumMarker` on the block, this module's own
+ *      whole-text read — NOT `parseVerdict`, which since #2312 reads candidate
+ *      lines and is deliberately not the same reader). A block whose line-level
  *      markers all say one thing while the whole-text reader lands on another is
  *      carrying a marker those lines do not account for — an echo or a quotation
  *      that out-ranked the closing line — so nothing is pointed at, and a shape we
  *      cannot point at is not an ending.
  *
- * The value itself comes from `readEnumMarker`, the same reader `parseVerdict`
- * uses, applied to the ONE block and the ONE line that block ends on — so
+ * The value itself comes from `readEnumMarker`, the whole-reply reader this
+ * module keeps for its own consistency check, applied to the ONE block and the ONE
+ * line that block ends on — so
  * emphasis, case and the heading form keep working, and the line judged is the
  * line that produced the value rather than any line that happens to contain it.
  */
