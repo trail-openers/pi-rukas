@@ -137,20 +137,88 @@ assert(
   ).length === 1,
   "a // inside a string literal does not start a comment that could hide a hand-on",
 );
-// The comment strip must not eat a regex literal. `\/\/.*$/` (an unanchored
-// marker) truncated `const rx = /a\//; …` to `const rx = /a`, which hid a real
-// hand-on sharing the line — the exact shape a path-splitting helper writes.
+// The comment strip must not eat a regex literal. The first naive strip,
+// `/\/\/.*$/`, matched any `//` and truncated `const rx = /a\//; …` to
+// `const rx = /a`, hiding a real hand-on that shared the line — the exact shape a
+// path-splitting helper writes. A later `\s\/\/.*$` narrowed it only to
+// whitespace-preceded slashes, which a regex body also satisfies, so it hid the
+// same hand-on. These fixtures are built from char codes rather than escape
+// sequences: a fixture typed with `\\\\` in source is a DOUBLED backslash, and a
+// scan pointed at that judges a line whose shape it does not have, so the scan
+// could pass while asserting on a line nobody writes. `B` is one backslash and
+// `S` one slash, so `S + B + S + S` is the `\\//` that closes `p.split(/\\//)`;
+// each fixture is pinned by its own shape assertion before the scan is trusted.
+const B = String.fromCharCode(92);
+const S = String.fromCharCode(47);
+const HANDON = "const ctx = { verifyExecFn: run };";
+const HANDON_EXEC = "const ctx = { verifyExecFn: execp };";
+
+// A regex whose body holds the pair, with the hand-on on the same line.
+const RX_WITH_SLASHES = "const execp = promisify(exec);\nconst rx = " + S + B + S + S + B + S + S + "; " + HANDON_EXEC;
+assert(RX_WITH_SLASHES.includes(S + B + S + S + B + S + S + "; " + HANDON_EXEC), "the rx fixture really is /" + B + S + S + B + S + S + " with a hand-on on its line");
 assert(
-  shellOnlyEscapes(
-    "const execp = promisify(exec);\nconst rx = /\\/\\//; const ctx = { verifyExecFn: execp };",
-  ).length === 1,
+  shellOnlyEscapes(RX_WITH_SLASHES).length === 1,
   "a regex literal containing // on the same line as a hand-on does not hide it",
 );
+
+// The path-splitting shape from the report, hand-on sharing the line.
+const SPLIT_HANDON = "const run = promisify(execFile);\nconst seg = p.split(" + S + B + S + S + "); " + HANDON;
+assert(SPLIT_HANDON.includes("p.split(" + S + B + S + S + "); " + HANDON), "the split fixture really is p.split(/" + B + S + S + ") with a hand-on on its line");
 assert(
-  shellOnlyEscapes(
-    "const run = promisify(execFile);\nconst seg = p.split(/\\//); const ctx = { verifyExecFn: run };",
-  ).length === 1,
+  shellOnlyEscapes(SPLIT_HANDON).length === 1,
   "a trailing-slash regex on the hand-on's line does not hide it",
+);
+
+// The same line with a PROSE comment added: the comment is real and the hand-on
+// lives inside it, so the scan must neither truncate before the comment nor read
+// the comment's text as a use.
+const SPLIT_PROSE = "const run = promisify(execFile);\nconst seg = p.split(" + S + B + S + S + "); // path segments " + HANDON;
+assert(SPLIT_PROSE.includes("p.split(" + S + B + S + S + "); // path segments " + HANDON), "the prose fixture really is a split regex followed by a comment holding the hand-on");
+assert(
+  shellOnlyEscapes(SPLIT_PROSE).length === 0,
+  "a hand-on written inside a trailing comment is not counted, whatever precedes it",
+);
+
+// A character-class regex: the `/` inside `[/]` is data, not a comment marker,
+// so the hand-on after it stays visible.
+const CLASS_HANDON = "const run = promisify(execFile);\nconst re = " + S + "[a" + S + "b]" + S + ".test(x); " + HANDON;
+assert(CLASS_HANDON.includes(S + "[a" + S + "b]" + S + ".test(x); " + HANDON), "the class fixture really is a slash-in-class regex with a hand-on on its line");
+assert(
+  shellOnlyEscapes(CLASS_HANDON).length === 1,
+  "a slash inside a regex character class does not begin a comment that hides the hand-on",
+);
+
+// A URL string: the `//` of `https://` sits inside a string, so it cannot start
+// the comment that would delete the hand-on sharing the line.
+const URL_HANDON = "const run = promisify(execFile);\nconst u = \"https:" + S + S + "example.com/a\"; " + HANDON + " // counted per run";
+assert(URL_HANDON.includes("https:" + S + S + "example.com/a\"; " + HANDON), "the URL fixture really is a https:// string with a hand-on on its line");
+assert(
+  shellOnlyEscapes(URL_HANDON).length === 1,
+  "a URL string plus a trailing comment does not hide the hand-on on that line",
+);
+
+// An UNTERMINATED `/` whose body holds the pair: `const a = /a//b`. The naive
+// `\s\/\/.*$` strip read that `//` as a comment and deleted the hand-on after
+// it, and a scanner that swallows an unterminated literal's tail does the same.
+// A `/` with no closing slash is not a literal, so the code after it stays code.
+const UNTERMINATED_HANDON =
+  "const run = promisify(execFile);\nconst re = /a" + S + S + "b" + HANDON;
+assert(
+  UNTERMINATED_HANDON.includes("/a" + S + S + "b" + HANDON),
+  "the unterminated fixture really is an open /a" + S + S + "b with a hand-on after it",
+);
+assert(
+  shellOnlyEscapes(UNTERMINATED_HANDON).length === 1,
+  "an unterminated regex whose body holds // does not hide the hand-on that follows",
+);
+
+// Division, not a regex: after `a / b` a slash cannot open a literal, so the
+// comment that follows is still a comment and its text is not a use.
+const DIVISION_PROSE = "const run = promisify(execFile);\nconst half = 1 " + S + " 2; // the run is counted per run";
+assert(DIVISION_PROSE.includes("1 " + S + " 2; // the run"), "the division fixture really is a division followed by a comment naming the binding");
+assert(
+  shellOnlyEscapes(DIVISION_PROSE).length === 0,
+  "a division slash keeps the following comment a comment",
 );
 
 console.log(`\nexit ${exit}`);
