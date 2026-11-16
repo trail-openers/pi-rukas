@@ -13,6 +13,7 @@ import { execp } from "../exec.ts";
 import type { Forge } from "../forge.ts";
 import { detectMainline } from "../mainline.ts";
 import { resolveCycleForge } from "../work-driver-forge-ctx.ts";
+import { type PiSpec, renderPiSpec } from "./spec.ts";
 import { oneLine } from "./text-fence.ts";
 
 /**
@@ -195,5 +196,46 @@ export async function postHandback(repoRoot: string, issue: number, body: string
   if (commentPoster !== undefined) return commentPoster(issue, body);
   const forge = await forgeFor(repoRoot);
   if (!forge) throw new Error("no forge adapter: cannot post the handback comment");
+  await forge.issueComment(issue, body);
+}
+
+/**
+ * Post the derived-contract comment: the criteria this run read out of a prose
+ * ticket and is now building to.
+ *
+ * Why it exists: a `derive` run puts a machine-written contract on a human's
+ * issue and then spends hours building to it. Silence would leave the author
+ * reading a PR whose acceptance criteria nobody approved, and it would leave no
+ * record on the ISSUE of what the model actually claimed. So the derivation is
+ * published at the moment it is made, fenced exactly as the author would write
+ * it, with the model named — the two things needed to notice a bad derivation
+ * before the merge rather than after.
+ *
+ * Posted once, by `ready`, on the same step-log guarantee every other comment
+ * has: a step that posted never runs twice, so a resume does not re-post, and a
+ * run that re-reads a persisted `derivedSpec` never posts again because it never
+ * re-derives.
+ */
+export async function postDerivedSpec(
+  repoRoot: string,
+  issue: number,
+  spec: PiSpec,
+  model: string,
+): Promise<void> {
+  const body = [
+    `work-lean: issue #${issue} carried no \`pi-spec v1\` block, so this run derived one and is building to it.`,
+    "",
+    "Read the criteria below against the ticket. If they are wrong, correct them (or run /plan), and start the run again — the run re-reads the block from the issue.",
+    "",
+    "```pi-spec v1",
+    renderPiSpec(spec),
+    "```",
+    "",
+    `- derived by ${model === "" ? "the run's default model" : `\`${model}\``}`,
+    `- ${String(spec.criteria.length)} criteria, size ${spec.size}`,
+  ].join("\n");
+  if (commentPoster !== undefined) return commentPoster(issue, body);
+  const forge = await forgeFor(repoRoot);
+  if (!forge) throw new Error("no forge adapter: cannot post the derived-spec comment");
   await forge.issueComment(issue, body);
 }

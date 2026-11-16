@@ -261,8 +261,7 @@ function validate(obj: unknown): string | undefined {
     // refused at load rather than silently reading as the shipped default.
     if (
       l.specIntake !== undefined &&
-      (typeof l.specIntake !== "string" ||
-        !SPEC_INTAKE_VALUES.includes(l.specIntake as SpecIntake))
+      (typeof l.specIntake !== "string" || !SPEC_INTAKE_VALUES.includes(l.specIntake as SpecIntake))
     )
       return `.pi/work.json lean.specIntake must be one of ${SPEC_INTAKE_VALUES.join(", ")}`;
   }

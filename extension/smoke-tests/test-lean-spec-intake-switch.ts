@@ -27,16 +27,16 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { LeanConfigError, loadWorkConfig } from "../src/lean/config.ts";
 import { execp } from "../src/exec.ts";
+import { LeanConfigError, loadWorkConfig } from "../src/lean/config.ts";
 import {
   SPEC_INTAKE_VALUES,
   SpecIntakeError,
   resolveSpecIntake,
   validateSpecIntake,
 } from "../src/lean/spec-intake-switch.ts";
-import { gitTestEnv } from "./lib/git-test-env.ts";
 import { withEnv } from "./lib/env-scope.ts";
+import { gitTestEnv } from "./lib/git-test-env.ts";
 import { worktreeCommit } from "./lib/lean-spec-intake-fixtures.ts";
 
 let failed = 0;

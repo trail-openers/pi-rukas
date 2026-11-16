@@ -96,7 +96,10 @@ export function worktreeCommit(
  * write the derived spec into the issue is caught by a non-empty array rather
  * than by the absence of something.
  */
-export function ghStub(dir: string, issue: { title: string; body: string }): {
+export function ghStub(
+  dir: string,
+  issue: { title: string; body: string },
+): {
   binDir: string;
   calls: { edits: string[]; comments: string[] };
 } {

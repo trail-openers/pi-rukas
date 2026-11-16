@@ -136,10 +136,7 @@ export function problemText(problem: string): string {
  * no statement to make (`parsePiSpec` refuses an empty `problem`, so one must
  * never be filed).
  */
-export function piSpecFromBullets(
-  problem: string,
-  bullets: readonly string[],
-): PiSpec | undefined {
+export function piSpecFromBullets(problem: string, bullets: readonly string[]): PiSpec | undefined {
   const statement = problemText(problem);
   if (statement === "") return undefined;
   if (bullets.length === 0) return undefined;

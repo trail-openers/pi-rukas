@@ -30,8 +30,9 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import { testsFromLog } from "./build.ts";
 import type { ReviewDeps } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
-import { parsePiSpec } from "./spec.ts";
+import { specFor } from "./spec-for.ts";
 import { gitQuiet } from "./specify-reset.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { Step } from "./state.ts";
 import { newestDecided } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
@@ -189,11 +190,19 @@ const DIVIDER = "| --- | --- | --- | --- | --- |";
 /** The section a review seat reads, or `""` when it has nothing to say: no body, no
  * parsable block, no criteria. A body whose spec cannot be parsed has no criteria,
  * and a table invented from prose would be a contract nothing enforces. */
-export function renderAcceptanceSection(steps: Step[], issueBody: string | undefined): string {
+export function renderAcceptanceSection(
+  steps: Step[],
+  issueBody: string | undefined,
+  run: { derivedSpec?: DerivedSpec } = {},
+): string {
   if (issueBody === undefined || issueBody.trim() === "") return "";
-  const parsed = parsePiSpec(issueBody);
-  if (!parsed.ok) return "";
-  const rows = acceptanceRows(steps, parsed.spec);
+  // The accessor, with the record consulted: a table printed for a derived run
+  // must be a table of the criteria it was built to, and an empty string remains
+  // the answer whenever no contract exists to tabulate — never a table invented
+  // from prose.
+  const read = specFor(issueBody, run);
+  if (!read.ok) return "";
+  const rows = acceptanceRows(steps, read.spec);
   if (rows.length === 0) return "";
   const head = certifiedHead(steps);
   // Which absence the reader is told about is a separate question from whether there

@@ -38,6 +38,7 @@ import type { HandlerCtx } from "./engine.ts";
 import type { LensRound, ReviewDeps } from "./review-args.ts";
 import { type AdversarialGate, adversarialGate, lensGate } from "./review-gates.ts";
 import { budgetStopped } from "./review-step.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { BudgetArms, DispatchUsageRow } from "./step-budget.ts";
 
 /**
@@ -95,6 +96,8 @@ export async function buyFullReview(
     head: string;
     branch: string;
     issueBody: string;
+    /** The run's derived contract, threaded to both seats of the pair. */
+    derivedSpec?: DerivedSpec;
     /** The executed acceptance table, handed to BOTH children of the pair so the six
      * lenses and the adversarial reviewer judge the diff against the same table. */
     acceptanceTable?: string;
@@ -107,13 +110,25 @@ export async function buyFullReview(
   gate: AdversarialGate & { findings: string; open: boolean; blocking: boolean };
   review: LensRound & { head: string };
 }> {
-  const { base, head, branch, issueBody, acceptanceTable, pr, threshold, rows, budget } = opts;
+  const {
+    base,
+    head,
+    branch,
+    issueBody,
+    derivedSpec,
+    acceptanceTable,
+    pr,
+    threshold,
+    rows,
+    budget,
+  } = opts;
   const [gateSettled, lensSettled] = await Promise.allSettled([
     adversarialGate(deps, ctx, {
       base,
       head,
       branch,
       issueBody,
+      ...(derivedSpec === undefined ? {} : { derivedSpec }),
       acceptanceTable,
       wave: "full",
       rows,
@@ -124,6 +139,7 @@ export async function buyFullReview(
       branch,
       wave: "full",
       issueBody,
+      ...(derivedSpec === undefined ? {} : { derivedSpec }),
       acceptanceTable,
       pr,
       // Stated rather than omitted: pass 1 carries NOTHING to the lenses, because

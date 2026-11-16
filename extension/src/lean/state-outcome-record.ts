@@ -9,8 +9,8 @@
 
 import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
 import type { WorkConfig } from "./config.ts";
-import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { ReviewBoundRecord } from "./review-bound.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { RedRecord, ReviewRecord } from "./state-outcome-gates.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";

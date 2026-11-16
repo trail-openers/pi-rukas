@@ -51,6 +51,7 @@ import { type FixRunId, ReviewInfraError } from "./review.ts";
 import { gitQuiet, resetWorktreeToBase } from "./specify-reset.ts";
 import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 
 /**
@@ -183,6 +184,9 @@ export async function fixRound(
     findings: string;
     /** The run's issue, printed into the fixer's brief (see `ReviewFixArgs`). */
     issueBody: string;
+    /** The run's derived contract, so the fixer's brief names the requirements it
+     * may not contradict as the run understood them. */
+    derivedSpec?: DerivedSpec;
     gate: string;
     wave: ReviewWave;
     arm: FixArm;
@@ -213,6 +217,7 @@ export async function fixRound(
       gate: opts.gate,
       findings: opts.findings,
       issueBody: opts.issueBody,
+      ...(opts.derivedSpec === undefined ? {} : { derivedSpec: opts.derivedSpec }),
       worktree: wt,
       repoRoot: ctx.repoRoot,
       branch: specifyBranch(ctx.run.branch, ctx.issue),

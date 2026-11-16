@@ -24,6 +24,7 @@ import type { DispatchResult } from "../types.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { BuildDispatch } from "./build-types.ts";
 import type { WorkConfig } from "./config.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { BudgetArms, FixRunId } from "./step-budget.ts";
 
 /**
@@ -84,6 +85,15 @@ export interface AdversarialArgs {
   cwd: string;
   issue: number;
   issueBody: string;
+  /**
+   * The run's derived contract, when its issue carried no `pi-spec v1` block and
+   * intake mode derived one. Threaded so the criteria section a seat is judged
+   * against is the criteria the run was actually built to — a seat handed an issue
+   * with no block would otherwise see no criteria at all and grade the branch
+   * against nothing. Absent is every authored-spec run, and the render is
+   * unchanged.
+   */
+  derivedSpec?: DerivedSpec;
   wave: ReviewWave;
   /**
    * The findings the fix range was allowed to contain, for the `fix` wave only.
@@ -131,6 +141,9 @@ export interface LensArgs {
   full?: boolean;
   /** Post-change prose and the deterministic claim scan, read from the branch ref. */
   evidence: string | undefined;
+  /** The run's derived contract, for the same reason `AdversarialArgs` carries it:
+   * a lens briefed on criteria it can read is briefed on the contract the run ran. */
+  derivedSpec?: DerivedSpec;
   /** The executed acceptance table, appended to this round's `context` by
    * `lensContext`. Its own argument rather than folded into `context` at the call
    * site because both passes carry it and there is exactly one place that composes

@@ -26,7 +26,8 @@
  */
 import { leanReviewProblemEnabled } from "./review-problem-switch.ts";
 import { criteriaBlock } from "./spec-blocks.ts";
-import { parsePiSpec } from "./spec.ts";
+import { specFor } from "./spec-for.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 import { fenceText } from "./text-fence.ts";
 
 /** The cap on the rendered criteria section — the bound the carried-findings block
@@ -88,14 +89,20 @@ function fenceCriteria(block: string): string {
  * render: two readers of one knob, read at two moments, is how an off state ends
  * up printing half of itself.
  */
-export function renderSpecCriteriaSection(rawBody: string | undefined): string {
+export function renderSpecCriteriaSection(
+  rawBody: string | undefined,
+  run: { derivedSpec?: DerivedSpec } = {},
+): string {
   if (rawBody === undefined || rawBody.trim() === "") return "";
-  const parsed = parsePiSpec(rawBody);
-  if (!parsed.ok) return "";
-  const block = criteriaBlock(parsed.spec);
+  // The accessor, so the criteria a seat is judged against are the criteria the
+  // run was built to. A run with no contract anywhere still returns `""` and the
+  // raw-body fallbacks elsewhere stay in force.
+  const read = specFor(rawBody, run);
+  if (!read.ok) return "";
+  const block = criteriaBlock(read.spec);
   if (block.trim() === "") return "";
   const lead = leanReviewProblemEnabled()
-    ? `${LEAN_REVIEW_PROBLEM_LEAD}\n\n${fenceProblem(parsed.spec.problem)}\n\n`
+    ? `${LEAN_REVIEW_PROBLEM_LEAD}\n\n${fenceProblem(read.spec.problem)}\n\n`
     : "";
   return `${LEAN_REVIEW_CRITERIA_HEADING}\n\n${LEAN_REVIEW_CRITERIA_LEAD}\n\n${lead}${fenceCriteria(block)}`;
 }

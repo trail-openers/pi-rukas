@@ -136,7 +136,8 @@ export {
 } from "./review-waves.ts";
 import type { LensRound, ReviewDeps, ReviewWave } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
-import type { Outcome, ReviewBoundRecord, Step } from "./state.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
+import type { LeanRun, Outcome, ReviewBoundRecord, Step } from "./state.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 import { armBudget, budgetFor } from "./step-budget.ts";
 
@@ -145,9 +146,13 @@ export const FIX_BOUND_MS = 20 * 60_000;
 
 /** The step's one acceptance section, or `undefined` when it has none — the off arm
  * and an unparsable spec both. Read once, at the top of the step. */
-function acceptanceSection(steps: Step[], issueBody: string | undefined): string | undefined {
+function acceptanceSection(
+  steps: Step[],
+  issueBody: string | undefined,
+  run: { derivedSpec?: DerivedSpec },
+): string | undefined {
   if (!leanReviewAcceptanceEnabled()) return undefined;
-  const section = renderAcceptanceSection(steps, issueBody);
+  const section = renderAcceptanceSection(steps, issueBody, run);
   return section === "" ? undefined : section;
 }
 
@@ -205,7 +210,7 @@ async function reviewPass(
   // handed to both passes of both gates and to the PR comment, so six lens briefs, one
   // adversarial brief per pass and one comment all carry the SAME bytes. `undefined`
   // rather than `""` when there is none, which is what makes the off arm byte-identical.
-  const acceptanceTable = acceptanceSection(ctx.steps, issueBody);
+  const acceptanceTable = acceptanceSection(ctx.steps, issueBody, ctx.run);
   // The blocking bar, resolved ONCE for the whole step at the run's base commit for the
   // same reason: it is a fact the step needs before it pays for a pass. Never per pass —
   // see `ReviewDeps.reviewThreshold`.
@@ -308,6 +313,7 @@ async function reviewPass(
       head,
       branch,
       issueBody,
+      ...(ctx.run.derivedSpec === undefined ? {} : { derivedSpec: ctx.run.derivedSpec }),
       acceptanceTable,
       pr,
       threshold,
@@ -381,6 +387,7 @@ async function reviewPass(
       frozen,
       findings,
       issueBody,
+      ...(ctx.run.derivedSpec === undefined ? {} : { derivedSpec: ctx.run.derivedSpec }),
       gate: gateName,
       wave: "full",
       // The arm the tree's name carries: "a" when the findings came from the
@@ -423,6 +430,7 @@ async function reviewPass(
       branch,
       wave: "fix" as const,
       issueBody,
+      ...(ctx.run.derivedSpec === undefined ? {} : { derivedSpec: ctx.run.derivedSpec }),
       acceptanceTable,
       pr,
       carried,
@@ -468,6 +476,7 @@ async function reviewPass(
       head,
       branch,
       issueBody,
+      ...(ctx.run.derivedSpec === undefined ? {} : { derivedSpec: ctx.run.derivedSpec }),
       acceptanceTable,
       wave: "fix",
       // The CRITICAL bar the second pass judges against: the rows the fix range itself is

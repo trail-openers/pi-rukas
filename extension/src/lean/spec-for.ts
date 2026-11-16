@@ -26,14 +26,16 @@
  * it mid-flight.
  */
 
-import type { LeanRun } from "./state.ts";
 import { type ParseResult, type PiSpec, parsePiSpec } from "./spec.ts";
+import type { LeanRun } from "./state.ts";
 
 /** Where the contract this run is executing came from. */
 export type SpecSource = "issue" | "derived";
 
 /** What a caller gets: the spec and its provenance, or the parse failure. */
-export type SpecFor = { ok: true; spec: PiSpec; source: SpecSource } | { ok: false; reason: string };
+export type SpecFor =
+  | { ok: true; spec: PiSpec; source: SpecSource }
+  | { ok: false; reason: string };
 
 /** The one parse reason `derive` mode stands in for. Every other reason is the author's. */
 const NO_BLOCK = "no pi-spec v1 block";

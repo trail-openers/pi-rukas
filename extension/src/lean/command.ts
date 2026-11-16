@@ -20,8 +20,10 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
+import { traceWarn } from "../trace.ts";
 import type { DispatchSpec } from "../types.ts";
 import { type CycleBudgetMs, flagBudgetMs } from "../work-driver-deadline.ts";
+import { handoffChannel } from "../work-driver-handoff-channel.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { proveBaseSha, unresolvedMainlineRule } from "./base-proof.ts";
 import { buildDeps, buildOutcome } from "./build.ts";
@@ -30,15 +32,15 @@ import { leanChildOpts } from "./child-opts.ts";
 import { ciLandHandlers, publishHandler } from "./command-post-publish.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
-import { fetchIssueBody, mainlineSha } from "./io.ts";
+import { fetchIssueBody, mainlineSha, postDerivedSpec } from "./io.ts";
 import { reportHandlers } from "./report-handlers.ts";
 import { reviewDeps } from "./review-deps.ts";
 import { reviewOutcome } from "./review.ts";
-import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
-import { type DeriveDeps, deriveDeps } from "./spec-derive.ts";
-import { configAtBase, contractOf, type DerivedRecord } from "./spec-intake.ts";
-import { leanSeed, type LeanSeed } from "./seed.ts";
+import { type LeanSeed, leanSeed } from "./seed.ts";
+import { type DeriveDeps, deriveDeps, traceDerivePostFailure } from "./spec-derive.ts";
 import { specFor } from "./spec-for.ts";
+import { type DerivedRecord, configAtBase, contractOf } from "./spec-intake.ts";
+import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Step } from "./state.ts";
 import type { BudgetOpts } from "./step-budget.ts";
@@ -109,7 +111,14 @@ export async function readyOutcome(
       facts: { failedRules: [`could not read the issue: ${(err as Error).message}`] },
     };
   }
-  const contract = await contractOf(repoRoot, issue, body, base, derive, await configAtBase(repoRoot, base));
+  const contract = await contractOf(
+    repoRoot,
+    issue,
+    body,
+    base,
+    derive,
+    await configAtBase(repoRoot, base),
+  );
   if ("rule" in contract)
     return {
       kind: "fail",
@@ -120,8 +129,7 @@ export async function readyOutcome(
     };
   const parsed = { ok: true as const, spec: contract.spec };
   const failed = readiness(parsed.spec);
-  if (failed.length > 0)
-    return { kind: "fail", facts: { spec: parsed.spec, failedRules: failed } };
+  if (failed.length > 0) return { kind: "fail", facts: { spec: parsed.spec, failedRules: failed } };
   // The base is the run's, resolved once by `leanSeed` and pinned on the run record: re-probing
   // here would let a `ready` that ran after origin/HEAD moved judge the run against a commit the
   // rest of it never saw.
@@ -268,7 +276,11 @@ export function phase1Handlers(
     const { kind, facts } = await readyOutcome(
       repoRoot,
       issue,
-      { baseSha: ctx.run.baseSha, ...(seedWhy ? { why: seedWhy } : {}), ...(seedInfra ? { infra: true } : {}) },
+      {
+        baseSha: ctx.run.baseSha,
+        ...(seedWhy ? { why: seedWhy } : {}),
+        ...(seedInfra ? { infra: true } : {}),
+      },
       // The derivation's one child, wired per run so it carries this run's
       // headless trust stamp the way every other role's deps do.
       deriveDeps(headless),
@@ -283,15 +295,34 @@ export function phase1Handlers(
     // derived contract exists nowhere else, and re-deriving it would pay a second
     // child for a document that could come back DIFFERENT — every step after that
     // building against criteria the earlier ones never saw.
-    if (kind === "ok")
+    if (kind === "ok") {
+      // The derived contract is PUBLISHED where it is minted. A `derive` run puts a
+      // machine-written acceptance table on a human's issue, and the author has to
+      // see it before the run spends a build cycle on it — after the merge is too
+      // late to be a review. The host channel owns its own delivery, so on `host`
+      // this posts nothing and the body travels with the result: the rule the two
+      // reporting steps already follow.
+      //
+      // Posted by `ready`, which the step log guarantees runs at most once with an
+      // outcome: a resume re-reads the persisted contract, never re-derives, and so
+      // never re-posts. A failed post does not end the run — the operator learns of
+      // it from stderr and the summary line, and a run is not destroyed because a
+      // comment could not be written.
+      if (facts.derived !== undefined && handoffChannel() !== "host") {
+        try {
+          await postDerivedSpec(repoRoot, issue, facts.derived.spec, facts.derived.model);
+        } catch (err) {
+          traceDerivePostFailure(issue, (err as Error).message);
+        }
+      }
       return {
         kind,
         ...(facts.config === undefined ? {} : { config: facts.config }),
         ...(facts.baseSha === undefined ? {} : { baseSha: facts.baseSha }),
         ...(facts.derived === undefined ? {} : { derivedSpec: facts.derived }),
       };
-    if (facts.infra === true)
-      return { kind: "infra", reason: facts.failedRules.join("; ") };
+    }
+    if (facts.infra === true) return { kind: "infra", reason: facts.failedRules.join("; ") };
     return { kind, failedRules: facts.failedRules };
   };
   handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps(headless));

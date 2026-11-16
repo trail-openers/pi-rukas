@@ -49,7 +49,10 @@ function refusal(where: string, value: unknown): SpecIntakeError {
  * Validate one knob value. `undefined` means "this source said nothing", which
  * lets the next source decide; anything but the two names is refused.
  */
-export function validateSpecIntake(value: unknown, where = SPEC_INTAKE_ENV): SpecIntake | undefined {
+export function validateSpecIntake(
+  value: unknown,
+  where = SPEC_INTAKE_ENV,
+): SpecIntake | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || !SPEC_INTAKE_VALUES.includes(value as SpecIntake))
     throw refusal(where, value);

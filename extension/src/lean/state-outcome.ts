@@ -15,8 +15,8 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import type { DispatchUsage } from "../types.ts";
 import { HANDOFF_CHANNELS, type HandoffChannel } from "../work-driver-handoff-channel.ts";
 import { CRITERION_ID } from "./spec.ts";
-import { derivedSpecProblem } from "./state-derived-spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
+import { derivedSpecProblem } from "./state-derived-spec.ts";
 import { reviewBoundProblem, validatedReviewBound } from "./state-dispatches.ts";
 import {
   DISPATCHES_MAX_ROWS,

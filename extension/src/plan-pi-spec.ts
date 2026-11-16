@@ -55,8 +55,6 @@
 import type { PiSpec } from "./lean/spec.ts";
 import { SPEC_INFO, parsePiSpec, readiness, renderPiSpec } from "./lean/spec.ts";
 import { withLineAboveOpenPoints } from "./open-points-contract.ts";
-import { criteriaBullets, descriptorProblem } from "./plan-pi-spec-descriptor.ts";
-import { fencePrefix, opensFenceWith } from "./plan-pi-spec-fences.ts";
 import {
   CRITERION_MAX_CHARS,
   MAX_CRITERIA,
@@ -64,6 +62,8 @@ import {
   neutraliseFenceRuns as mapNeutraliseFenceRuns,
   piSpecFromBullets,
 } from "./pi-spec-map.ts";
+import { criteriaBullets, descriptorProblem } from "./plan-pi-spec-descriptor.ts";
+import { fencePrefix, opensFenceWith } from "./plan-pi-spec-fences.ts";
 import { clip, oneLine } from "./plan-pi-spec-text.ts";
 import type { PlanType } from "./plan-types.ts";
 import { trace, traceWarn } from "./trace.ts";
@@ -204,7 +204,6 @@ export function piSpecFailedRules(spec: PiSpec): string[] {
  * bullet's form against the block's, and `/plan`'s callers have always reached
  * the primitive by this name.
  */
-
 
 /**
  * Every run of three or more backticks or tildes in `s` replaced by look-alikes, so

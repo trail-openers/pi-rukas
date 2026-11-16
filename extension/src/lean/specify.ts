@@ -57,7 +57,8 @@ import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
-import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
+import { specFor } from "./spec-for.ts";
+import { type PiSpec, readiness } from "./spec.ts";
 import { runSpecifyAttempt } from "./specify-attempt.ts";
 import type { CaptureResult } from "./specify-capture.ts";
 import { assertRunnerCanRunTests } from "./specify-preflight.ts";
@@ -74,6 +75,7 @@ import {
   worktreeExists,
 } from "./specify-tree.ts";
 import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
+import type { LeanRun } from "./state.ts";
 import type { Outcome } from "./state.ts";
 import type { BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
 import { joinNotes } from "./text-fence.ts";
@@ -143,11 +145,19 @@ export interface SpecifyDeps {
  */
 export { SpecifyInfraError } from "./specify-run.ts";
 
-/** The rules a spec fails on re-read, or [] when it still holds. */
-function specRules(body: string): { spec?: PiSpec; rules: string[] } {
-  const parsed = parsePiSpec(body);
-  if (!parsed.ok) return { rules: [`spec: ${parsed.reason}`] };
-  return { spec: parsed.spec, rules: readiness(parsed.spec) };
+/**
+ * The rules a spec fails on re-read, or [] when it still holds.
+ *
+ * The read goes through `specFor`, so a run whose contract the engine DERIVED is
+ * re-read against the contract it is actually executing rather than declined for
+ * an issue that never carried a block. A body whose block is malformed still
+ * reports its own reason, unchanged: that is the author's defect, and the
+ * accessor never papers over one.
+ */
+function specRules(body: string, run: LeanRun): { spec?: PiSpec; rules: string[] } {
+  const read = specFor(body, run);
+  if (!read.ok) return { rules: [`spec: ${read.reason}`] };
+  return { spec: read.spec, rules: readiness(read.spec) };
 }
 
 /**
@@ -268,7 +278,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   } catch (err) {
     throw new SpecifyInfraError(`could not read the issue: ${(err as Error).message}`);
   }
-  const read = specRules(body);
+  const read = specRules(body, ctx.run);
   if (read.rules.length > 0) return { kind: "no-red-test", failedRules: read.rules };
   const spec = read.spec as PiSpec;
   // The same bytes the spec was parsed from, kept for the adversary's brief.

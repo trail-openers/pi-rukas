@@ -29,10 +29,15 @@
 
 import { execp } from "../exec.ts";
 import { resolveModel } from "../models.ts";
-import type { LeanSeed } from "./seed.ts";
 import { type WorkConfig, loadWorkConfig } from "./config.ts";
-import { type DeriveDeps, SpecDeriveError, deriveSpecForRun, traceDeriveRefusal } from "./spec-derive.ts";
-import { resolveSpecIntake, type SpecIntake } from "./spec-intake-switch.ts";
+import type { LeanSeed } from "./seed.ts";
+import {
+  type DeriveDeps,
+  SpecDeriveError,
+  deriveSpecForRun,
+  traceDeriveRefusal,
+} from "./spec-derive.ts";
+import { type SpecIntake, resolveSpecIntake } from "./spec-intake-switch.ts";
 import type { PiSpec } from "./spec.ts";
 import { parsePiSpec } from "./spec.ts";
 import { oneLine } from "./text-fence.ts";

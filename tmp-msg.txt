@@ -1,0 +1,10 @@
+feat(lean): read the contract through the accessor in every step
+
+specify, build, challenge, verify, publish and the four review renderers
+now read their spec through specFor, so a run whose contract the engine
+derived is graded against the contract it is actually executing instead of
+being declined for an issue that never carried a block.
+
+publish-body prints a `spec: derived` line when the record says so, and
+ready posts the derived contract to the issue the moment it mints it —
+skipped on the host channel, which owns its own delivery.

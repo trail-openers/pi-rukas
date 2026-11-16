@@ -59,10 +59,7 @@ function assert(cond: boolean, msg: string): void {
     spec?.criteria.every((c) => c.command === undefined) === true,
     "no criterion carries a command — neither producer may make one executable",
   );
-  assert(
-    spec?.scope === undefined,
-    `no scope is invented (got ${JSON.stringify(spec?.scope)})`,
-  );
+  assert(spec?.scope === undefined, `no scope is invented (got ${JSON.stringify(spec?.scope)})`);
   assert(spec?.size === "M", `four criteria size M (got ${String(spec?.size)})`);
 }
 
@@ -89,7 +86,10 @@ for (const [problem, bullets, label] of [
     problemText(long).length <= PROBLEM_MAX_CHARS,
     `the problem never exceeds ${PROBLEM_MAX_CHARS} (got ${problemText(long).length})`,
   );
-  const many = piSpecFromBullets("p", Array.from({ length: 40 }, (_, i) => `b${String(i)}`));
+  const many = piSpecFromBullets(
+    "p",
+    Array.from({ length: 40 }, (_, i) => `b${String(i)}`),
+  );
   assert(
     many?.criteria.length === MAX_CRITERIA,
     `at most ${MAX_CRITERIA} criteria embed (got ${String(many?.criteria.length)})`,

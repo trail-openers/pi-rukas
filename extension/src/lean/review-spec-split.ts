@@ -37,8 +37,9 @@ import {
 } from "../adversarial-prompts.ts";
 import { renderSpecCriteriaSection } from "./review-criteria.ts";
 import { leanReviewProblemEnabled } from "./review-problem-switch.ts";
-import { parsePiSpec } from "./spec.ts";
+import { specFor } from "./spec-for.ts";
 import { normalizeProse, stripPiSpecBlocks } from "./spec.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 
 /** Whether lean's review seats receive the split rendering. */
 export function leanReviewSpecSplitEnabled(): boolean {
@@ -78,10 +79,14 @@ const CRITERIA_CLAUSE =
  * fence — and it is gated on the problem switch, so with `=0` the prose block
  * always prints exactly as it did today.
  */
-export function renderReviewIssueBlock(rawBody: string | undefined, rule: string): string {
+export function renderReviewIssueBlock(
+  rawBody: string | undefined,
+  rule: string,
+  run: { derivedSpec?: DerivedSpec } = {},
+): string {
   const prose = renderReviewProse(rawBody);
   if (prose === "") return "";
-  const criteria = renderSpecCriteriaSection(rawBody);
+  const criteria = renderSpecCriteriaSection(rawBody, run);
   // With no parsable block the seat reads exactly what it read before the split:
   // same lead-in, same rule, same fenced body. A body that never carried a spec
   // cannot tell the switch is on, which is what makes the no-spec arm of the
@@ -89,7 +94,7 @@ export function renderReviewIssueBlock(rawBody: string | undefined, rule: string
   if (criteria === "") return fencedIssuePromptBlock(rawBody, rule, fencedIssueBody);
   const statementShown =
     leanReviewProblemEnabled() &&
-    normalizeProse(stripPiSpecBlocks(rawBody ?? "")) === normalizeProse(specProblem(rawBody));
+    normalizeProse(stripPiSpecBlocks(rawBody ?? "")) === normalizeProse(specProblem(rawBody, run));
   return `\n\n${ISSUE_PROMPT_LEAD} ${ADVERSARIAL_FINDING_RULE}${CRITERIA_CLAUSE} ${rule}\n\n${
     statementShown ? "" : `${prose}\n\n`
   }${criteria}`;
@@ -97,10 +102,10 @@ export function renderReviewIssueBlock(rawBody: string | undefined, rule: string
 
 /** The parsed spec's `problem`, or `""` when the body carries no readable one —
  * the value the dedupe above compares the stripped prose against. */
-function specProblem(rawBody: string | undefined): string {
+function specProblem(rawBody: string | undefined, run: { derivedSpec?: DerivedSpec }): string {
   if (rawBody === undefined) return "";
-  const parsed = parsePiSpec(rawBody);
-  return parsed.ok ? parsed.spec.problem : "";
+  const read = specFor(rawBody, run);
+  return read.ok ? read.spec.problem : "";
 }
 
 /**
@@ -108,10 +113,13 @@ function specProblem(rawBody: string | undefined): string {
  * loop. The loop takes the prose as `issueBody` and this as its own field, so the
  * switch is read once per gate call and an off arm threads nothing.
  */
-export function reviewCriteriaSection(rawBody: string | undefined): {
+export function reviewCriteriaSection(
+  rawBody: string | undefined,
+  run: { derivedSpec?: DerivedSpec } = {},
+): {
   reviewCriteria?: string;
 } {
-  const criteria = leanReviewSpecSplitEnabled() ? renderSpecCriteriaSection(rawBody) : "";
+  const criteria = leanReviewSpecSplitEnabled() ? renderSpecCriteriaSection(rawBody, run) : "";
   return criteria === "" ? {} : { reviewCriteria: criteria };
 }
 
@@ -133,7 +141,10 @@ export function reviewCriteriaSection(rawBody: string | undefined): {
  * own bound to what it prints. Stripping and re-bounding here would be the second
  * bound `MAX_ISSUE_CHARS` exists to forbid.
  */
-export function seatIssueBody(rawBody: string | undefined): string | undefined {
+export function seatIssueBody(
+  rawBody: string | undefined,
+  run: { derivedSpec?: DerivedSpec } = {},
+): string | undefined {
   if (!leanReviewSpecSplitEnabled()) return rawBody;
   return renderSpecCriteriaSection(rawBody) === "" ? rawBody : stripPiSpecBlocks(rawBody ?? "");
 }
@@ -144,8 +155,12 @@ export function seatIssueBody(rawBody: string | undefined): string | undefined {
  * — the parse, the strip and the criteria render never happen — and with it on it
  * is the split block above.
  */
-export function reviewIssueBlock(rawBody: string | undefined, rule: string): string {
+export function reviewIssueBlock(
+  rawBody: string | undefined,
+  rule: string,
+  run: { derivedSpec?: DerivedSpec } = {},
+): string {
   return leanReviewSpecSplitEnabled()
-    ? renderReviewIssueBlock(rawBody, rule)
+    ? renderReviewIssueBlock(rawBody, rule, run)
     : fencedIssuePromptBlock(rawBody, rule, fencedIssueBody);
 }

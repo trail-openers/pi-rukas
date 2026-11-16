@@ -20,9 +20,9 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
-import { assertDeadline } from "./deadline-record.ts";
 import type { WorkConfig } from "./config.ts";
-import { assertDerivedSpec, type DerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
+import { assertDeadline } from "./deadline-record.ts";
+import { type DerivedSpec, assertDerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
 // The verdict SHAPE is re-exported so every caller of the record keeps one
 // import site: `state.ts` says what a run IS, `state-outcome-record.ts` says
 // what a step may report into it, `state-store.ts` says where it lives.

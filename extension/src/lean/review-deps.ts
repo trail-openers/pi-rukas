@@ -41,6 +41,7 @@ import { fetchIssueBody, forgeFor } from "./io.ts";
 import type { ReviewWave } from "./review-args.ts";
 import { reviewCriteriaSection, reviewIssueBlock, seatIssueBody } from "./review-spec-split.ts";
 import type { ReviewDeps } from "./review.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { BudgetArms, BudgetFired } from "./step-budget.ts";
 import { fenceText, promptText } from "./text-fence.ts";
 
@@ -74,7 +75,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           head: a.head,
           workCwd: a.cwd,
           context: adversarialContext(a.issue, a.wave, a.blockingFindings, a.acceptanceTable),
-          issueBody: seatIssueBody(a.issueBody),
+          issueBody: seatIssueBody(a.issueBody, a),
           // The split's criteria section, rendered HERE — the only seam that sets
           // it. The /work driver and the `adversarial_loop` tool leave the loop's
           // `reviewCriteria` absent and their prompts stay byte-identical; with the
@@ -85,7 +86,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           // `issueBody` ITSELF. Handing it the raw body while rendering the section
           // put the machine block in the reviewer's prompt twice — once as JSON, once
           // as criteria rows — and the block is what the split exists to keep out.
-          ...reviewCriteriaSection(a.issueBody),
+          ...reviewCriteriaSection(a.issueBody, a),
           // The reviewer's lane is one verdict; the fix round is this step's, so the loop
           // must not dispatch a fixer of its own.
           reportOnly: true,
@@ -282,6 +283,8 @@ export function lensContext(
     carried?: string;
     fixDelta?: string;
     issueBody?: string;
+    /** See `AdversarialArgs.derivedSpec` — the same record, threaded to the block. */
+    derivedSpec?: DerivedSpec;
     full?: boolean;
     acceptanceTable?: string;
   } = {},
@@ -295,7 +298,7 @@ export function lensContext(
       ? "full review of the branch"
       : "re-review of the fix wave's commits";
   const parts = [`/work-lean issue #${String(issue)}, lens-review ${scope}`];
-  const issueBlock = reviewIssueBlock(extra.issueBody, ADVERSARIAL_FINDING_RULE);
+  const issueBlock = reviewIssueBlock(extra.issueBody, ADVERSARIAL_FINDING_RULE, extra);
   if (issueBlock !== "") parts.push(issueBlock.trim());
   const carried = extra.carried?.trim();
   if (carried !== undefined && carried !== "")
@@ -334,6 +337,9 @@ export interface ReviewFixArgs {
   /** The run's issue body, printed into the brief so the fixer cannot "fix" a finding by
    * violating a stated requirement. Threaded from the one `issueBody` the step read. */
   issueBody?: string;
+  /** See `AdversarialArgs.derivedSpec` — the fixer's brief names the requirements it
+   * may not contradict, so it must read them from the contract the run actually ran. */
+  derivedSpec?: DerivedSpec;
   /** Absolute path of the disposable tree the child works in. */
   worktree: string;
   /** The repo the tree belongs to, for the write fence's `repo` field. */
@@ -378,6 +384,7 @@ export function fixPrompt(opts: ReviewFixArgs): string {
   const issueBlock = reviewIssueBlock(
     opts.issueBody,
     "A finding you cannot apply without contradicting it is declined, not implemented — how is stated below.",
+    opts,
   );
   // Printed as its own section because a brief with no issue block has no requirement to
   // cite, and the rule must then not appear at all.

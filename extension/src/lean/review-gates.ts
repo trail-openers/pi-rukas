@@ -31,6 +31,7 @@ import { lensContext } from "./review-deps.ts";
 import { rangeDiff, reviewedHead } from "./review-git.ts";
 import type { LensRound, ReviewDeps } from "./review.ts";
 import { ReviewInfraError } from "./review.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 import { dispatchUsageRow, lensRows } from "./step-budget.ts";
 
@@ -146,6 +147,8 @@ export async function adversarialGate(
     head: string;
     branch: string;
     issueBody: string;
+    /** The run's derived contract, threaded so the brief's criteria follow the run. */
+    derivedSpec?: DerivedSpec;
     /** Which pass of the one wave this is. */
     wave: "full" | "fix";
     /**
@@ -170,6 +173,7 @@ export async function adversarialGate(
       cwd: ctx.repoRoot,
       issue: ctx.issue,
       issueBody: opts.issueBody,
+      ...(opts.derivedSpec === undefined ? {} : { derivedSpec: opts.derivedSpec }),
       wave: opts.wave,
       ...(opts.blockingFindings === undefined ? {} : { blockingFindings: opts.blockingFindings }),
       ...(opts.acceptanceTable === undefined ? {} : { acceptanceTable: opts.acceptanceTable }),
@@ -266,6 +270,8 @@ export async function lensGate(
      * The lens seam itself takes no body — the context string is what the six
      * children read. */
     issueBody: string;
+    /** The run's derived contract, threaded so the brief's criteria follow the run. */
+    derivedSpec?: DerivedSpec;
     /** The executed acceptance table, appended to the lenses' brief by `lensContext`. */
     acceptanceTable?: string;
     /** The run's PR number, threaded to the review layer rather than re-derived. */
@@ -342,6 +348,7 @@ export async function lensGate(
         // rather than the delta section, which `lensFixDelta` reads on both arms.
         full: opts.full,
         issueBody: opts.issueBody,
+        ...(opts.derivedSpec === undefined ? {} : { derivedSpec: opts.derivedSpec }),
         acceptanceTable: opts.acceptanceTable,
       }),
       ...(opts.since === undefined ? {} : { since: opts.since }),

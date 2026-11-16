@@ -21,17 +21,17 @@ import {
   DERIVE_MAX_CRITERIA,
   DERIVE_ROLE,
   SpecDeriveError,
-  deriveSpec,
   deriveBudget,
   derivePrompt,
+  deriveSpec,
   extractDerivedSpec,
   parseDerivedBlock,
 } from "../src/lean/spec-derive.ts";
+import { type SpecSource, specFor, specSource } from "../src/lean/spec-for.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
 import { parsePiSpec, readiness, renderPiSpec } from "../src/lean/spec.ts";
-import { type SpecSource, specFor, specSource } from "../src/lean/spec-for.ts";
-import type { DispatchResult } from "../src/types.ts";
 import type { BudgetArms } from "../src/lean/step-budget.ts";
+import type { DispatchResult } from "../src/types.ts";
 import { deriveReply, specBlock } from "./lib/lean-spec-intake-fixtures.ts";
 
 let failed = 0;
@@ -50,7 +50,15 @@ function reply(text: string): DispatchResult {
 
 /** A child that died. */
 function dead(why: NonNullable<DispatchResult["killCause"]> = "timeout"): DispatchResult {
-  return { role: "explore", ok: false, text: "", toolUses: [], exitCode: 1, ms: 10, killCause: why };
+  return {
+    role: "explore",
+    ok: false,
+    text: "",
+    toolUses: [],
+    exitCode: 1,
+    ms: 10,
+    killCause: why,
+  };
 }
 
 const BULLETS = ["the run declines a no-block issue under require", "a derived spec is persisted"];
@@ -70,10 +78,7 @@ const BULLETS = ["the run declines a no-block issue under require", "a derived s
     spec?.criteria.every((c) => c.verify === "test") === true,
     "every derived criterion is verify: test — a child cannot make one executable",
   );
-  assert(
-    spec?.size === "S",
-    `two criteria size S (got ${String(spec?.size)})`,
-  );
+  assert(spec?.size === "S", `two criteria size S (got ${String(spec?.size)})`);
   assert(spec?.scope === undefined, "a derived spec carries no scope");
 }
 
@@ -93,7 +98,10 @@ const BULLETS = ["the run declines a no-block issue under require", "a derived s
       back.ok && JSON.stringify(back.spec) === JSON.stringify(spec),
       `parsePiSpec(renderPiSpec(spec)) deep-equals the spec (got ${back.ok ? "different" : back.reason})`,
     );
-    assert(readiness(spec).length === 0, `…and readiness passes (got ${JSON.stringify(readiness(spec))})`);
+    assert(
+      readiness(spec).length === 0,
+      `…and readiness passes (got ${JSON.stringify(readiness(spec))})`,
+    );
     assert(
       !rendered.includes("```bun"),
       "the rendered block cannot be closed early by the bullet's own fence run",
@@ -153,9 +161,7 @@ for (const [count, expectOk, label] of [
   const bullets = Array.from({ length: count }, (_, i) => `criterion number ${String(i + 1)}`);
   let threw: unknown;
   try {
-    await deriveSpec({ title: "t", body: "b" }, () =>
-      Promise.resolve(reply(deriveReply(bullets))),
-    );
+    await deriveSpec({ title: "t", body: "b" }, () => Promise.resolve(reply(deriveReply(bullets))));
   } catch (err) {
     threw = err;
   }
@@ -186,7 +192,7 @@ for (const [text, needle, label] of [
   ["```pi-spec v1\nnot json\n```", "JSON", "broken JSON"],
   ["```pi-spec v1\n[]\n```", "object", "a JSON array"],
   [
-    "```pi-spec v1\n" + JSON.stringify({ problem: "", criteria: [], size: "S" }) + "\n```",
+    `\`\`\`pi-spec v1\n${JSON.stringify({ problem: "", criteria: [], size: "S" })}\n\`\`\``,
     "problem",
     "an empty problem",
   ],
@@ -256,13 +262,20 @@ for (const [child, needle, label] of [
   };
   let threw: unknown;
   try {
-    await deriveSpec({ title: "t", body: "b" }, () => Promise.resolve(reply(deriveReply(BULLETS))), {
-      arms: () => arms,
-    });
+    await deriveSpec(
+      { title: "t", body: "b" },
+      () => Promise.resolve(reply(deriveReply(BULLETS))),
+      {
+        arms: () => arms,
+      },
+    );
   } catch (err) {
     threw = err;
   }
-  assert(threw instanceof SpecDeriveError, `a ceiling stop is a SpecDeriveError (got ${String(threw)})`);
+  assert(
+    threw instanceof SpecDeriveError,
+    `a ceiling stop is a SpecDeriveError (got ${String(threw)})`,
+  );
   const message = threw instanceof Error ? threw.message : "";
   assert(
     message.includes("minutes") && message.includes("10"),
@@ -285,7 +298,11 @@ for (const [child, needle, label] of [
 
 // ── deriveSpec: a size-L or zero-criteria derivation is refused, block quoted.
 for (const [bullets, needle, label] of [
-  [Array.from({ length: 12 }, (_, i) => `criterion number ${String(i + 1)}`), "size L", "twelve criteria size L"],
+  [
+    Array.from({ length: 12 }, (_, i) => `criterion number ${String(i + 1)}`),
+    "size L",
+    "twelve criteria size L",
+  ],
   [[] as string[], "no acceptance criteria", "zero criteria"],
 ] as const) {
   let threw: unknown;
@@ -302,7 +319,7 @@ for (const [bullets, needle, label] of [
   );
   assert(
     message.includes("pi-spec v1"),
-    `…and quotes the rendered block so the operator can see what was derived`,
+    "…and quotes the rendered block so the operator can see what was derived",
   );
 }
 
@@ -347,7 +364,10 @@ for (const [bullets, needle, label] of [
     model: "provider/model",
     at: 1_700_000_000_000,
   };
-  const bodyWith = specBlock([{ id: "AC1", text: "from the issue", verify: "test" } as never], "issue problem");
+  const bodyWith = specBlock(
+    [{ id: "AC1", text: "from the issue", verify: "test" } as never],
+    "issue problem",
+  );
   const withBody = specFor(bodyWith, {});
   assert(
     withBody.ok && withBody.source === "issue" && withBody.spec.problem === "issue problem",
@@ -371,17 +391,18 @@ for (const [bullets, needle, label] of [
 }
 
 // ── specSource is derived exactly when the record carries one.
-{
-  assert(specSource({}) === "issue", 'a run with no derivedSpec is source "issue"');
-  assert(
-    specSource({ derivedSpec: { spec: {} as PiSpec, model: "m", at: 1 } }) === "derived",
-    'a run with a derivedSpec is source "derived"',
-  );
-}
+assert(specSource({}) === "issue", 'a run with no derivedSpec is source "issue"');
+assert(
+  specSource({ derivedSpec: { spec: {} as PiSpec, model: "m", at: 1 } }) === "derived",
+  'a run with a derivedSpec is source "derived"',
+);
 
 // ── The budget row: its own key, its own defaults, and a config override wins.
 {
-  assert(DERIVE_ROLE === "explore", `the deriving child is the read-only role (got ${DERIVE_ROLE})`);
+  assert(
+    DERIVE_ROLE === "explore",
+    `the deriving child is the read-only role (got ${DERIVE_ROLE})`,
+  );
   assert(
     DERIVE_DEFAULT_BUDGET.minutes <= 10 && DERIVE_DEFAULT_BUDGET.turns <= 60,
     `the shipped ceiling is a modest one — ${String(DERIVE_DEFAULT_BUDGET.minutes)} min / ${String(DERIVE_DEFAULT_BUDGET.turns)} turns`,

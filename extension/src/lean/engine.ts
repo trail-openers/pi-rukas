@@ -157,9 +157,7 @@ function applyReadyFacts(run: LeanRun, outcome: Outcome): LeanRun {
   return {
     ...run,
     ...(outcome.config === undefined ? {} : { config: outcome.config }),
-    ...(outcome.baseSha === undefined || run.baseSha !== ""
-      ? {}
-      : { baseSha: outcome.baseSha }),
+    ...(outcome.baseSha === undefined || run.baseSha !== "" ? {} : { baseSha: outcome.baseSha }),
     ...(outcome.derivedSpec === undefined ? {} : { derivedSpec: outcome.derivedSpec }),
   };
 }

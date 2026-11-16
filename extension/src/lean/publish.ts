@@ -40,7 +40,7 @@ import { challengeBudgetFromLog, publishBody } from "./publish-body.ts";
 import { type PublishDeps, PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
 import type { PublishForge } from "./publish-deps.ts";
 import { createdDraftState, reusedDraftState } from "./publish-draft.ts";
-import { parsePiSpec } from "./spec.ts";
+import { specFor, specSource } from "./spec-for.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import { PR_URL, PR_URL_MAX_CHARS } from "./state-outcome.ts";
@@ -291,9 +291,13 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
       `could not read the issue: ${(err as Error)?.message ?? String(err)}`,
     );
   });
-  const parsed = parsePiSpec(fetched);
-  if (!parsed.ok) throw new PublishInfraError(`the issue's spec is unusable: ${parsed.reason}`);
-  const spec = parsed.spec;
+  // Read through the accessor. This is the step that prints the contract onto the
+  // PR, so it is where a derived run would most visibly be told it has none: the
+  // body must describe the criteria the run was actually built and verified
+  // against, which for a derived run is the record's, not the issue's.
+  const read = specFor(fetched, ctx.run);
+  if (!read.ok) throw new PublishInfraError(`the issue's spec is unusable: ${read.reason}`);
+  const spec = read.spec;
 
   // Resolved ONCE: the stale-branch check and the PR check are two questions of
   // one adapter, and resolving twice is two chances to get two different answers.
@@ -342,6 +346,9 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
     publishBody({
       issue,
       spec,
+      // Provenance, read off the RECORD and not from a closure: a resumed run that
+      // never derived still says `derived`, because the record is the fact.
+      specSource: specSource(ctx.run),
       tests: testsFromLog(ctx.steps),
       verifyKind,
       // `verifiedHead` is the green verdict's subject. A red record's head (or
