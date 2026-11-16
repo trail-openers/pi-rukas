@@ -233,6 +233,20 @@ export async function initSubmodules(
   await beforeInit?.(wt);
   if (!leanSubmodulesLocalEnabled()) return updateFromRemote(exec, wt);
   const notes = await seedFromSuperproject(exec, wt, listed);
+  // A submodule this run's own tree CREATED — added on the run's branch, so its store sits under
+  // THIS tree's gitdir and its files were put there by the child, not by anyone who verified
+  // them — is neither seeded (this step cloned nothing) nor fairly absent (bytes do stand at the
+  // path). It is refused. `clean -fdx` does not recurse into a submodule git has no shared record
+  // of, so a run that merely LEFT one checked out reaches this line too and is refused for the
+  // same reason: the only source on this host is the tree under test, so no verdict about those
+  // bytes is evidence. A path nothing here could supply at all is the ordinary `absent` note
+  // below, and stays a disclosure — the two are told apart by whether anything stands at the
+  // path, which is git's answer rather than this step's account of its own work.
+  const created = await createdInRunTree(exec, wt, notes);
+  if (created.length > 0)
+    throw new SpecifyInfraError(
+      `the submodule${created.length > 1 ? "s" : ""} at ${created.join(", ")} ${created.length > 1 ? "were" : "was"} added inside this run's own worktree, so this superproject never held ${created.length > 1 ? "them" : "it"}: the only source on this host is the tree under test, and bytes nobody verified cannot carry a verdict. Seed the submodule in the superproject, or turn the local rule off with PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL=0 and let git fetch the URL the base records.`,
+    );
   // The seeding arm's defining claim is negative: it never hands a recorded URL to git.
   // A negative is not observable from a passing run, so when a submodule had nothing to
   // seed from — a superproject whose copy is gone, or a smoke test's sabotage — the step
@@ -254,6 +268,34 @@ export async function initSubmodules(
     );
   }
   return notes;
+}
+
+/**
+ * The absent notes whose path git reports as POPULATED, i.e. a checkout nobody here seeded.
+ *
+ * On the local arm a path is populated because this step cloned it from the superproject, or it
+ * is not populated at all. The third way — a checkout already sitting there — belongs to a
+ * submodule the run's own tree created, because the reset's `clean -fdx` reaches the submodule
+ * contents of anything git has a shared record for, and a store filed under this tree's gitdir
+ * is exactly the case where it has none. Such a path is never evidence: its bytes are the run's
+ * own, and the alternative to refusing it is to hand the operator a verdict on a tree whose
+ * vendored code came from nowhere anybody checked. The status line is asked per path, and an
+ * unreadable status is not grounds to accuse anything — "could not tell" proceeds with the
+ * ordinary disclosure, which stays honest in the other direction.
+ */
+async function createdInRunTree(
+  exec: ExecFn,
+  wt: string,
+  notes: readonly SubmoduleNote[],
+): Promise<string[]> {
+  const created: string[] = [];
+  for (const note of notes.filter((n) => n.kind === "absent")) {
+    const status = await ask(exec, wt, [...NO_HOOKS, "submodule", "status", "--", note.path]);
+    const line = (status?.stdout ?? "").split("\n")[0] ?? "";
+    if (line === "" || line.startsWith("U") || line.startsWith("-")) continue;
+    created.push(note.path);
+  }
+  return created;
 }
 
 /**
@@ -297,7 +339,20 @@ async function seedFromSuperproject(
   // superproject holds what the operator's checkout populated — the bytes the base's verify
   // ran against.
   const superproject = await superprojectRoot(exec, wt);
-  const gitDirs = await gitDirsOf(exec, superproject);
+  const superGitDirs = await gitDirsOf(exec, superproject);
+  // git dirs the seeding may read a module store from. The superproject's own answers come
+  // first. This tree's `--git-common-dir` is then admitted ONLY when it is byte-for-byte one of
+  // the superproject's answers — which is git saying "this is the shared store", not the run
+  // naming a directory it wants trusted. What is never admitted is a git dir unique to the run
+  // tree: a submodule added inside a linked worktree is filed there, holding only what this
+  // run's tree committed, and seeding from it would call a path the superproject never held
+  // `seeded`. `localSource` refuses such a store as well, at the one place a store is read —
+  // the guard here means a probe this step issues cannot even offer it.
+  const readDirs = new Set<string>(superGitDirs);
+  for (const dir of await gitDirsOf(exec, wt)) {
+    if (superGitDirs.includes(dir)) readDirs.add(dir);
+  }
+  const gitDirs = [...readDirs];
   const notes: SubmoduleNote[] = [];
   for (const entry of listed) {
     const source = localSource(superproject, gitDirs, entry.path, { wt });

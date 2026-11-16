@@ -220,6 +220,7 @@ export function localSource(
 ): string | undefined {
   const parts = sub.split("/").filter((p) => p !== "" && p !== "." && !path.isAbsolute(p));
   if (parts.length === 0) return undefined;
+  const superprojectResolved = path.resolve(superproject);
   // The run's own tree is refused as a source, by its PATH rather than by its git dirs — a
   // seed must come from bytes the OPERATOR'S superproject holds, the ones the base commit's
   // verify ran against, so nothing this run could have written itself counts. Asked of the
@@ -232,7 +233,21 @@ export function localSource(
     if (dir === path.resolve(superproject)) return undefined;
     if (path.resolve(superproject).startsWith(dir + path.sep)) return undefined;
   }
+  // A git dir under the RUN TREE is skipped as a store location. The committed checkout is
+  // refused above by PATH, which is the right test for a checkout: a linked worktree's
+  // `--git-common-dir` answers the SUPERPROJECT's `.git`, so refusing on the tree's own paths
+  // would refuse the shared store for every run whose worktree lives under the superproject —
+  // the normal layout — and turn this rule into "every submodule is absent". A store cannot be
+  // refused that way, because git files one under the tree that added the submodule: for a
+  // linked worktree that is `<common>/.git/worktrees/<name>/modules/<path>`, below the run's
+  // own root. Such a store records what THIS run's tree committed, so seeding from it would
+  // let a branch be judged against bytes no verify ever ran on, and would call the path seeded
+  // while the superproject still holds no copy of it — the exact dishonesty the disclosure
+  // exists to prevent. Skipping it does not skip the shared store, which sits above the run's
+  // root and is asked by name.
+  const runTree = path.resolve(run.wt);
   for (const dir of gitDirs) {
+    if (dir !== superprojectResolved && dir.startsWith(runTree + path.sep)) continue;
     const store = path.join(dir, "modules", ...parts);
     // `objects` is what makes it a git dir rather than a leftover directory of that
     // name: a store git created and then emptied still has it, and cloning from
