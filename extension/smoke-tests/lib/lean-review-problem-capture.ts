@@ -36,6 +36,7 @@ import {
   result,
   setup,
 } from "./lean-review-fixtures.ts";
+import { seedVerifiedLog } from "./lean-review-verified-log.ts";
 import { stepGitEnv } from "./lean-review-fixtures.ts";
 import { isolateLedger } from "./review-ledger-test-helpers.ts";
 
@@ -86,7 +87,7 @@ export async function runReviewStepCapturingProblem(
   issueBody: string,
 ): Promise<ProblemCaptured> {
   const { repoRoot, baseSha } = makeRepo();
-  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const q = 1;\n" });
+  const head = await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const q = 1;\n" });
   prompts.length = 0;
   const contexts: string[] = [];
   let lensCalls = 0;
@@ -124,7 +125,12 @@ export async function runReviewStepCapturingProblem(
 
   let verdict = "";
   try {
-    const outcome = await reviewOutcome(ctxFor(repoRoot, baseSha, BRANCH), deps);
+    const ctx = ctxFor(repoRoot, baseSha, BRANCH);
+    // A log the engine could have produced: `review` is entered only from a green
+    // `publish`, and the acceptance table's entry guard refuses a head no green
+    // `verify` certified. See `seedVerifiedLog`.
+    seedVerifiedLog(ctx, head);
+    const outcome = await reviewOutcome(ctx, deps);
     verdict = String((outcome as { kind?: string }).kind ?? "unknown");
   } catch (err) {
     verdict = `threw: ${(err as Error).message.slice(0, 120)}`;

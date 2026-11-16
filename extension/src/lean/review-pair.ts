@@ -95,6 +95,9 @@ export async function buyFullReview(
     head: string;
     branch: string;
     issueBody: string;
+    /** The executed acceptance table, handed to BOTH children of the pair so the six
+     * lenses and the adversarial reviewer judge the diff against the same table. */
+    acceptanceTable?: string;
     pr: number | undefined;
     threshold: Severity;
     rows: DispatchUsageRow[];
@@ -104,13 +107,14 @@ export async function buyFullReview(
   gate: AdversarialGate & { findings: string; open: boolean; blocking: boolean };
   review: LensRound & { head: string };
 }> {
-  const { base, head, branch, issueBody, pr, threshold, rows, budget } = opts;
+  const { base, head, branch, issueBody, acceptanceTable, pr, threshold, rows, budget } = opts;
   const [gateSettled, lensSettled] = await Promise.allSettled([
     adversarialGate(deps, ctx, {
       base,
       head,
       branch,
       issueBody,
+      acceptanceTable,
       wave: "full",
       rows,
       budget,
@@ -120,6 +124,7 @@ export async function buyFullReview(
       branch,
       wave: "full",
       issueBody,
+      acceptanceTable,
       pr,
       // Stated rather than omitted: pass 1 carries NOTHING to the lenses, because
       // the gate had not answered when this round was bought.

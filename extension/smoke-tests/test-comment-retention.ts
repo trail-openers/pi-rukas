@@ -445,5 +445,26 @@ async function developGate(
   );
 }
 
+// The head-tree read never passes `--end-of-options` to `git grep` (git 2.43 takes it as a revision).
+{
+  const grepArgv: string[][] = [];
+  const spy: Parameters<typeof findLostCommentsRaw>[0] = async (_cmd, opts) => {
+    const argv = (opts as { argv?: string[] } | undefined)?.argv ?? [];
+    if (argv[0] === "grep") grepArgv.push(argv);
+    if (argv[0] === "diff")
+      return { stdout: "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,2 +1,1 @@\n-// gone\n code\n" };
+    return { stdout: "" };
+  };
+  await findLostCommentsRaw(spy, "/tmp", "abc", "def", ["src"], 1000);
+  assert(
+    grepArgv.length > 0 && grepArgv.every((a) => !a.includes("--end-of-options")),
+    "grep argv: no --end-of-options (git 2.43 reads it as a revision)",
+  );
+  assert(
+    grepArgv.some((a) => a.join(" ") === "grep -z -e  def -- src"),
+    "grep argv: ref follows the pattern directly, then -- paths",
+  );
+}
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

@@ -17,7 +17,8 @@
  *   (3) build:  kill / quota-terminal children still THROW with zero waits;
  *   (4) build:  PI_ENSEMBLE_TRANSIENT_RETRY=0 — one re-dispatch, zero waits;
  *   (5) build:  a deadline that cannot fit the wait + allowance — zero waits,
- *               the re-dispatch still happens;
+ *               the re-dispatch still happens; both arms pin the jitter draw and
+ *               the backoff env, so neither direction depends on `Math.random`;
  *   (6) build:  the wait is in the step's recorded reason, not only stderr;
  *   (7) specify: the same 503 child is retried through the existing re-prompt,
  *               with the wait recorded, and every OTHER specify throw is unchanged.
@@ -77,6 +78,9 @@ const ENV_KEYS = [
   "PI_ENSEMBLE_TRANSIENT_RETRY",
   "PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS",
   "PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS",
+  // #2286 — the clamp `leanProviderWaitMs` applies AFTER the jitter. A host that set it under
+  // the floor would change the drawn wait out from under case (5)'s arithmetic.
+  "PI_ENSEMBLE_PROVIDER_RETRY_MAX_WAIT_MS",
   "PI_ENSEMBLE_HANDOFF_TIMEOUT_MS",
 ] as const;
 const savedEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
@@ -85,6 +89,11 @@ for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
 process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
 process.env.PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS = "60000";
 process.env.PI_ENSEMBLE_HANDOFF_TIMEOUT_MS = "10000";
+// The clamp sits above every wait this file draws, so it never bites — pinned rather than
+// defaulted so an ambient 30-min default (or a host's smaller value) cannot move a drawn wait.
+process.env.PI_ENSEMBLE_PROVIDER_RETRY_MAX_WAIT_MS = String(10 * 60_000);
+// #2286 — the wait arms assert that a wait WAS taken, which is vacuous with the hatch off.
+process.env.PI_ENSEMBLE_TRANSIENT_RETRY = "1";
 
 /** Run one case with the sleep seam recording; nothing sleeps for real. */
 async function withWaits<T>(run: () => Promise<T>): Promise<{ waits: number[]; value: T }> {
@@ -208,38 +217,90 @@ async function withEnv<T>(key: string, value: string | undefined, run: () => Pro
 
 // ── (5) build: a deadline too close skips the wait and keeps the retry ──────
 {
-  // The wait the 503 asks for is the 60 s floor; the deadline leaves the wait
-  // MINUS the allowance, so the skip branch is driven without a real sleep.
-  const { waits, value: r } = await withWaits(() =>
-    runBuild({
-      issue: 2129,
-      child: EDIT_FILE,
-      // One second of room left, which no wait of the 60 s floor class can fit.
-      clock: { deadlineMs: () => handoffAllowanceMs() + 1_000 },
-      dispatchResults: [{ ...NOWORK, errorStop: STILL_LOADING }],
-    }),
-  );
-  assert(
-    waits.length === 0,
-    `(5) a deadline inside the wait + allowance takes ZERO waits (${JSON.stringify(waits)})`,
-  );
-  assert(
-    r.threw === undefined && r.outcome?.kind === "ok" && r.dispatched === 2,
-    `(5) and today's immediate re-dispatch is exactly what happens instead (${r.threw?.message ?? `${r.outcome?.kind}/${String(r.dispatched)}`})`,
-  );
-  // The other arm: the same clock with room beyond the wait + allowance takes it.
+  // #2286 — the 503 classifies provider-severed with no provider-stated delay, so the rung
+  // `providerRetryWaitMs` returns is `min(maxWait, floor)` and `jitteredMs` then takes its
+  // `floorMs === 0` arm: the whole wait is ONE draw, `min(maxWait, ceil(rand × base))` with
+  // `base = min(maxWait, floor)`. Under this file's pins that is `ceil(rand × 60 000)`; under an
+  // ambient smaller floor or clamp it is something else entirely, which is why both keys are
+  // pinned above. The step's clock is pinned at 0 and the deadline is a constant, so the guard's
+  // own rule (`provider-wait.ts`: skip when `deadlineMs - now - handoffAllowanceMs() < wait`)
+  // reduces to `deadlineMs - allowance < wait`. Both arms pin the draw for their duration and
+  // state their expectation against that rule — never against luck.
+  const draw = (r: number) => () => r;
+  // 1 000 ms of room beyond the handoff allowance, the number the guard compares against.
+  const roomMs = 1_000;
+  const allowance = handoffAllowanceMs();
+  /** The two env numbers the leaf's length formula reads, as it reads them. */
+  const floorMs = () => Number(process.env.PI_ENSEMBLE_PROVIDER_RETRY_FLOOR_MS);
+  const maxWaitMs = () => Number(process.env.PI_ENSEMBLE_PROVIDER_RETRY_MAX_WAIT_MS);
+  /** The wait one draw produces, spelled out with the same arithmetic the leaf runs. */
+  const drawnWait = (r: number): number =>
+    Math.min(maxWaitMs(), Math.ceil(r * Math.min(maxWaitMs(), floorMs())));
+  const providerChild = [{ ...NOWORK, errorStop: STILL_LOADING }];
+  /** Run one build with the jitter draw pinned, restored whatever the run does. */
+  const withDraw = async <T,>(rand: () => number, run: () => Promise<T>): Promise<T> => {
+    const realRandom = Math.random;
+    Math.random = rand;
+    try {
+      return await run();
+    } finally {
+      Math.random = realRandom;
+    }
+  };
+
+  // Skip arm — the guard's rule is a STRICT comparison, so the two boundary draws sit one
+  // millisecond either side of the room and land on opposite sides of the branch: the drawn wait
+  // must be ≥ `roomMs + 1` to be skipped. (`ceil` means a draw of exactly `roomMs / base` is NOT
+  // the boundary — it lifts to `roomMs`, which fits — so the pair is taken on the WAIT axis, the
+  // axis the guard compares, and each arm asserts the wait its own draw produced.)
+  const skipDraws = [
+    { name: "a draw well inside the room", rand: draw(0.001) },
+    { name: "the boundary draw one ms under the room", rand: draw((roomMs - 1) / 60_000) },
+    { name: "the boundary draw one ms over the room", rand: draw((roomMs + 1) / 60_000) },
+    { name: "a draw the whole wait class can max out to", rand: draw(1) },
+  ];
+  for (const arm of skipDraws) {
+    const wait = drawnWait(arm.rand());
+    const expectsWait = wait <= roomMs;
+    const { waits, value: r } = await withWaits(() =>
+      withDraw(arm.rand, () =>
+        runBuild({
+          issue: 2129,
+          child: EDIT_FILE,
+          // ctx.now() is pinned to 0 by the fixture, so this IS the room the guard compares.
+          clock: { now: () => 0, deadlineMs: () => allowance + roomMs },
+          dispatchResults: providerChild,
+        }),
+      ),
+    );
+    assert(
+      waits.length === (expectsWait ? 1 : 0) && (waits[0] === undefined || waits[0] === wait),
+      `(5) skip arm: ${arm.name} draws ${String(wait)} ms against ${String(roomMs)} ms of room, so the guard (${expectsWait ? "takes" : "skips"}) it (${JSON.stringify(waits)})`,
+    );
+    assert(
+      r.threw === undefined && r.outcome?.kind === "ok" && r.dispatched === 2,
+      `(5) and today's immediate re-dispatch is exactly what happens instead (${r.threw?.message ?? `${r.outcome?.kind}/${String(r.dispatched)}`})`,
+    );
+  }
+
+  // Roomy arm: one NAMED non-zero draw, far enough above zero that the assertion cannot be
+  // satisfied by the bottom of the jitter range.
+  const roomyDraw = 0.5;
+  const roomyWait = drawnWait(roomyDraw);
   const roomy = await withWaits(() =>
-    runBuild({
-      issue: 2130,
-      child: EDIT_FILE,
-      // Moving clock: 0 at the skip test, so deadline − now comfortably fits the wait.
-      clock: { deadlineMs: () => 60_000 + handoffAllowanceMs() + 60_000 },
-      dispatchResults: [{ ...NOWORK, errorStop: STILL_LOADING }],
-    }),
+    withDraw(draw(roomyDraw), () =>
+      runBuild({
+        issue: 2130,
+        child: EDIT_FILE,
+        // The same guard, this time with room beyond the drawn wait + allowance.
+        clock: { now: () => 0, deadlineMs: () => 60_000 + allowance + 60_000 },
+        dispatchResults: providerChild,
+      }),
+    ),
   );
   assert(
-    roomy.waits.length === 1 && (roomy.waits[0] ?? 0) > 0,
-    `(5) the same case with room outside the allowance takes the wait (${JSON.stringify(roomy.waits)})`,
+    roomy.waits.length === 1 && roomy.waits[0] === roomyWait,
+    `(5) the same case with room outside the allowance takes the wait the 0.5 draw names: ${String(roomyWait)} ms (${JSON.stringify(roomy.waits)})`,
   );
 }
 
