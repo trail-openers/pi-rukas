@@ -7,15 +7,12 @@
  *
  * The move is a lease-pinned atomic push — `--atomic`, `--force-with-lease=<branch>:<held>`, and
  * an UNFORCED branch refspec, where `<held>` is the head this step read off origin, not the head
- * the run pushed. So the lease guards one window: a branch that moved between this step's read
- * and its push is refused and nothing of it is moved, while a branch that had already moved is
- * read at its new value and the rewind runs, keeping the head it displaces under
- * `refs/lean/unverified/<issue>`.
+ * the run pushed. So the lease guards one window: a branch that moved between this step's read and
+ * its push is refused and nothing of it is moved.
  *
  * Being unforced is what makes the lease real: `git push` does not consult the lease for a refspec
  * carrying a leading `+`, and a rewind is a non-fast-forward move the lease alone authorises.
- * `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS=0` puts BOTH the `+` and `--atomic` back byte for byte: both
- * are what the switch reaches, and the off arm is the pre-fix argv in full.
+ * `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS=0` puts BOTH the `+` and `--atomic` back byte for byte.
  *
  * The branch is state-file data, so it gets `assertPublishableBranch`: `main` is a legal ref and
  * legality is not permission.
@@ -43,16 +40,15 @@ export interface Rewind {
   /**
    * The head the run pushed that this step's own push moved off — set only where the rewind moved
    * it. The caller reads it as "the unverified head the run left behind", never as a snapshot of
-   * origin at any moment: an arm that pushed nothing has no such head to name.
+   * origin at any moment.
    */
   unshippedHead?: string;
   /** Why nothing moved, in the record's own words, when `shipped` is false. */
   reason?: string;
   /**
-   * The HEAD RULE's words for why there was no head to move. Distinct from `reason` because the two
-   * answer different questions: `reason` explains a push that did not happen, this explains the
-   * FINDING that there was nothing to push to. The record quotes this one — the rule that judged
-   * the log is the authority on why what was shipped is not what the gate approved.
+   * The HEAD RULE's words for why there was no head to move. Distinct from `reason`: `reason`
+   * explains a push that did not happen, this explains the FINDING that there was nothing to push
+   * to. The record quotes this one.
    */
   noHeadReason?: string;
   /**
@@ -98,13 +94,10 @@ export function unverifiedRef(issue: number): string {
  * Whether git said the words a lease refusal says.
  *
  * `--force-with-lease` is enforced client-side: when origin's value for the leased ref is not what
- * this push expected, the porcelain prints `stale info`, which under `--atomic` arrives beside the
- * server's `atomic push failed for ref <ref>` line. That is the ONLY wording admitted —
- * `test-lean-rewind-lease-binds.ts` drives a lease that does not match against an origin holding
- * objects this clone can supply, so the lease is the only thing that can refuse. Anything else that
- * failed the push (an unreachable object, an unpack failure, a transport drop) never reached that
- * check, and calling it a lease refusal would send the operator to look for someone who moved their
- * branch when the fix is a fetch.
+ * this push expected, the porcelain prints `stale info`. That is the ONLY wording admitted: anything
+ * else that failed the push (an unreachable object, an unpack failure, a transport drop) never
+ * reached the lease check, and calling it a lease refusal would send the operator to look for
+ * someone who moved their branch when the fix is a fetch.
  */
 function leaseRefused(stderr: string): boolean {
   return /stale info/i.test(stderr);
@@ -124,14 +117,12 @@ function firstLine(stderr: string): string {
  * Does this clone hold `sha` as a commit — yes, no, or could git not be asked?
  *
  * `git cat-file -e <sha>^{commit}` answers on its RESULT, not on an exit code the caller has to go
- * looking for: the executor RESOLVES for an object and REJECTS for an absent one, so a resolved
- * call is `true`, full stop, and the exit code is read only on the rejection shape. The `^{commit}`
+ * looking for: the executor RESOLVES for an object and REJECTS for an absent one. The `^{commit}`
  * peel is what makes a blob or a tree at that oid answer `false`.
  *
  * `undefined` is the third answer and stays separate from `false` on purpose: "no such object" is a
- * reason to move nothing and say so, while "git did not answer" — never started, timed out, killed,
- * or rejected with no exit information at all — is not evidence about the object, and collapsing the
- * two is how a locked index or a hung git becomes a confident wrong claim about a head.
+ * reason to move nothing and say so, while "git did not answer" is not evidence about the object,
+ * and collapsing the two is how a locked index becomes a confident wrong claim about a head.
  */
 async function holdsCommit(
   exec: VerifyExec,
@@ -150,8 +141,8 @@ async function holdsCommit(
     return true;
   } catch (err) {
     const e = err as { code?: unknown; killed?: unknown; signal?: unknown };
-    // Only a git that RAN and refused may say `false`: a rejection with no exit information at all
-    // is an executor that could not be called, and a killed or signalled git carried no answer.
+    // Only a git that RAN and refused may say `false`: a rejection with no exit information is an
+    // executor that could not be called, and a killed or signalled git carried no answer.
     if (typeof e?.code !== "number" || e.killed === true || e.signal != null) return undefined;
     return false;
   }
@@ -170,14 +161,12 @@ function readSha(stdout: string | undefined): string | undefined {
  *
  * Both arms ask for the same ceiling and buffer; what the switch decides is who hands the call to
  * the executor. On the routed arm that is the network wrapper, which supplies the non-interactive
- * env (`GIT_TERMINAL_PROMPT=0`, a BatchMode ssh command), the process-group kill that takes an ssh
- * grandchild with the child, and its own bound — the three things that make a wedged read a lost
- * read rather than a lost trial. On the off arm it is the executor itself, in the pre-fix call: the
- * caller's env if it supplied one, and no group kill.
+ * env, the process-group kill that takes an ssh grandchild with the child, and its own bound — the
+ * three things that make a wedged read a lost read rather than a lost trial. On the off arm it is
+ * the executor itself, in the pre-fix call.
  *
- * Every origin read in this file is one call to {@link originRead}, so the ceiling a read carries is
- * the one its body spells, and the enumeration gate's count for this file is the count of reads that
- * can hang.
+ * Every origin read in this file is one call to {@link originRead}, so the ceiling a read carries
+ * is the one its body spells.
  */
 async function originRead(
   exec: VerifyExec,
@@ -208,9 +197,7 @@ async function originRead(
  *
  * `dir` is any clone of origin — the move names both shas on the command line rather than reading a
  * working tree, so no tree has to be clean. Every refusal is a `Rewind` with `shipped: false`, never
- * a throw: the reporting step's contract is that it always answers. The one refusal that is not an
- * unverified head is `alreadyAtVerified` — origin held the certified head before this step ran, so
- * what it ships needs no caveat.
+ * a throw: the reporting step's contract is that it always answers.
  */
 export async function rewindToVerified(
   exec: VerifyExec,
@@ -230,10 +217,8 @@ export async function rewindToVerified(
   if (unsafe !== undefined)
     return { shipped: false, reason: `the branch is not pushable: ${unsafe}` };
   // Legality is one thing and permission another: `netRefProblem` says the name is a ref git will
-  // take, which `main` is. The branch this push moves is state-file data, so it gets `publish`'s and
-  // `review`'s own guard. The guard throws `PublishInfraError` at its callers; here the refusal is a
-  // `Rewind`, because this step's contract is that it always answers. `held` is read AFTER the
-  // refusal: a step that moved nothing has no head to name as the one it left behind.
+  // take, which `main` is. The guard throws `PublishInfraError` at its callers; here the refusal is a
+  // `Rewind`, because this step's contract is that it always answers.
   const pushable = await assertPublishableBranch(ctx.repoRoot, branch, exec).then(
     () => undefined,
     (err: unknown) =>
@@ -259,8 +244,7 @@ export async function rewindToVerified(
   // Shape is not existence. `verifiedHead` round-trips through the on-disk state file, so this clone
   // may hold no such object, and the arm below that pushes nothing when origin already holds it
   // would otherwise certify an object nobody can read as the head the gate approved.
-  const holdsVerified = await holdsCommit(exec, ctx.repoRoot, verifiedHead, opts.env ?? netEnv);
-  if (holdsVerified === undefined)
+  const holdsVerified = await holdsCommit(exec, ctx.repoRoot, verifiedHead, opts.env ?? netEnv);  if (holdsVerified === undefined)
     return {
       shipped: false,
       unshippedHead: held,
@@ -275,10 +259,8 @@ export async function rewindToVerified(
 
   // Origin already holds the certified head, but this step did not produce that: no push, no keep,
   // and `shipped: true` would claim a move never made. `alreadyAtVerified` names why this is not a
-  // refusal, rather than leaving the caller to tell the arms apart by shape alone; `unshippedHead`
-  // repeats the head only so the record still answers "what is on the branch", and `headFacts` in
-  // handback.ts is what stops it printing as an unshipped one. Every other `shipped: false` arm
-  // leaves it unset, which reads as "not verified".
+  // refusal, and `headFacts` in handback.ts is what stops `unshippedHead` printing as an unshipped
+  // one.
   if (held === verifiedHead)
     return {
       shipped: false,
@@ -289,25 +271,19 @@ export async function rewindToVerified(
 
   // One push, two refspecs: the branch moves back to the verified head and the head it moved off
   // gains its keeping-ref on origin — on BOTH sides of the wire, because a ref written in the clone
-  // alone dies with the run's worktree and a head nobody names is a head a GC removes. They must be
-  // ONE transaction: by the time a second push ran the rewind's lease was already spent, so a
-  // separate keep push would land even when the rewind was refused. Git's default applies each ref
-  // on its own, so `--atomic` is the only reading of "nothing of it is moved"; the off arm does not
-  // get it, because the off arm is the pre-fix argv byte for byte.
+  // alone dies with the run's worktree. They must be ONE transaction: by the time a second push ran
+  // the rewind's lease was already spent. Git's default applies each ref on its own, so `--atomic`
+  // is the only reading of "nothing of it is moved"; the off arm does not get it, because the off
+  // arm is the pre-fix argv byte for byte.
   //
   // There is deliberately no local `update-ref` before this push: a ref can only be written from an
-  // object this clone holds, and on the refusal path origin's head may be one it has never seen, so
-  // the local write would fail first and the record would blame the keeping-ref for the lease's
-  // refusal.
+  // object this clone holds, and on the refusal path origin's head may be one it has never seen.
   //
   // The lease carries its EXPECTED value (`<ref>:<held>`). The bare form compares origin against
-  // this clone's remote-tracking ref, which only a `fetch` refreshes, so on a clone that has not
-  // fetched since the fix wave it would accept a rewind of a branch somebody else moved. Binding it
-  // to the sha this step read off origin makes origin the arbiter.
-  //
-  // And the branch refspec must NOT be forced for that arbitration to happen: git skips the lease
-  // for a refspec carrying a leading `+`, which `test-lean-rewind-lease-binds.ts` observes both
-  // ways. The keeping-ref refspec stays unforced as it always was.
+  // this clone's remote-tracking ref, which only a `fetch` refreshes, so it would accept a rewind of
+  // a branch somebody else moved. Binding it to the sha this step read off origin makes origin the
+  // arbiter — and the branch refspec must NOT be forced for that arbitration to happen: git skips
+  // the lease for a refspec carrying a leading `+`.
   const binds = leanRewindLeaseBinds();
   const pushArgv = [
     ...NO_HOOKS,
@@ -338,8 +314,7 @@ export async function rewindToVerified(
   if (pushStderr !== undefined) {
     // The lease is not the only reason a push says no: a clone that never fetched a third party's
     // head fails with `bad object` / `unpacker error` and never reached the lease check. The two need
-    // different operator actions, so the line is chosen from git's own stderr and origin stays the
-    // arbiter of what the branch holds.
+    // different operator actions, so the line is chosen from git's own stderr.
     const refused = await originRead(exec, ctx.repoRoot, ref, opts.env ?? netEnv);
     const where = `origin still holds ${refused === undefined ? "an unreadable head" : refused.slice(0, 12)}`;
     return {
