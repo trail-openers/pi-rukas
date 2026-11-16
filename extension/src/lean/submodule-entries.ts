@@ -29,12 +29,10 @@ import { NO_HOOKS, SpecifyInfraError } from "./specify-reset.ts";
 const QUICK_GIT_MS = 30_000;
 
 /**
- * One registered submodule: the name `.gitmodules` files it under, and its path.
- *
- * `name` is the key git printed with its `submodule.` prefix and `.path` suffix removed, so
- * `submodule.<name>.url` is a key git answers — the seeding names its source under exactly that
- * key. The URL the base records is deliberately NOT held: no arm of the pass may use it as a
- * fetch source, and a value nobody may read is safest not read at all.
+ * One registered submodule: the name `.gitmodules` files it under, and its path. `name` is the key
+ * git printed with its `submodule.` prefix and `.path` suffix removed, so `submodule.<name>.url`
+ * is a key git answers. The URL the base records is deliberately NOT held — no arm may use it as
+ * a fetch source, and a value nobody may read is safest not read at all.
  */
 export interface SubmoduleEntry {
   name: string;
@@ -42,14 +40,10 @@ export interface SubmoduleEntry {
 }
 
 /**
- * The registered submodules, in `.gitmodules` order — or `undefined` when the file
- * lists nothing, which is the same as having none and ends the initialisation.
- *
- * `git config --file .gitmodules --get-regexp path` prints `submodule.<name>.path
- * <path>`; the name is what the URL override must be keyed by, since that is the
- * section git reads. Exits 1 on a file that lists nothing and above 1 on a file it
- * could not read, so "could not tell" refuses the run rather than skipping an
- * initialisation it was asked for.
+ * The registered submodules, in `.gitmodules` order — or `undefined` when the file lists nothing,
+ * which is the same as having none and ends the initialisation. `git config --file .gitmodules
+ * --get-regexp path` exits 1 on a file that lists nothing and above 1 on a file it could not read,
+ * so "could not tell" refuses the run rather than skipping an initialisation it was asked for.
  */
 export async function listSubmodules(
   exec: ExecFn,
@@ -81,13 +75,12 @@ export async function listSubmodules(
     // what has to be handed back, and a token this cannot unquote is the step not
     // understanding its base — the same refusal as a file it could not read.
     //
-    // git prints the WHOLE KEY — `submodule.<name>.path <path>` — so the name is the key with
-    // its `submodule.` prefix and its `.path` suffix both taken off, and the step then hands
-    // that same key back as `-c submodule.<name>.url=…`. A name that still carried the prefix
-    // would build `submodule.submodule.<name>.url`, a key git never consults: the entry would
-    // seed from whatever URL `.gitmodules` records and the whole offline rule would go quiet
-    // while every case stayed green. Requiring the prefix is what makes that readable as an
-    // answer this step understands rather than a line it half-parsed.
+    // git prints the WHOLE KEY — `submodule.<name>.path <path>` — so the name is the key with its
+    // `submodule.` prefix and `.path` suffix both taken off, then handed back as `-c
+    // submodule.<name>.url=…`. A name still carrying the prefix would build
+    // `submodule.submodule.<name>.url`, a key git never consults: the entry would seed from the
+    // URL `.gitmodules` records and the whole offline rule would go quiet while every case stayed
+    // green — so the regex REQUIRES the prefix rather than half-parsing the line.
     const hit = /^submodule\.(?:"((?:[^"\\]|\\.)*)"|([^\s]+?))\.path\s+(.*)$/u.exec(line.trim());
     const rawName = hit?.[1] ?? hit?.[2];
     const rawValue = hit?.[3];
@@ -193,12 +186,19 @@ function unquoteGitConfig(token: string): string | undefined {
   return out;
 }
 
+/** Is `p` inside `root` (or `root` itself) once `..` and `.` are resolved? */
+function inside(root: string, p: string): boolean {
+  const r = path.resolve(root);
+  const c = path.resolve(p);
+  return c === r || c.startsWith(r + path.sep);
+}
+
 /**
- * Where this host holds `sub`, as a source git can clone from.
- *
- * The module store wins over the checkout because it is the complete object store and
- * the checkout may be a tree someone half-cleaned; both are inside the superproject,
- * which is the rule the caller's disclosure rests on.
+ * Where this host holds `sub`, as a source git can clone from, or `undefined` when nothing the
+ * OPERATOR'S superproject holds has it (module store first, then checkout — the store is the
+ * complete object store, the checkout may be half-cleaned). Every returned path is held to the
+ * superproject AFTER resolution: `path.join` preserves `..`, so a base entry named `../elsewhere`
+ * would otherwise walk out of it, and the run's own tree must never be the source.
  */
 export function localSource(
   superproject: string,
@@ -206,29 +206,30 @@ export function localSource(
   sub: string,
   run: { wt: string },
 ): string | undefined {
-  const parts = sub.split("/").filter((p) => p !== "" && p !== "." && !path.isAbsolute(p));
+  const parts = sub
+    .split("/")
+    .filter((p) => p !== "" && p !== "." && p !== ".." && !path.isAbsolute(p));
   if (parts.length === 0) return undefined;
   const superprojectResolved = path.resolve(superproject);
   const runTree = path.resolve(run.wt);
-  // Both halves of one rule — a seed comes from bytes the OPERATOR'S superproject holds, the
-  // ones the base's verify ran against, so nothing this run wrote counts — asked two ways
-  // because the two kinds of source are identified differently. The CHECKOUT is refused by
-  // PATH: a linked worktree's `--git-common-dir` answers the SHARED store, so comparing dirs
-  // there would refuse it for every run under the superproject (the normal layout) and make
-  // every submodule absent. A STORE needs the dir test, because git files one under the tree
-  // that added it — `<common>/.git/worktrees/<name>/modules/<path>` — holding only what THIS run
-  // committed. The shared store sits above the run's root and is still asked by name.
-  if (runTree === superprojectResolved || superprojectResolved.startsWith(runTree + path.sep))
-    return undefined;
+  // The run's tree is never the source (the `--show-toplevel` field bug, and the same self-seed
+  // via a superproject nested inside it). Only super-inside-run is refused — the normal layout
+  // has the run UNDER the superproject, so inverting it makes every submodule absent.
+  if (runTree === superprojectResolved || inside(runTree, superprojectResolved)) return undefined;
   for (const dir of gitDirs) {
-    if (dir !== superprojectResolved && dir.startsWith(runTree + path.sep)) continue;
-    const store = path.join(dir, "modules", ...parts);
-    // `objects` is what makes it a git dir rather than a leftover directory of that
-    // name: a store git created and then emptied still has it, and cloning from
-    // something that is not a repository is a failure the step did not cause.
-    if (existsSync(path.join(store, "objects"))) return store;
+    // Skip a store filed under the RUN's gitdir — it holds only this run's commits.
+    const resolved = path.resolve(dir);
+    if (resolved !== superprojectResolved && inside(runTree, resolved)) continue;
+    // `objects` marks a real git dir; containment stops a `..` the filter missed or an outside
+    // git dir from leaving here.
+    const store = path.join(resolved, "modules", ...parts);
+    if (existsSync(path.join(store, "objects")) && inside(superprojectResolved, store))
+      return store;
   }
-  const checkout = path.join(superproject, ...parts);
+  const checkout = path.join(superprojectResolved, ...parts);
+  // No containment test: the `..`/absolute filter makes `parts` non-escaping, so this join is
+  // inside by construction — a test here would be an unexercised guard. The store branch keeps
+  // its own because a git dir the CALLER names can still sit outside (case c2).
   if (existsSync(path.join(checkout, ".git")) || existsSync(path.join(checkout, "HEAD")))
     return checkout;
   return undefined;
