@@ -200,18 +200,26 @@ const RUNNER = "sh {file}";
   );
 }
 
-// ── (d) challenge shares the provisioning path, so a submodule survives ITS reset
+// ── (d) a submodule the run's OWN worktree added is refused, not seeded from itself
 {
   const issue = 54;
   const built = challengeFixture(issue);
   const remote = submoduleRemote();
-  // The submodule joins the run's BRANCH — the commit `challenge` resets to and
-  // proves red against — and the worktree is moved onto it, exactly as a real
-  // run's head carries a gitlink its base did not.
+  // The submodule joins the run's BRANCH, which is the commit `challenge` resets to and proves
+  // red against. `submodule add` was run INSIDE the run's worktree, so git filed its store at
+  // `.git/worktrees/lean-54/modules/vendor/lib` and the superproject holds neither a `.gitmodules`
+  // section, nor a shared store, nor a checkout (each confirmed by `probe-d2.ts`).
+  //
+  // Resolution 2 is what decides the outcome: "First-level submodules are seeded from the
+  // SUPERPROJECT's own module store or its populated checkout path." None of the three exists
+  // here, so there is nothing to seed from, and Resolution 3's "otherwise it is absent and
+  // disclosed by path" governs the shape of the answer. Absent-and-disclosed is not available
+  // either, because `clean -fdx` does not recurse into a submodule git has no shared record of:
+  // the run's own files stand at the path, and calling that "the base's verify ran without it"
+  // would be the lie the disclosure exists to prevent. So the step refuses, naming the path and
+  // the two repairs — the whole claim being that bytes whose only source is the tree under test
+  // cannot carry a verdict.
   const head = (() => {
-    // The branch is held by the run's worktree, so the new commit is made there:
-    // the round's head is the commit its own tree carries, which is the state a
-    // run that committed on its branch is actually in.
     addSubmodule(built.worktree, remote.repoRoot, SUB);
     git(built.worktree, "commit", "-q", "-m", "add the vendored submodule");
     return git(built.worktree, "rev-parse", "HEAD");
@@ -222,19 +230,36 @@ const RUNNER = "sh {file}";
     built,
     child: (tree) => {
       put(tree, "tests/AC1-submodule.test.sh", redEdge("tests/AC1-submodule.test.sh"), 0o755);
+      // The tree the adversary is handed is still the one it would attack, so this is not a
+      // claim that the round was skipped — it is the record that the tree the child saw was
+      // NOT made whole, which is what the handback below exists to say out loud.
       assert(
         existsSync(path.join(tree, INSIDE)),
-        "(d) the challenge child worked in a tree whose submodule was populated",
+        `(d) the child's tree was left holding the run's own submodule bytes (nothing seeded it) in ${tree}`,
       );
     },
     toolUses: [submit("AC1", ["tests/AC1-submodule.test.sh"])],
   });
-  assert(r.threw === undefined, `(d) the round ran rather than handing back (${r.threw?.message})`);
   assert(
-    existsSync(path.join(r.worktree, INSIDE)) === true,
-    `(d) and the round left the submodule populated (got ${
-      existsSync(path.join(r.worktree, INSIDE)) ? "there" : "empty"
-    })`,
+    r.threw instanceof SpecifyInfraError,
+    `(d) the round hands back rather than judging a tree whose submodule came from itself (got ${r.threw?.name ?? `no throw: ${r.outcome?.kind}`})`,
+  );
+  assert(
+    r.threw?.message.includes(SUB) === true,
+    `(d) and the handback names the path it could not source (got ${r.threw?.message?.slice(0, 160)})`,
+  );
+  assert(
+    r.threw?.message.includes("this run's own worktree") === true,
+    `(d) and says where the submodule came from, which is the only repair an operator can act on (got ${r.threw?.message?.slice(0, 200)})`,
+  );
+  // The cost claim the case owns: a round that hands back on the submodule pays no adversary.
+  // `dispatched` counts the fixture's dispatches, and this fixture's `runChallenge` records one
+  // for a step that reached the round — so the honest reading of `1` is that the throw happened
+  // after dispatch, and the assertion below is about the outcome the operator is handed: no
+  // verdict, and the reason naming the submodule.
+  assert(
+    r.outcome === undefined,
+    `(d) and no verdict is reported for a tree nobody could source (got ${r.outcome?.kind})`,
   );
 }
 

@@ -57,6 +57,20 @@ function assert(cond: boolean, msg: string): void {
 /** Every git argv the stub saw, for the claims about what the step ASKED git to do. */
 const calls: string[][] = [];
 
+/**
+ * The main checkout of a tree the stub is asked about, read from the shape the fixture builds.
+ *
+ * `treeWithGitmodules` puts the run's tree at `<root>/.worktrees/lean-<n>`, so the tree holding
+ * the base's submodule records — the one the stub must name as the common dir's parent — is two
+ * components up. It is derived rather than captured because the stub is handed a `cwd`, and a
+ * stub that guessed the wrong directory here would have the seed read a place nobody wrote to.
+ */
+const repoRootOf = (cwd: string): string => {
+  const marker = `${path.sep}.worktrees${path.sep}`;
+  const at = cwd.lastIndexOf(marker);
+  return at === -1 ? cwd : cwd.slice(0, at);
+};
+
 /** A distinct 40-hex sha per case, so a stub can be told which base to confirm. */
 const sha = (n: number): string => n.toString(16).padStart(40, "0");
 
@@ -108,11 +122,24 @@ const agreeToEverything =
       return { stdout: `submodule.${SUB}.path ${SUB}\n`, exitCode: 0 } as never;
     if (joined.includes("submodule") && joined.includes("status"))
       return { stdout: `U${"0".repeat(39)} ${SUB}\n`, exitCode: 0 } as never;
-    if (joined.includes("rev-parse"))
+    if (joined.includes("rev-parse")) {
+      // The seeding's two git-dir questions have to be answered with the SHAPE of a git dir, not
+      // with the base's sha: `superprojectRoot` reads git's answer for its shape and refuses
+      // anything that is not `<…>/.git` or `<…>/.git/worktrees/<name>`, so a stub that returned
+      // `want` here was refused and the case never reached the disclosure it is about. Every
+      // other question keeps the base's sha, which is what the reset's own proof asks for.
+      if (joined.includes("--git-common-dir"))
+        return { stdout: `${repoRootOf(String(o?.cwd ?? ""))}${path.sep}.git\n`, exitCode: 0 } as never;
+      if (joined.includes("--absolute-git-dir") || joined.includes("--git-dir"))
+        return {
+          stdout: `${path.join(repoRootOf(String(o?.cwd ?? "")), ".git", "worktrees", `lean-${issue}`)}\n`,
+          exitCode: 0,
+        } as never;
       return {
         stdout: joined.includes("--show-toplevel") ? `${String(o?.cwd ?? "")}\n` : `${want}\n`,
         exitCode: 0,
       } as never;
+    }
     return { stdout: "", exitCode: 0 } as never;
   };
 
