@@ -25,8 +25,8 @@
  * without touching the real repository the suite runs in.
  */
 
-import { createConnection } from "node:net";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { forgeReadMac, newForgeReadNonce, newForgeReadSecret } from "../../src/forge-read-auth.ts";

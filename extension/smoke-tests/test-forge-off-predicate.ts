@@ -38,8 +38,7 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const src = (f: string): string =>
-  readFileSync(join(import.meta.dirname, "..", "src", f), "utf8");
+const src = (f: string): string => readFileSync(join(import.meta.dirname, "..", "src", f), "utf8");
 
 const off = src("forge-off.ts");
 assert(
@@ -82,10 +81,7 @@ assert(
   ctx.includes("forgeEnvIsOff"),
   "work-driver-forge-ctx.ts calls the same predicate (one reader, both consumers)",
 );
-assert(
-  !/\.PI_ENSEMBLE_FORGE\s*===\s*"none"/.test(ctx),
-  "and no longer compares the value inline",
-);
+assert(!/\.PI_ENSEMBLE_FORGE\s*===\s*"none"/.test(ctx), "and no longer compares the value inline");
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

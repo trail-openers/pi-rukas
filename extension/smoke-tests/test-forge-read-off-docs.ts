@@ -23,10 +23,7 @@ import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 
 const { assert, failures } = makeAssert();
 
-const lean = readFileSync(
-  path.resolve(import.meta.dirname, "..", "..", "docs", "lean.md"),
-  "utf8",
-);
+const lean = readFileSync(path.resolve(import.meta.dirname, "..", "..", "docs", "lean.md"), "utf8");
 
 // The paragraph is the helper-child section's, and the needles are checked against
 // that span rather than the whole file: a mention anywhere else would pass a gate
@@ -35,10 +32,7 @@ const at = lean.indexOf("Every child lean dispatches");
 assert(at >= 0, "docs/lean.md still has the helper-child paragraph beside the step table");
 const para = lean.slice(at, lean.indexOf("\n\n", at));
 
-assert(
-  para.includes("`PI_ENSEMBLE_FORGE=none`"),
-  "the paragraph still states the off value",
-);
+assert(para.includes("`PI_ENSEMBLE_FORGE=none`"), "the paragraph still states the off value");
 assert(
   para.includes("both") && para.includes("broker"),
   "and now says it covers BOTH readers of it, driver and broker",
@@ -63,10 +57,7 @@ assert(
   para.includes("socket still binds") && para.includes("tool still registers"),
   "and says the child keeps its tool, so a reader does not expect the tool to vanish",
 );
-assert(
-  para.includes("PI_ENSEMBLE_FORGE_READ_OFF_GUARD=0"),
-  "and offers the escape hatch by name",
-);
+assert(para.includes("PI_ENSEMBLE_FORGE_READ_OFF_GUARD=0"), "and offers the escape hatch by name");
 assert(
   para.includes("git config --get remote.*") && para.includes("gh"),
   "and names what the parent issues NOTHING of under none: no CLI and no remote read",
@@ -78,7 +69,5 @@ assert(
   "and no longer claims the driver is the only reader of none",
 );
 
-console.log(
-  `\n${failures() === 0 ? "docs green" : "docs RED"} (${String(failures())} failing)`,
-);
+console.log(`\n${failures() === 0 ? "docs green" : "docs RED"} (${String(failures())} failing)`);
 process.exit(failures());

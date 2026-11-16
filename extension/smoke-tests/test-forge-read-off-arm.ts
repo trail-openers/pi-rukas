@@ -33,13 +33,13 @@
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { forgeReadOffGuardEnabled } from "../src/forge-read-off-switch.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import {
   OFF_ARM_REQUEST,
   driveProvedRead,
   fixtureRepoRoot,
   offArmExec,
 } from "./lib/forge-read-off-arm.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 
 const { assert, failures } = makeAssert();
@@ -88,20 +88,17 @@ assert(
   const recorded = (want?.opts ?? []).map((o) => ({ ...(o ?? {}), cwd: root }));
   let run: Awaited<ReturnType<typeof driveProvedRead>> | undefined;
   let threw: Error | undefined;
-  await withEnv(
-    { PI_ENSEMBLE_FORGE: "none", PI_ENSEMBLE_FORGE_READ_OFF_GUARD: "0" },
-    async () => {
-      assert(
-        forgeReadOffGuardEnabled() === false,
-        "(off) this arm runs with the guard off, read at call time",
-      );
-      try {
-        run = await driveProvedRead({ execFn: exec.fn, cwd: root }, OFF_ARM_REQUEST);
-      } catch (err) {
-        threw = err as Error;
-      }
-    },
-  );
+  await withEnv({ PI_ENSEMBLE_FORGE: "none", PI_ENSEMBLE_FORGE_READ_OFF_GUARD: "0" }, async () => {
+    assert(
+      forgeReadOffGuardEnabled() === false,
+      "(off) this arm runs with the guard off, read at call time",
+    );
+    try {
+      run = await driveProvedRead({ execFn: exec.fn, cwd: root }, OFF_ARM_REQUEST);
+    } catch (err) {
+      threw = err as Error;
+    }
+  });
   assert(
     threw === undefined,
     `(off) the broker accepted the harness's recorder and served the read (${
@@ -154,8 +151,7 @@ assert(
     },
   );
   assert(
-    run?.fields.ok === false &&
-      run.fields.reason === "the forge is off: PI_ENSEMBLE_FORGE=none",
+    run?.fields.ok === false && run.fields.reason === "the forge is off: PI_ENSEMBLE_FORGE=none",
     `(on) the same request with the guard unset is refused by name (${JSON.stringify(run?.fields)})`,
   );
   assert(

@@ -81,10 +81,9 @@ import { type Server, createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { detectForge } from "./forge-detect.ts";
+import { forgeEnvIsOff } from "./forge-off.ts";
 import { newForgeReadNonce, newForgeReadSecret, verifyForgeReadMac } from "./forge-read-auth.ts";
 import { type ForgeReadExecuteOptions, executeForgeRead } from "./forge-read-execute.ts";
-import type { ForgeExecFn } from "./forge-types.ts";
-import { forgeEnvIsOff } from "./forge-off.ts";
 import { FORGE_READ_OFF_REASON, forgeReadOffGuardEnabled } from "./forge-read-off-switch.ts";
 // #2160 — the proof half of the line (the spent-nonce ledger, the request's
 // proof check, the reply's proof) is a module of its own (§12 cap): this file owns
@@ -97,7 +96,8 @@ import {
   parseForgeReadRequest,
   validateForgeRead,
 } from "./forge-read-tool.ts";
-import { trace } from "./trace.ts";
+import type { ForgeExecFn } from "./forge-types.ts";
+import { trace, traceWarn } from "./trace.ts";
 
 /**
  * How the parent resolves and runs one validated read.
@@ -393,6 +393,13 @@ async function handleLine(
   // instead. The value is read from the PARENT's environment at request time, since
   // the child's env holds no such variable and the read runs here.
   if (forgeReadOffGuardEnabled() && forgeEnvIsOff()) {
+    // Traced, not silent: a refusal the operator cannot see in the parent's log is
+    // indistinguishable from a broker that never answered, and the helper child's
+    // report then reads as a forge bug. `traceWarn`, not `trace` — a policy refusal
+    // that changes an outcome is exactly what that primitive is for, and gating it on
+    // `PI_ENSEMBLE_DEBUG` would hide it in every normal run. The reason text is the
+    // same one the child sees, so the two halves of the contract name each other.
+    traceWarn(`forge-read-broker: refused a proved read — ${FORGE_READ_OFF_REASON}`);
     writeResponse(
       conn,
       { type: "forge-read-response", ok: false, reason: FORGE_READ_OFF_REASON },

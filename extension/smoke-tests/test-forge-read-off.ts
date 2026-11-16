@@ -37,15 +37,11 @@
  */
 
 import { existsSync } from "node:fs";
-import { FORGE_READ_OFF_REASON } from "../src/forge-read-off-switch.ts";
 import { bindForgeReadSocket } from "../src/forge-read-broker.ts";
-import {
-  OFF_ARM_REQUEST,
-  driveProvedRead,
-  offArmExec,
-} from "./lib/forge-read-off-arm.ts";
+import { FORGE_READ_OFF_REASON } from "../src/forge-read-off-switch.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { assert, check, forgeExitCode } from "./lib/forge-harness.ts";
+import { OFF_ARM_REQUEST, driveProvedRead, offArmExec } from "./lib/forge-read-off-arm.ts";
 
 /** A forge CLI, or any of the remote reads `detectForge` issues before one. */
 const FORGE_OR_REMOTE = /^(gh |glab |git config --get remote\.|git remote)/;
@@ -69,7 +65,10 @@ async function main(): Promise<void> {
       typeof res?.reason === "string" && res.reason.length > 0,
       "the reason is non-empty — the child renders it as its tool text",
     );
-    assert(res?.output === undefined, "a refusal carries no bytes (${JSON.stringify(res?.output)})");
+    assert(
+      res?.output === undefined,
+      "a refusal carries no bytes (${JSON.stringify(res?.output)})",
+    );
   });
   await check("none issues zero commands — no CLI and no remote read", async () => {
     const exec = offArmExec();
@@ -177,7 +176,7 @@ async function main(): Promise<void> {
   });
 
   console.log("the exact-match contract:");
-  await check("None / \"none \" are NOT off — same comparison the driver makes", async () => {
+  await check('None / "none " are NOT off — same comparison the driver makes', async () => {
     for (const value of ["None", "none ", "NONE"]) {
       const exec = offArmExec();
       let run: Awaited<ReturnType<typeof driveProvedRead>> | undefined;
@@ -215,13 +214,19 @@ async function main(): Promise<void> {
 
   // Non-vacuity: the recorder must be able to record at all, or every zero-call
   // assertion above would pass on a broker that answers nothing.
-  await check("the recorder is not vacuous: the same executor records on the unset arm", async () => {
-    const exec = offArmExec();
-    await withEnv({ PI_ENSEMBLE_FORGE: undefined }, async () => {
-      await driveProvedRead({ execFn: exec.fn }, OFF_ARM_REQUEST as unknown as Record<string, unknown>);
-    });
-    assert(exec.calls.length > 0, "the seam did record commands for a served read");
-  });
+  await check(
+    "the recorder is not vacuous: the same executor records on the unset arm",
+    async () => {
+      const exec = offArmExec();
+      await withEnv({ PI_ENSEMBLE_FORGE: undefined }, async () => {
+        await driveProvedRead(
+          { execFn: exec.fn },
+          OFF_ARM_REQUEST as unknown as Record<string, unknown>,
+        );
+      });
+      assert(exec.calls.length > 0, "the seam did record commands for a served read");
+    },
+  );
 
   await forgeExitCode("forge_read refuses under PI_ENSEMBLE_FORGE=none and issues nothing");
 }
