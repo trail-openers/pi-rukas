@@ -15,6 +15,7 @@
 
 import type { execp } from "../exec.ts";
 import { validateTestDir, validateTestGlob } from "./config-test-location.ts";
+import { SPEC_INTAKE_VALUES, type SpecIntake } from "./spec-intake-switch.ts";
 
 export interface Budget {
   turns: number;
@@ -47,6 +48,13 @@ export interface WorkConfig {
     freezeCheck?: string;
   };
   budgets: Partial<Record<string, Budget>>;
+  /**
+   * How the run obtains its `pi-spec v1` contract. `require` (the shipped
+   * default) refuses an issue whose body carries no block; `derive` derives one
+   * inside the run. Read through `resolveSpecIntake`, which weighs the env above
+   * this field — the field is one input, never the last word.
+   */
+  lean?: { specIntake?: SpecIntake };
 }
 
 /** A config that exists but cannot be read. Never collapsed into a default. */
@@ -245,6 +253,19 @@ function validate(obj: unknown): string | undefined {
       if (reason !== undefined) return reason;
     }
   }
+  if (o.lean !== undefined) {
+    if (typeof o.lean !== "object" || o.lean === null || Array.isArray(o.lean))
+      return ".pi/work.json lean must be an object";
+    const l = o.lean as Record<string, unknown>;
+    // Validated at the loader, like every other key here, so a typo'd mode is
+    // refused at load rather than silently reading as the shipped default.
+    if (
+      l.specIntake !== undefined &&
+      (typeof l.specIntake !== "string" ||
+        !SPEC_INTAKE_VALUES.includes(l.specIntake as SpecIntake))
+    )
+      return `.pi/work.json lean.specIntake must be one of ${SPEC_INTAKE_VALUES.join(", ")}`;
+  }
   if (o.budgets !== undefined) {
     if (typeof o.budgets !== "object" || o.budgets === null || Array.isArray(o.budgets))
       return ".pi/work.json budgets must be an object";
@@ -333,5 +354,16 @@ export async function loadWorkConfig(
     // key is an own property of the parsed object, and spreading it would put it on the result
     // rather than refuse it.
     budgets: mergeBudgets(o.budgets),
+    // Built field by field for the same reason: `specIntake` is the only key the schema
+    // admits under `lean`, so nothing a file put beside it can ride onto the record.
+    ...(o.lean === undefined
+      ? {}
+      : {
+          lean: {
+            ...(typeof (o.lean as { specIntake?: unknown }).specIntake === "string"
+              ? { specIntake: (o.lean as { specIntake: SpecIntake }).specIntake }
+              : {}),
+          },
+        }),
   };
 }

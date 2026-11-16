@@ -57,6 +57,13 @@ import { SPEC_INFO, parsePiSpec, readiness, renderPiSpec } from "./lean/spec.ts"
 import { withLineAboveOpenPoints } from "./open-points-contract.ts";
 import { criteriaBullets, descriptorProblem } from "./plan-pi-spec-descriptor.ts";
 import { fencePrefix, opensFenceWith } from "./plan-pi-spec-fences.ts";
+import {
+  CRITERION_MAX_CHARS,
+  MAX_CRITERIA,
+  PROBLEM_MAX_CHARS,
+  neutraliseFenceRuns as mapNeutraliseFenceRuns,
+  piSpecFromBullets,
+} from "./pi-spec-map.ts";
 import { clip, oneLine } from "./plan-pi-spec-text.ts";
 import type { PlanType } from "./plan-types.ts";
 import { trace, traceWarn } from "./trace.ts";
@@ -85,13 +92,13 @@ export const PI_SPEC_OMISSION_PREFIX = "pi-spec block omitted:";
 export const PI_SPEC_EXAMPLE_INFO = `${SPEC_INFO}-example`;
 
 /** The problem field comes from the `Descriptor:` line (title fallback), and never renders longer than this. */
-export const PI_SPEC_PROBLEM_MAX_CHARS = 200;
+export const PI_SPEC_PROBLEM_MAX_CHARS = PROBLEM_MAX_CHARS;
 
 /** The most criteria the block embeds; the size band still counts the original. */
-export const PI_SPEC_MAX_CRITERIA = 12;
+export const PI_SPEC_MAX_CRITERIA = MAX_CRITERIA;
 
 /** One criterion's text never renders longer. */
-export const PI_SPEC_CRITERION_MAX_CHARS = 200;
+export const PI_SPEC_CRITERION_MAX_CHARS = CRITERION_MAX_CHARS;
 
 /** An omission reason is clipped to this, like every other field the disclosure carries. */
 export const PI_SPEC_OMISSION_REASON_MAX_CHARS = 200;
@@ -170,10 +177,6 @@ export const PI_SPEC_SECTION_MAX_CHARS =
 export const PI_SPEC_OMISSION_LINE_MAX_CHARS =
   PI_SPEC_OMISSION_PREFIX.length + 1 + PI_SPEC_OMISSION_REASON_MAX_CHARS + 2;
 
-/** The size bands the contract's `size` field reports. */
-const SIZE_SMALL_MAX = 3;
-const SIZE_MEDIUM_MAX = 8;
-
 /** The fields the mapper reads - all of them sections the draft really renders. */
 export interface PiSpecDraft {
   type: PlanType;
@@ -196,42 +199,23 @@ export function piSpecFailedRules(spec: PiSpec): string[] {
 /**
  * Every run of three or more backticks or tildes in `s` replaced by look-alikes,
  * so the text can sit inside the block's JSON without ever opening or closing a
- * fence. The block is fenced with three backticks, and a JSON-escaped backtick
- * still renders as a backtick on the line that carries it - so a criterion that
- * quotes a fenced snippet would terminate the block early and make the whole spec
- * unparseable.
- *
- * A single backtick is left alone: it cannot fence anything, and it is the common
- * case (`run \`bun test\`` inside a criterion). Each character of a run becomes
- * ONE look-alike code point - U+02CB for a backtick, U+02DC for a tilde - so a
- * reader sees a quote mark where the fence was, and the 1:1 width is what lets
- * the mapper clip AFTER neutralising without cutting a stand-in in half. Written
- * as a code-point loop rather than a regex class because the run length must be
- * counted, not merely matched.
+ * fence. The mapping's own implementation is `pi-spec-map.ts`'s — re-exported
+ * here because the read-back guards in this file and its siblings weigh a
+ * bullet's form against the block's, and `/plan`'s callers have always reached
+ * the primitive by this name.
+ */
+
+
+/**
+ * Every run of three or more backticks or tildes in `s` replaced by look-alikes, so
+ * the text can sit inside the block's JSON without ever opening or closing a fence.
+ * The implementation is `pi-spec-map.ts`'s — the ONE mapper both /plan and
+ * `work-lean`'s spec-intake mode run — re-exported here because this file's
+ * read-back guard weighs a bullet's form against the block's, and /plan's callers
+ * and sibling tests have always reached the primitive by this name.
  */
 export function neutraliseFenceRuns(s: string): string {
-  let out = "";
-  let i = 0;
-  while (i < s.length) {
-    const c = s[i] as string;
-    if (c !== "`" && c !== "~") {
-      out += c;
-      i++;
-      continue;
-    }
-    let j = i;
-    while (j < s.length && s[j] === c) j++;
-    out += j - i >= 3 ? (c === "`" ? "ˋ" : "˜").repeat(j - i) : c.repeat(j - i);
-    i = j;
-  }
-  return out;
-}
-
-/** S → at most 3 criteria, M → at most 8, L → more. */
-function sizeOf(count: number): PiSpec["size"] {
-  if (count <= SIZE_SMALL_MAX) return "S";
-  if (count <= SIZE_MEDIUM_MAX) return "M";
-  return "L";
+  return mapNeutraliseFenceRuns(s);
 }
 
 /**
@@ -239,19 +223,23 @@ function sizeOf(count: number): PiSpec["size"] {
  * filed title otherwise. Both go through the same pipeline at the same bound.
  * The parsing of the statement out of the body is `plan-pi-spec-descriptor.ts`'s.
  */
-function problemText(draft: PiSpecDraft): string {
+function problemTextOf(draft: PiSpecDraft): string {
   return descriptorProblem(draft.body) || draft.title;
 }
 
 /**
- * The drafted body + title → the contract, bounded by construction. Criteria are
+ * The drafted body + title → the contract, bounded by construction. The mapping
+ * itself is `pi-spec-map.ts`'s — the SAME one `work-lean`'s spec-intake mode
+ * applies to a deriving child's bullets — so the two producers cannot drift on
+ * the bound, the neutralisation order, or the `verify`/`size` rules. Criteria are
  * the draft's own `## Acceptance criteria` bullets, in order, with positional ids
  * `AC1...`, and every one is `verify: "test"` with no command. A backticked command
  * in the prose is text a reviewer reads, never something the executor runs: only a
  * human writing the block by hand can make a criterion a command, which is why the
  * drafter does not get to. At most `PI_SPEC_MAX_CRITERIA` are embedded, but `size`
  * counts the ORIGINAL set - a thirteen-criterion plan is honestly `L` even though
- * twelve ride in the block. `problem` is the title; there is no `scope`.
+ * twelve ride in the block. `problem` is the descriptor line (title fallback);
+ * there is no `scope`.
  *
  * Returns undefined when there is nothing to contract: an epic, a spike, zero
  * criteria, or neither a descriptor nor a title to state (`parsePiSpec` refuses a
@@ -260,24 +248,7 @@ function problemText(draft: PiSpecDraft): string {
 export function piSpecFromDraft(draft: PiSpecDraft): PiSpec | undefined {
   if (draft.type === "spike" || draft.type === "epic") return undefined;
   if (draft.title.trim() === "") return undefined;
-  const all = criteriaBullets(draft.body);
-  if (all.length === 0) return undefined;
-  const criteria = all.slice(0, PI_SPEC_MAX_CRITERIA).map((bullet, i) => ({
-    id: `AC${i + 1}`,
-    // Neutralise FIRST, then clip: the 1:1 look-alikes keep the width honest (they
-    // are BMP code points, so a neutralised field never carries a surrogate pair),
-    // and a bullet whose fences collapse cannot lose its tail to the clip. The clip
-    // is never what ships a short criterion: `placePiSpecSection` compares this
-    // text with the bullet's own neutralised form and omits the block when the clip
-    // took anything.
-    text: clip(neutraliseFenceRuns(oneLine(bullet)), PI_SPEC_CRITERION_MAX_CHARS),
-    verify: "test" as const,
-  }));
-  return {
-    problem: clip(neutraliseFenceRuns(oneLine(problemText(draft))), PI_SPEC_PROBLEM_MAX_CHARS),
-    criteria,
-    size: sizeOf(all.length),
-  };
+  return piSpecFromBullets(problemTextOf(draft), criteriaBullets(draft.body));
 }
 
 /** The heading, the fenced block, and (when not ready) the readiness line. */
