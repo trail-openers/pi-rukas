@@ -11,10 +11,11 @@
 # variable before launching. This repo's full offline suite is ~641 files; at
 # 2 jobs under load it measured past the old shared 10-minute bound, which
 # parked healthy cycles at `verify-failed:develop` on code that was never
-# judged. 30 minutes is the documented suite-tier default
-# (`PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS`), stated here explicitly so the gate's
-# budget is visible next to the command it bounds rather than being an ambient
-# number somebody remembers.
+# judged. This repo sets 60 minutes, twice the documented 30-minute suite-tier
+# default (`PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS`): the consolidated run shares
+# the host with the cycle's other children, and under that load the suite runs
+# past 30 minutes and parks healthy cycles at `verify-timeout:develop`. The
+# per-test watchdog still bounds a single hung test.
 #
 # Precedence (highest first): PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS →
 # PI_ENSEMBLE_VERIFY_TIMEOUT_MS → this file → the documented default.
@@ -25,4 +26,4 @@
 #
 # `.pi/` is a protected path, so an unattended /work cycle cannot rewrite these
 # budgets — same rule as .pi/verify-cmd.
-1800000
+3600000
