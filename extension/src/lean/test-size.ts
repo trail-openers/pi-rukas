@@ -13,46 +13,35 @@
 /**
  * How many lines one kept acceptance test may have.
  *
- * `TEST_SCOPE_CONTRACT` already asks for the smallest test that proves the
- * criterion, and a prompt obeyed in spirit and not in size still ships a thousand
- * lines.
+ * `TEST_SCOPE_CONTRACT` already asks for the smallest test that proves the criterion, and a prompt obeyed in
+ * spirit and not in size still ships a thousand lines.
  *
- * 150 is a measured distribution with room above it — live adversary tests land at
- * about 130 lines even after the child has been shown the refusal reason, so a
- * tighter cap declines real work. At 150 lines and `MAX_TEST_FILES_PER_CRITERION`
- * files the bound is still 300 lines per criterion; a file past it is testing the
- * code around the criterion.
+ * 150 is a measured distribution with room above it — live adversary tests land at about 130 lines even after
+ * the child has been shown the refusal reason, so a tighter cap declines real work.
  */
 export const MAX_TEST_LINES = 150;
 
 /**
  * How many test files ONE criterion may end up with across the WHOLE RUN.
  *
- * `MAX_TEST_FILES_PER_ROW` bounds one row; a child that spreads the same work over
- * several `submit_tests` calls for one criterion was bounded by nothing. One
- * focused test per criterion is the norm.
+ * `MAX_TEST_FILES_PER_ROW` bounds one row; a child that spreads the same work over several `submit_tests`
+ * calls for one criterion was bounded by nothing. One focused test per criterion is the norm.
  *
- * The bound is per RUN, not per call: a step that validates twice, or a run whose
- * next challenge round starts from what the last one froze, would otherwise
- * multiply the cap by the number of calls. The `frozenByCriterion` opt of
- * `validateSubmitRows` seeds each criterion's count from what the run already
- * holds. A caller that omits the seed sees only what its own rows keep.
+ * The bound is per RUN, not per call: a step that validates twice, or a run whose next challenge round starts
+ * from what the last one froze, would otherwise multiply the cap by the number of calls. A caller that omits
+ * the `frozenByCriterion` seed sees only what its own rows keep.
  */
 export const MAX_TEST_FILES_PER_CRITERION = 2;
 
 /**
  * How many BYTES one kept acceptance test may hold.
  *
- * `MAX_TEST_LINES` bounds the count, but the count is only known AFTER the bytes
- * are in memory, and the read that produces them is the one thing this rule should
- * not be paid for on a file it is going to refuse. A line count is not a size, so
- * this bounds a file that is within the line cap at roughly normal line width.
+ * `MAX_TEST_LINES` bounds the count, but the count is only known AFTER the bytes are in memory, and the read
+ * that produces them is the one thing this rule should not be paid for on a file it is going to refuse.
  *
- * Checked on the stat the boundary already has, BEFORE the read, which makes it a
- * bound on the CALL as well as the file. Per VALIDATION, not per run: the child owns
- * the window between this read and the capture's, so `specify-run.ts` re-checks the
- * bytes it actually holds against this same constant. The capture's own
- * `MAX_CAPTURE_BYTES` is a different, far larger number deliberately.
+ * Checked on the stat the boundary already has, BEFORE the read, which makes it a bound on the CALL as well as
+ * the file. Per VALIDATION, not per run: `specify-run.ts` re-checks the bytes it actually holds against this
+ * same constant. The capture's own `MAX_CAPTURE_BYTES` is a different, far larger number deliberately.
  */
 export const MAX_TEST_BYTES = 24_576;
 
@@ -60,11 +49,9 @@ export const MAX_TEST_BYTES = 24_576;
 const NOT_TEXT = "is not a text file (NUL byte); an acceptance test is a source file";
 
 /**
- * Why a file the size rule cannot honestly count is not a kept test.
- *
- * A NUL byte is not a line-break question the rule could answer: no acceptance test
- * the harness commits is NUL-bearing, so the file is refused rather than counted —
- * which is also how a UTF-16 file is refused.
+ * Why a file the size rule cannot honestly count is not a kept test. A NUL byte is not a line-break question
+ * the rule could answer: no acceptance test the harness commits is NUL-bearing, so the file is refused rather
+ * than counted — which is also how a UTF-16 file is refused.
  */
 export function testNotTextProblem(rel: string): string {
   return `${rel} ${NOT_TEXT}`;
@@ -81,10 +68,8 @@ export function testNotTextProblem(rel: string): string {
  * `\n` — so a child cannot dodge the bound by choosing its separator. An empty file
  * is ZERO lines.
  *
- * A NUL byte refuses the count rather than guessing at it, and comes back as
- * `{ notText: true }` rather than a throw: the caller must tell "not a text file"
- * (a verdict on the child's work, a drop) from "could not be read at all"
- * (infrastructure, a throw).
+ * A NUL byte refuses the count rather than guessing at it, and comes back as `{ notText: true }` rather than a
+ * throw: the caller must tell "not a text file" (a drop) from "could not be read at all" (infrastructure).
  */
 export function countTestLines(bytes: Buffer): { lines: number } | { notText: true } {
   if (bytes.includes(0)) return { notText: true };
@@ -97,8 +82,7 @@ export function countTestLines(bytes: Buffer): { lines: number } | { notText: tr
       lines++;
       trailing = true;
     } else if (b === 13) {
-      // `\r\n` is ONE break: when the `\r` of a pair is seen, the `\n` that
-      // follows is skipped, so neither half counts twice.
+      // `\r\n` is ONE break: when the `\r` of a pair is seen, the `\n` that follows is skipped.
       lines++;
       trailing = true;
       if (bytes[i + 1] === 10) i++;
@@ -113,10 +97,8 @@ export function testSizeProblem(rel: string, lines: number): string {
 }
 
 /**
- * Why an oversized test file is not a kept test.
- *
- * Stated from the stat alone, so the file is refused without a read — a rule that
- * had to read it to reject it costs what it exists to cap.
+ * Why an oversized test file is not a kept test. Stated from the stat alone, so the file is refused without a
+ * read — a rule that had to read it to reject it costs what it exists to cap.
  */
 export function testBytesProblem(rel: string, bytes: number): string {
   return `${rel} is ${bytes} bytes; an acceptance test is at most ${MAX_TEST_BYTES} bytes`;
