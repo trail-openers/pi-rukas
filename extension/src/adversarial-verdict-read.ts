@@ -79,35 +79,33 @@ const HEADING_RE = /^ {0,3}#{1,6} +\** *VERDICT *\** *$/i;
  *  rather than imported so this reader and `readMarker` cannot drift on what a
  *  marker is spelled like — the one deliberate difference is that this one is
  *  ANCHORED to the start of its line, which is what makes the exclusions
- *  possible at all. */
-const INLINE_PREFIX = /^ {0,3}\**\s*VERDICT\s*:?\s*\**\s*:?\s*/i;
-
-/** The one alternation of every status value, most severe first, built lazily.
- *  Lazy because `VERDICT_STATUSES` lives in `adversarial-verdict.ts`, which
- *  imports this module: built at module load it would read the const before its
- *  own module body has run. Most severe first because `CRITICAL_ISSUES_FOUND`
- *  contains `ISSUES_FOUND`, which is the order `VERDICT_STATUSES` is declared
- *  in. `\b` is the boundary rather than a `(?![A-Z_])` look-ahead: the separator
- *  tolerance lets lower-case prose follow the value
- *  (`VERDICT: APPROVED (per the doctrine)`), and a look-ahead that excluded only
- *  upper-case letters would let `ISSUES_FOUND` match inside a lower-case
- *  `critical_issues_found` and read the wrong verdict. */
-let valueAlt: RegExp | undefined;
-function valueAltRe(): RegExp {
-  if (valueAlt === undefined) {
-    valueAlt = new RegExp(
-      `(${VERDICT_STATUSES.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`,
-      "i",
-    );
-  }
-  return valueAlt;
-}
+ *  possible at all.
+ *
+ *  "Start of its line" counts the markdown decorations a line can wear in front
+ *  of the marker — a `>` block-quote marker and a `|` table-cell delimiter, each
+ *  optionally followed by spaces — as part of the prefix rather than as
+ *  something the anchor has to swallow. Both shapes are then
+ *  CANDIDATES that the quote/table exclusion refuses, which is the point of
+ *  `verdictCandidateLines` marking exclusions instead of dropping lines: a
+ *  reviewer whose only verdict line sits in a block quote is the difference
+ *  between "said nothing" and "had a verdict, quoted away", and a prefix that
+ *  simply failed to match would report the first for the second. A 4+ space
+ *  indent is deliberately NOT in the prefix: at most three spaces are allowed
+ *  through, so an indented marker stays a candidate its `structural` flag
+ *  refuses. */
+const INLINE_PREFIX = /^ {0,3}(?:>[ ]?|\|[ ]?|\**\s*)VERDICT\s*:?\s*\**\s*:?\s*/i;
 
 /** The bare value form: exactly one enum value with nothing but optional
  *  emphasis around it — the spelling the heading form's value line takes. The
  *  value is matched against the enum rather than a permissive `[A-Z_]+` so a
  *  heading whose value line is prose (`APPROVED, because the gate covers it`)
- *  states no verdict; the inline form is the one that tolerates trailing text. */
+ *  states no verdict; the inline form is the one that tolerates trailing text.
+ *
+ *  Both this and the inline value below are built lazily because
+ *  `VERDICT_STATUSES` lives in `adversarial-verdict.ts`, which imports this
+ *  module: built at module load they would read the const before its own module
+ *  body has run. Most severe first because `CRITICAL_ISSUES_FOUND` contains
+ *  `ISSUES_FOUND`, which is the order `VERDICT_STATUSES` is declared in. */
 let bareValueRe: RegExp | undefined;
 function bareValueRe_(): RegExp {
   if (bareValueRe === undefined) {
@@ -131,17 +129,35 @@ function bareValueRe_(): RegExp {
  *  buried later in the line is not in marker position either — that is prose
  *  which happens to name a verdict, and the whole-reply matcher's habit of
  *  finding those is the defect this module closes. */
+/** The inline value, anchored to the start of what follows the separator, built
+ *  lazily for the reason given on `bareValueRe_`. */
+let inlineValueRe: RegExp | undefined;
+function inlineValueRe_(): RegExp {
+  if (inlineValueRe === undefined) {
+    inlineValueRe = new RegExp(
+      `^(${VERDICT_STATUSES.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![A-Za-z0-9_])`,
+      "i",
+    );
+  }
+  return inlineValueRe;
+}
+
 function inlineValue(line: string): AdversarialVerdictStatus | undefined {
   const prefix = INLINE_PREFIX.exec(line);
   if (prefix === null) return undefined;
   const rest = line.slice(prefix[0].length);
+  // `VERDICT: <APPROVED|ISSUES_FOUND|…>` is the brief SHOWING the reviewer its
+  // choices; matching `APPROVED` inside it would read every reply that quotes the
+  // template as an approval.
   if (rest.startsWith("<")) return undefined;
   // Anchored: the value must be the first thing after the separator, so a
   // verdict named later in the line is prose, not a marker. This is the one
   // place this reader is STRICTER than `readMarker`, and the two together
   // (anchored prefix + anchored value) are what make the whole-reply
-  // quotation class unrepresentable.
-  const matched = new RegExp(`^(${VERDICT_STATUSES.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})(?![A-Za-z0-9_])`, "i").exec(rest)?.[1];
+  // quotation class unrepresentable. The look-ahead excludes letters, digits and
+  // `_` rather than letters alone, so `ISSUES_FOUND` cannot match inside a
+  // lower-case `critical_issues_found`.
+  const matched = inlineValueRe_().exec(rest)?.[1];
   if (matched === undefined) return undefined;
   return VERDICT_STATUSES.find((s) => s.toLowerCase() === matched.toLowerCase());
 }
@@ -200,10 +216,7 @@ function headingValueIndex(lines: string[], index: number): number | undefined {
 
 /** The value a token-bearing line states, for the menu-run count: inline form
  *  first, then the heading form's following value line. */
-function tokenLineStatus(
-  lines: string[],
-  index: number,
-): AdversarialVerdictStatus | undefined {
+function tokenLineStatus(lines: string[], index: number): AdversarialVerdictStatus | undefined {
   const line = lines[index] as string;
   const inline = inlineValue(line);
   if (inline !== undefined) return inline;
@@ -348,7 +361,8 @@ export function verdictCandidateLines(text: string): VerdictLine[] {
       // decide it.
       structural: QUOTED_OR_TABLE_RE.test(line),
       menuRun: menuRun.has(i),
-    });  }
+    });
+  }
   return out;
 }
 

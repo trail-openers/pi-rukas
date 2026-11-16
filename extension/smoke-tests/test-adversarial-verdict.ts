@@ -23,13 +23,10 @@
  * died with no commit and no PR.
  */
 
-import { decideLoopAction, parseVerdict } from "../src/adversarial-verdict.ts";
-import {
-  readAdversarialVerdict,
-  verdictCandidateLines,
-} from "../src/adversarial-verdict-read.ts";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { readAdversarialVerdict, verdictCandidateLines } from "../src/adversarial-verdict-read.ts";
+import { decideLoopAction, parseVerdict } from "../src/adversarial-verdict.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -163,7 +160,10 @@ const MAX = 3;
     ['a "> " block quote', "> VERDICT: CRITICAL_ISSUES_FOUND"],
     ['a "| " table cell', "| VERDICT: CRITICAL_ISSUES_FOUND |"],
     ["inline backticks", "`VERDICT: CRITICAL_ISSUES_FOUND`"],
-    ["a mid-line prose mention", "It would be wrong to answer VERDICT: CRITICAL_ISSUES_FOUND here."],
+    [
+      "a mid-line prose mention",
+      "It would be wrong to answer VERDICT: CRITICAL_ISSUES_FOUND here.",
+    ],
   ];
   for (const [name, shape] of blocking) {
     const v = parseVerdict(AFTER + shape);
@@ -295,9 +295,13 @@ const MAX = 3;
     fixture.includes("`VERDICT: APPROVED`"),
     "…and the fixture really carries the quoted APPROVED that caused the misread",
   );
+  // A bulleted echo of the whole menu, each entry inside inline code: the values
+  // are all named, none of them in marker position, so the real verdict stands.
+  const echoedInline = `VERDICT: APPROVED
+
+- the brief offers \`APPROVED\`, \`MINOR_OBSERVATIONS\`, \`ISSUES_FOUND\`, \`CRITICAL_ISSUES_FOUND\``;
   assert(
-    readAdversarialVerdict(`VERDICT: APPROVED\n\n- as the brief says: \`${MENU.split("\n").join("` and `")}\``) ===
-      "APPROVED",
+    readAdversarialVerdict(echoedInline) === "APPROVED",
     "a bulleted echo of the whole menu inside inline code leaves the real verdict alone",
   );
 }
