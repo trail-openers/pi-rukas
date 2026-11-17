@@ -177,11 +177,16 @@ export async function reaskRoundVerdict(
   tally: { accumulateUsageOnly: (r: DispatchResult) => void },
   reask?: VerdictReaskFn,
   jobId?: string,
+  /** The tree the round's review was dispatched in — the loop's `workCwd`. The
+   * production child runs there, so it follows up the review it belongs to
+   * rather than the parent's cwd. */
+  cwd?: string,
 ): Promise<ReaskedRoundVerdict | undefined> {
   const recovered = await reaskAdversarialVerdict({
     transcriptPath: adv.transcriptPath,
     role: adv.role,
     ...(adv.model === undefined ? {} : { model: adv.model }),
+    ...(cwd === undefined || cwd === "" ? {} : { cwd }),
     ...(jobId === undefined ? {} : { jobId }),
     ...(reask === undefined ? {} : { reask }),
   });
@@ -226,6 +231,31 @@ export async function reaskRoundVerdict(
 export interface ReaskedRoundVerdict {
   verdict: AdversarialVerdict;
   source: typeof VERDICT_REASK_SOURCE_TAG;
+}
+
+/**
+ * The loop's gate on a re-ask, in one call.
+ *
+ * The two conditions live here rather than in the round body so the loop reads
+ * as one statement and the switch's off arm is a function the loop never enters:
+ * an aborted loop asks nothing, and with
+ * `PI_ENSEMBLE_ADVERSARIAL_VERDICT_REASK=0` no child is reached at all. `cwd` is
+ * threaded from the loop's `workCwd` — the same value `runPhase` was handed — so
+ * the second child of a round starts in the tree the round reviewed and never in
+ * the parent's process directory.
+ */
+export function reaskRoundOnce(
+  adv: DispatchResult,
+  round: number,
+  tally: { accumulateUsageOnly: (r: DispatchResult) => void },
+  params: { verdictReask?: VerdictReaskFn; workCwd?: string },
+  jobId?: string,
+  signal?: { aborted: boolean },
+): Promise<ReaskedRoundVerdict | undefined> {
+  if (!adversarialVerdictReaskEnabled() || signal?.aborted === true) {
+    return Promise.resolve(undefined);
+  }
+  return reaskRoundVerdict(adv, round, tally, params.verdictReask, jobId, params.workCwd);
 }
 
 /** The result text of a round whose verdict arrived through the re-ask: the

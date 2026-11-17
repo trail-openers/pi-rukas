@@ -31,11 +31,19 @@ export const SEAMS_SPAWN_CONFIG: Seam[] = [
   {
     // The adversarial verdict re-ask, loop side: it turns an unreadable round
     // into a recovered verdict or leaves the round exactly as it was. Both of
-    // its production callers are `adversarial.ts` — the ask itself, and the
+    // its production callers are `adversarial.ts` — the gated ask, and the
     // switch its reviewer brief reads.
     file: "adversarial-verdict-reask.ts",
     pending: {},
-    canary: { symbol: "reaskRoundVerdict", importer: "adversarial.ts" },
+    testOnly: {
+      // The ask itself, driven through the gate below by the loop-side suite (and
+      // directly, with the real child, by the spawn suite). Kept separate from
+      // `reaskRoundOnce` because the gate is the production entry and this is the
+      // seam a test scripts the answer at.
+      reaskRoundVerdict:
+        "the one ask: calls the seam, reads its answer with the strict reader, folds only the child's cost; test-adversarial-verdict-reask.ts drives it",
+    },
+    canary: { symbol: "reaskRoundOnce", importer: "adversarial.ts" },
   },
   {
     // The re-ask's child plumbing: argv, env, stdin, bound, RPC stream. Only
@@ -48,14 +56,14 @@ export const SEAMS_SPAWN_CONFIG: Seam[] = [
       // child is judged by, asserted without spawning one (a live spawn is
       // refused offline by `assertLiveSpawnAllowed`).
       reaskChildArgs:
-        "the re-ask child's argv; test-adversarial-verdict-reask.ts pins the resume flags and the no-fence ask",
+        "the re-ask child's argv; test-adversarial-verdict-reask-child.ts pins the resume flags and the no-fence ask",
       reaskReplyText:
-        "the RPC-stream reply extractor; test-adversarial-verdict-reask.ts pins that a partial stream is not a verdict",
+        "the RPC-stream reply extractor; test-adversarial-verdict-reask-child.ts pins that only the last turn answers",
       // The temp-file write behind the child's `--append-system-prompt`; split
       // out of `writeReviewerPromptFile` so the mode and name are assertable
       // without a role's prompt file on disk.
       writeReaskPromptFile:
-        "the prompt-file write (0700 dir, 0600 file, role-named); test-adversarial-verdict-reask.ts drives it against a mkdtemp root",
+        "the prompt-file write (0700 dir, 0600 file, role-named); test-adversarial-verdict-reask-child.ts drives it against a mkdtemp root",
     },
     canary: { symbol: "spawnVerdictReaskChild", importer: "adversarial-verdict-reask.ts" },
   },

@@ -69,7 +69,7 @@ const CRITICAL_REPLY =
 /** The re-ask answer every case installs. It is answered, not absent: under `"0"`
  * the switch — not the missing stub — is what must keep the second child away,
  * and a case with no seam installed would pass even if the loop asked anyway. */
-const ANSWER: ReaskOutcome = { ok: true, text: "VERDICT: APPROVED", completed: true };
+const ANSWER: ReaskOutcome = { ok: true, text: "VERDICT: APPROVED" };
 let reaskCalls: Parameters<VerdictReaskFn>[0][] = [];
 const reask: VerdictReaskFn = async (args) => {
   reaskCalls.push(args);

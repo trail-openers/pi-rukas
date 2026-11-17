@@ -27,11 +27,7 @@ import {
 } from "./adversarial-reviewer-arm.ts";
 import { type RoundReview, roundAfterReread } from "./adversarial-round-state.ts";
 import { type RoundRecord, createUsageTally } from "./adversarial-usage.ts";
-import {
-  adversarialVerdictReaskEnabled,
-  reaskResultText,
-  reaskRoundVerdict,
-} from "./adversarial-verdict-reask.ts";
+import { reaskResultText, reaskRoundOnce } from "./adversarial-verdict-reask.ts";
 import {
   type LoopResultState,
   decideLoopAction,
@@ -358,8 +354,8 @@ export async function runAdversarialLoop(
     // a re-ask living there would follow it everywhere. The review dispatch is
     // the only one this loop makes, so it is the only one that can be asked.
     const recovered =
-      verdict.verdictParsed === false && adversarialVerdictReaskEnabled() && !signal.aborted
-        ? await reaskRoundVerdict(adv, round, tally, params.verdictReask, orchestratorJobId)
+      verdict.verdictParsed === false
+        ? await reaskRoundOnce(adv, round, tally, params, orchestratorJobId, signal)
         : undefined;
     const finalVerdict = recovered?.verdict ?? verdict;
     rounds.push({

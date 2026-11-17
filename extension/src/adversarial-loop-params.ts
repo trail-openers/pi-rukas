@@ -158,7 +158,10 @@ export type AdversarialLoopParams = ReportPolicy & {
    * — a real `pi` child on the reviewer's session file. It exists as a param
    * rather than a module mock because `assertLiveSpawnAllowed` refuses a real
    * adversarial spawn, and the re-ask is the one dispatch of the round a smoke
-   * test must be able to script without scripting the reviewer too.
+   * test must be able to script without scripting the reviewer too. Because it
+   * is a FUNCTION, the `adversarial_loop` tool strips it from raw args (the tool
+   * schema has no such property) so no caller can install its own reader at the
+   * seam a verdict is decided on — the same treatment the budget arms get.
    */
   verdictReask?: VerdictReaskFn;
 };

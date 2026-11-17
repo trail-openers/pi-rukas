@@ -66,9 +66,10 @@ reaskShapesAreFenced(assert);
 const { runAdversarialLoop } = await import("../src/adversarial.ts");
 const { parseVerdict } = await import("../src/adversarial-verdict.ts");
 
-/** A completed re-ask answer — the shape only a child that ended its own turn gets. */
+/** A re-ask answer — the shape only a child that ended its own turn gets (the
+ * type has no arm for an answer from a killed child, which is the point). */
 function answered(text: string, extra: { usage?: DispatchUsage } = {}): ReaskOutcome {
-  return { ok: true, text, completed: true, ...extra };
+  return { ok: true, text, ...extra };
 }
 
 /** The re-ask seam: what it was asked, and what it answered. */

@@ -41,13 +41,14 @@ import type { AdversarialVerdict, DispatchResult } from "./types.ts";
  * operator needs in order to tell a wedged provider from a missing session. */
 export type ReaskFailure = "no-session" | "spawn-failed" | "timeout" | "no-answer";
 
-/** What the re-ask returned: the re-ask child's own reply, or why it did not. */
+/** What the re-ask returned: the re-ask child's own reply, or why it did not.
+ *
+ * There is exactly one shape that can carry an answer, and the reader of this
+ * type (`reaskAdversarialVerdict`) accepts an answer from no other: a stream cut
+ * short by the bound or a signal has nowhere to come from, so a partial reply is
+ * not a verdict and no arm of this union can express one. */
 export type ReaskOutcome =
-  /** The child ended its own turn (`agent_end` reached and a clean exit), so its
-   * final reply is a complete answer. An answer from a child the bound or a
-   * signal ended is reported as `ok: false, reason: "timeout"` instead — a
-   * partial stream is not a verdict. */
-  | { ok: true; text: string; completed: true; usage?: DispatchResult["usage"] }
+  | { ok: true; text: string; usage?: DispatchResult["usage"] }
   | { ok: false; reason: ReaskFailure };
 
 /** The answer a re-ask yielded that the strict reader still refused — the
@@ -151,9 +152,21 @@ export function reaskChildArgs(args: {
  *
  * The child env comes from the same helper `spawn.ts` uses, because a re-ask is
  * the same helper role with the same credentials; a strip placed only at the
- * other site would leave this one fully authenticated. `withOperatorConfigGuard`
- * wraps it for the same reason the reattach path wraps its own spawn: this child
- * runs outside `spawnSpecialist`, so it guards its own operator-config window.
+ * other site would leave this one fully authenticated. The strip is asked for
+ * with `args.role` — the role actually being re-asked — and never a literal, so
+ * the env matches the child rather than the first caller this feature had.
+ * `withOperatorConfigGuard` wraps it for the same reason the reattach path wraps
+ * its own spawn: this child runs outside `spawnSpecialist`, so it guards its own
+ * operator-config window.
+ *
+ * `cwd` is the review's own tree, threaded from the loop's `workCwd` (which is
+ * required on every non-reportOnly round). The child resumes the reviewer's
+ * session file by absolute path, so the tree it starts in changes only what a
+ * `bash` call it makes would resolve against — and the tool fence strips
+ * `write`/`edit`/`multiedit` and the child guards register, so a re-ask child
+ * cannot write anything anywhere. It is still the reviewer's tree, because a
+ * second reviewer child that looked at a different checkout is a second opinion
+ * rather than a follow-up.
  */
 export async function spawnVerdictReaskChild(args: {
   transcriptPath: string;
@@ -190,11 +203,13 @@ export async function spawnVerdictReaskChild(args: {
 async function runReaskChild(
   command: string,
   argv: string[],
-  args: { cwd?: string; boundMs: number; prompt: string },
+  args: { role: string; cwd?: string; boundMs: number; prompt: string },
 ): Promise<ReaskOutcome> {
-  const childEnv = forgeReadChildEnv(process.env, "adversarial-developer");
+  const childEnv = forgeReadChildEnv(process.env, args.role);
   scrubGitLocation(childEnv);
   const child = spawn(command, argv, {
+    // Absent means the parent's cwd, which is the loop's process directory, not
+    // the reviewed tree — so the loop always names one (adversarial.ts).
     cwd: args.cwd,
     shell: false,
     stdio: ["pipe", "pipe", "pipe"],
@@ -272,7 +287,7 @@ async function runReaskChild(
   }
   if (settled.timedOut) return { ok: false, reason: "timeout" };
   if (text === "") return { ok: false, reason: "no-answer" };
-  return { ok: true, text, completed: true };
+  return { ok: true, text };
 }
 
 /** The role's system prompt, written to a temp file the way `spawnSpecialist`
