@@ -30,9 +30,6 @@ export const SPEC_INTAKE_VALUES = ["require", "derive"] as const;
 
 export type SpecIntake = (typeof SPEC_INTAKE_VALUES)[number];
 
-/** The knob's env name, spelled once so the gate, the docs and this reader agree. */
-export const SPEC_INTAKE_ENV = "PI_ENSEMBLE_LEAN_SPEC_INTAKE";
-
 /** A knob set to something it cannot mean. Never collapsed into the default. */
 export class SpecIntakeError extends Error {
   override readonly name = "SpecIntakeError";
@@ -51,7 +48,7 @@ function refusal(where: string, value: unknown): SpecIntakeError {
  */
 export function validateSpecIntake(
   value: unknown,
-  where = SPEC_INTAKE_ENV,
+  where = "PI_ENSEMBLE_LEAN_SPEC_INTAKE",
 ): SpecIntake | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || !SPEC_INTAKE_VALUES.includes(value as SpecIntake))
@@ -66,7 +63,7 @@ export function validateSpecIntake(
  * not carry. Env first means an operator's word beats a repo that set `derive`.
  */
 export function resolveSpecIntake(config?: WorkConfig): SpecIntake {
-  const env = validateSpecIntake(process.env[SPEC_INTAKE_ENV]);
+  const env = validateSpecIntake(process.env.PI_ENSEMBLE_LEAN_SPEC_INTAKE);
   if (env !== undefined) return env;
   const fromConfig = config?.lean?.specIntake;
   return fromConfig ?? "require";
@@ -83,6 +80,6 @@ export function applySpecIntakeFlag(value: string | undefined): string | undefin
   if (value === undefined) return undefined;
   if (!SPEC_INTAKE_VALUES.includes(value as SpecIntake))
     return `--spec-intake must be one of ${SPEC_INTAKE_VALUES.join(", ")}`;
-  process.env[SPEC_INTAKE_ENV] = value;
+  process.env.PI_ENSEMBLE_LEAN_SPEC_INTAKE = value;
   return undefined;
 }

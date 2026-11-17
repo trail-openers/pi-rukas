@@ -33,16 +33,14 @@ import { leanChildOpts } from "./child-opts.ts";
 import { type Budget, type WorkConfig, loadWorkConfig } from "./config.ts";
 import { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
 import type { PiSpec } from "./spec.ts";
-import { parsePiSpec, readiness, renderPiSpec } from "./spec.ts";
-import { type BudgetArms, armBudget, budgetFor, dispatchUsageRow } from "./step-budget.ts";
+import { parsePiSpec } from "./spec.ts";
+import { type DerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
+import { type BudgetArms, armBudget, dispatchUsageRow } from "./step-budget.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
 
 /** The role of the one child: a reader, never a writer. */
 export const DERIVE_ROLE = "explore";
-
-/** The `budgets` key that bounds this child — its own row, not a step's. */
-export const DERIVE_BUDGET_KEY = "derive";
 
 // Re-exported from its leaf so the number is declared once for `config.ts` too.
 export { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
@@ -153,34 +151,6 @@ export function parseDerivedBlock(text: string): PiSpec | undefined {
   return derived;
 }
 
-/** The first `pi-spec v1` block in a reply, mapped. Exported for its own tests. */
-export function extractDerivedSpec(reply: string): PiSpec | undefined {
-  return parseDerivedBlock(reply);
-}
-
-/**
- * Why a rendered contract is not one this run can build from, or `undefined`.
- *
- * Both checks are made on the RENDERED block, never on the in-memory object:
- * the block is what every later step re-parses, so a spec whose rendering the
- * parser reads differently is a contract the run would execute differently from
- * the one it validated. `readiness` then applies the rules `ready` applies to an
- * authored block — a derived `size: "L"` is refused exactly as a written one is.
- * The rendered block is quoted in every refusal, so the operator can see what
- * the child actually said rather than being told it was wrong.
- */
-export function derivedSpecProblem(spec: PiSpec): string | undefined {
-  const rendered = renderPiSpec(spec);
-  const back = parsePiSpec(rendered);
-  if (!back.ok)
-    return `the derived spec does not survive its own rendering: ${back.reason}\n\n${rendered}`;
-  if (JSON.stringify(back.spec) !== JSON.stringify(spec))
-    return `the derived spec read back different from the one rendered\n\n${rendered}`;
-  const rules = readiness(back.spec);
-  if (rules.length > 0) return `the derived spec is not ready: ${rules.join("; ")}\n\n${rendered}`;
-  return undefined;
-}
-
 /** What one derivation needs from the outside world, all of it injectable. */
 export interface DeriveDeps {
   /** The issue's TITLE — the body comes from the caller's own fetch, never a second one. */
@@ -195,8 +165,7 @@ export interface DeriveDeps {
 
 /** The `derive` row of the run's config, or the shipped ceiling when it has none. */
 export function deriveBudget(config?: WorkConfig): Budget {
-  const configured = config?.budgets?.[DERIVE_BUDGET_KEY];
-  return configured ?? DERIVE_DEFAULT_BUDGET;
+  return config?.budgets?.derive ?? DERIVE_DEFAULT_BUDGET;
 }
 
 /**
@@ -236,7 +205,7 @@ export async function deriveSpec(
   const derived = parseDerivedBlock(result.text ?? "");
   if (derived === undefined)
     throw new SpecDeriveError("the spec-derive child returned no parsable pi-spec v1 block", [row]);
-  const problem = derivedSpecProblem(derived);
+  const problem = derivedSpecProblem({ spec: derived, model: "", at: 0 });
   if (problem !== undefined) throw new SpecDeriveError(problem, [row]);
   return derived;
 }

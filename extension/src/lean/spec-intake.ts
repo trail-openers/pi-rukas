@@ -24,21 +24,15 @@ import { type DeriveDeps, SpecDeriveError, deriveSpecForRun, traceDerive } from 
 import { type SpecIntake, resolveSpecIntake } from "./spec-intake-switch.ts";
 import type { PiSpec } from "./spec.ts";
 import { parsePiSpec } from "./spec.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 import { oneLine } from "./text-fence.ts";
 
 /** The text a prose ticket's missing block is reported as, in both modes. */
 export const NO_BLOCK_RULE = "no pi-spec v1 block";
 
-/** The provenance recorded for one derivation, so a bad contract can be traced. */
-export interface DerivedRecord {
-  spec: PiSpec;
-  model: string;
-  at: number;
-}
-
 /** What the decision came to: a contract, or the rule that stopped the run. */
 export type Contract =
-  | { spec: PiSpec; derived?: DerivedRecord }
+  | { spec: PiSpec; derived?: DerivedSpec }
   | { rule: string; infra?: boolean };
 
 /**
@@ -69,8 +63,7 @@ export async function contractOf(
   if (body.trim() === "") return { rule: NO_BLOCK_RULE };
   try {
     const spec = await deriveSpecForRun(derive, repoRoot, issue, base.baseSha, body);
-    return { spec, derived: { spec, model: deriveModel(), at: Date.now() } };
-  } catch (err) {
+    return { spec, derived: { spec, model: deriveModel(), at: Date.now() } };  } catch (err) {
     if (!(err instanceof SpecDeriveError)) throw err;
     traceDerive(issue, "refused", err.message);
     // Clipped: the derivation's cause is a model's text put into a rule an

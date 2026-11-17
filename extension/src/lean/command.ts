@@ -39,7 +39,8 @@ import { reviewOutcome } from "./review.ts";
 import { type LeanSeed, leanSeed } from "./seed.ts";
 import { type DeriveDeps, type DeriveDispatch, deriveDeps, traceDerive } from "./spec-derive.ts";
 import { specFor } from "./spec-for.ts";
-import { type DerivedRecord, configAtBase, contractOf } from "./spec-intake.ts";
+import { configAtBase, contractOf } from "./spec-intake.ts";
+import { type DerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Step } from "./state.ts";
@@ -72,7 +73,7 @@ interface ReadyFacts {
    * accessor's own gate — so a record can carry a derived spec only because a
    * `ready` validated it.
    */
-  derived?: DerivedRecord;
+  derived?: DerivedSpec;
 }
 
 /**
