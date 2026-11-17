@@ -82,12 +82,20 @@ function fenceRun(line: string): { char: string; length: number } | null {
  *  now sits outside the block and signs). Refusing to close can only ever fence too
  *  much, which is the one direction this reader is allowed to err in; refusing to
  *  open exposes lines, which is why the OPENER rule stays the broad `FENCE_RE`.
- *  `CLOSER_RE` is this rule and `closerRun` reads it, so the walk and the pattern
- *  cannot disagree about what a bare run looks like. */
-const CLOSER_RE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
+ *  The run's LENGTH is not tested here: `fencePositions` requires it to equal the
+ *  opener's exactly, so this pattern says only what a bare run looks like and the
+ *  walk decides whether that run ends the block that is open. `CLOSER_RE` is this
+ *  rule and `closerRun` reads it, so the walk and the pattern cannot disagree about
+ *  what a bare run looks like. Like `FENCE_RE` its quantifier is LAZY, which is what
+ *  makes a line whose characters are all the fence character — `~~~~` under a `~~~`
+ *  block — be read as the run the reviewer wrote rather than as the whole line, and a
+ *  line that carries more of the character than that is not a bare run at all. */
+const CLOSER_RE = /^[ \t]*(`{3,}?|~{3,}?)[ \t]*$/;
 
-/** The run of a line that closes a block, or null when the line is content — a
- *  paragraph, or a delimiter carrying an info string. */
+/** The run of a line that could close a block — a bare run, whatever its length —
+ *  or null when the line is content: a paragraph, or a delimiter carrying an info
+ *  string. Whether that run actually ends the open block is the walk's question, since
+ *  it depends on the opener above it. */
 function closerRun(line: string): { char: string; length: number } | null {
   const hit = CLOSER_RE.exec(line);
   if (hit === null) return null;
@@ -114,14 +122,21 @@ function closerRun(line: string): { char: string; length: number } | null {
  *     — a rule with an info-string exception anywhere in it has one more spelling
  *     that opens nothing, and every one of them is a forgery that signs.
  *   - **Closer.** With a block open, a line closes it only when it is a BARE run of
- *     the SAME character, at least as long as the opener's run: whitespace on either
- *     side and nothing else (`CLOSER_RE`). A line that shows an info string is not a
- *     closer but content the reviewer is displaying — `~~~~bash` under a `~~~` block
- *     does not end it, exactly as a ``` line does not end a ```` block. The two
- *     directions are deliberately asymmetric: an opener that refuses to open EXPOSES
+ *     the SAME character whose run length EQUALS the opener's exactly: whitespace on
+ *     either side and nothing else (`CLOSER_RE`), and `closing.length === open.length`
+ *     here. A line that shows an info string is not a closer but content the reviewer
+ *     is displaying — `~~~~bash` under a `~~~` block does not end it, exactly as a ```
+ *     line does not end a ```` block. Neither is a bare run of a DIFFERENT length: a
+ *     forger writes a longer run under a short opener, presents it as the end of the
+ *     block, and signs on the lines that now look unfenced. CommonMark lets a longer
+ *     bare run close a shorter opener; this reader does not, and the over-fencing that
+ *     costs (a reply whose closer is longer than its opener keeps everything below it
+ *     fenced) is the price of the direction, not a defect in it: anything other than
+ *     the exact bare run stays content, so the walk can only ever fence TOO much. The
+ *     two directions are deliberately asymmetric: an opener that refuses to open EXPOSES
  *     lines, so the opener test is the broad `FENCE_RE`; a closer that refuses to
- *     close only HIDES them, so the closer test is the narrow bare-run one, and
- *     failing closed is the single error this reader may make.
+ *     close only HIDES them, so the closer test is the narrow exact-length bare run,
+ *     and failing closed is the single error this reader may make.
  *   - **Content.** Every other line under an open block is fenced, and a block the
  *     reply never closes fences to the end of it. */
 export type FencePosition = "outside" | "inside" | "fence";
@@ -129,7 +144,9 @@ export type FencePosition = "outside" | "inside" | "fence";
 export function fencePositions(lines: readonly string[]): FencePosition[] {
   const out: FencePosition[] = [];
   // undefined — no block is open. Otherwise the character and run length of the
-  // opener that is still live: the walk's only state.
+  // opener that is still live: the walk's only state. The run length is the run only,
+  // never the characters that follow it, so the info string a reviewer pasted after the
+  // opener's run cannot make its closer deeper than the run it actually wrote.
   let open: { char: string; length: number } | undefined;
   for (const line of lines) {
     const run = fenceRun(line);
@@ -140,9 +157,11 @@ export function fencePositions(lines: readonly string[]): FencePosition[] {
     if (open === undefined) open = run;
     else {
       // The closer is read by its own, narrower rule: a delimiter that carries an
-      // info string is content under the open block, not the line that ends it.
+      // info string is content under the open block, not the line that ends it — and
+      // so is a bare run whose length differs from the opener's, because a longer run
+      // is a forger's "closer" and a shorter one never reached this length on its own.
       const closing = closerRun(line);
-      if (closing !== null && closing.char === open.char && closing.length >= open.length)
+      if (closing !== null && closing.char === open.char && closing.length === open.length)
         open = undefined;
     }
     out.push("fence");
@@ -254,7 +273,8 @@ const TAB_EMPHASIS_BULLET = String.raw`(?:\*\*|\*) *\t`;
  *  silence, because a forgery that leaves no trace in the candidate list is the one
  *  failure this reader cannot report. A single `*` is NOT in this group: `*VERDICT:`
  *  is one asterisk of emphasis touching the token, refused by the emphasis rules
- *  rather than as a list item, and marked the same way (`NOT_A_TOKEN_LINE`). */
+ *  rather than as a list item, and marked the same way every other refused shape is
+ *  marked — a candidate whose `structural` is set, not a line that went missing. */
 const SEPARATORLESS_LIST_MARKER = String.raw`(?:[-+]|[0-9]+[.)])(?=VERDICT)`;
 
 /** A block quote, a table row, a line with ANY leading whitespace (a tab, one to
