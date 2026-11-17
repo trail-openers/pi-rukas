@@ -29,7 +29,7 @@ export interface DerivedSpec {
  * rather than restate it. */
 export type ContractSource = { derivedSpec?: DerivedSpec };
 
-/** A lone (unpaired) UTF-16 surrogate: `JSON.stringify` cannot hand it back intact. */
+/** A lone (unpaired) UTF-16 surrogate — the one string `JSON.stringify` cannot return. */
 const LoneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF]/;
 
 /** A candidate derived spec, or `undefined` with the reason it is not one. The
@@ -50,8 +50,8 @@ export function derivedSpecProblem(value: unknown): string | undefined {
   if (typeof spec !== "object" || spec === null || Array.isArray(spec))
     return "derivedSpec.spec must be an object";
   // The surrogate clause, asked of the reader's OWN canonical parse below rather than
-  // of the caller's object: `spec` is `unknown` here, and a check that reached into it
-  // would be a second, differently-typed reader of the same fields.
+  // of the caller's object: `spec` is `unknown` here, and reaching into it would be a
+  // second, differently-typed reader of the same fields.
   const rendered = renderPiSpecSafe(spec as PiSpec);
   if (rendered === undefined) return "derivedSpec.spec is not a renderable pi-spec";
   const back = parsePiSpec(rendered);

@@ -134,11 +134,9 @@ export function readyDeps(headless: boolean): ReadyDeps {
  * that cannot start still has to say why on the issue — but a run whose git could not be asked
  * is not an unready issue, and posting "your base is not a commit" on an issue whose clone
  * merely had a locked index would tell the operator to fix something that is not broken.
- *
- * The third kind is `infra`: what the intake returns when the fault is not the author's (a
- * failed derivation, a config that exists and cannot be read). It is a verdict the machine
- * routes to `handback`, so it is part of this function's own answer, not something the caller
- * re-derives from the facts.
+ * The third kind, `infra`, is the intake's: a fault that is not the author's (a failed
+ * derivation, a config that exists and cannot be read), which the machine routes to
+ * `handback` rather than `decline`.
  */
 export async function readyOutcome(
   repoRoot: string,
@@ -163,14 +161,9 @@ export async function readyOutcome(
     ...(d.arm === undefined ? {} : { arm: d.arm }),
   };
   const contract = await contractOf(repoRoot, issue, body, base, derive);
-  // The cost rows of the child the intake paid for, read off the contract the step is
-  // now recording. A deriving child that died still spent tokens, and the step log is
-  // the only place a host can read that; `contractOf` returns rows ONLY on a contract,
-  // so a run that never billed a child records no key at all.
-  // `contractOf` reports the rows of every child the INTAKE paid for — the drafting
-  // child on a contract, and on the `infra` rule the child whose derivation failed: a
-  // child that died before it drafted anything still spent tokens, and this step's
-  // record is the only place the run can still account for them.
+  // The rows of every child the INTAKE paid for — the drafting child on a contract, and
+  // on the `infra` rule the child whose derivation failed: a dead child still spent
+  // tokens, and this step's record is the only place the run can still account for them.
   const rows = contract.dispatches ?? [];
   if ("rule" in contract)
     return {
@@ -257,8 +250,7 @@ export async function readyOutcome(
         failedRules: [
           `.pi/work.json is unusable: ${oneLine(err instanceof Error ? err.message : String(err), 160)}`,
         ],
-        // The child was paid for before this refusal, so its cost rides on the verdict
-        // that says the config it was armed from is unusable.
+        // The child was paid for before this refusal, so its cost rides on the verdict.
         ...(rows.length === 0 ? {} : { dispatches: rows }),
       },
     };
@@ -340,9 +332,8 @@ export function phase1Handlers(
   // the production wiring built with THIS run's trust stamp, so a headless run cannot
   // lend its stamp to an interactive one that follows it in the same process.
   const d: ReadyDeps = { ...readyDeps(headless), ...deps };
-  // The rows of `ready`'s drafting child, on every verdict: a child that died still
-  // cost tokens, and a `ready` that billed none records no key at all. `ready` is a
-  // dispatching state — see `DISPATCH_STATES`.
+  // The rows of `ready`'s drafting child ride on every verdict (a dead child still cost
+  // tokens); a `ready` that billed none records no key. See `DISPATCH_STATES`.
   const rowsField = (facts: ReadyFacts): { dispatches?: DispatchUsageRow[] } =>
     facts.dispatches === undefined || facts.dispatches.length === 0
       ? {}

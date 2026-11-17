@@ -118,10 +118,9 @@ export function derivePrompt(input: { title: string; body: string }): string {
  */
 export function parseDerivedBlock(text: string): PiSpec | undefined {
   if (text.length > REPLY_MAX_CHARS) return undefined;
-  // The child's reply is PROSE with the block inside it, and `parsePiSpec` reads an
-  // issue BODY whose whole content is the contract. So the block is located first:
-  // exactly one `pi-spec v1` fence is handed to the reader on its own, and anything
-  // else — no block, or two — goes in whole so the reader's own count rules still fire.
+  // The reply is PROSE with the block inside it and `parsePiSpec` reads a BODY whose
+  // whole content is the contract, so the block is located first: one fence goes to the
+  // reader alone, anything else (none, or two) goes in whole so its count rules fire.
   const specs = fencedBlocks(text).filter((b) => b.info === SPEC_INFO);
   const parsed = parsePiSpec(
     specs.length === 1 ? `\`\`\`${SPEC_INFO}\n${specs[0]?.content ?? ""}\n\`\`\`` : text,
@@ -167,11 +166,9 @@ export interface DeriveOutcome {
   dispatches: DispatchUsageRow[];
 }
 
-/** Derive the contract for one issue from its title and body, and report the cost of
- * the child that produced it. Every outcome but a usable spec throws
- * {@link SpecDeriveError} naming its own cause (the causes are listed in this file's
- * header). The child's cost rows ride on every throw: a child that died still cost
- * tokens. */
+/** Derive the contract for one issue from its title and body, and report the cost of the
+ * child that produced it. Every failure throws {@link SpecDeriveError} naming its own
+ * cause, with the child's cost rows on it: a child that died still spent tokens. */
 export async function deriveSpec(
   input: { title: string; body: string },
   dispatch: DeriveDispatch,
@@ -190,9 +187,6 @@ export async function deriveSpec(
     throw new SpecDeriveError(`the spec-derive child could not be run: ${(err as Error).message}`);
   }
   const row = dispatchUsageRow(result);
-  // Every failure from here on is the child's own — a ceiling it blew, a death, or a
-  // reply that is not a contract — so each names its own cause and carries the cost
-  // row: a child that died still spent tokens.
   const fired = arms.fired(result);
   if (fired !== undefined)
     throw new SpecDeriveError(
@@ -224,10 +218,9 @@ export async function deriveSpecForRun(
   baseSha: string,
   body: string,
 ): Promise<DeriveOutcome> {
-  // A missing title is not fatal (the body is the substance). It is derived from and
-  // the failure is TRACED under its own cause name rather than folded into an
-  // expression's side effect: a run that built its contract from no title has to be
-  // tellable from the log, not only by the shape of the spec.
+  // A missing title is not fatal (the body is the substance), and the failure is traced
+  // under its own cause name rather than folded into an expression's side effect: a run
+  // that derived from no title has to be tellable from the log.
   let title = "";
   try {
     title = await deps.issueTitle(repoRoot, issue);

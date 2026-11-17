@@ -39,9 +39,8 @@ import { oneLine } from "./text-fence.ts";
 /** The text a prose ticket's missing block is reported as, in both modes. */
 export const NO_BLOCK_RULE = "no pi-spec v1 block";
 
-/** What the decision came to: a contract, or the rule that stopped the run. A
- * contract carries the cost rows of the child that drafted it (empty when the
- * contract came from the issue and no child was billed). */
+/** What the decision came to: a contract, or the rule that stopped the run. Either may
+ * carry the cost rows of a child the intake paid for; neither does when none was billed. */
 export type Contract =
   | { spec: PiSpec; derived?: DerivedSpec; dispatches: DispatchUsageRow[] }
   | { rule: string; infra?: boolean; dispatches?: DispatchUsageRow[] };
@@ -62,13 +61,11 @@ export async function contractOf(
   if (parsed.ok) return { spec: parsed.spec, dispatches: [] };
   if (parsed.reason !== NO_BLOCK_RULE) return { rule: parsed.reason };
   // Env first (the operator's word), then the committed `lean.specIntake`, then
-  // `require` — so a repo that sets `derive` in `.pi/work.json` is read before its prose
-  // is derived from. The read is at the run's base, and its three outcomes stay three:
-  // a file that is ABSENT is the normal case and gets the shipped default; a file that
-  // EXISTS AND CANNOT BE READ (`LeanConfigError` — git show failed, or the bytes are
-  // not valid JSON) is infrastructure, so it hands back rather than posting a not-ready
-  // comment on a ticket whose own text was never the problem; and a mode value the
-  // switch refuses is a refusal naming the knob, never a raw throw out of the step.
+  // `require`. The read is at the run's base and its three outcomes stay three: an
+  // ABSENT file is the normal case and gets the shipped default; a file that EXISTS AND
+  // CANNOT BE READ (`LeanConfigError`) is infrastructure, so it hands back rather than
+  // posting a not-ready comment on a ticket whose text was never the problem; and a
+  // mode the switch refuses is a refusal naming the knob, never a raw throw.
   let config: WorkConfig | undefined;
   if (base.baseSha !== "") {
     try {
@@ -86,8 +83,8 @@ export async function contractOf(
     intake = resolveSpecIntake(config);
   } catch (err) {
     if (!(err instanceof SpecIntakeError)) throw err;
-    // The repo's own defect, not infrastructure: a knob set to a value it cannot mean
-    // is the author's mistake, so it declines and says so rather than handing back.
+    // The repo's defect, not infrastructure: a knob set to a value it cannot mean is
+    // the author's mistake, so it declines and says so rather than handing back.
     return { rule: oneLine(err.message, 240) };
   }
   if (intake !== "derive" || derive === undefined) return { rule: NO_BLOCK_RULE };
@@ -104,10 +101,8 @@ export async function contractOf(
   } catch (err) {
     if (!(err instanceof SpecDeriveError)) throw err;
     traceDerive(issue, "refused", err.message);
-    // Clipped: the derivation's cause is a model's text put into a rule an
-    // operator reads verbatim on the issue's handback comment. The child's cost rows
-    // ride on the handback: a child that died before it drafted anything still spent
-    // tokens, and this record is the only place the run can still account for them.
+    // Clipped: the cause is a model's text put into a rule the operator reads verbatim.
+    // The child's rows ride on the handback: a child that died still spent tokens.
     return {
       rule: `spec derivation failed: ${oneLine(err.message, 240)}`,
       infra: true,
@@ -116,8 +111,7 @@ export async function contractOf(
   }
 }
 
-/** The loader a run with no wiring of its own reads its mode through: the committed
- bytes at its base, which is where a run's config lives. */
+/** The mode read of a run with no wiring of its own: the committed bytes at its base. */
 function defaultLoadConfig(repoRoot: string, baseSha: string): Promise<WorkConfig> {
   return loadWorkConfig(execp, repoRoot, baseSha);
 }
