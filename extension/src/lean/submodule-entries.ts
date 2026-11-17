@@ -87,12 +87,11 @@ export async function listSubmodules(
     // submodule into a refusal — so the answer is read by name as well as by position.
     const rawName = hit?.[1] ?? hit?.[2] ?? hit?.groups?.name;
     const rawValue = hit?.[3] ?? hit?.groups?.value;
-    // Two alternatives: `--get-regexp` prints a name containing `=` or a space UNQUOTED (measured,
-    // git 2.53) and a tab-containing one C-quoted, so neither branch alone reads every key — and a
-    // skip on a line neither reads would drop a submodule the base registers, the same quiet wrong
-    // answer the filter below exists to prevent. The unquoted branch cannot be `(.*)` either:
-    // `git config` answers a `.`-bearing name as its own section, so a section literally named
-    // `x.path` would read as the name `x.path <path>`.
+    // Two alternatives: `--get-regexp` prints a name containing `=` or a space UNQUOTED and a
+    // tab-containing one C-quoted, so neither branch alone reads every key — and a skip on a line
+    // neither reads would drop a submodule the base registers. The unquoted branch cannot be
+    // `(.*)` either: `git config` answers a `.`-bearing name as its own section, so a section
+    // literally named `x.path` would read as the name `x.path <path>`.
     // One refusal for both ways a key fails to be a name and a path — a line the regexes cannot
     // split, and a pair of tokens the unquoter below cannot prove it read. The base's own line,
     // verbatim, is what an operator needs to go and look at.
@@ -103,12 +102,11 @@ export async function listSubmodules(
         `could not read the submodule list of ${wt}: git config --file .gitmodules --get-regexp path printed a key this step cannot split into a name and a path, so it cannot tell which submodules the base registers: ${JSON.stringify(line.trim())}`,
       );
     // The name is not a label: it is the KEY of the `-c submodule.<name>.url=…` the seeding names
-    // its source with, and git splits a command-line assignment at its FIRST `=`. A name carrying one
-    // sets a key git never consults (measured, git 2.53: `-c submodule.a=b.url=SRC` leaves
-    // `submodule.a` = `b.url=SRC` and `submodule.a=b.url` unset), so `submodule update` falls back
-    // to the URL the base records while `protocol.file.allow=always` on the same call licenses the
-    // transport — the offline rule failing OPEN to a network fetch with every case green. A quote or
-    // whitespace does the same by moving where git thinks the section ends.
+    // its source with, and git splits a command-line assignment at its FIRST `=`. A name carrying
+    // one sets a key git never consults (`-c submodule.a=b.url=SRC` leaves `submodule.a` =
+    // `b.url=SRC`), so `submodule update` falls back to the URL the base records while
+    // `protocol.file.allow=always` on the same call licenses the transport — the offline rule
+    // failing OPEN to a network fetch with every case green.
     if (/[="\s]/u.test(name))
       throw new SpecifyInfraError(
         `could not use the submodule name ${JSON.stringify(name)} from ${wt}/.gitmodules: it cannot be named on a command-line config assignment without changing the key git reads, so this step would seed that entry from the URL the base records rather than from this superproject`,
@@ -231,25 +229,20 @@ export function localSource(
  * The superproject whose bytes to copy: the MAIN working tree, asked of git rather than
  * derived from the caller's path or from `--show-toplevel`.
  *
- * `--show-toplevel` is the wrong question here, and the field bug is the reason: asked inside
- * a linked worktree it answers with THAT worktree, so a step seeding "from the superproject"
- * would be seeding from the very tree it is about to populate — a clone of a repository into
- * itself, which ends not in an error but in a checkout that quietly holds nothing.
- * `--git-common-dir` answers with the shared store (for a linked tree, the superproject's
- * `.git` rather than the tree's own) and its parent is the main checkout: the one tree whose
- * submodule content the base's verify ran against, and the only one no run of this harness can
- * have written.
+ * `--show-toplevel` is the wrong question here: asked inside a linked worktree it answers with
+ * THAT worktree, so a step seeding "from the superproject" would be seeding from the very tree it
+ * is about to populate — a clone of a repository into itself, which ends not in an error but in a
+ * checkout that quietly holds nothing. `--git-common-dir` answers with the shared store and its
+ * parent is the main checkout: the one tree whose submodule content the base's verify ran against,
+ * and the only one no run of this harness can have written.
  *
  * The main checkout is then derived from git's SHAPE — `<…>/.git`, or `<…>/.git/worktrees/<name>`
- * — never from the caller's path. Counting components off `wt` is the trap the field fell into:
- * a run's worktree lives at `<repo>/.worktrees/lean-<issue>`, as deep as a linked tree's gitdir,
- * so an answer derived from it points at `<repo>/.worktrees` — a directory that exists, so no
- * existence check catches it, and which is then asked to supply the submodule the run is
- * populating. Reading the shape makes a run's scaffolding unpayable as a source: `rev-parse`
- * answers `<…>/.worktrees/lean-1` (or echoes an unrecognised `--git-*` question back, which is
- * what a recording exec hands it) and neither has the shape of a common dir, so the step refuses
- * rather than seeding from a directory nobody populated — and a case can stub git, answer the
- * question the step asks, and still exercise this path.
+ * — never from the caller's path. Counting components off `wt` is the trap: a run's worktree lives
+ * at `<repo>/.worktrees/lean-<issue>`, as deep as a linked tree's gitdir, so an answer derived from
+ * it points at `<repo>/.worktrees` — a directory that exists, so no existence check catches it.
+ * Reading the shape makes a run's scaffolding unpayable as a source: `rev-parse` answers
+ * `<…>/.worktrees/lean-1` (or echoes an unrecognised `--git-*` question back) and neither has the
+ * shape of a common dir, so the step refuses rather than seeding from a directory nobody populated.
  */
 export async function superprojectRoot(exec: ExecFn, wt: string): Promise<string> {
   const r = await exec("git", {
@@ -278,12 +271,10 @@ export async function superprojectRoot(exec: ExecFn, wt: string): Promise<string
 }
 
 /**
- * Every git dir `checkout` could be keeping a module store under.
- *
- * `--git-common-dir` for the shared store of a linked worktree, `--absolute-git-dir`
- * for the tree's own. Both are asked, because git has moved a submodule's objects
- * between those two places across its own versions and a probe that guesses one is a
- * probe that fails quietly.
+ * Every git dir `checkout` could be keeping a module store under: `--git-common-dir` for the
+ * shared store of a linked worktree, `--absolute-git-dir` for the tree's own. Both are asked,
+ * because git has moved a submodule's objects between those two places across its own versions and
+ * a probe that guesses one is a probe that fails quietly.
  */
 export async function gitDirsOf(exec: ExecFn, checkout: string): Promise<string[]> {
   const dirs = new Set<string>();
