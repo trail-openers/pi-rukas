@@ -18,15 +18,15 @@ import { oneLine } from "./text-fence.ts";
 /**
  * The disclosure this step records when the runner ran and refused the probe file.
  *
- * The fact that exit 4 was read as the PROBE being rejected, not as a runner that
- * cannot run tests. Recorded on the step's outcome, never as a verdict about the issue.
+ * The fact that exit 4 was read as the PROBE being rejected, not a runner that cannot run tests. Recorded on
+ * the step's outcome, never as a verdict about the issue.
  */
 export const PROBE_REJECTED = "the runner rejected the probe file (exit 4)";
 
 /**
- * How much of the rendered command the disclosure quotes. The sibling clip in `publish-body.ts` is
- * what a printed command gets there; the same bound applies for the same reason — the template is
- * project-authored text that lands in a reason line the operator reads.
+ * How much of the rendered command the disclosure quotes. Same bound as the sibling clip in
+ * `publish-body.ts`, for the same reason: the template is project-authored text landing in a reason line the
+ * operator reads.
  */
 const REJECTED_COMMAND_CLIP = 119;
 
@@ -39,21 +39,19 @@ const PROBE_NOTE_SLICE_BOUND = REJECTED_COMMAND_CLIP + PROBE_REJECTED.length + "
 /**
  * The longest note this renderer can return.
  *
- * DERIVED by running the renderer on its worst case, not declared from arithmetic over its parts:
- * `oneLine` appends its ellipsis AFTER the slice and trims and collapses space runs, all of which
- * change the length a hand-written sum would predict. Measuring the renderer keeps the bound true by
- * construction. The note is JOINED onto the step's own reason, so the clause this step contributes
- * has to be as bounded as the sentence it is added to.
+ * DERIVED by running the renderer on its worst case, not from arithmetic over its parts: `oneLine` appends
+ * its ellipsis AFTER the slice and trims and collapses space runs, all of which change the length a
+ * hand-written sum predicts. Measuring the renderer keeps the bound true by construction. The note is JOINED
+ * onto the step's reason, so this step's clause must be as bounded as that sentence.
  */
 export const PROBE_NOTE_MAX_CHARS = oneLine(probeNoteWorstCase(), PROBE_NOTE_SLICE_BOUND).length;
 
 /**
- * The disclosure line for one proof — the note names the rendered command, clipped to the bound
- * above, which is a RENDERED length and so already carries the ellipsis.
+ * The disclosure line for one proof: the note names the rendered command, clipped to the bound above — a
+ * RENDERED length, so it already carries the ellipsis.
  *
- * `oneLine` and not a bare interpolation, because `proof.cmd` is the project's own `verify.test`
- * template: a newline would end the reason line this note is joined onto, and a `|` would open a
- * column in the table it is eventually printed in.
+ * `oneLine`, not a bare interpolation, because `proof.cmd` is the project's own `verify.test` template: a
+ * newline ends the reason line this joins onto, and a `|` opens a column in the table it is printed in.
  */
 export function probeRejected(proof: Proof): string {
   return oneLine(`${PROBE_REJECTED}: ${proof.cmd}`, PROBE_NOTE_MAX_CHARS - 1);
@@ -62,10 +60,8 @@ export function probeRejected(proof: Proof): string {
 /**
  * Is `abs` an ordinary file this probe may claim (rather than a link, dir or fifo)?
  *
- * `lstat`, never `stat`: the question is what sits AT the name, not what the name resolves to. The
- * link is refused by name rather than by inference — `isSymbolicLink()` before `isFile()`.
- *
- * Module-private: the only caller is `probeWrite`.
+ * `lstat`, never `stat`: the question is what sits AT the name, not what it resolves to. The link is refused
+ * by name rather than inference — `isSymbolicLink()` before `isFile()`. Only caller is `probeWrite`.
  */
 function isPlainProbe(abs: string): boolean {
   try {
@@ -79,13 +75,13 @@ function isPlainProbe(abs: string): boolean {
 /**
  * Write the empty probe at `rel`, or hand back naming why it could not.
  *
- * The guard asks `lstatSync` whether ANYTHING is at the name — not `existsSync`, which follows links
- * and so reports a dangling symlink as nothing there. That difference is the whole guard: for a
- * dangling link `existsSync` says "clear" and `wx` then answers `EEXIST`, handing the operator a raw
- * error naming a file that appears not to exist.
+ * The guard asks `lstatSync` whether ANYTHING is at the name — not `existsSync`, which follows links and
+ * reports a dangling symlink as nothing there. That difference is the whole guard: for a dangling link
+ * `existsSync` says "clear" and `wx` answers `EEXIST`, handing the operator a raw error naming a file that
+ * appears not to exist.
  *
- * `wx` still carries the race: a name that appeared between the check and the write is refused rather
- * than opened. The check before it exists to give the operator a message that names the path.
+ * `wx` still carries the race — a name that appeared between check and write is refused, not opened. The
+ * check before it exists to give the operator a message naming the path.
  */
 export function probeWrite(wt: string, rel: string): void {
   const abs = path.join(wt, rel);
@@ -116,9 +112,9 @@ function lstatExists(abs: string): boolean {
 /**
  * Remove the probe, never throwing.
  *
- * A probe left in the tree is an untracked byte the reset's clean-tree assertion and the
- * acceptance-test commit both have to explain, so this runs on every path including the throw; a
- * probe that cannot be removed is left to the reset's own `clean -fdx`.
+ * A probe left in the tree is an untracked byte the reset's clean-tree assertion and the acceptance-test
+ * commit both explain, so this runs on every path including the throw; one that cannot be removed is left to
+ * the reset's `clean -fdx`.
  */
 export function removeProbe(wt: string, rel: string): void {
   const abs = path.join(wt, rel);
