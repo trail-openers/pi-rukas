@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.89](https://github.com/trail-openers/pi-rukas/compare/v0.14.88...v0.14.89) (2026-11-17)
+
+
+### Bug Fixes
+
+* **adversarial:** close the residual gaps in the verdict candidate reader ([#2339](https://github.com/trail-openers/pi-rukas/issues/2339)) ([cea1101](https://github.com/trail-openers/pi-rukas/commit/cea1101bb448b6134f9ae68af7f6a0b0ca21d690))
+* **review:** name the code index project for reviewer children ([#2337](https://github.com/trail-openers/pi-rukas/issues/2337)) ([7dd46b3](https://github.com/trail-openers/pi-rukas/commit/7dd46b33fa38527169d8bbfaffe19a7d18a3544d)), closes [#2329](https://github.com/trail-openers/pi-rukas/issues/2329)
+
 ## [0.14.88](https://github.com/trail-openers/pi-rukas/compare/v0.14.87...v0.14.88) (2026-11-17)
 
 > **Spec intake is inert when the issue carries a pi-spec block.** With `PI_ENSEMBLE_LEAN_SPEC_INTAKE=derive` (#2326), an issue that carries a valid `pi-spec v1` block dispatches no derive child, posts no comment, runs on the authored spec, and records no `derivedSpec`. This is proven by `extension/smoke-tests/test-lean-spec-intake-inert.ts`. That a derived run's record keeps its contract on reload (#2334, `PI_ENSEMBLE_LEAN_READY_FACTS_ON_LOAD`) is proven by `extension/smoke-tests/test-lean-ready-facts-on-load.ts`.
