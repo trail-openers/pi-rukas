@@ -231,8 +231,9 @@ async function settle(
   }
   const logged = withOutcome(run, key, outcome, now());
   // `ready`'s verdict also has to land on the RUN, not only its step record:
-  // `derivedSpec` is the only copy of a contract that exists on no issue.
-  const withFacts = key === "ready" ? applyReadyFacts(logged, outcome) : logged;
+  // `derivedSpec` is the only copy of a contract that exists on no issue. Keyed on the
+  // step's STATE — `key` is `<issue>:<state>:<n>`, so it is never the bare `ready`.
+  const withFacts = state === "ready" ? applyReadyFacts(logged, outcome) : logged;
   if (outcome.kind === "error") {
     drive.save(withFacts);
     return endRun(
