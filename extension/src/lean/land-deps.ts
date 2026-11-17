@@ -1,17 +1,13 @@
 /**
  * lean/land-deps — the forge seam `lean/land` reaches through, in production form.
  *
- * `land` performs the one irreversible act in a run, so its seam is deliberately
- * the *existing* evidence gatherer rather than a new forge surface:
- * `gatherMergeEvidence` is the driver's executed-evidence read (it runs
- * `mergeEvidenceViewCmd`, which carries `mergeStateStatus`, `state` and
- * `headRefOid` from ONE command, and the check rows that name what is failing),
- * and `prMerge` is the adapter's pinned merge. Neither is re-implemented here —
- * see `land.ts` for why the arrival gate is not restated either.
+ * `land` performs the one irreversible act in a run, so its seam is deliberately the *existing* evidence
+ * gatherer rather than a new forge surface: `gatherMergeEvidence` is the driver's executed-evidence read
+ * (one command carrying `mergeStateStatus`, `state` and `headRefOid`, plus the check rows that name what
+ * is failing), and `prMerge` is the adapter's pinned merge. Neither is re-implemented here.
  *
- * A test injects a recorder into `LandDeps` and the suite never touches a real
- * PR: every `merged` claim the tests observe came from an evidence read that
- * said `ok` plus a merge that was read back as `MERGED`.
+ * A test injects a recorder into `LandDeps` and the suite never touches a real PR: every `merged` claim
+ * came from an evidence read that said `ok` plus a merge read back as `MERGED`.
  */
 
 import { execp } from "../exec.ts";
@@ -44,11 +40,9 @@ export interface LandDeps {
   stateAfter: (repoRoot: string, prNumber: number) => PromiseLike<string | undefined>;
   loadConfig: (repoRoot: string, baseSha: string) => Promise<{ autoMerge: boolean }>;
   /**
-   * The merge-author gate (#2181): is this PR's author listed in
-   * `.pi/merge-authors` at the run's base commit? Production is the shared gate in
-   * `merge-guard-author.ts` — the same function the `/work` driver's `merged` step
-   * and the merge guard call — so no path can drift on what the allowlist means.
-   * Injected so a case can name an author without a forge.
+   * The merge-author gate: is this PR's author listed in `.pi/merge-authors` at the run's base commit?
+   * Production is the shared gate in `merge-guard-author.ts` — the same function the driver's `merged`
+   * step and the merge guard call — so no path drifts on what the allowlist means.
    */
   checkAuthor: (
     repoRoot: string,
@@ -58,10 +52,8 @@ export interface LandDeps {
   /**
    * The squash subject the merge carries; absent, the forge's default is used.
    *
-   * `landDeps()` always supplies this in production (see `primeMergeSubject`).
-   * A squash subject BECOMES the permanent commit record on main, and
-   * release-please derives the version bump and the changelog entry from it, so a
-   * lean merge that left it to the forge's default left the changelog to luck.
+   * A squash subject BECOMES the permanent commit record on main, and release-please derives the version
+   * bump and changelog entry from it, so leaving it to the forge's default left the changelog to luck.
    */
   mergeSubject?: (issue: number) => string | undefined;
 }
@@ -69,14 +61,10 @@ export interface LandDeps {
 /**
  * The squash subject per issue, filled by `primeMergeSubject`.
  *
- * The `mergeSubject` seam is called SYNCHRONOUSLY from inside the pinned merge
- * call, so the forge read that produces the subject cannot happen at the call
- * site. It happens at wiring time instead: `command.ts` primes this cache when it
- * builds the deps for a run, and the seam answers from it. An issue that was
- * never primed (a resumed run whose deps were built before the priming landed, a
- * forge-less clone, an unreadable issue) gets `undefined`, which
- * `prMergeSubjectFlag` renders as NO `--subject` flag — the forge's default,
- * never a blank subject.
+ * The seam is called SYNCHRONOUSLY from inside the pinned merge call, so the forge read that produces the
+ * subject happens at wiring time instead: `command.ts` primes this cache when it builds the deps. An issue
+ * never primed gets `undefined`, which `prMergeSubjectFlag` renders as NO `--subject` flag — the forge's
+ * default, never a blank subject.
  */
 const subjectCache = new Map<number, string | undefined>();
 
@@ -84,10 +72,9 @@ const subjectCache = new Map<number, string | undefined>();
 export function landDeps(): LandDeps {
   const adapter = async (repoRoot: string) => forgeFor(repoRoot);
   return {
-    // The forge this seam already resolves for every other operation, named on
-    // the evidence read rather than left to the gatherer's last-resort detection:
-    // a clone whose remote the gatherer cannot read should refuse on its CI
-    // verdict, not on a forge fault the rest of this function never hit (#2226).
+    // The forge this seam already resolves for every other operation, named on the evidence read rather
+    // than left to the gatherer's last-resort detection: a clone whose remote the gatherer cannot read
+    // should refuse on its CI verdict, not on a forge fault nothing else here would hit.
     // `undefined` (no adapter) falls through to the gatherer's own refusal.
     evidence: async (repoRoot, prNumber) =>
       gatherMergeEvidence(execp, repoRoot, prNumber, (await adapter(repoRoot))?.forge),
@@ -108,17 +95,13 @@ export function landDeps(): LandDeps {
       return (await f.prView(prNumber))?.state;
     },
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
-    // #2181 — the shared gate, on this process's executor. Reads the allowlist at
-    // the run's base sha with `git show`, so a run cannot land its own PR by
-    // widening the file it is judged by.
+    // The shared gate, on this process's executor. Reads the allowlist at the run's base sha, so a run
+    // cannot land its own PR by widening the file it is judged by.
     checkAuthor: (repoRoot, baseSha, author) =>
       heldForMergeAuthor({ exec: execp, cwd: repoRoot, baseSha, author }),
-    // Read from the cache `primeMergeSubject` fills at wiring time. The format is
-    // the driver's ONE conventional-subject parser — the commit-pr path derives its
-    // title through `deriveConsolidationSubject` from the issue title
-    // (`work-driver-commit-title.ts`) and so does the handoff consolidation commit.
-    // A lean merge that invented its own subject would be a second parser
-    // disagreeing with the first about what the same change is.
+    // From the cache `primeMergeSubject` fills at wiring time. The format is the driver's ONE
+    // conventional-subject parser — the commit-pr path and the handoff consolidation commit derive theirs
+    // the same way; a lean merge inventing its own subject would be a second parser disagreeing.
     mergeSubject: (issue) => subjectCache.get(issue),
   };
 }
@@ -126,12 +109,10 @@ export function landDeps(): LandDeps {
 /**
  * Read the issue's title and cache the conventional squash subject its merge carries.
  *
- * Called once per run, at wiring time, because the seam that returns it is sync
- * (see `subjectCache`). `clipTitle` is the driver's own clipper, at the same 64 as
- * `deriveCommitPrTitle`, and only the first line survives: `--subject` is a
- * one-line shell argument, which is `prMergeSubjectFlag`'s contract. An absent
- * forge, an unreadable issue, an empty title or a subject the parser refused all
- * cache `undefined` — no flag, not a blank subject.
+ * Called once per run, at wiring time, because the seam that returns it is sync. `clipTitle` is the
+ * driver's own clipper at the same 64 as `deriveCommitPrTitle`, and only the first line survives —
+ * `--subject` is a one-line argument. An absent forge, unreadable issue, empty title, or a subject the
+ * parser refused all cache `undefined`: no flag, not a blank subject.
  */
 export async function primeMergeSubject(
   repoRoot: string,
