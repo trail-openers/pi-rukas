@@ -256,10 +256,10 @@ export function buildAdversarialPrompt(opts: {
 Round: ${opts.round} of ${opts.maxRounds}.
 
 Attack this implementation. Find edge cases, security holes, race conditions, API misuse, flawed assumptions. ${checks} ${laneRules} Return a verdict line at the end exactly matching one of:
-  VERDICT: APPROVED
-  VERDICT: MINOR_OBSERVATIONS
-  VERDICT: ISSUES_FOUND
-  VERDICT: CRITICAL_ISSUES_FOUND
+VERDICT: APPROVED
+VERDICT: MINOR_OBSERVATIONS
+VERDICT: ISSUES_FOUND
+VERDICT: CRITICAL_ISSUES_FOUND
 
 Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${scopeSection}${issue}${criteria}${commentSection}${opts.fixDelta ?? ""}
 

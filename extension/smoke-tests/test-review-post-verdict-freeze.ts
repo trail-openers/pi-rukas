@@ -89,12 +89,14 @@ function quietTargets(
   };
 }
 /** The four-line verdict menu, lifted out of the prompt the reviewer is actually
- *  sent — retyping it here would let the prompt and this test drift apart. */
+ *  sent — retyping it here would let the prompt and this test drift apart. The
+ *  match tolerates either indentation (#2322 de-dented the brief's menu) so this
+ *  fixture cannot go vacuous on a prompt edit. */
 function reviewerMenu(): string {
   const prompt = buildAdversarialPrompt({ diff: "+x", context: "c", round: 1, maxRounds: 3 });
   return prompt
     .split("\n")
-    .filter((l) => /^\s+VERDICT: [A-Z_]+$/.test(l))
+    .filter((l) => /^\s*VERDICT: [A-Z_]+$/.test(l))
     .join("\n");
 }
 
@@ -104,6 +106,15 @@ function reviewerMenu(): string {
 {
   const menu = reviewerMenu();
   assert(menu.split("\n").length === 4, "the reviewer brief carries the four-line menu");
+  // #2322 AC4, canary two: the menu now prints at column 0, so a reviewer that
+  // copies one line gets a readable signature — and the reply that echoes the
+  // WHOLE menu back is still refused below, which is the half of AC4 this block
+  // owns. If the menu ever stops being four consecutive lines, the exclusion
+  // asserted here would be judging something other than the brief's menu.
+  assert(
+    /^VERDICT: [A-Z_]+\nVERDICT: [A-Z_]+\nVERDICT: [A-Z_]+\nVERDICT: [A-Z_]+$/.test(menu),
+    "…printed at column 0, so copying one line verbatim is a signature (AC4)",
+  );
   const calls: string[] = [];
   const stop = createVerdictStop();
   observeReviewBounds(

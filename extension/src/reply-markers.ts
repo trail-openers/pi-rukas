@@ -119,17 +119,22 @@ export const MARKER_CONTRACTS: readonly MarkerContract[] = [
   {
     token: "VERDICT",
     values: ["CRITICAL_ISSUES_FOUND", "ISSUES_FOUND", "MINOR_OBSERVATIONS", "APPROVED"],
-    // Two consumers read this token with the shared reader and must not be
-    // conflated: `adversarial-verdict.ts` judges the WHOLE reply, while
-    // `review-bounds-verdict.ts` judges only the closing text block of a
-    // tool-free message (#1827 — the whole-reply read ends a child that merely
-    // echoes the prompt's menu). The row names the loop's consumer; the live
-    // stop's own absence policy is "do not stop", stated in its module header.
-    consumer: "adversarial-verdict.ts",
+    // Two consumers read this token and must not be conflated: the loop's own
+    // read is the LINE-level candidate rule, split across the two modules its
+    // name lists (the per-line patterns in `adversarial-verdict-line.ts`, the
+    // candidate/menu-run walk in `adversarial-verdict-read.ts`, whose
+    // `readAdversarialVerdict` is what `parseVerdict` calls — naming
+    // `adversarial-verdict.ts` here would point the row at the caller of a rule it
+    // does not contain), while `review-bounds-verdict.ts` judges only the closing
+    // text block of a tool-free message (#1827 — the whole-reply read ends a child
+    // that merely echoes the prompt's menu). The live stop's own absence policy is
+    // "do not stop", stated in its module header.
+    consumer: "adversarial-verdict-read.ts",
     // #2312 — the loop's read is line-level, not whole-reply: the candidate rule
     // and its consequence are the row's content, and test-marker-contracts.ts
-    // checks the token and every value against the consumer's source (which lives
-    // in `VERDICT_STATUSES`, plus the reader this row now points at).
+    // checks the token and every value against the consumer's source (the four
+    // spellings are named in the menu-run walk below, and are declared in
+    // `VERDICT_STATUSES`).
     onAbsence:
       "no candidate line — the last signature in the reply, which must start at column 0, excluding fenced/indented/quoted/bulleted/table rows and any line of a run of consecutive token lines naming 2+ values — → verdictParsed=false → fix round mid-loop, `incomplete` at the terminal round (never pass, never reject)",
   },

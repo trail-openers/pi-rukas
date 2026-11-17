@@ -21,6 +21,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { buildAdversarialPrompt } from "../src/adversarial-prompts.ts";
 import {
   readAdversarialVerdict,
   verdictCandidateLines,
@@ -53,15 +54,11 @@ function assert(cond: boolean, msg: string) {
     JSON.stringify(c("**VERDICT:** APPROVED")) === '["APPROVED:0"]',
     "…including the bold-split spelling reviewers write",
   );
-  // #2312 fix wave F1: indentation is decoration only up to one space of slack.
-  // Markdown itself tolerates a little drift, but a reviewer quoting somebody
-  // else's verdict line indents it, and a two-space indent is exactly what the
-  // brief's own menu is written in. Only column 0 signs.
   // #2312 fix wave F1: the signature sits at column 0. Indentation is decoration —
-  // a reviewer quoting somebody else's verdict line indents it, and a two-space
-  // indent is exactly what the brief's own menu is written in. The line is still
+  // a reviewer quoting somebody else's verdict line indents it. The line is still
   // MARKED (so a forged verdict reads as refused, not as absent) but `structural`,
-  // so it signs nothing.
+  // so it signs nothing. (#2322 moved the brief's own menu to column 0, so an
+  // indent is now purely quotation; AC4's arms below pin that menu spelling.)
   const ind1 = verdictCandidateLines(" VERDICT: APPROVED")[0];
   assert(
     ind1?.status === "APPROVED" && ind1?.structural === true,
@@ -70,7 +67,7 @@ function assert(cond: boolean, msg: string) {
   const ind2 = verdictCandidateLines("  VERDICT: APPROVED")[0];
   assert(
     ind2?.status === "APPROVED" && ind2?.structural === true,
-    "…nor two, which is the brief menu's own indent (F1)",
+    "…nor two, the indent a quoted or pasted line carries (F1)",
   );
   assert(
     JSON.stringify(c("VERDICT: APPROVED (per the doctrine)")) === '["APPROVED:0"]',
@@ -84,9 +81,21 @@ function assert(cond: boolean, msg: string) {
     readAdversarialVerdict("### VERDICT\n\nAPPROVED") === "APPROVED",
     "…and reads as the value on its next non-blank line",
   );
+  // A heading's value line accepts what the inline form accepts after `VERDICT:`,
+  // so a verdict with its reason attached signs (`APPROVED, because the gate covers
+  // it` — the same tolerance `VERDICT: APPROVED (per the doctrine)` has always had).
+  // What states no verdict is a line with no value in marker position at all.
   assert(
-    c("### VERDICT\nAPPROVED, because the gate covers it").length === 0,
-    "a heading whose value line is prose states no verdict",
+    c("### VERDICT\nAPPROVED, because the gate covers it").length === 1,
+    "a heading whose value line is a verdict with its reason attached is a candidate — the same tolerance the inline form has",
+  );
+  assert(
+    c("### VERDICT\nthe gate covers it").length === 0,
+    "a heading whose value line names no verdict states none",
+  );
+  assert(
+    c("### VERDICT\nsee the ISSUES_FOUND rows above").length === 0,
+    "…and neither does a value line that merely mentions one further in",
   );
   assert(
     c(" ## VERDICT\n\nAPPROVED").length === 0,
@@ -251,6 +260,85 @@ function assert(cond: boolean, msg: string) {
     );
   }
 
+  // #2322 AC2: a tab after a list bullet, and more than two asterisks of
+  // emphasis, are markdown structure or noise rather than emphasis touching the
+  // token. Only `*\t` was red before the fix (QUOTED_OR_TABLE_RE's bullet
+  // alternative requires a literal space); the other four rows are the
+  // REGRESSION half — they were already excluded, and must stay excluded.
+  for (const marker of ["*\t", "+\t", "-\t", "1.\t", "1)\t", "***"]) {
+    const decorated = `${marker}VERDICT: APPROVED`;
+    // Two exclusion mechanisms, one outcome. A TAB after a bullet is refused by
+    // the marker patterns (the bullet group needs a literal space) and then marked
+    // structural by `TAB_LIST_MARKERS`, so the line is a MARKED candidate; three
+    // asterisks are never a token line at all. Both sign nothing, and only the
+    // marked one can be reported as "refused" rather than "absent".
+    const marked = verdictCandidateLines(decorated);
+    if (marker === "***") {
+      assert(
+        marked.length === 0,
+        `a \`${marker}\` prefix is no longer even a token line (F2/#2322)`,
+      );
+    } else {
+      assert(
+        marked.length === 1 && marked[0]?.structural === true,
+        `a \`${marker.replace(/\t/g, "\\t")}\` prefix is marked structural, not silently missing (#2322)`,
+      );
+    }
+    assert(
+      readAdversarialVerdict(decorated) === undefined,
+      `…so it signs nothing on its own`,
+    );
+    assert(
+      parseVerdict(`VERDICT: ISSUES_FOUND\n\n${decorated}`).status === "ISSUES_FOUND",
+      `…and never out-ranks the real ISSUES_FOUND above it`,
+    );
+  }
+
+  // The same two mechanisms on the markers' NO-SPACE spellings, which are what a
+  // completion produces when it drops the space after a bullet. A single `*` glued
+  // to the token reads as emphasis and is refused the way `***VERDICT:***` is
+  // refused — a one-asterisk run touching the token is decoration, not a list item,
+  // so it is no token line at all. A `-`, `+` or `1.`/`1)` glued to the token is a
+  // list marker that lost the space its content needs: no markdown renders it as a
+  // marker, and it must still be a MARKED structural refusal rather than a line the
+  // reader never saw, because a forgery that leaves no trace is the failure this
+  // list exists to make visible.
+  for (const marker of ["*", "-", "+", "1.", "1)"]) {
+    const decorated = `${marker}VERDICT: APPROVED`;
+    const marked = verdictCandidateLines(decorated);
+    if (marker === "*") {
+      assert(
+        marked.length === 0,
+        `a \`${marker}\` immediately before the token is decoration, not a token line at all`,
+      );
+    } else {
+      assert(
+        marked.length === 1 && marked[0]?.structural === true,
+        `a \`${marker}\` glued to the token is marked structural, not silently missing`,
+      );
+    }
+    assert(
+      readAdversarialVerdict(decorated) === undefined,
+      `…so \`${marker}VERDICT:\` signs nothing on its own`,
+    );
+    assert(
+      parseVerdict(`VERDICT: ISSUES_FOUND\n\n${decorated}`).status === "ISSUES_FOUND",
+      `…and \`${marker}VERDICT: APPROVED\` never out-ranks the real ISSUES_FOUND above it`,
+    );
+  }
+
+  // The refusal must not reach the form reviewers actually write: two asterisks
+  // touching the token are bold, and bold signs on both sides of the token.
+  assert(
+    readAdversarialVerdict("**VERDICT:** APPROVED") === "APPROVED",
+    "`**VERDICT:** APPROVED` is bold and stays readable while a single `*` is refused",
+  );
+  assert(
+    JSON.stringify(verdictCandidateLines("**VERDICT:** APPROVED").map((l) => `${l.status}:${l.index}`)) ===
+      '["APPROVED:0"]',
+    "…and is a MARKED candidate rather than a line the reader walked past",
+  );
+
   // The shapes that must STILL read, or the exclusions have become a maw.
   assert(
     readAdversarialVerdict("**VERDICT:** APPROVED") === "APPROVED",
@@ -305,3 +393,4 @@ function assert(cond: boolean, msg: string) {
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);
+
