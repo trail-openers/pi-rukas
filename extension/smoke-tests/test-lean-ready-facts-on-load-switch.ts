@@ -11,10 +11,13 @@
  * Three things, none of them covered by the drive case in
  * `test-lean-spec-intake-record.ts`:
  *
- *   (docs) a `docs/lean.md` sentence naming the knob — a switch nobody can discover is a
- *       switch that does not exist, and the roster check in `test-headless-inputs.ts` never
- *       opens `docs/`. Asserted on the guide, not on `docs/configuration.md`, whose rows are
- *       a separate workstream's;
+ *   (docs) the knob is discoverable in the two places an operator looks: a `docs/lean.md`
+ *       sentence where the guide describes where the derived contract lives, and a
+ *       `docs/configuration.md` row beside the other lean knobs. The roster check in
+ *       `test-headless-inputs.ts` pins that `HEADLESS_INPUTS` LISTS the name and that its
+ *       default agrees with the live reader, and never opens `docs/` at all — so a knob in
+ *       the roster with no row anywhere is one nobody can find, which is the state this
+ *       section refuses to ship.
  *   (truth table) on for unset, `"1"`, `""` and `"false"`; off for the literal `"0"` —
  *       read at CALL time, so a pin leaked from another file in this process cannot make an
  *       ON case measure the off arm;
@@ -125,6 +128,37 @@ function loadReadyOutcome(
     check(
       lean.includes(needle),
       `and that passage states what the reader needs to know about it: "${needle}"`,
+    );
+  }
+  // The reference row, not just the guide's prose: `HEADLESS_INPUTS` makes the knob
+  // machine-discoverable through `--capabilities`, and this table is the human-readable
+  // half. Every neighbouring lean knob has a row and a test that insists on it
+  // (`test-lean-submodules-local-switch.ts`, `test-lean-guard-fail-closed-switch.ts`, …);
+  // a knob listed in the roster with no row is one an operator cannot find or reason about.
+  const doc = readFileSync(
+    path.resolve(import.meta.dirname, "..", "..", "docs", "configuration.md"),
+    "utf8",
+  );
+  check(
+    doc.includes("`PI_ENSEMBLE_LEAN_READY_FACTS_ON_LOAD`"),
+    "(docs) docs/configuration.md carries a row for PI_ENSEMBLE_LEAN_READY_FACTS_ON_LOAD",
+  );
+  const row =
+    doc
+      .split("\n")
+      .find((line) => line.includes("`PI_ENSEMBLE_LEAN_READY_FACTS_ON_LOAD`")) ?? "";
+  // The off arm is the operator's whole reason to reach for this knob — comparing a loaded
+  // record against one written before the fix — so the row has to state what `0` puts back,
+  // not merely that it disables something.
+  for (const [needle, why] of [
+    ["`derivedSpec`", "names the field the knob gates"],
+    ["`baseSha`", "…and its pair"],
+    ["v0.14.87", "says `0` restores the release's own load, which is the off arm's claim"],
+    ["step log", "and says the pair is what the step log retains, so the reader knows no consumer loses it"],
+  ] as const) {
+    check(
+      row.includes(needle),
+      `the configuration row ${why} (looked for ${JSON.stringify(needle)} in the row)`,
     );
   }
 }
