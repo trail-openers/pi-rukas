@@ -1,35 +1,32 @@
 /*
  * lean/publish — push the run's branch and open its PR.
  *
- * The step is the first one that writes OUTSIDE the clone, so its whole design is
- * "do not act on a claim you did not read". In order:
+ * The step is the first one that writes OUTSIDE the clone, so its whole design is "do not act
+ * on a claim you did not read". In order:
  *
- *   1. the tree is the run's, at a real commit, on its branch, and CLEAN — a dirty
- *      tree would be published as bytes no commit holds;
- *   2. the spec is re-read from the forge, because the body's criterion map is a
- *      claim about a contract that is editable while the run goes on;
- *   3. the newest DECIDED `verify` verdict is read from the step log, and a green
- *      decided about a different commit than the one about to be pushed is REFUSED
- *      before the push — "green" is a claim about a named tree, and pushing
- *      something else under it is the one lie this step cannot take back;
- *   4. origin is read first (`remoteBranchSha`), an OPEN PR on the branch is
- *      refused with its URL, and the push ALWAYS carries a lease bound to the sha
- *      that read returned — so a rewrite is legitimate only because it was bound to
- *      an observed sha and survived the PR check; success is decided afterwards by
- *      reading origin again, never by parsing porcelain;
- *   5. the forge is asked for an OPEN PR on the branch FIRST and only then told to
- *      create one. A `prList` that throws aborts the step: creating without looking
- *      is how a resumed run opens a second PR for the same work.
+ *   1. the tree is the run's, at a real commit, on its branch, and CLEAN — a dirty tree would
+ *      be published as bytes no commit holds;
+ *   2. the spec is re-read from the forge, because the body's criterion map is a claim about a
+ *      contract that is editable while the run goes on;
+ *   3. the newest DECIDED `verify` verdict is read from the step log, and a green decided about
+ *      a different commit than the one about to be pushed is REFUSED before the push — "green"
+ *      is a claim about a named tree, and pushing something else under it is the one lie this
+ *      step cannot take back;
+ *   4. origin is read first (`remoteBranchSha`), an OPEN PR on the branch is refused with its
+ *      URL, and the push ALWAYS carries a lease bound to the sha that read returned; success is
+ *      decided afterwards by reading origin again, never by parsing porcelain;
+ *   5. the forge is asked for an OPEN PR on the branch FIRST and only then told to create one.
+ *      A `prList` that throws aborts the step: creating without looking is how a resumed run
+ *      opens a second PR for the same work.
  *
- * Everything the step cannot observe is a `PublishInfraError` — the engine turns a
- * throw into a handed-back run, the honest answer to "nobody looked". Once the push
- * has landed, every such error names the head and says the push succeeded, so a
- * handoff never sends the next run looking in the wrong place. The recorded outcome
- * carries `prUrl` and nothing else: `state-outcome.ts` refuses that field on any
- * other step, so it stays the run's only evidence that a PR exists at an address.
+ * Everything the step cannot observe is a `PublishInfraError` — the engine turns a throw into a
+ * handed-back run, the honest answer to "nobody looked". Once the push has landed, every such
+ * error names the head and says the push succeeded, so a handoff never sends the next run
+ * looking in the wrong place. The recorded outcome carries `prUrl` and nothing else:
+ * `state-outcome.ts` refuses that field on any other step.
  *
- * The step's own preconditions read the run's persisted state, so the push target is
- * data rather than a decision — `assertPublishableBranch` in `publish-deps.ts`.
+ * The step's own preconditions read the run's persisted state, so the push target is data
+ * rather than a decision — `assertPublishableBranch` in `publish-deps.ts`.
  */
 import { existsSync } from "node:fs";
 import type { NormalizedPullRequest } from "../forge-types.ts";
@@ -105,8 +102,8 @@ async function remoteBranchSha(
   const [ref, why] = [`refs/heads/${branch}`, `could not read origin's ${branch}`];
   const out = await gitIn(deps, wt, ["ls-remote", "--heads", "origin", ref], why, 60_000);
   if (out === "") return undefined;
-  // One line `<sha>\t<ref>`; a reply not naming the ref asked for is refused,
-  // not read as "absent".
+  // One line `<sha>\t<ref>`; a reply not naming the ref asked for is refused, not read as
+  // "absent".
   const [sha = "", gotRef = ""] = out.split(/\s+/);
   if (gotRef !== ref || !/^[0-9a-f]{40}$/.test(sha))
     throw new PublishInfraError(`${why} (got ${out.slice(0, 120)})`);
@@ -114,26 +111,21 @@ async function remoteBranchSha(
 }
 
 /**
- * The head pushed to origin's branch under a lease bound to `remote` — the sha this
- * step read from origin moments before, or `""` when the read said the branch is
- * absent (git then requires the ref to STILL not exist).
+ * The head pushed to origin's branch under a lease bound to `remote` — the sha this step read
+ * from origin moments before, or `""` when the read said the branch is absent (git then
+ * requires the ref to STILL not exist).
  *
- * A forced update is legitimate here for exactly one reason: the lease binds the
- * rewrite to the sha we observed and the open-PR check passed on that same branch,
- * so nothing moves that this step did not read and clear. Hence no `--no-verify`, no
- * unconditional `--force`, and no `rev-list` heuristic about how far apart the tips
- * are — a realistic stale branch is 2-6 commits deep, and a count gate admitting only
- * 1 never replaces one.
+ * A forced update is legitimate here for exactly one reason: the lease binds the rewrite to the
+ * sha we observed and the open-PR check passed on that same branch. Hence no `--no-verify`, no
+ * unconditional `--force`, and no `rev-list` heuristic about how far apart the tips are.
  *
- * Success is origin, read back after the push — never porcelain. `git push
- * --porcelain` prints a fast-forward UNBRACKETED (`abc..def`), so flag regexes have
- * been observed reporting a landed push as "no success flag", and a rejection exits 0.
- * Origin decides; the porcelain travels only as a diagnostic.
+ * Success is origin, read back after the push — never porcelain. `git push --porcelain` prints a
+ * fast-forward UNBRACKETED (`abc..def`), so flag regexes have been observed reporting a landed
+ * push as "no success flag", and a rejection exits 0. Origin decides; the porcelain travels only
+ * as a diagnostic.
  *
- * The ref name is checked with the driver's own `netRefProblem` BEFORE the command
- * line: `branch` is state-file data, and `assertSafeRef` only says it is a legal git
- * name — `+x`, `a:b` and `-f` all are, and git parses them as a refspec, a force, or
- * an option.
+ * The ref name is checked with the driver's own `netRefProblem` BEFORE the command line: `branch`
+ * is state-file data, and `assertSafeRef` only says it is a legal git name.
  */
 async function pushHead(
   deps: PublishDeps,
@@ -164,13 +156,12 @@ async function pushHead(
       const why = String(e?.stderr ?? e?.message ?? err).slice(0, 500);
       throw new PublishInfraError(`could not push ${branch}: ${why}`);
     });
-  // Origin is read FIRST: if it holds this head the push landed whatever the
-  // porcelain says, so the two rejection shapes git prints for one (`! [rejected]
-  // …` and any `!`-flagged ref line) cannot refute an observed fact.
+  // Origin is read FIRST: if it holds this head the push landed whatever the porcelain says,
+  // so the two rejection shapes git prints cannot refute an observed fact.
   const after = await remoteBranchSha(deps, wt, branch);
   if (after === head) return;
-  // Only a ref that did NOT move is judged on its output, and then the porcelain
-  // is a diagnostic appended to the refusal, never the reason for it.
+  // Only a ref that did NOT move is judged on its output, and then the porcelain is a
+  // diagnostic appended to the refusal, never the reason for it.
   const out = typeof ran?.stdout === "string" ? ran.stdout : "";
   const porcelain =
     /\[rejected\]/.test(out) || /^\s*!/m.test(out)
@@ -214,12 +205,12 @@ function oneLineTitle(problem: string): string {
 }
 
 /**
- * The forge's open PRs for `branch`, or infrastructure. The list is scoped by
- * `sourceBranch`, so every row in it is a row about THIS branch.
+ * The forge's open PRs for `branch`, or infrastructure. The list is scoped by `sourceBranch`,
+ * so every row in it is a row about THIS branch.
  *
- * Looking and failing is not the same as finding nothing: pushing or creating
- * without the answer is how a resumed run rewrites a branch under review, or ends
- * up with two PRs for one issue.
+ * Looking and failing is not the same as finding nothing: pushing or creating without the
+ * answer is how a resumed run rewrites a branch under review, or ends up with two PRs for one
+ * issue.
  */
 async function listOpenPrs(f: PublishForge, branch: string): Promise<NormalizedPullRequest[]> {
   const open = await f.prList({ state: "open", sourceBranch: branch }).catch((err: unknown) => {
@@ -231,17 +222,15 @@ async function listOpenPrs(f: PublishForge, branch: string): Promise<NormalizedP
 }
 
 /**
- * What origin's branch points at, as the lease's expected value: `""` when the ref is
- * absent, `head` when it already matches (the push is then skipped).
+ * What origin's branch points at, as the lease's expected value: `""` when the ref is absent,
+ * `head` when it already matches (the push is then skipped).
  *
- * Any OTHER sha means this step is about to rewrite a branch, so it first asks the
- * forge whether that branch is under review — and the check FAILS CLOSED: the list
- * was asked for THIS branch, so ANY row it returns blocks unless its state positively
- * reads CLOSED or MERGED once uppercased, whatever its `headRefName`. A lowercase
- * `"open"`, an empty string or a missing head branch must refuse, not read as "no PR":
- * `mapPrListReply` in `forge-list.ts` synthesises `state: ""` for a forge that
- * answered with one bare number, and an exact `=== "OPEN"` comparison would
- * force-push over a branch somebody is reviewing.
+ * Any OTHER sha means this step is about to rewrite a branch, so it first asks the forge whether
+ * that branch is under review — and the check FAILS CLOSED: the list was asked for THIS branch,
+ * so ANY row it returns blocks unless its state positively reads CLOSED or MERGED once
+ * uppercased, whatever its `headRefName`. A lowercase `"open"`, an empty string or a missing
+ * head branch must refuse, not read as "no PR": `mapPrListReply` in `forge-list.ts` synthesises
+ * `state: ""` for a forge that answered with one bare number.
  */
 async function pushLeaseTarget(
   deps: PublishDeps,
@@ -250,9 +239,9 @@ async function pushLeaseTarget(
   head: string,
   branch: string,
 ): Promise<string> {
-  // The ref is read first and the forge is asked second, so the lease is bound to
-  // the value the forge check was about. A move after this read fails the lease
-  // at push time, which is the window the lease exists to close.
+  // The ref is read first and the forge is asked second, so the lease is bound to the value the
+  // forge check was about. A move after this read fails the lease at push time, which is the
+  // window the lease exists to close.
   const remote = (await remoteBranchSha(deps, wt, branch)) ?? "";
   if (remote === "" || remote === head) return remote;
   // Not having looked is no licence to rewrite a branch somebody may be reading.
@@ -267,19 +256,17 @@ async function pushLeaseTarget(
 /**
  * The `publish` step. Returns `ok` with `prUrl`; THROWS on infrastructure.
  *
- * `deps.forge` is the seam a test drives: production resolves the real adapter
- * and a case hands in a recorder, so the push assertions stay against a real
- * bare origin while the forge calls stay observable.
+ * `deps.forge` is the seam a test drives: production resolves the real adapter and a case hands
+ * in a recorder, so the push assertions stay against a real bare origin while the forge calls
+ * stay observable.
  */
 export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
   const branch = specifyBranch(ctx.run.branch, issue);
-  // Before a single git read, let alone a push: the branch is state-file data,
-  // and `assertSafeRef` inside the guard only says it is a legal ref — `main`
-  // is. The guard lives in publish-deps so the step's decisions stay separate
-  // from what it asks the outside world. The step's OWN executor is handed to the
-  // guard so the probes it makes go the way the push goes — the same seam a suite
-  // drives, and the same transport origin will be asked over.
+  // Before a single git read, let alone a push: the branch is state-file data, and
+  // `assertSafeRef` inside the guard only says it is a legal ref — `main` is. The guard lives in
+  // publish-deps so the step's decisions stay separate from what it asks the outside world. The
+  // step's OWN executor is handed to the guard so the probes it makes go the way the push goes.
   await assertPublishableBranch(repoRoot, branch, deps.exec);
   const wt = specifyWorktreePath(repoRoot, issue);
   if (!existsSync(wt)) throw new PublishInfraError(`the worktree ${wt} does not exist`);
@@ -295,8 +282,8 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   if (!parsed.ok) throw new PublishInfraError(`the issue's spec is unusable: ${parsed.reason}`);
   const spec = parsed.spec;
 
-  // Resolved ONCE: the stale-branch check and the PR check are two questions of
-  // one adapter, and resolving twice is two chances to get two different answers.
+  // Resolved ONCE: the stale-branch check and the PR check are two questions of one adapter,
+  // and resolving twice is two chances to get two different answers.
   const f = await deps.forge(repoRoot);
 
   const v = newestDecided(ctx.steps, "verify");
@@ -309,25 +296,22 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
     ctx.run.counters.draft === true ||
     verifyKind !== "green" ||
     spec.criteria.some((c) => c.verify === "manual") ||
-    // A `command` criterion the gate could not run is a criterion nobody checked,
-    // and a ready PR behind an unchecked criterion is the claim this step exists to
-    // refuse — so it holds the PR as a draft exactly as a `manual` criterion does.
+    // A `command` criterion the gate could not run is a criterion nobody checked, and a ready
+    // PR behind an unchecked criterion is the claim this step exists to refuse.
     spec.criteria.some((c) => c.verify === "command" && !v?.outcome?.commandCriteria?.[c.id]);
 
-  // Read origin, clear the branch against the forge, then push under a lease
-  // bound to that read. A move between the read and the push makes the lease
-  // refuse, which is the race the lease exists to close. When origin already holds
-  // this head there is nothing to write, and the step says so rather than pushing
-  // a no-op it cannot verify.
+  // Read origin, clear the branch against the forge, then push under a lease bound to that
+  // read. A move between the read and the push makes the lease refuse. When origin already
+  // holds this head there is nothing to write, and the step says so rather than pushing a no-op
+  // it cannot verify.
   if (f === undefined)
     throw new PublishInfraError(`no forge adapter: cannot check ${branch} is in review`);
   const remote = await pushLeaseTarget(deps, f, wt, head, branch);
   const wrote = remote !== head;
   if (wrote) await pushHead(deps, wt, head, branch, remote);
-  // From here on the head is OUTSIDE the clone. Every refusal below is a
-  // handback over a pushed branch, so it says so — an error that reads only
-  // "could not open the PR" hides the one fact the operator needs first. When
-  // origin already held this head nothing was written, so the text says so.
+  // From here on the head is OUTSIDE the clone. Every refusal below is a handback over a pushed
+  // branch, so it says so — an error that reads only "could not open the PR" hides the one fact
+  // the operator needs first.
   const pushed = (what: string) =>
     new PublishInfraError(
       `${wrote ? `pushed ${head.slice(0, 12)} to ${branch}` : `${branch} is already on origin`}, but ${what}`,
@@ -344,9 +328,8 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
       spec,
       tests: testsFromLog(ctx.steps),
       verifyKind,
-      // `verifiedHead` is the green verdict's subject. A red record's head (or
-      // one left over from an older green) printed under a red verdict would
-      // read as "this commit passed", so it travels with a green only.
+      // `verifiedHead` is the green verdict's subject. A red record's head printed under a red
+      // verdict would read as "this commit passed", so it travels with a green only.
       ...(verifyKind === "green" && v?.outcome?.verifiedHead !== undefined
         ? { verifiedHead: v.outcome.verifiedHead }
         : {}),
@@ -357,14 +340,11 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
       ...(v?.outcome?.commandNotRunnable === undefined
         ? {}
         : { commandNotRunnable: v.outcome.commandNotRunnable }),
-      // The tiers the gate excused over the base commit, from the record — the body
-      // renders its disclosure from this and never from the reason prose. BOTH steps
-      // that can excuse a tier are read: `ci` excuses the project's FULL tier under
-      // its own key, and a body that read only `verify` would print a clean PR for a
-      // run whose full tier exited non-zero and was let go on the base commit's
-      // colour. A newer `ci` verdict with no disclosure replaces an older one — the
-      // newest decided step of each kind is the claim that stands, as it is for
-      // `verifyKind`.
+      // The tiers the gate excused over the base commit, from the record — the body renders its
+      // disclosure from this and never from the reason prose. BOTH steps that can excuse a tier
+      // are read: `ci` excuses the project's FULL tier under its own key, and a body that read
+      // only `verify` would print a clean PR for a run whose full tier was let go on the base
+      // commit's colour. The newest decided step of each kind is the claim that stands.
       ...(() => {
         const excused = {
           ...(v?.outcome?.preexistingFailures ?? {}),
@@ -372,12 +352,10 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
         };
         return Object.keys(excused).length === 0 ? {} : { preexistingFailures: excused };
       })(),
-      // The optional adversary round that ran out of its own ceiling, read off
-      // the log rather than out of a closure, so a resumed run prints the same
-      // line a live one would. The reader's object IS the pair (`{limit, value}`)
-      // and is WRAPPED here, never spread: spreading it would hand `publishBody`
-      // two fields it never reads and drop the line without a sound. `undefined`
-      // under the key is the same absence to the renderer as no key at all.
+      // The optional adversary round that ran out of its own ceiling, read off the log rather
+      // than out of a closure, so a resumed run prints the same line a live one would. The
+      // reader's object IS the pair (`{limit, value}`) and is WRAPPED here, never spread:
+      // spreading it would hand `publishBody` two fields it never reads.
       challengeBudget: challengeBudgetFromLog(ctx.steps),
       draft,
       version: ctx.run.version,
@@ -386,9 +364,8 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
     }),
     draft,
   ).catch((err: unknown) => {
-    // `openPr` already raises PublishInfraErrors whose text names the failure
-    // (a rejected list, a refused re-draft); the prefix says what the operator
-    // must know first — the push landed.
+    // `openPr` already raises PublishInfraErrors whose text names the failure; the prefix says
+    // what the operator must know first — the push landed.
     if (err instanceof PublishInfraError) throw pushed(err.message);
     throw pushed(`the forge could not open the PR: ${(err as Error)?.message ?? String(err)}`);
   });
@@ -402,20 +379,16 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   return {
     kind: "ok",
     prUrl,
-    // The FULL head this step pushed, not the 12-char prefix the reason line
-    // prints. `prUrl` alone says a PR exists; this says which commit stands under
-    // it, which is the half the host's `prState` compares to the green verify's
-    // `verifiedHead` — and `verifiedHead` is a `verify` field, so there is no
-    // other place a later reader could get this from. Recorded from the same
-    // `head` the push carried (`assertTree` proved it 40-hex before anything was
-    // written), so `ready` never rests on prose.
+    // The FULL head this step pushed, not the 12-char prefix the reason line prints. `prUrl`
+    // alone says a PR exists; this says which commit stands under it, which is the half the
+    // host's `prState` compares to the green verify's `verifiedHead` — and `verifiedHead` is a
+    // `verify` field, so there is no other place a later reader could get this from. Recorded
+    // from the same `head` the push carried, so `ready` never rests on prose.
     publishedHead: head,
-    // The state as the forge REPORTED it, never as this run asked for it: the
-    // create path read the new PR back through `draftStateOf`, so a forge that
-    // left a requested draft mergeable is recorded `false`; a reply that
-    // already carried the flag is trusted as-is. A recorded `true` over a ready
-    // PR is the lie the read-back exists to prevent, and guessing the requested
-    // value would be the same lie in the other direction.
+    // The state as the forge REPORTED it, never as this run asked for it: the create path read
+    // the new PR back through `draftStateOf`. A recorded `true` over a ready PR is the lie the
+    // read-back exists to prevent, and guessing the requested value would be the same lie in
+    // the other direction.
     ...(pr?.isDraft === undefined ? {} : { draft: pr.isDraft }),
     reason: `${wrote ? "published" : "already on origin, published"} ${draft ? "draft " : ""}PR ${prUrl} at ${head.slice(0, 12)}`,
   };
