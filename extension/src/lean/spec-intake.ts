@@ -35,14 +35,10 @@ export type Contract =
   | { spec: PiSpec; derived?: DerivedSpec }
   | { rule: string; infra?: boolean };
 
-/**
- * Decide the run's contract from its issue body.
- *
- * `derive` is optional because the derivation needs the run's wiring (forge read,
- * config load, child dispatch): a caller that has no deps in hand — a case, or a
- * run whose mode will resolve to `require` anyway — gets today's behaviour and
- * nothing is missed, since the mode check is made before the deps are ever used.
- */
+/** Decide the run's contract from its issue body. `derive` is optional because the
+ * derivation needs the run's wiring (forge read, child dispatch): a caller with no deps
+ * in hand — a case, or a run whose mode resolves to `require` — gets today's behaviour,
+ * and nothing is missed because the mode is checked before the deps are used. */
 export async function contractOf(
   repoRoot: string,
   issue: number,
@@ -54,11 +50,10 @@ export async function contractOf(
   if (parsed.ok) return { spec: parsed.spec };
   if (parsed.reason !== NO_BLOCK_RULE) return { rule: parsed.reason };
   // Env first (the operator's word), then the committed `lean.specIntake`, then
-  // `require` — so a repo that sets `derive` in `.pi/work.json` is read before its
-  // prose is derived from. The read is at the run's base and NON-FATAL: the switch's
-  // fallback is `require`, and the full config read in `readyOutcome` still reports a
-  // broken config exactly as it does today, so a run whose config is unreadable
-  // neither derives a contract by default nor loses that error.
+  // `require` — so a repo that sets `derive` in `.pi/work.json` is read before its prose
+  // is derived from. The read is at the run's base and NON-FATAL: the fallback stays
+  // `require` and `readyOutcome`'s own full read still reports a broken config, so an
+  // unreadable config neither silently arms a derivation nor loses that error.
   const config =
     base.baseSha === ""
       ? undefined
@@ -80,11 +75,10 @@ export async function contractOf(
 }
 
 /** The model the deriving child will be resolved to, for the record's provenance.
- *
  * Resolution is the run's own — role env, config, the global default — so the record
- * names the model that actually drafted the contract rather than a guess. `""` is
- * honest for the shipped default, where no model is configured: a fabricated name
- * would mislead the operator reading back a bad derivation. */
+ * names the model that actually drafted the contract. `""` is honest for the shipped
+ * default, where none is configured: a fabricated name would mislead the operator
+ * reading back a bad derivation. */
 export function deriveModel(): string {
   try {
     return resolveModel("explore").model ?? "";

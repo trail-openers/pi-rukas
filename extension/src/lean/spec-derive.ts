@@ -200,13 +200,11 @@ export async function deriveSpec(
   return derived;
 }
 
-/**
- * The derivation as the command drives it: the title read through the forge, the
- * budget read at the run's base, one child. A missing title is not fatal (the body
- * is the substance and the problem line comes from the child's own statement); a
- * config that cannot be read DOES throw — the same rule `ready` applies, since a
- * blanket default would hand the child a budget nobody configured.
- */
+/** The derivation as the command drives it: the title read through the forge, the
+ * budget read at the run's base, one child. A missing title is not fatal (the body is
+ * the substance and the problem line comes from the child); a config that cannot be
+ * read DOES throw — the rule `ready` applies, since a blanket default would hand the
+ * child a budget nobody configured. */
 export async function deriveSpecForRun(
   deps: DeriveDeps,
   repoRoot: string,
@@ -225,15 +223,11 @@ export async function deriveSpecForRun(
   });
 }
 
-/**
- * Trace one derivation event so stderr says what happened and to which issue.
- *
- * `stage` separates the two things an operator must not conflate — `refused`
- * ("no contract was produced") and `unposted` ("the contract exists and nobody on
- * the issue can see it"). Collapsing them would make a posting failure read as a
- * derivation failure, the one mistake an operator cannot afford while deciding
- * whether to re-run.
- */
+/** Trace one derivation event so stderr says what happened and to which issue.
+ * `stage` separates the two things an operator must not conflate — `refused` ("no
+ * contract was produced") and `unposted` ("it exists and nobody on the issue can see
+ * it"): collapsing them makes a posting failure read as a derivation failure, the one
+ * mistake an operator cannot afford while deciding whether to re-run. */
 export function traceDerive(issue: number, stage: "refused" | "unposted", why: string): void {
   try {
     traceWarn(`lean/spec-derive #${String(issue)} ${stage}: ${oneLine(why, 300)}`);

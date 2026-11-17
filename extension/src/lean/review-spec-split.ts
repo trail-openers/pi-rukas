@@ -55,9 +55,8 @@ export function renderReviewProse(rawBody: string | undefined): string {
   return fencedIssueBody(stripPiSpecBlocks(rawBody ?? ""));
 }
 
-/** What the lead-in adds to the shared sentence when a criteria section follows:
- * the seat is told where the rest of the contract is, because the body it just
- * read no longer contains it. */
+/** What the lead-in adds when a criteria section follows: the seat is told where the
+ * rest of the contract is, because the body it just read no longer contains it. */
 const CRITERIA_CLAUSE =
   " Its acceptance criteria are printed in their own section below and are not truncated by the issue's length.";
 
@@ -65,19 +64,16 @@ const CRITERIA_CLAUSE =
  * The issue block a lean review seat receives with the split on: the stripped
  * prose and the criteria section, one lead-in over both.
  *
- * `rule` is the seat's own sentence about what to do with the requirements —
- * each print site keeps its copy, because the fixer's rule and a lens's rule are
- * not the same instruction. An absent or blank body yields `""`: no block, and
- * never the string "undefined".
+ * `rule` is the seat's own sentence about what to do with the requirements — each
+ * print site keeps its copy, because the fixer's rule and a lens's rule are not the
+ * same instruction. An absent or blank body yields `""`: no block, never "undefined".
  *
- * The prose block is DROPPED when it is the spec's own `problem` restated — the
- * shape `/plan` files, where the body opens by repeating the statement. The
- * section below prints that statement under the criteria cap, which is far above
- * the prose bound, so a second copy here would be a second contract to disagree
- * with AND a tail the shorter bound already cut. The comparison is the one
- * `leanIssueSection` applies — both sides whitespace-collapsed BEFORE any bound or
- * fence — and it is gated on the problem switch, so with `=0` the prose block
- * always prints exactly as it did today.
+ * The prose block is DROPPED when it is the spec's own `problem` restated — the shape
+ * `/plan` files. The section below prints that statement under the criteria cap, far
+ * above the prose bound, so a second copy here is a second contract to disagree with
+ * AND a tail the shorter bound already cut. The comparison is `leanIssueSection`'s —
+ * both sides whitespace-collapsed BEFORE any bound or fence — gated on the problem
+ * switch, so with `=0` the prose prints exactly as it did today.
  */
 export function renderReviewIssueBlock(
   rawBody: string | undefined,
