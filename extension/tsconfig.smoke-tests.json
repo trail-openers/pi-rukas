@@ -186,6 +186,7 @@
     "smoke-tests/test-lean-submodule-local-source.ts",
     "smoke-tests/test-lean-submodule-disclosure.ts",
     "smoke-tests/test-lean-submodule-clause.ts",
+    "smoke-tests/test-lean-submodule-unreadable.ts",
     "smoke-tests/test-lean-submodule-host-state.ts",
     "smoke-tests/test-lean-submodule-licence.ts",
     "smoke-tests/test-lean-submodule-local-source-guard.ts",

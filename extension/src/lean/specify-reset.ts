@@ -335,7 +335,16 @@ export async function resetWorktreeToBase(
   );
   const state = await submoduleState(exec, wt);
   const claimed = new Set(notes.filter((n) => n.kind !== "seeded").map((n) => n.path));
-  const unproven = (state?.unpopulated ?? []).filter((p) => !claimed.has(p));
+  const unproven = state.unpopulated.filter((p) => !claimed.has(p));
+  // The backstop's own death is a finding, not an absence. With nothing in the account to carry it
+  // it becomes one note of its own; with an account, it rides on the first note. Either way the
+  // clause says the tree could not be proved, which is the case a reader must not be able to
+  // mistake for "git checked and everything was fine".
+  if (state.unreadable === true) {
+    const head = withContent[0];
+    const marked: SubmoduleNote = { path: "", kind: "failure", detail: "", unreadable: true };
+    return head === undefined ? [marked] : [{ ...head, unreadable: true }, ...withContent.slice(1)];
+  }
   // Three shapes of the same carry. Nothing unproven: the pass's own account stands. Nothing in
   // the account at all: git's answer IS the account. Both: git's finding rides on the first note
   // rather than becoming one of its own, because the clause the caller builds reads one list and a

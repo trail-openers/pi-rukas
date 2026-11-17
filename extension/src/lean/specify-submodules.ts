@@ -106,6 +106,13 @@ export interface SubmoduleNote {
    * was silent. Without it a disclosure says "no submodules" about a tree that has one.
    */
   unproven?: readonly string[];
+  /**
+   * Set when a read this step depends on could not be answered — `git submodule status` rejecting,
+   * or the per-path control the offline rule asks dying. An absent answer is information; a thrown
+   * read is an outage, and the two must not reach the caller as the same value. Without this the
+   * death of the backstop reads as "git checked, nothing unproven", which is a pass.
+   */
+  unreadable?: boolean;
 }
 
 /**
@@ -125,7 +132,10 @@ export function submoduleNoteClause(notes: readonly SubmoduleNote[]): string | u
   for (const n of notes)
     if (n.kind !== "seeded" || n.emptyCheckout === true) unpopulated.add(n.path);
   for (const p of notes.flatMap((n) => n.unproven ?? [])) unpopulated.add(p);
-  if (unpopulated.size === 0) return undefined;
+  // A read that died is its own disclosure. It carries no path, so it must not fall through to
+  // the `unpopulated.size === 0` silence below — that is the fail-open this branch exists to close.
+  const unreadable = notes.some((n) => n.unreadable === true);
+  if (unpopulated.size === 0 && !unreadable) return undefined;
   // Bounded, because the clause rides in a reason line the consumer clips from the END: an
   // unbounded path list made a 200-submodule base a 26 806-character clause, and the clipping
   // deleted the disclosure — the one part of the reason the operator was meant to read.
@@ -145,7 +155,14 @@ export function submoduleNoteClause(notes: readonly SubmoduleNote[]): string | u
     for (const p of n.unproven ?? []) named.add(p);
   }
   const local = [...named].some((p) => !unpopulated.has(p)) ? "some " : "";
-  return `${local}submodules are not populated: ${listed} — the superproject holds neither a module store nor a populated checkout for these paths, so this step seeded nothing there`;
+  // A read that could not be answered is disclosed in its OWN words. Saying it "seeded nothing"
+  // would be a second unmeasured claim — what was measured here is that the question failed. With
+  // no path to name the clause says only that; with paths, it says both.
+  const couldNotTell = unreadable
+    ? "this step could not read the tree's submodule state, so it cannot say these paths are populated"
+    : "the superproject holds neither a module store nor a populated checkout for these paths, so this step seeded nothing there";
+  if (unpopulated.size === 0) return couldNotTell;
+  return `${local}submodules are not populated: ${listed} — ${couldNotTell}`;
 }
 
 /** How many unpopulated paths one clause names before it switches to a count. */
@@ -171,14 +188,31 @@ export function notesFor(unpopulated: readonly string[]): SubmoduleNote[] {
 export interface WorktreeSubmoduleState {
   readonly registered: readonly string[];
   readonly unpopulated: readonly string[];
+  /**
+   * Set when git was asked and could not answer — a child that rejected, or output no line of
+   * this format could be read from. `undefined` from `submoduleState` means "this tree has no
+   * submodules to ask about"; this means "the question could not be answered", and the two read
+   * oppositely at the reset: one is an absence to report, the other is a backstop that died and
+   * must not be taken as a pass.
+   */
+  readonly unreadable?: boolean;
+}
+
+/**
+ * The state of a tree whose read could not be answered. Exported so a caller with no `.gitmodules`
+ * of its own, or a read that died, produces the SAME distinguishable value rather than the `undefined`
+ * that means "nothing to report".
+ */
+export function unreadableSubmoduleState(): WorktreeSubmoduleState {
+  return { registered: [], unpopulated: [], unreadable: true };
 }
 
 /** Ask the tree what it holds, for the case that must not be taken on trust. */
-export async function submoduleState(
-  exec: ExecFn,
-  wt: string,
-): Promise<WorktreeSubmoduleState | undefined> {
-  if (!existsSync(path.join(wt, ".gitmodules"))) return undefined;
+export async function submoduleState(exec: ExecFn, wt: string): Promise<WorktreeSubmoduleState> {
+  // No `.gitmodules` is a genuine absence, not a failed read: git was never asked because there is
+  // nothing to ask about. It reads as the same nothing as an empty listing, and unlike a died read
+  // it is one the step can stand behind.
+  if (!existsSync(path.join(wt, ".gitmodules"))) return { registered: [], unpopulated: [] };
   const status = await exec("git", {
     // No `--recursive`: a sweep walks into seeded submodules asking git to describe levels that are
     // not this tree's to report, and puts the word on the argv of a suite whose point is that no
@@ -188,7 +222,11 @@ export async function submoduleState(
     timeout: QUICK_GIT_MS,
     maxBuffer: 1024 * 1024,
   }).catch(() => undefined);
-  if (status === undefined) return undefined;
+  // A read that could not be answered is not a read that answered "nothing". Returning the empty
+  // state here would make the backstop's own failure indistinguishable from a tree with no
+  // submodules, and the reset reads that as "nothing unproven" — the silent pass this exists to
+  // refuse.
+  if (status === undefined) return unreadableSubmoduleState();
   const registered: string[] = [];
   const unpopulated: string[] = [];
   // git's own format, verified line by line against git 2.53: `<sigil><sha> <path> [(<describe>)]`.
@@ -212,7 +250,7 @@ export async function submoduleState(
     registered.push(hit[3]);
     if (hit[1] !== " ") unpopulated.push(hit[3]);
   }
-  return registered.length === 0 ? undefined : { registered, unpopulated };
+  return registered.length === 0 ? unreadableSubmoduleState() : { registered, unpopulated };
 }
 
 /**
@@ -256,7 +294,16 @@ export async function initSubmodules(
   // disclosure. One local call, on a path that had nothing to do.
   for (const note of notes.filter((n) => n.kind === "absent")) {
     const status = await ask(exec, wt, [...NO_HOOKS, "submodule", "status", "--", note.path]);
-    const line = (status?.stdout ?? "").split("\n")[0] ?? "";
+    // "could not tell" is neither of the two answers this read decides between. Treating a
+    // rejected read as an empty line would let the step report an unseeded gitlink as merely
+    // absent — the same shape as a step that had PROVED nothing was fetched and nothing was added
+    // by the run — so the mark travels on the note and the disclosure says it could not tell.
+    if (status === undefined) {
+      const at = notes.indexOf(note);
+      notes[at] = { ...note, unreadable: true };
+      continue;
+    }
+    const line = (status.stdout ?? "").split("\n")[0] ?? "";
     if (line === "" || line.startsWith("U") || line.startsWith("-")) continue;
     throw new SpecifyInfraError(
       `the submodule at ${note.path} was added inside this run's own worktree, so this superproject never held it: the only source on this host is the tree under test, and bytes nobody verified cannot carry a verdict. Seed it in the superproject, or set PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL=0 and let git fetch the URL the base records. git's line, which tells this from a fetch: ${trim(line)}`,
