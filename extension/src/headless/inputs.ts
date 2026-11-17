@@ -94,6 +94,10 @@ export const HEADLESS_INPUTS_A: readonly HostInput[] = [
   flag("ADVERSARIAL_DIFF_CAP", true),
   flag("ADVERSARIAL_EMPTY_SKIP", true),
   ms("ADVERSARIAL_PHASE_BUDGET_MS", 1_800_000),
+  // The re-ask of a round whose reviewer fenced its whole report, verdict line
+  // included: a second child on the reviewer's own session, asked for the one
+  // line. `0` restores the pre-fix shape — the infra failure, no second child.
+  flag("ADVERSARIAL_VERDICT_REASK", true),
   flag("ALLOW_DESTRUCTIVE_GIT", false),
   flag("ALLOW_DEVELOPER_PUSH", false),
   flag("ALLOW_DIRECT_ISSUE_CREATE", false),

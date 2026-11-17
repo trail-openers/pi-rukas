@@ -28,4 +28,43 @@ export const SEAMS_SPAWN_CONFIG: Seam[] = [
     },
     canary: { symbol: "withOperatorConfigGuard", importer: "spawn.ts" },
   },
+  {
+    // The adversarial verdict re-ask, loop side: it turns an unreadable round
+    // into a recovered verdict or leaves the round exactly as it was. Both of
+    // its production callers are `adversarial.ts` — the ask itself, and the
+    // switch its reviewer brief reads.
+    file: "adversarial-verdict-reask.ts",
+    pending: {},
+    canary: { symbol: "reaskRoundVerdict", importer: "adversarial.ts" },
+  },
+  {
+    // The re-ask's child plumbing: argv, env, stdin, bound, RPC stream. Only
+    // the loop-side module spawns it, which is what keeps a second reviewer
+    // child from appearing anywhere else in the harness.
+    file: "adversarial-verdict-reask-child.ts",
+    pending: {},
+    testOnly: {
+      // The child's argv and the RPC reply extraction: the shapes a real `pi`
+      // child is judged by, asserted without spawning one (a live spawn is
+      // refused offline by `assertLiveSpawnAllowed`).
+      reaskChildArgs:
+        "the re-ask child's argv; test-adversarial-verdict-reask.ts pins the resume flags and the no-fence ask",
+      reaskReplyText:
+        "the RPC-stream reply extractor; test-adversarial-verdict-reask.ts pins that a partial stream is not a verdict",
+      // The temp-file write behind the child's `--append-system-prompt`; split
+      // out of `writeReviewerPromptFile` so the mode and name are assertable
+      // without a role's prompt file on disk.
+      writeReaskPromptFile:
+        "the prompt-file write (0700 dir, 0600 file, role-named); test-adversarial-verdict-reask.ts drives it against a mkdtemp root",
+    },
+    canary: { symbol: "spawnVerdictReaskChild", importer: "adversarial-verdict-reask.ts" },
+  },
+  {
+    // The re-ask's shared vocabulary — tag, label, prompt, result clause, bound.
+    // Read by the loop side AND the child side, so it sits below both: neither
+    // half imports the other across the seam.
+    file: "adversarial-verdict-reask-constants.ts",
+    pending: {},
+    canary: { symbol: "VERDICT_REASK_PROMPT", importer: "adversarial-verdict-reask.ts" },
+  },
 ];

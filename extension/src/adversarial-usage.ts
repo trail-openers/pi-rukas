@@ -40,6 +40,13 @@ export interface UsageTally {
   lastModel: string | undefined;
   /** Fold one dispatch result in: its cost, its transcript, and the first model. */
   accumulate: (r: DispatchResult) => void;
+  /**
+   * Fold a child's COST in and nothing else. The re-ask is a child the round
+   * paid for, so its tokens belong in the totals; its transcript and model do
+   * not, because the round is the ORIGINAL reviewer's round and its result must
+   * keep naming the reviewer's session and model.
+   */
+  accumulateUsageOnly: (r: DispatchResult) => void;
 }
 
 export function createUsageTally(): UsageTally {
@@ -55,20 +62,25 @@ export function createUsageTally(): UsageTally {
       return lastModel;
     },
     accumulate: (r: DispatchResult) => {
-      if (r.usage) {
-        usage.input += r.usage.input;
-        usage.output += r.usage.output;
-        usage.cacheRead += r.usage.cacheRead;
-        usage.cacheWrite += r.usage.cacheWrite;
-        usage.cost += r.usage.cost;
-        usage.turns += r.usage.turns;
-        usage.toolCalls = addCount(usage.toolCalls, r.usage.toolCalls);
-        usage.toolErrors = addCount(usage.toolErrors, r.usage.toolErrors);
-      }
+      accumulateUsage(r);
       if (r.transcriptPath) lastTranscript = r.transcriptPath;
       if (r.model && !lastModel) lastModel = r.model;
     },
+    accumulateUsageOnly: accumulateUsage,
   };
+
+  /** The cost half of {@link accumulate}, alone. */
+  function accumulateUsage(r: DispatchResult): void {
+    if (!r.usage) return;
+    usage.input += r.usage.input;
+    usage.output += r.usage.output;
+    usage.cacheRead += r.usage.cacheRead;
+    usage.cacheWrite += r.usage.cacheWrite;
+    usage.cost += r.usage.cost;
+    usage.turns += r.usage.turns;
+    usage.toolCalls = addCount(usage.toolCalls, r.usage.toolCalls);
+    usage.toolErrors = addCount(usage.toolErrors, r.usage.toolErrors);
+  }
 }
 
 /** One round's outcome, as the loop records it for the ledger and the report. */
@@ -76,4 +88,8 @@ export interface RoundRecord {
   round: number;
   verdict: AdversarialVerdict;
   ms: number;
+  /** The verdict came from the re-ask rather than from the reviewer's own reply.
+   * Absent for every round the reviewer signed, so the record a reader of the
+   * pre-re-ask loop saw is unchanged. */
+  verdictFromReask?: boolean;
 }

@@ -17,6 +17,7 @@ import {
   writeAdversarialLedgerEntry,
 } from "./adversarial-ledger.ts";
 import { isToolPathProvenance } from "./adversarial-loop-params.ts";
+import { synthesizeResult } from "./adversarial-verdict.ts";
 import { execp } from "./exec.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -342,7 +343,15 @@ export function makeLoopLedger(params: {
    * the same text the caller sees. */
   decorate: (raw: DispatchResult) => DispatchResult;
   note: (result: DispatchResult) => DispatchResult;
-}): { binding: BindingState; write: (raw: DispatchResult) => DispatchResult } {
+}): {
+  binding: BindingState;
+  write: (raw: DispatchResult) => DispatchResult;
+  /** A reportOnly loop whose verdict policy was unrecognised — an infrastructure
+   * failure, on the ledger, before any round ran. */
+  policyErrorResult: (text: string) => DispatchResult;
+  /** A loop with nothing to review — rejected, on the ledger, before any round ran. */
+  noDiffResult: (text: string) => DispatchResult;
+} {
   const binding: BindingState = { captured: { binding: {}, headRef: params.headRef } };
   const write = makeLedgerWrite({
     state: binding,
@@ -357,7 +366,49 @@ export function makeLoopLedger(params: {
     decorate: params.decorate,
     note: params.note,
   });
-  return { binding, write };
+  const preRoundWrite = makeLedgerWrite({
+    state: binding,
+    workCwd: params.workCwd,
+    branch: params.branch,
+    resolvedBranch: params.resolvedBranch,
+    callerSuppliedDiff: params.callerSuppliedDiff,
+    toolPath: isToolPathProvenance(params.toolPath),
+    baseRef: params.baseRef,
+    execFn: params.execFn,
+    rowNonce: params.rowNonce,
+    decorate: params.decorate,
+    note: params.note,
+  });
+  // The two results a loop can return BEFORE it has a round to report: a
+  // reportOnly caller whose verdict policy was unrecognised, and a caller that
+  // supplied nothing to review. They are built here because both must travel the
+  // SAME ledger path as every round result — a row for a loop that never judged
+  // the diff is what makes a parked cycle auditable, and a hand-built result at
+  // the call site is how one of them ends up unwritten.
+  return {
+    binding,
+    write,
+    policyErrorResult: (text: string) =>
+      preRoundWrite(
+        synthesizeResult({
+          ok: false,
+          loopOutcome: "infra-failure",
+          text,
+          ms: 0,
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+        }),
+      ),
+    noDiffResult: (text: string) =>
+      preRoundWrite(
+        synthesizeResult({
+          ok: false,
+          loopOutcome: "rejected",
+          text,
+          ms: 0,
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+        }),
+      ),
+  };
 }
 
 /**

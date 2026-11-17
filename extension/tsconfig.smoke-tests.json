@@ -468,6 +468,9 @@
     "smoke-tests/test-adversarial-verdict-fence-matrix.ts",
     "smoke-tests/test-adversarial-verdict-brief-forms.ts",
     "smoke-tests/test-adversarial-verdict-reader-stop-agreement.ts",
-    "smoke-tests/test-adversarial-verdict-reply-shapes.ts"
+    "smoke-tests/test-adversarial-verdict-reply-shapes.ts",
+    "smoke-tests/test-adversarial-verdict-reask.ts",
+    "smoke-tests/test-adversarial-verdict-reask-child.ts",
+    "smoke-tests/lib/adversarial-reask-fixtures.ts"
   ]
 }
