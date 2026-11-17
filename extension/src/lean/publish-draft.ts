@@ -7,7 +7,8 @@
  * PR tells the host a mergeable PR stands behind unverified bytes.
  *
  * The record may carry what the FORGE was read to say, never what this run asked for; nothing when nobody
- * could tell; and a refusal when the run still had a DECISION to make with the answer.
+ * could tell; and a refusal when the run still had a DECISION to make with the answer (see
+ * `reusedDraftState`).
  */
 import type { NormalizedPullRequest } from "../forge-types.ts";
 import type { PublishForge } from "./publish-deps.ts";

@@ -66,8 +66,8 @@ function firstBlob(listed: { stdout?: string } | undefined): string | undefined 
     const [meta, name] = entry.split("\t");
     if (name === undefined || name === "") continue;
     if (name === "." || path.isAbsolute(name) || name.startsWith("../")) return undefined;
-    // `<mode> <type> <sha>`; anything git did not call a blob is not a file to look for, and a
-    // A line of a shape this step does not recognise is skipped rather than guessed at.
+    // `<mode> <type> <sha>`; anything git did not call a blob is not a file to look for, and a line of a
+    // shape this step does not recognise is skipped rather than guessed at.
     if (meta?.split(/\s+/)?.[1] !== "blob") continue;
     return name;
   }

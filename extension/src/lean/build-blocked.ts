@@ -119,7 +119,8 @@ export async function blockedProved(opts: {
       skipped.push(file);
       continue;
     }
-    // Every file the driver JUDGED reaches `ran`, greens included — the cause's map holds the whole set.
+    // Every file the driver JUDGED reaches `ran`, greens included — the cause's map holds every file vetted
+    // up to and including the red, and stops there.
     ran.push(file);
     if (proof.kind === "green") continue;
     // A red counts only while the bytes behind its name are those the freeze hashed. Refused by name.

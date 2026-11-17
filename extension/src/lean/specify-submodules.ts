@@ -178,9 +178,11 @@ export async function submoduleState(exec: ExecFn, wt: string): Promise<Worktree
   // git's format: `<sigil><sha> <path> [(<describe>)]`. The sigil is GLUED to the sha and the sha is always
   // printed, so the parser demands both.
   //
-  // Three sigils are read, and the third keeps `registered` meaningful: ` ` is a populated submodule, so a
-  // parser matching only the defect glyphs reports nothing for a healthy tree. `-` is a gitlink with nothing
-  // checked out; `U` is unmerged. A line matching none is ignored, not guessed at.
+  // Format checked against git 2.53. Three sigils are read, and the third keeps `registered` meaningful: ` `
+  // is a populated submodule, so a parser matching only the defect glyphs reports nothing for a healthy tree.
+  // `-` is the unpopulated-gitlink glyph; `U` is an unmerged path, which no pass of this step produces. `+`
+  // (a different sha) is another defect and is deliberately left uncounted. A line matching none is ignored,
+  // not guessed at.
   for (const line of ((status as { stdout?: string }).stdout ?? "").split("\n")) {
     // The path is group 3: group 2 is only checked to BE a sha, so a parser reading it as the path took the
     // SHA for the submodule's name.
@@ -213,8 +215,9 @@ export async function initSubmodules(
   // The seeding arm's claim is negative — it never hands a recorded URL to git — and a negative is not
   // observable from a passing run. So one `submodule status` per absent path settles two questions:
   //
-  //   - did something FETCH it? An unseeded gitlink shows `-` (or `U`); anything else means something
-  //     populated it, and on this arm only a fetch from the recorded URL could have.
+  //   - did something FETCH it? An unseeded gitlink shows `-`, the unpopulated-gitlink glyph; anything else
+  //     means something populated it, and on this arm only a fetch from the recorded URL could have. `U` is
+  //     also treated as unreadable rather than as a fetch, though this step never produces an unmerged path.
   //   - or did the RUN create it? A store under this tree's own gitdir is invisible to `clean -fdx`, so a
   //     submodule the run added arrives populated and unseeded. Refused too.
   //

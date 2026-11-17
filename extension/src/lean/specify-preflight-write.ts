@@ -24,9 +24,9 @@ import { oneLine } from "./text-fence.ts";
 export const PROBE_REJECTED = "the runner rejected the probe file (exit 4)";
 
 /**
- * How much of the rendered command the disclosure quotes. Same bound as the sibling clip in
- * `publish-body.ts`, for the same reason: the template is project-authored text landing in a reason line the
- * operator reads.
+ * How much of the rendered command the disclosure quotes. One narrower than `PREEXISTING_COMMAND_CLIP`
+ * (`publish-body.ts`), which is the bound a printed command gets there: the template is project-authored text
+ * landing in a reason line the operator reads, and the interesting part is the front of it.
  */
 const REJECTED_COMMAND_CLIP = 119;
 

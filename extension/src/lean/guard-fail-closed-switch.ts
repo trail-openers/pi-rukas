@@ -4,7 +4,7 @@
  *
  * `assertPublishableBranch` stands in front of every force-push the lean driver makes. When
  * neither `git symbolic-ref` nor `gh repo view` can name the mainline, the fail-closed arm asks
- * origin with the `origin-head-probe` (`git ls-remote --symref origin HEAD`) — the same transport
+ * origin with `ORIGIN_PROBE_COMMAND` (`git ls-remote --symref origin HEAD`) — the same transport
  * the push it guards will use — and refuses when origin will not say either. Without the arm the
  * guard returns without an opinion and the push goes ahead unchecked. The probe is
  * `ORIGIN_PROBE_COMMAND` (`lean/publish-deps.ts`), issued through the harness's network-git wrapper.

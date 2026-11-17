@@ -236,7 +236,8 @@ export async function rewindToVerified(
     };
 
   // Origin already holds the certified head but this step did not produce that: no push, no keep, and
-  // `shipped: true` would claim a move never made.
+  // `shipped: true` would claim a move never made. `headFacts` in handback.ts is what stops `unshippedHead`
+  // printing as unshipped.
   if (held === verifiedHead)
     return {
       shipped: false,

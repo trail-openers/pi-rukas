@@ -80,9 +80,10 @@ export function isMeasure(value: unknown): boolean {
  * exported because a rule two files state is a rule one of them will violate: a reader with its own
  * looser literal silently deleted the fixer row from every review that fixed anything.
  *
- * The shape: the epoch milliseconds `fixRunId` mints, then `-<arm>-<round>-<attempt>` for the
- * fix-tree creation that made this tree. No sign, no fraction, no exponent — a hand-edited record
- * carries `"1e12"`, `"-5"` and `"1.5"`, all of which `Number()` would accept and no tree name ever has.
+ * The shape: the epoch milliseconds `fixRunId` mints, then the `-<arm>-<wave>-<attempt>` composite that
+ * `fixRound` builds for the fix-tree creation that made this tree. No sign, no fraction, no exponent — a
+ * hand-edited record carries `"1e12"`, `"-5"` and `"1.5"`, all of which `Number()` would accept and no tree
+ * name ever has.
  *
  * **Why the letters are admitted rather than the writer narrowed.** The suffix is what keeps the two
  * arms of one round apart: `fixTreeName` is `lean-<issue>-fix-<arm>-<round>-<attempt>-<epoch>`, and a
