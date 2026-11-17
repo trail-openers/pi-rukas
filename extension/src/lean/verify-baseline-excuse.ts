@@ -2,18 +2,17 @@
  * lean/verify-baseline-excuse — a tier red at HEAD whose every failure line the base run
  * ALSO printed is not this run's failure.
  *
- * The unit of comparison is the WHOLE failure line, which is what keeps this runner-agnostic: a parser
- * that reads a test name out of each line folds two checks onto one token, and a folded name excuses a
- * failure only this run authored. Two checks are two lines, so whole lines cannot fold.
+ * The unit of comparison is the WHOLE failure line, which keeps this runner-agnostic: a parser that reads a
+ * test name out of each line folds two checks onto one token, and a folded name excuses a failure only this
+ * run authored. Two checks are two lines, so whole lines cannot fold.
  *
  * The compared set is wider than the classifier — every non-empty line either run printed — so a head-only
  * line nobody recognised still has to appear at the base. The rule is DEFAULT-REFUSE in both directions of
  * ignorance: a line past {@link FAILURE_LINE_SCAN_MAX} refuses either side, and a head-only line refuses with
  * no allow-list of shapes that may be head-only. The accepted cost — a PR adding passing tests to a suite
  * already red at base, renumbered TAP output, a moved timing line — is a hand-back, never a green. Both
- * sides must be non-empty, every head line must equal a base line verbatim (trimmed, its tree's prefix
- * out), the two trees must be two trees, and a base red shaped like a missing dependency tree is the
- * probe's provisioning, not the commit's.
+ * sides must be non-empty, every head line must equal a base line verbatim, the trees must be two trees,
+ * and a base red shaped like a missing dependency tree is the probe's provisioning, not the commit's.
  */
 
 import { realpathSync } from "node:fs";
@@ -33,16 +32,16 @@ export type BaselineExcuse =
   | { kind: "refused" };
 
 /**
- * Does this stream hold a line past the classifier's scan window? Such a line is judged on its first
- * 8 KiB, so two that differ only past the window fold onto one key — so it refuses on EITHER side.
+ * Does this stream hold a line past the classifier's scan window? Such a line is judged on its first 8 KiB,
+ * so two differing only past the window fold onto one key — refuse on EITHER side.
  */
 function hasOverWindowLine(stream: string): boolean {
   return splitLines(stream).some((line) => line.trim().length > FAILURE_LINE_SCAN_MAX);
 }
 
 /**
- * The lines the classifier READS as failures: stream order, trimmed, deduplicated, non-empty — the
- * names the `## Pre-existing` disclosure records, not the comparison set ({@link allLinesOf}).
+ * The lines the classifier READS as failures: stream order, trimmed, deduplicated, non-empty — the names
+ * the `## Pre-existing` disclosure records, not the comparison set ({@link allLinesOf}).
  */
 export function failureLinesOf(stream: string): string[] {
   const seen = new Set<string>();
@@ -60,13 +59,13 @@ export function failureLinesOf(stream: string): string[] {
  * The harness's OWN residue, discounted from the comparison.
  *
  * The executor prefixes its own `Command failed: <cmd>` echo to what the gate printed, so requiring the
- * executor's writing to appear at the base is no requirement about the project's failures. It is the ONLY
- * line discounted, and by WHO WROTE it: admitted only when it quotes the command both runs were given.
+ * executor's writing at the base is no requirement about the project's failures. It is the ONLY line
+ * discounted, and by WHO WROTE it: admitted only when it quotes the command both runs were given.
  */
 function harnessResidue(line: string, cmd: string, headRoot: string, probeRoot: string): boolean {
   if (!/^Command failed:\s/.test(line)) return false;
   const echoed = line.slice("Command failed:".length).trim();
-  // One command is one command, whichever tree it was run from.
+  // One command is one command, whichever tree it ran from.
   const spellings = [cmd, stripRoot(cmd, headRoot), stripRoot(cmd, probeRoot)];
   return spellings.some(
     (c) => c === stripRoot(echoed, headRoot) || c === stripRoot(echoed, probeRoot),
@@ -74,9 +73,9 @@ function harnessResidue(line: string, cmd: string, headRoot: string, probeRoot: 
 }
 
 /**
- * Every line a stream printed that holds text, in stream order, trimmed and deduplicated: the
- * comparison set. Deliberately NOT `failureLines` — dropping an unread head-only line would grade a
- * defect the base never printed as one it did.
+ * Every line a stream printed that holds text, in stream order, trimmed and deduplicated: the comparison
+ * set. Deliberately NOT `failureLines` — dropping an unread head-only line grades a defect the base never
+ * printed as one it did.
  */
 function allLinesOf(stream: string): string[] {
   const seen = new Set<string>();
@@ -94,9 +93,9 @@ function allLinesOf(stream: string): string[] {
  * One run's tree prefix, out of a line.
  *
  * The prefix is measured at the first character that could begin a path — `/`, `.` or a drive letter —
- * not at column 0 where the runner's marker sits, and both spellings (with and without a trailing
- * separator) are tried. The search stops there: a root appearing later is content the tier printed, so a
- * global removal would erase a difference and excuse it.
+ * not column 0 where the runner's marker sits, and both spellings (with/without a trailing separator) are
+ * tried. The search stops there: a root appearing later is content the tier printed, and a global removal
+ * would erase a difference and excuse it.
  */
 export function stripRoot(line: string, root: string): string {
   const trimmed = line.trim();
@@ -113,9 +112,9 @@ export function stripRoot(line: string, root: string): string {
 /**
  * A tree resolved to the spelling its own run would have printed it under.
  *
- * A tree reached through a symlink prints its names under the symlinked spelling while the caller holds
- * the resolved one, and the two never share a prefix. Only the longest existing prefix resolves: the
- * probe's tree is deleted before this comparison runs.
+ * A tree reached through a symlink prints its names under the symlinked spelling while the caller holds the
+ * resolved one, and the two never share a prefix. Only the longest existing prefix resolves — the probe's
+ * tree is deleted before this comparison runs.
  */
 function treeRoot(dir: string): string {
   const parts = dir
@@ -141,7 +140,7 @@ function treeRoot(dir: string): string {
 /**
  * Is this base run's red the shape of a tree that was never provisioned?
  *
- * `worktree-provision`'s predicate reads its dependency phrases anywhere in the stream, and a tier's own
+ * `worktree-provision`'s predicate reads its dependency phrases anywhere in the stream and a tier's own
  * `sh` trace can print them — so only an individually dependency-shaped FAILURE LINE counts.
  */
 function baseRedIsMissingDeps(stream: string): boolean {
@@ -155,8 +154,8 @@ const MISSING_DEP_LINE =
 /**
  * May this tier's red be excused over the base run's red?
  *
- * The caller has settled the colour questions and the frozen acceptance verdict; this decides whether the
- * head run printed anything the base did not. Every refusal means the caller keeps the hand-back.
+ * The caller settled the colour questions and the frozen acceptance verdict; this decides whether the head
+ * run printed anything the base did not. Every refusal means the caller keeps the hand-back.
  */
 export function baselineExcuse(opts: {
   tierName: string;
@@ -181,18 +180,18 @@ export function baselineExcuse(opts: {
   const base = allLinesOf(baseStream);
   // A line past the classifier's window is judged on a clipped view.
   if (hasOverWindowLine(headStream) || hasOverWindowLine(baseStream)) return { kind: "refused" };
-  // A probe tree that is the run's own tree compares against nothing, since every line is its own echo.
+  // A probe tree that IS the run's own tree compares against nothing — every line is its own echo.
   const headRoot = treeRoot(opts.headRoot);
   const probeRoot = treeRoot(opts.probeRoot);
   if (headRoot === probeRoot) return { kind: "refused" };
-  // A bare checkout whose dependencies were never linked fails every command: that red belongs to the
-  // probe's provisioning, not to the commit. Per FAILURE LINE, not anywhere in the stream.
+  // A bare checkout whose dependencies were never linked fails every command: that red is the probe's
+  // provisioning, not the commit's. Judged per FAILURE LINE, not anywhere in the stream.
   if (baseRedIsMissingDeps(baseStream)) return { kind: "refused" };
   // The RAW stream's lines, both sides: the residue discount runs after this, so a head left with nothing
-  // but discounted residue is refused here as an empty key set.
+  // but residue is refused here as an empty key set.
   if (head.length === 0 || base.length === 0) return { kind: "refused" };
-  // One key per side: each line with ITS OWN tree's prefix out. Each keeps every digit — a moved pass count
-  // or a renumbered TAP check hands the run back rather than granting a green.
+  // One key per side: each line with ITS OWN tree's prefix out, keeping every digit — a moved pass count or
+  // a renumbered TAP check hands the run back rather than granting a green.
   const residue = (line: string): boolean => harnessResidue(line, opts.cmd, headRoot, probeRoot);
   const headKey = head
     .map((line) => stripRoot(line, headRoot))
@@ -201,8 +200,8 @@ export function baselineExcuse(opts: {
     base.map((line) => stripRoot(line, probeRoot)).filter((line) => !residue(line)),
   );
   if (!headKey.every((line) => baseKey.has(line))) return { kind: "refused" };
-  // The disclosure names only the failures the classifier could read; the empty-set refusal above is what
-  // keeps it naming real checks rather than no check at all.
+  // The disclosure names only failures the classifier could read; the empty-set refusal above keeps it
+  // naming real checks rather than none.
   const matched = failureLinesOf(headStream)
     .map((line) => stripRoot(line, headRoot))
     .filter((line) => line.length > 0);
@@ -213,14 +212,14 @@ export function baselineExcuse(opts: {
     baseSha: opts.baseSha,
   };
   // The step log's reader refuses an over-long or control-character name and would then refuse the whole
-  // run file. Ask it here, while the refusal is still cheap.
+  // run file — ask it here, while the refusal is cheap.
   if (preexistingFailuresProblem({ [opts.tierName]: record }) !== undefined)
     return { kind: "refused" };
   return { kind: "excused", record };
 }
 
 /**
- * A head line cut to what the step log's reader accepts, for DISPLAY. `total` carries the true count.
+ * A head line cut to what the step log's reader accepts, for DISPLAY only; `total` carries the true count.
  */
 function boundedLine(line: string): string {
   return line.length > PREEXISTING_NAME_MAX_CHARS
