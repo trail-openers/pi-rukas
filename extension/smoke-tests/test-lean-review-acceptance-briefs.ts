@@ -1,18 +1,15 @@
 #!/usr/bin/env bun
 /**
- * The acceptance table reaches BOTH reviewer briefs and the PR comment, and the
- * step refuses a head the gate never certified.
+ * The acceptance table reaches BOTH reviewer briefs, and the step refuses a head
+ * the gate never certified.
  *
- * Four claims, each of which a stub of the other half cannot fake:
+ * Three claims here, each of which a stub of the other half cannot fake:
  *
  *  (a) **the two briefs.** `lensContext` is what six lens children read and
  *      `adversarialContext` is what the adversarial reviewer reads; both must
  *      carry the section, on BOTH waves. The fixer's brief is NOT one of the two
  *      (A4): it already names the frozen files it may not touch, and a seat that
  *      edits the tree does not need the gate's results re-stated to it.
- *  (b) **one comment per attempt.** The step posts the table once on the run's PR
- *      through the existing `deps.prComment` seam — whatever arm closed the step,
- *      and separately from the unreviewed-lanes post `review-bound.ts` owns.
  * (b2) **both comments, when both are owed.** The table and the unreviewed-lanes
  *      disclosure are two claims, and every other post case here composes only one
  *      of them, so this case pins the pair: two posts, in order, and what a forge
@@ -21,6 +18,10 @@
  *      is refused before pass 1 is bought, naming both shas: every `pass at …`
  *      cell would otherwise speak about bytes no gate ran.
  *
+ * The single-comment case (b) and its derived-spec regression live in the sibling
+ * `test-lean-review-acceptance-briefs-derived.ts`; both files drive the same step
+ * over the fixture in `lib/lean-review-acceptance-fixtures.ts`.
+ *
  * The repo, the branch and the commits are real (`lib/lean-review-fixtures.ts`);
  * only the models and the gate verdicts are stubs, so the guard's git read is a
  * git read and the refusal is the step's own.
@@ -28,19 +29,19 @@
  * Offline: no child process, no model, no token.
  */
 
-import {
-  acceptanceComment,
-  renderAcceptanceSection,
-} from "../src/lean/review-acceptance.ts";
-import { execp } from "../src/exec.ts";
+import { renderAcceptanceSection } from "../src/lean/review-acceptance.ts";
 import { leanReviewAcceptanceEnabled } from "../src/lean/review-acceptance-switch.ts";
 import { lensContext } from "../src/lean/review-deps.ts";
 import { ReviewInfraError } from "../src/lean/review.ts";
-import { renderPiSpec } from "../src/lean/spec.ts";
-import { sha256 } from "../src/lean/specify-proof.ts";
-import type { Outcome, Step } from "../src/lean/state.ts";
+import type { Step } from "../src/lean/state.ts";
 import type { DispatchResult, DispatchSpec } from "../src/types.ts";
 import { withEnv } from "./lib/env-scope.ts";
+import {
+  HEAD,
+  ISSUE_BODY,
+  logFor,
+  realFrozen,
+} from "./lib/lean-review-acceptance-fixtures.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   BRANCH,
@@ -49,73 +50,19 @@ import {
   ctxFor,
   depsWith,
   fixerThatCommits,
-  frozenBlob,
   lensRoundFor,
   makeRepo,
   result,
   runStep,
   setup,
-  stepGitEnv,
 } from "./lib/lean-review-fixtures.ts";
 import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
 
 const { assert, failures } = makeAssert();
 isolateLedger();
 
-const HEAD = "0123456789abcdef0123456789abcdef01234567";
-
-/** The newline, spelled for the assertions that read one line out of a posted body. */
-const NL = String.fromCharCode(10);
-
-const CRITERIA = [
-  { id: "AC1", text: "The meter refuses the draw once the quota is spent.", verify: "test" as const },
-  { id: "AC2", text: "The preservation script still exits 0.", verify: "command" as const },
-  { id: "AC3", text: "The refusal reads well to a human.", verify: "manual" as const },
-];
-
-const ISSUE_BODY = `Add a quota check to the meter.\n\n${renderPiSpec({
-  problem: "The meter must refuse the draw once the quota is spent.",
-  criteria: CRITERIA,
-  size: "M",
-})}\n`;
-
-/**
- * The log the step reads, matching what the fixture repo really holds.
- *
- * `frozen` overrides the recorded digest of the frozen test. A case that buys a fix
- * wave MUST pass the repo's own hash (`sha256(frozenBlob(repoRoot, head))`): the
- * review step's integration re-hashes the committed bytes, so a made-up digest makes
- * every fix round "change the frozen acceptance contract" and the case measures that
- * refusal instead of what it names. A case that buys no fixer never reaches that
- * proof and the placeholder is enough.
- */
-function logFor(head: string, frozen?: Record<string, string>): Step[] {
-  const step = (state: string, outcome: Outcome | undefined, n = 0): Step => ({
-    key: `7:${state}:${String(n)}`,
-    state: state as Step["state"],
-    startedAt: 1,
-    outcome,
-  });
-  return [
-    step("specify", { kind: "ok", frozen: frozen ?? { "tests/AC1.test.ts": "a".repeat(64) }, tests: { AC1: ["tests/AC1.test.ts"] } }),
-    step("verify", {
-      kind: "green",
-      verifiedHead: head,
-      commandCriteria: { AC2: "passed" },
-      commandNotRunnable: {},
-    }),
-    step("publish", { kind: "ok", prUrl: "https://github.com/o/r/pull/11", publishedHead: head }),
-  ];
-}
-
 /** The section every assertion below compares the briefs against. */
 const section = (head: string): string => renderAcceptanceSection(logFor(head), ISSUE_BODY);
-
-/** The frozen record a fix-wave case must hand `logFor`: the digest of the repo's own
- * committed bytes, which is the one the step's own frozen proof accepts. */
-const realFrozen = (repoRoot: string, head: string): Record<string, string> => ({
-  "tests/AC1.test.ts": sha256(frozenBlob(repoRoot, head)),
-});
 
 // ── (a) both briefs carry the section, on both waves ──────────────────────
 {
@@ -134,7 +81,7 @@ const realFrozen = (repoRoot: string, head: string): Record<string, string> => (
     );
   }
   // The adversarial seat's brief is composed inside `review-deps.ts`; the step's
-  // own dispatch is what shows the whole path, so case (b) asserts it there.
+  // own dispatch is what shows the whole path, so the sibling's case (b) asserts it there.
   const noTable = lensContext(7, "full", { issueBody: ISSUE_BODY });
   assert(
     !noTable.includes("## The acceptance table"),
@@ -145,132 +92,6 @@ const realFrozen = (repoRoot: string, head: string): Record<string, string> => (
     emptyTable === noTable,
     "(a) and a blank table threads nothing: byte-identical to the no-table call",
   );
-}
-
-// ── (b) one comment per attempt, carrying the same bytes ───────────────────
-{
-  const { repoRoot, baseSha } = makeRepo();
-  const head = await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
-  const posts: string[] = [];
-  const adversarialTables: (string | undefined)[] = [];
-  const ctx = ctxFor(repoRoot, baseSha, BRANCH);
-  ctx.steps.push(...logFor(head));
-  const { outcome, threw } = await runStep(
-    ctx,
-    depsWith({
-      // The real wiring builds this brief; drive it with the table the step would
-      // have composed, so the adversarial seat's copy of it is asserted too.
-      // (The step's own pass through this seam is case (b)'s post path.)
-      fetchIssueBody: async () => ISSUE_BODY,
-      prComment: async (_repo, _pr, bodyText) => {
-        posts.push(bodyText);
-      },
-      lens: async (a) =>
-        lensRoundFor({ wave: a.wave, since: a.since, head: a.head }, "APPROVED", []),
-      // The seat's own brief is composed inside `review-deps.ts` from exactly these
-      // args (`adversarialContext(a.issue, a.wave, a.blockingFindings, a.acceptanceTable)`),
-      // so the strongest thing capturable at this seam is that the step handed the
-      // gate the table at all — and then the same composition, reprinted here, is
-      // what the seat read. Case (a) pins that composition against the briefs.
-      adversarial: async (a) => {
-        adversarialTables.push(a.acceptanceTable);
-        return result({ loopOutcome: "approved" });
-      },
-    }),
-  );
-  assert(outcome !== undefined && threw === undefined, `(b) the step passed (${String(outcome?.kind)})`);
-  assert(
-    adversarialTables.length >= 1 && adversarialTables.every((t) => t === section(head)),
-    `(b) the step handed the ADVERSARIAL gate the same table it handed the six lenses, on every pass (${String(adversarialTables.length)} passes) — the mutant: threading it to the lenses only, which leaves the gate that can block a run judging without it`,
-  );
-  assert(
-    posts.length === 1,
-    `(b) exactly ONE acceptance comment per attempt (${String(posts.length)} posted: ${JSON.stringify(
-      posts.map((p) => p.slice(0, 40)),
-    )})`,
-  );
-  const posted = posts[0] ?? "";
-  assert(
-    posted.includes("AC1") && posted.includes("AC2") && posted.includes("AC3"),
-    "(b) the comment carries every criterion, not just the first",
-  );
-  assert(
-    posted.includes(`pass at ${head.slice(0, 12)}`) &&
-      posted.includes(`pass (command) at ${head.slice(0, 12)}`) &&
-      posted.includes("manual — needs a human"),
-    "(b) and each of the three verdict shapes is a row the reader can weigh",
-  );
-  const anchor = posted.split(NL).find((l) => l.startsWith("Reviewed head:")) ?? "";
-  // One substring assembled from char codes and this case's own head — no literal
-  // that can disagree with the printer over a dash or a space.
-  const want =
-    "Reviewed head: `" + head + "` " + String.fromCharCode(8212) + " the commit the gates read, which is the certified head.";
-  assert(
-    anchor === want && anchor.includes(head),
-    `(b) the comment names the head the gates read, as the full sha, beside the certified-head claim (${JSON.stringify(
-      anchor,
-    )}) — the mutant: a comment that named no head would leave a reader unable to tell which commit the rows describe`,
-  );
-  assert(
-    posted.includes(section(head)),
-    "(b) and the section is the SAME bytes the briefs were handed — one renderer, three surfaces",
-  );
-  // The comment's own renderer, exercised directly on the same log: the step's
-  // post path above proves it reached the forge; this proves the shape is the
-  // renderer's and not an artefact of the harness.
-  assert(
-    acceptanceComment(logFor(head), ISSUE_BODY, head).includes(section(head)),
-    "(b) acceptanceComment is the section plus its head anchor, nothing else",
-  );
-  // The regression, at the surface that had the bug: the step's own post path for a
-  // run whose contract the record holds rather than the issue. A prose body with a
-  // derived spec on the run rendered `""` at the comment (so nothing posted) while
-  // the briefs were handed a full table — the disclosure existed everywhere but the
-  // one place a PR reviewer would read it.
-  {
-    const derivedBody = "Add a quota check to the meter, in prose only.\n";
-    const derivedRun = {
-      spec: {
-        problem: "The meter must refuse the draw once the quota is spent.",
-        criteria: CRITERIA.map((c) => ({ ...c })),
-        size: "M" as const,
-      },
-      model: "some/model",
-      at: 1_700_000_000_000,
-    };
-    const { repoRoot, baseSha } = makeRepo();
-    const dHead = await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
-    const dPosts: string[] = [];
-    const dCtx = ctxFor(repoRoot, baseSha, BRANCH);
-    dCtx.run = { ...dCtx.run, derivedSpec: derivedRun };
-    dCtx.steps.push(...logFor(dHead, realFrozen(repoRoot, dHead)));
-    const derivedStep = await runStep(
-      dCtx,
-      depsWith({
-        fetchIssueBody: async () => derivedBody,
-        prComment: async (_repo, _pr, bodyText) => {
-          dPosts.push(bodyText);
-        },
-        lens: async (a) => lensRoundFor({ wave: a.wave, since: a.since, head: a.head }, "APPROVED", []),
-        adversarial: async () => result({ loopOutcome: "approved" }),
-      }),
-    );
-    assert(
-      derivedStep.outcome !== undefined && derivedStep.threw === undefined,
-      `(b) the derived run's step passed (${String(derivedStep.outcome?.kind)})`,
-    );
-    assert(
-      dPosts.filter((p) => p.startsWith("## The acceptance table")).length === 1,
-      `(b) a derived run posts exactly ONE acceptance comment (${String(dPosts.filter((p) => p.startsWith("## The acceptance table")).length)}: ${JSON.stringify(dPosts.map((p) => p.slice(0, 24)))}) — the mutant: dropping the record at the post site, which posts none and leaves every other file green`,
-    );
-    assert(
-      renderAcceptanceSection(logFor(dHead), derivedBody, { derivedSpec: derivedRun }) !== "" &&
-        (dPosts[0] ?? "").includes("AC1") &&
-        (dPosts[0] ?? "").includes(`pass at ${dHead.slice(0, 12)}`),
-      "(b) …and that comment is the table of the DERIVED criteria, at the head the gate certified",
-    );
-  }
-  cleanupRoots();
 }
 
 // ── (b2) both disclosures post, and a forge that refuses one says so on the record ──
@@ -285,8 +106,10 @@ const realFrozen = (repoRoot: string, head: string): Record<string, string> => (
   // fixer's commit, so a second attempt on the same clone would find origin holding a
   // head no green `verify` of its own log named — the entry guard would then refuse the
   // run for the previous attempt's fix rather than for anything this arm did.
+  let tag = 0;
   const makeCase = async () => {
-    const { repoRoot, baseSha } = makeRepo();    const head = await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
+    const { repoRoot, baseSha } = makeRepo();
+    const head = await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
     const ctx = ctxFor(repoRoot, baseSha, BRANCH);
     // The step's clock measures from the newest `review` entry's `startedAt`, which the
     // engine writes ahead of the handler; seeding it once at 0 is what makes "the bound
@@ -316,7 +139,6 @@ const realFrozen = (repoRoot: string, head: string): Record<string, string> => (
     };
     return { ctx, head, dispatch };
   };
-  let tag = 0;
 
   const drive = async (fail: "none" | "first" | "both") => {
     const { ctx, head, dispatch } = await makeCase();
