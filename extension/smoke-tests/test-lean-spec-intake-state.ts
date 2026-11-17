@@ -206,6 +206,42 @@ function runWith(derived?: DerivedSpec) {
     bad({ spec: many(12, "L"), model: "m", at: 1 }).includes("ready"),
     "…and the full 12 the mapper embeds is refused as size L, which readiness refuses",
   );
+  // A lone UTF-16 surrogate is the one string a JSON reader can carry that no
+  // downstream writer survives: `JSON.stringify` emits it as a literal U+FFFD or
+  // throws depending on the host, so a record holding one does not round-trip to the
+  // bytes every later step re-parses. Refused by name, like every other corruption.
+  for (const [label, smuggled] of [
+    ["a lone high surrogate in problem", { ...SPEC, problem: "tail \ud800" }],
+    [
+      "a lone high surrogate in a criterion",
+      {
+        ...SPEC,
+        criteria: [
+          { id: "AC1", text: "tail \ud800", verify: "test" as const },
+          ...SPEC.criteria.slice(1),
+        ],
+      },
+    ],
+  ] as const) {
+    assert(
+      derivedSpecProblem({ spec: smuggled, model: "m", at: 1 }) !== undefined,
+      `${label} is refused rather than carried`,
+    );
+    assert(
+      /surrogate/i.test(derivedSpecProblem({ spec: smuggled, model: "m", at: 1 }) ?? ""),
+      `…${label} and the refusal names what is wrong with it (got ${JSON.stringify(derivedSpecProblem({ spec: smuggled, model: "m", at: 1 }))})`,
+    );
+  }
+  // …and the same bytes in a well-formed PAIR are not the defect: an astral character
+  // is valid text and must still load.
+  assert(
+    derivedSpecProblem({
+      spec: { ...SPEC, criteria: [{ id: "AC1", text: "emoji \ud83d\ude00", verify: "test" as const }, ...SPEC.criteria.slice(1)] },
+      model: "m",
+      at: 1,
+    }) === undefined,
+    "…and a surrogate PAIR (a real astral character) still loads",
+  );
   assert(
     derivedSpecProblem({ spec: SPEC, model: "m", at: 1 }) === undefined,
     "the shared validator accepts what the run validator accepts",

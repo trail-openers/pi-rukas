@@ -29,6 +29,9 @@ export interface DerivedSpec {
  * rather than restate it. */
 export type ContractSource = { derivedSpec?: DerivedSpec };
 
+/** A lone (unpaired) UTF-16 surrogate: `JSON.stringify` cannot hand it back intact. */
+const LoneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:[^\uD800-\uDBFF]|^)[\uDC00-\uDFFF]/;
+
 /** A candidate derived spec, or `undefined` with the reason it is not one. The
  * result is canonicalised — `parsePiSpec`'s own object, not the caller's — so a field
  * order or an omitted optional in the file cannot leak into what the steps execute.
@@ -46,10 +49,20 @@ export function derivedSpecProblem(value: unknown): string | undefined {
   const spec = d.spec;
   if (typeof spec !== "object" || spec === null || Array.isArray(spec))
     return "derivedSpec.spec must be an object";
+  // The surrogate clause, asked of the reader's OWN canonical parse below rather than
+  // of the caller's object: `spec` is `unknown` here, and a check that reached into it
+  // would be a second, differently-typed reader of the same fields.
   const rendered = renderPiSpecSafe(spec as PiSpec);
   if (rendered === undefined) return "derivedSpec.spec is not a renderable pi-spec";
   const back = parsePiSpec(rendered);
   if (!back.ok) return quoted(`derivedSpec.spec does not parse: ${back.reason}`);
+  // One clause for the two text fields a contract carries: a lone UTF-16 surrogate is
+  // the one string a JSON reader can hold that no writer round-trips — it survives
+  // `JSON.stringify` here and comes back U+FFFD or as a throw depending on the host, so
+  // a record carrying one is a contract whose bytes no later step can re-read. A
+  // well-formed PAIR is an ordinary astral character and stays admissible.
+  for (const text of [back.spec.problem, ...back.spec.criteria.map((c) => c.text)])
+    if (LoneSurrogate.test(text)) return quoted("derivedSpec.spec carries a lone UTF-16 surrogate");
   if (JSON.stringify(back.spec) !== JSON.stringify(spec))
     return quoted("derivedSpec.spec does not round-trip through its own rendering");
   const unready = readiness(back.spec);

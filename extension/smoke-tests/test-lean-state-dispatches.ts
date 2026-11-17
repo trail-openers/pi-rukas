@@ -262,11 +262,19 @@ for (const [label, issue, outcome, expected] of [
     errorOutcome("review", thrown).dispatches?.length === 1,
     "a review step's rows survive its throw into the handback record",
   );
-  // And the asymmetry, stated as a positive: a state that never dispatches
-  // records nothing, so `review` is a widening and not a wildcard.
+  // …and `ready`, which pays for the `derive` intake's one drafting child. Before
+  // `ready` joined the set its rows were DROPPED on the way to the record — silently,
+  // because a state outside the set is not refused, it is filtered — so a derive run
+  // reported no cost for the model it billed. The same throw path has to admit them.
   assert(
-    errorOutcome("ready", thrown).dispatches === undefined,
-    "a step that dispatches nothing still records no rows — `review` is added, not everything",
+    errorOutcome("ready", thrown).dispatches?.length === 1,
+    "a ready step's rows survive its throw into the record",
+  );
+  // And the asymmetry, stated as a positive: a state that never dispatches
+  // records nothing, so the widening named two states and not everything.
+  assert(
+    errorOutcome("not-ready", thrown).dispatches === undefined,
+    "a step that dispatches nothing still records no rows — `review` and `ready` are added, not everything",
   );
 }
 

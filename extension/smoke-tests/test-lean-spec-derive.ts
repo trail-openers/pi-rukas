@@ -195,7 +195,9 @@ for (const [count, expectOk, label] of [
   try {
     await deriveSpec({ title: "t", body: "b" }, () =>
       Promise.resolve(
-        reply('prefix ```pi-spec v1\n{"problem":"p","criteria":[],"size":"S"}\n``` suffix'),
+        // The closer sits on its own line, as the brief instructs: a fence with text
+        // after the run does not close the block, and `fencedBlocks` rightly refuses it.
+        reply('prefix\n```pi-spec v1\n{"problem":"p","criteria":[],"size":"S"}\n```\nsuffix'),
       ),
     );
   } catch (err) {

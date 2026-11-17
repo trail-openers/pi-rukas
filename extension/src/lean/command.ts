@@ -134,6 +134,11 @@ export function readyDeps(headless: boolean): ReadyDeps {
  * that cannot start still has to say why on the issue — but a run whose git could not be asked
  * is not an unready issue, and posting "your base is not a commit" on an issue whose clone
  * merely had a locked index would tell the operator to fix something that is not broken.
+ *
+ * The third kind is `infra`: what the intake returns when the fault is not the author's (a
+ * failed derivation, a config that exists and cannot be read). It is a verdict the machine
+ * routes to `handback`, so it is part of this function's own answer, not something the caller
+ * re-derives from the facts.
  */
 export async function readyOutcome(
   repoRoot: string,
@@ -335,6 +340,13 @@ export function phase1Handlers(
   // the production wiring built with THIS run's trust stamp, so a headless run cannot
   // lend its stamp to an interactive one that follows it in the same process.
   const d: ReadyDeps = { ...readyDeps(headless), ...deps };
+  // The rows of `ready`'s drafting child, on every verdict: a child that died still
+  // cost tokens, and a `ready` that billed none records no key at all. `ready` is a
+  // dispatching state — see `DISPATCH_STATES`.
+  const rowsField = (facts: ReadyFacts): { dispatches?: DispatchUsageRow[] } =>
+    facts.dispatches === undefined || facts.dispatches.length === 0
+      ? {}
+      : { dispatches: facts.dispatches };
   handlers.ready = async (ctx) => {
     const { kind, facts } = await readyOutcome(
       repoRoot,
@@ -375,30 +387,12 @@ export function phase1Handlers(
           ? {}
           : { baseSha: facts.baseSha }),
         ...(facts.derived === undefined ? {} : { derivedSpec: facts.derived }),
-        ...(facts.dispatches === undefined || facts.dispatches.length === 0
-          ? {}
-          : { dispatches: facts.dispatches }),
+        ...rowsField(facts),
       };
     }
-    if (facts.infra === true) {
-      return {
-        kind: "infra",
-        reason: facts.failedRules.join("; "),
-        // A derivation that FAILED still billed its child, and the handback record is
-        // the only place that cost can still be read. `ready` is one of the states
-        // `DISPATCH_STATES` admits.
-        ...(facts.dispatches === undefined || facts.dispatches.length === 0
-          ? {}
-          : { dispatches: facts.dispatches }),
-      };
-    }
-    return {
-      kind,
-      failedRules: facts.failedRules,
-      ...(facts.dispatches === undefined || facts.dispatches.length === 0
-        ? {}
-        : { dispatches: facts.dispatches }),
-    };
+    if (facts.infra === true)
+      return { kind: "infra", reason: facts.failedRules.join("; "), ...rowsField(facts) };
+    return { kind, failedRules: facts.failedRules, ...rowsField(facts) };
   };
   handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps(headless));
   handlers.build = (ctx) => buildOutcome(ctx, buildDeps(headless));

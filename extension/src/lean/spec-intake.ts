@@ -20,7 +20,7 @@
 
 import { execp } from "../exec.ts";
 import { resolveModel } from "../models.ts";
-import { type WorkConfig, LeanConfigError, loadWorkConfig } from "./config.ts";
+import { LeanConfigError, type WorkConfig, loadWorkConfig } from "./config.ts";
 import type { LeanSeed } from "./seed.ts";
 import {
   type DeriveDeps,
@@ -29,10 +29,10 @@ import {
   deriveSpecForRun,
   traceDerive,
 } from "./spec-derive.ts";
-import type { DerivedSpec } from "./state-derived-spec.ts";
 import { type SpecIntake, SpecIntakeError, resolveSpecIntake } from "./spec-intake-switch.ts";
 import type { PiSpec } from "./spec.ts";
 import { parsePiSpec } from "./spec.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 import { oneLine } from "./text-fence.ts";
 

@@ -33,8 +33,8 @@ import { leanChildOpts } from "./child-opts.ts";
 import { type Budget, type WorkConfig, loadWorkConfig } from "./config.ts";
 import { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
 import type { PiSpec } from "./spec.ts";
-import { parsePiSpec } from "./spec.ts";
-import { type DerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
+import { SPEC_INFO, fencedBlocks, parsePiSpec } from "./spec.ts";
+import { derivedSpecProblem } from "./state-derived-spec.ts";
 import { type BudgetArms, armBudget, dispatchUsageRow } from "./step-budget.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
@@ -118,7 +118,14 @@ export function derivePrompt(input: { title: string; body: string }): string {
  */
 export function parseDerivedBlock(text: string): PiSpec | undefined {
   if (text.length > REPLY_MAX_CHARS) return undefined;
-  const parsed = parsePiSpec(text);
+  // The child's reply is PROSE with the block inside it, and `parsePiSpec` reads an
+  // issue BODY whose whole content is the contract. So the block is located first:
+  // exactly one `pi-spec v1` fence is handed to the reader on its own, and anything
+  // else — no block, or two — goes in whole so the reader's own count rules still fire.
+  const specs = fencedBlocks(text).filter((b) => b.info === SPEC_INFO);
+  const parsed = parsePiSpec(
+    specs.length === 1 ? `\`\`\`${SPEC_INFO}\n${specs[0]?.content ?? ""}\n\`\`\`` : text,
+  );
   if (!parsed.ok) return undefined;
   // An EMPTY criteria array is not "nothing parsable": the child wrote a block, and
   // `readiness` has the sentence that says what is wrong with it ("no acceptance
