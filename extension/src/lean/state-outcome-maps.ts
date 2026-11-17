@@ -1,24 +1,19 @@
 /**
- * lean/state-outcome-maps — the two-entry-per-field map records an outcome may
- * carry, and the rules that let one into a durable record.
+ * lean/state-outcome-maps — the two-entry-per-field map records an outcome may carry, and the rules
+ * that let one into a durable record.
  *
- * Split from `state-outcome.ts`, which passed the size cap when `build` gained
- * its blocked report, along the same seam `state-dispatches.ts` drew: the
- * validators for self-contained `Record<string, string>` fields, which read
- * nothing else in the outcome. `state-outcome.ts` keeps `DISPATCH_STATES`, the
- * ownership table, and `outcomeProblem`; this file keeps what a map of paths or
- * criterion ids must look like.
+ * Split from `state-outcome.ts`, which passed the size cap when `build` gained its blocked report.
+ * `state-outcome.ts` keeps `DISPATCH_STATES`, the ownership table, and `outcomeProblem`; this file
+ * keeps what a map of paths or criterion ids must look like.
  *
- * Each map is BOTH judged (a `*Problem` for the loader) and rebuilt (a
- * `validated*` for `buildOutcome`) from the same bounds, so the reader that
- * validates and the builder that rebuilds cannot drift apart.
+ * Each map is BOTH judged (a `*Problem` for the loader) and rebuilt (a `validated*` for
+ * `buildOutcome`) from the same bounds, so the reader that validates and the builder that rebuilds
+ * cannot drift apart.
  *
- * `commandCriteria` and `commandNotRunnable` are `verify`'s account of the
- * spec's `command` criteria — what licenses `passed (command)` in the PR body,
- * and why the gate skipped the rest. `blockedBy` is `build`'s account of the
- * frozen tests it proved cannot all pass together; its KEYS are frozen test
- * paths rather than criterion ids, so it takes `frozenKeyProblem` instead of
- * `CRITERION_ID` — a `\n` inside one would write a heading into a public comment.
+ * `commandCriteria` and `commandNotRunnable` are `verify`'s account of the spec's `command` criteria
+ * — what licenses `passed (command)` in the PR body, and why the gate skipped the rest. `blockedBy`
+ * is `build`'s account of the frozen tests it proved cannot all pass together; its KEYS are frozen
+ * test paths rather than criterion ids, so it takes `frozenKeyProblem` instead of `CRITERION_ID`.
  */
 
 import { CRITERION_ID } from "./spec.ts";
@@ -28,18 +23,14 @@ import { frozenKeyProblem } from "./state-outcome.ts";
 const COMMAND_CRITERION_KIND = "passed";
 
 /**
- * One why-a-command-was-not-run — or one stated frozen-test conflict — is prose;
- * the record must not grow without bound. Exported because the build step's
- * blocked report holds these values BEFORE they reach the record and must refuse
- * an entry it could not persist: two literals for one number is how a widening
- * lands on one side only.
+ * One why-a-command-was-not-run — or one stated frozen-test conflict — is prose; the record must not
+ * grow without bound. Exported because the build step's blocked report holds these values BEFORE
+ * they reach the record and must refuse an entry it could not persist.
  */
 export const RECORD_REASON_MAX_CHARS = 300;
 
-/**
- * How many entries any of these records may hold. Exported for the same reason as
- * {@link RECORD_REASON_MAX_CHARS}: a map the step could never have written is a blob.
- */
+/** How many entries any of these records may hold. Exported for the same reason as {@link
+ * RECORD_REASON_MAX_CHARS}. */
 export const RECORD_MAX_ENTRIES = 32;
 
 /** Is this a map-shaped value at all? The three records share the answer. */
@@ -50,11 +41,9 @@ function notAMap(value: unknown): boolean {
 /**
  * Why a `commandCriteria` map is not evidence this run may print, or undefined.
  *
- * The map is what licenses `passed (command)` in the PR body, so a value that is
- * not the word `passed` — or an id that is not a criterion id — is refused rather
- * than carried: it would read as evidence for a check the gate never made. The
- * entry bound is the tier's own: a record with more entries than the gate can
- * execute was not written by it.
+ * The map is what licenses `passed (command)` in the PR body, so a value that is not the word
+ * `passed` — or an id that is not a criterion id — is refused rather than carried. The entry bound
+ * is the tier's own: a record with more entries than the gate can execute was not written by it.
  */
 export function commandCriteriaProblem(value: unknown): string | undefined {
   if (notAMap(value)) return "outcome commandCriteria must be an object";
@@ -73,10 +62,9 @@ export function commandCriteriaProblem(value: unknown): string | undefined {
 /**
  * Why a `commandNotRunnable` map is not a record this run may print, or undefined.
  *
- * Each not-runnable reason reaches its own row of the PR body, so every key is a
- * criterion id and every value a bounded string — prose out of a tree check has no
- * business widening a durable record. Per-criterion rather than a single slot
- * because a spec's command criteria each fail for their own reason.
+ * Each not-runnable reason reaches its own row of the PR body, so every key is a criterion id and
+ * every value a bounded string. Per-criterion rather than a single slot because a spec's command
+ * criteria each fail for their own reason.
  */
 export function commandNotRunnableProblem(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null)
@@ -96,13 +84,10 @@ export function commandNotRunnableProblem(value: unknown): string | undefined {
 }
 
 /**
- * How long one stated conflict may PRINT. Distinct from {@link
- * RECORD_REASON_MAX_CHARS}, the DURABLE record's bound: a stored reason may be 300
- * characters, but neither rendering may print more than this. The value is the
- * child's prose and both outputs are public — `build.ts` clips the map it records
- * and `handback.ts` clips the comment it posts — so both share these caps rather
- * than each carrying its own copy, and they sit beside the validator that enforces
- * the record bound.
+ * How long one stated conflict may PRINT. Distinct from {@link RECORD_REASON_MAX_CHARS}, the DURABLE
+ * record's bound: a stored reason may be 300 characters, but neither rendering may print more than
+ * this. Both outputs are public, so `build.ts` and `handback.ts` share these caps rather than each
+ * carrying its own copy.
  */
 export const BLOCKED_REASON_CAP = 160;
 
@@ -112,9 +97,9 @@ export const BLOCKED_PATH_CAP = 200;
 /**
  * Why a `blockedBy` map is not the build step's named cause, or undefined.
  *
- * It is printed into the handback comment as the reason the run stopped, so a
- * half-record (a `blocked` step whose map holds nothing) is refused rather than
- * rendered as a fragment by the reader downstream.
+ * It is printed into the handback comment as the reason the run stopped, so a half-record (a
+ * `blocked` step whose map holds nothing) is refused rather than rendered as a fragment by the
+ * reader downstream.
  */
 export function blockedByProblem(value: unknown): string | undefined {
   if (notAMap(value)) return "outcome blockedBy must be an object";
