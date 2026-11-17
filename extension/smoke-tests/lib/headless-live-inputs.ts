@@ -22,6 +22,7 @@ import { childCodemodeEnabled } from "../../src/child-codemode.ts";
 import { commentRetentionEnabled } from "../../src/comment-retention.ts";
 import { COMMENT_RETENTION_PATHS } from "../../src/comment-retention.ts";
 import { forgeReadOffGuardEnabled } from "../../src/forge-read-off-switch.ts";
+import { glabMrCreateArgvEnabled } from "../../src/gl-mr-create-switch.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
 import { leanDeadlineHandbackEnabled } from "../../src/lean/deadline-handback.ts";
 import { leanGuardFailClosed } from "../../src/lean/guard-fail-closed-switch.ts";
@@ -246,6 +247,10 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // docs row and the call-time read are pinned by
   // test-forge-read-off-guard-switch.ts.
   ["PI_ENSEMBLE_FORGE_READ_OFF_GUARD", forgeReadOffGuardEnabled],
+  // The `glab mr create` transport. The reader is `v !== "0"`, so the gate's LIVE
+  // loop (env deleted) pins "unset means on"; the truth table, the off arm's
+  // byte-identity and the docs row are pinned by test-glab-mr-create-argv.ts.
+  ["PI_ENSEMBLE_GLAB_MR_CREATE", glabMrCreateArgvEnabled],
   ["PI_ENSEMBLE_LOOP_DETECTOR", loopDetectorEnabled],
   ["PI_ENSEMBLE_MERGE_AUTHORITY", mergeAuthorityEnabled],
   ["PI_ENSEMBLE_PLAN_CONTRACT", planContractEnabled],

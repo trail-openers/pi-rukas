@@ -11,6 +11,7 @@
 
 import { forgeListPageFlag, shq } from "./forge-commands.ts";
 import type { ForgeType } from "./forge-detect.ts";
+import { glabMrCreateArgvEnabled } from "./gl-mr-create-switch.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 
 export function prViewCmd(forge: ForgeType, number: number): string {
@@ -24,13 +25,26 @@ export function prListCmd(
   forge: ForgeType,
   opts: { state?: string; sourceBranch?: string } = {},
 ): string {
-  const stateFlag = opts.state ? ` --state ${shq(opts.state)}` : "";
   if (forge === "github") {
+    const stateFlag = opts.state ? ` --state ${shq(opts.state)}` : "";
     const head = opts.sourceBranch ? ` --head ${shq(opts.sourceBranch)}` : "";
     return `gh pr list${stateFlag}${head} ${forgeListPageFlag(forge)} --json number,title,state,url,headRefName,baseRefName,labels`;
   }
+  // `glab mr list` has NO `--state`: its help offers `-c/--closed` and
+  // `-M/--merged` instead, and `-M` implies closed. So "open" — the only state any
+  // caller here asks for — is glab's own default and needs no flag; asking for
+  // `--state open` was an invented flag that made every MR lookup die on
+  // `ERROR Unknown flag:`. Any other state has no spelling this builder can emit,
+  // so it is refused by name rather than silently answered as the default — a
+  // caller that asked for merged MRs and got the open ones would be reading a
+  // wrong answer from a command that exited 0.
+  if (opts.state && opts.state !== "open") {
+    throw new Error(
+      `forge pr list: glab mr list has no --state; it selects with -c/--closed and -M/--merged (asked for state "${opts.state}")`,
+    );
+  }
   const source = opts.sourceBranch ? ` --source-branch ${shq(opts.sourceBranch)}` : "";
-  return `glab mr list${stateFlag}${source} ${forgeListPageFlag(forge)} --output json`;
+  return `glab mr list${source} ${forgeListPageFlag(forge)} --output json`;
 }
 
 /**
@@ -44,10 +58,23 @@ export function prListCmd(
  * decide "no PR matches" — a wrong answer from a command that exited 0. The
  * caller refuses with this string instead of issuing it. `state` is the caller
  * to supply (`--state` is how gh selects open PRs; an absent state is not
- * "open").
+ * "open"). GitLab's `glab mr list` is doubly unable to answer it: no `--state`
+ * and no body field, which is why the GitLab caller refuses before building.
  */
 export function openPrBodyListCmd(state: string): string {
   return `gh pr list --state ${shq(state)} --limit 100 --json number,headRefName,body`;
+}
+
+/**
+ * A forge command, in one of the two shapes the executor takes: a shell string
+ * (every builder but one) or argv (`glab mr create`, below). The union is what
+ * keeps the exception visible at every call site instead of a `string` that
+ * silently drops the argv half.
+ */
+export interface ForgeArgvCmd {
+  /** The executable when `argv` is given, the whole shell string otherwise. */
+  cmd: string;
+  argv?: string[];
 }
 
 /**
@@ -57,25 +84,52 @@ export function openPrBodyListCmd(state: string): string {
  * The mapper in `forge.ts` (`prCreate`) already handles the plain-text URL
  * shape via `parsePrNumberFromResponse` + `makeMinimalPr`; the trailing
  * `makeMinimalPr` fallback fills in `url` from the parsed value.
+ *
+ * GitLab is the one builder on the argv path, because its body cannot travel
+ * as shell text: `glab mr create` has no file form for the description at the
+ * versions GitLab users run (`--description-file` is newer), so the body goes
+ * as ONE argv element of `-d`, and `execFile` never re-parses it. The flags are
+ * the ones `glab mr create --help` lists: `-s/--source-branch` (the source is
+ * never positional), `-t/--title`, `-d/--description`, `-b/--target-branch`,
+ * `--draft`, and `-y`, which is what stops the submission prompt from waiting
+ * on a stdin nobody will type into. There is no `--output json` — on success
+ * the subcommand prints the MR's URL as plain text, which is the shape the
+ * mapper reads. `smoke-tests/test-glab-flags.ts` judges every flag against the
+ * subcommand's own `--help`.
+ *
+ * The `"0"` arm of `PI_ENSEMBLE_GLAB_MR_CREATE` returns the pre-fix shell string
+ * verbatim — a known-broken baseline, kept only so a cycle can be compared
+ * against it.
  */
 export function prCreateCmd(
   forge: ForgeType,
   title: string,
   headBranch: string,
-  bodyFile: string,
+  /** The body string on the argv path; the path of a temp FILE elsewhere. */
+  body: string,
   opts: { baseBranch?: string; draft?: boolean } = {},
-): string {
+): ForgeArgvCmd {
   // #1292 — both CLIs spell it `--draft`; a draft is still state OPEN/opened.
   const draftFlag = opts.draft ? " --draft" : "";
   const baseBranch = opts.baseBranch;
   if (forge === "github") {
     const head = baseBranch ? `${shq(baseBranch)}...${shq(headBranch)}` : shq(headBranch);
-    return `gh pr create --title ${shq(title)} --head ${head} --body-file ${shq(bodyFile)}${draftFlag}`;
+    return {
+      cmd: `gh pr create --title ${shq(title)} --head ${head} --body-file ${shq(body)}${draftFlag}`,
+    };
   }
-  // GitLab: NO --head flag — the source branch is positional, and the
-  // target is `--target-branch`.
-  const target = baseBranch ? ` --target-branch ${shq(baseBranch)}` : "";
-  return `glab mr create ${shq(headBranch)} -t ${shq(title)} --description-file ${shq(bodyFile)}${target}${draftFlag} --output json`;
+  if (!glabMrCreateArgvEnabled()) {
+    return {
+      cmd: `glab mr create ${shq(headBranch)} -t ${shq(title)} --description-file ${shq(body)}${baseBranch ? ` --target-branch ${shq(baseBranch)}` : ""}${draftFlag} --output json`,
+    };
+  }
+  const argv = ["mr", "create", "-s", headBranch, "-t", title, "-d", body];
+  if (baseBranch) argv.push("-b", baseBranch);
+  if (opts.draft) argv.push("--draft");
+  // Pinned last and unconditionally: without it glab asks for confirmation and
+  // the driver has no terminal to answer.
+  argv.push("-y");
+  return { cmd: "glab", argv };
 }
 
 /**
@@ -169,7 +223,17 @@ export function prMergeCmd(
   const pin = prMergeHeadPinFlag(forge, headOid);
   if (forge === "github")
     return `gh pr merge ${number} --${method} --delete-branch${subjectFlag}${pin}`;
-  return `glab mr merge ${number} --${method} --auto-merge=false${subjectFlag}${pin}`;
+  // `glab mr merge` has NO `--subject`: its help spells the commit message
+  // `-m/--message` for a merge and `--squash-message` for a squash. Asking for a
+  // squash subject on GitLab therefore has no spelling this builder can emit, and
+  // is refused by name rather than dropped — a driver that composed a subject and
+  // watched it vanish would report a merge commit message the forge never wrote.
+  if (subjectFlag) {
+    throw new Error(
+      "forge pr merge: glab mr merge has no --subject (it takes -m/--message or --squash-message); refusing to drop the composed subject",
+    );
+  }
+  return `glab mr merge ${number} --${method} --auto-merge=false${pin}`;
 }
 
 export function prDiffCmd(forge: ForgeType, number: number): string {

@@ -75,13 +75,24 @@ const PR = 7;
 // ---------------------------------------------------------------- 1. commands
 {
   const gh = prCreateCmd("github", "T", BRANCH, "/tmp/b", { draft: true });
-  assert(gh.includes(" --draft"), `gh pr create carries --draft (${gh})`);
+  assert(gh.cmd.includes(" --draft"), `gh pr create carries --draft (${gh.cmd})`);
   assert(
-    !prCreateCmd("github", "T", BRANCH, "/tmp/b", {}).includes("--draft"),
+    !prCreateCmd("github", "T", BRANCH, "/tmp/b", {}).cmd.includes("--draft"),
     "…and not when the PR is not a draft",
   );
-  const gl = prCreateCmd("gitlab", "T", BRANCH, "/tmp/b", { baseBranch: "main", draft: true });
-  assert(/ --draft --output json$/.test(gl), `glab mr create carries --draft (${gl})`);
+  // The GitLab create carries `--draft` in its argv, and there is no `--output
+  // json` after it — that flag is not one `glab mr create` has, and asserting it
+  // was the tail of the invented command this replaced.
+  const gl = prCreateCmd("gitlab", "T", BRANCH, "the body", { baseBranch: "main", draft: true });
+  const glArgv = gl.argv ?? [];
+  assert(
+    glArgv.includes("--draft") && glArgv[glArgv.length - 1] === "-y",
+    `glab mr create carries --draft, then the pinned -y (${glArgv.join(" ")})`,
+  );
+  assert(
+    !glArgv.includes("--output") && !glArgv.includes("json"),
+    `…and no --output json on a subcommand that has no such flag (${glArgv.join(" ")})`,
+  );
   assert(prReadyCmd("github", PR) === "gh pr ready 7", "GitHub ready: gh pr ready <N>");
   assert(
     prReadyCmd("gitlab", PR) === "glab mr update 7 --ready",

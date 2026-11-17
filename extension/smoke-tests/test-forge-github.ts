@@ -64,13 +64,13 @@ async function main() {
     assert(cmd.startsWith("gh pr merge 17 --squash --delete-branch"), `got ${cmd}`);
   });
   await check("prCreateCmd uses --head", () => {
-    const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", { baseBranch: "main" });
+    const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", { baseBranch: "main" }).cmd;
     assert(cmd.includes("--head main...branch"), `got ${cmd}`);
   });
   // #776 — an absent/blank base branch must produce a plain `--head <branch>`,
   // never a ref range (the #753 "...mech-pr-body.md...feature/…" GraphQL shape).
   await check("prCreateCmd without a baseBranch uses a plain --head (no '...')", () => {
-    const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", {});
+    const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", {}).cmd;
     assert(cmd.includes("--head branch"), `got ${cmd}`);
     assert(!cmd.includes("..."), `ref range leaked: ${cmd}`);
   });
@@ -99,7 +99,7 @@ async function main() {
     assert(!cmd.includes("--json"), `must not carry --json: ${cmd}`);
   });
   await check("prCreateCmd('github', …) does NOT contain --json", () => {
-    const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", { baseBranch: "main" });
+    const cmd = forgeCommands.prCreateCmd("github", "T", "branch", "/tmp/b", { baseBranch: "main" }).cmd;
     assert(cmd.startsWith("gh pr create"), `got ${cmd}`);
     assert(!cmd.includes("--json"), `must not carry --json: ${cmd}`);
   });

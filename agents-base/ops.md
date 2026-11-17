@@ -339,14 +339,22 @@ For CI monitoring:
 ### GitLab (`glab`)
 
 ```bash
-# Create MR — the source branch is positional (no --head flag); target is --target-branch.
-# Long or multi-line bodies go through --description-file, never an inline -d value.
-glab mr create feature/branch-name \
+# Create MR. There is no positional source branch and no `--description-file` /
+# `--output json` on this subcommand — those are not `glab mr create` flags and
+# recent builds reject them with `ERROR Unknown flag:`. The source branch is `-s`,
+# the target `-b`, the body an inline `-d` value (quote it), and `-y` keeps glab
+# from opening an editor or a prompt when stdin is not a TTY.
+glab mr create \
+  -s feature/branch-name \
   -t "feat(scope): description" \
-  --description-file <scratch-dir>/mr-body.md \
-  --target-branch main \
-  --output json
+  -d "one line summary of the change" \
+  -b main \
+  -y
 ```
+
+On success glab prints the new MR's URL as a plain-text line (no JSON mode exists
+for this subcommand), so read the URL from that line — do not pipe the create's
+stdout through a JSON parser.
 
 **MERGE SAFETY INVARIANT — `--auto-merge=false` is MANDATORY:**
 
@@ -357,7 +365,8 @@ glab mr merge {MR_IID} --squash --auto-merge=false
 `glab mr merge` without this flag enables scheduled auto-merge when auto-merge is configured for the MR, deferring the actual merge to a later pipeline trigger. A merge that has not happened must never be reported as merged. There is no GitHub analogue (`gh pr merge` merges immediately).
 
 Other GitLab operations:
-- View: `glab mr view {MR_IID} --output json`
+- View: `glab mr view {MR_IID} --output json` (the read subcommands do have `--output json`; only `mr create` has none)
+- Update (title/body/labels): `glab issue`-style flags live on `mr update` — `glab mr update {MR_IID} --title "…" --description "…"`. To read a long body out of a file use `--description-file <path>`, which `mr update` **does** have — `mr create` does not.
 - Diff: `glab mr diff {MR_IID}`
 - CI status: `glab api "/projects/:id/merge_requests/{MR_IID}/pipelines" --output json` (first entry is the most recent pipeline; `glab ci status` is NOT safe in non-interactive contexts)
 - Note the GitLab field renames when reading `--output json`: `iid` (not `number`), `description` (not `body`), `state` is `opened` (not `OPEN`), `source_branch` (not `headRefName`), `web_url` (not `url`)

@@ -65,6 +65,13 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // `forgeReadOffGuardEnabled` in forge-read-off-switch.ts; the off decision
   // itself is `forgeEnvIsOff` in forge-off.ts, which the driver shares.
   flag("FORGE_READ_OFF_GUARD", true),
+  // The adapter's `glab mr create` transport: on, argv of the flags that
+  // subcommand lists with the body as one argv element; "0" puts the pre-fix
+  // shell string back byte for byte (a known-broken baseline — see the
+  // configuration.md row). The reader is `glabMrCreateArgvEnabled` in
+  // gl-mr-create-switch.ts; the flags themselves are judged against
+  // `glab mr create --help` by smoke-tests/test-glab-flags.ts.
+  flag("GLAB_MR_CREATE", true),
   // #2160 — the parent's per-spawn `forge_read` broker pair, both set by the
   // spawn layer and both read by the child's tool. `internal`: the parent mints
   // them, so a host never sets either, and an absent pair means the child has no

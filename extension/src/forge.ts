@@ -17,6 +17,7 @@ import { ciRunLog as ciRunLogImpl } from "./forge-ci-log.ts";
 import { GH_TERMINAL_CI, GL_TERMINAL_CI, terminalCiFor } from "./forge-ci-terminal.ts";
 import { ciRun as ciRunImpl, ciWatch as ciWatchImpl } from "./forge-ci.ts";
 import * as cmds from "./forge-commands.ts";
+import type { ForgeArgvCmd } from "./forge-commands.ts";
 import { listIssueComments, listPrComments, postPrComment } from "./forge-comments.ts";
 import type { PublicTextCheck } from "./forge-comments.ts";
 import type { ForgeDetection, ForgeType } from "./forge-detect.ts";
@@ -163,12 +164,18 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
   const NO_PUBLIC_TEXT_CHECK = (): Promise<PublicTextCheck> =>
     Promise.resolve({ text: "", rewritten: false });
 
-  const run = async <T>(cmd: string, map: (stdout: string) => T): Promise<T> => {
-    const { stdout } = await execFn(cmd, {
+  const run = async <T>(
+    cmd: string | ForgeArgvCmd,
+    map: (stdout: string) => T,
+    extra?: { env?: NodeJS.ProcessEnv },
+  ): Promise<T> => {
+    const { stdout } = await execFn(typeof cmd === "string" ? cmd : cmd.cmd, {
       cwd,
       maxBuffer: 512 * 1024,
       timeout: DEFAULT_EXEC_TIMEOUT_MS,
+      ...extra,
       ...extraOpts,
+      ...(typeof cmd === "string" ? {} : { argv: cmd.argv }),
     });
     return map(stdout);
   };
@@ -339,28 +346,62 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
     prCreate: async (title, headBranch, body, opts) => {
       const checkedTitle = (await checkPublicText("pull request title", title)).text;
       const checkedBody = (await checkPublicText("pull request body", body)).text;
-      return withBodyFile(`pr-${headBranch.slice(0, 16)}`, checkedBody, (file) =>
-        run(cmds.prCreateCmd(forge, checkedTitle, headBranch, file, opts ?? {}), (stdout) => {
-          // Tolerate both JSON (from --json flag) and plain-text URL responses.
-          const parsed = parsePrNumberFromResponse(stdout);
-          if (!parsed) {
-            throw new Error(
-              `forge pr create: could not parse PR number from response: ${stdout.trim().slice(0, 120)}`,
-            );
-          }
-          if (forge === "github") {
+      // An empty body is not a merge request with no description — it is the
+      // driver having lost the body, and a create with `-d ""` (or, worse, `-d
+      // -`, which asks glab for an editor) is a record nobody can read. Refused
+      // before any command is built, so nothing reaches the forge.
+      if (checkedBody.trim() === "" || checkedBody.trim() === "-") {
+        throw new Error(
+          `forge pr create: refusing to open a merge request with an empty body (branch ${headBranch})`,
+        );
+      }
+      if (forge === "github") {
+        return withBodyFile(`pr-${headBranch.slice(0, 16)}`, checkedBody, (file) =>
+          run(cmds.prCreateCmd(forge, checkedTitle, headBranch, file, opts ?? {}), (stdout) => {
+            // Tolerate both JSON (from --json flag) and plain-text URL responses.
+            const parsed = parsePrNumberFromResponse(stdout);
+            if (!parsed) {
+              throw new Error(
+                `forge pr create: could not parse PR number from response: ${stdout.trim().slice(0, 120)}`,
+              );
+            }
             try {
               return mapGhPrWithNumber(asRecord(stdout), parsed.number);
             } catch {
               return makeMinimalPr(parsed);
             }
+          }),
+        );
+      }
+      // GitLab creates with the body as ONE argv element (no file transport at
+      // the versions glab lacks `--description-file`), and prints the new MR's
+      // URL as plain text on success — so stdout is never JSON.parsed here. The
+      // last line carrying `/-/merge_requests/` is the answer; the progress line
+      // above it is not. A create that printed no such line created nothing, and
+      // saying so beats a number 0 that reads as PR #0.
+      const built = cmds.prCreateCmd(forge, checkedTitle, headBranch, checkedBody, opts ?? {});
+      return run(
+        built,
+        (stdout) => {
+          const line = stdout
+            .split("\n")
+            .map((l) => l.trim())
+            .filter((l) => l.includes("/-/merge_requests/"))
+            .pop();
+          const parsed = line ? parsePrNumberFromResponse(line) : undefined;
+          if (!parsed) {
+            throw new Error(
+              `forge pr create: glab printed no merge request URL: ${stdout.trim().slice(0, 120)}`,
+            );
           }
-          try {
-            return mapGlMr(asRecord(stdout));
-          } catch {
-            return makeMinimalPr(parsed);
-          }
-        }),
+          return makeMinimalPr(parsed);
+        },
+        // An explicit env is what closes this call's stdin. execFile inherits
+        // the parent's descriptors through the env it is handed, and a glab that
+        // decides to prompt would then wait on the driver's own terminal forever;
+        // `CI` is the flag glab and its prompt library read as "nobody is here",
+        // and the argv carries `-y` so the submission prompt is skipped anyway.
+        { env: { ...process.env, CI: "1", GIT_TERMINAL_PROMPT: "0" } },
       );
     },
 

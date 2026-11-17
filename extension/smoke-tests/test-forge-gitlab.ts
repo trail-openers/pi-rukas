@@ -5,6 +5,9 @@ import { composeGlReadiness, createForge, forgeCommands } from "../src/forge.ts"
 import { GL_JOBS_PAGE } from "../src/forge-pipeline.ts";
 import { GL_ISSUE, GL_JOBS, GL_MR, GL_MR_CHECKING, GL_MR_VIEW, GL_PIPELINE_DONE, GL_PIPELINE_RUNNING, GL_PROJECT, glDetection, mkExec } from "./forge-fixtures.ts";
 
+/** What a real `glab mr create` prints on success: a progress line, then the URL. */
+const MR_URL = "https://gitlab.com/acme/widget/-/merge_requests/17\n";
+
 let exitCode = 0;
 function check(name: string, fn: () => void | Promise<void>) {
   return Promise.resolve()
@@ -42,11 +45,22 @@ async function main() {
     const cmd = forgeCommands.prMergeCmd("gitlab", 17, oid, "squash");
     assert(cmd === `glab mr merge 17 --squash --auto-merge=false --sha ${oid}`, `got ${cmd}`);
   });
-  await check("prCreateCmd uses --target-branch (no --head flag)", () => {
-    const cmd = forgeCommands.prCreateCmd("gitlab", "T", "branch", "/tmp/b", { baseBranch: "main" });
-    assert(cmd.includes("--target-branch main"), `got ${cmd}`);
-    assert(!cmd.includes("--head"), `should not have --head: ${cmd}`);
-    assert(cmd.includes("glab mr create branch"), `positional source branch: ${cmd}`);
+  await check("prCreateCmd builds glab mr create from flags it has (no --head, no --output, no positional source)", () => {
+    const built = forgeCommands.prCreateCmd("gitlab", "T", "branch", "the body", {
+      baseBranch: "main",
+    });
+    assert(built.cmd === "glab", `cmd is the executable: ${built.cmd}`);
+    const argv = built.argv ?? [];
+    assert(argv.includes("-b") && argv[argv.indexOf("-b") + 1] === "main", `--target-branch as -b: ${argv.join(" ")}`);
+    assert(!argv.includes("--head"), `should not have --head: ${argv.join(" ")}`);
+    assert(
+      argv[argv.indexOf("-s") + 1] === "branch" && argv.indexOf("-s") === 2,
+      `the source branch is the -s value, never positional: ${argv.join(" ")}`,
+    );
+    assert(
+      !argv.includes("--description-file") && !argv.includes("--output") && !argv.includes("json"),
+      `no flag mr create lacks: ${argv.join(" ")}`,
+    );
   });
   await check("issueEditCmd uses glab api -X PUT with description=@file", () => {
     const cmd = forgeCommands.issueEditCmd("gitlab", 42, "/tmp/x/body.md");
@@ -212,19 +226,38 @@ async function main() {
   }
 
   {
-    const { fn, calls } = mkExec({
-      "glab mr create branch": { stdout: JSON.stringify(GL_MR) },
+    // glab mr create (no --output json — the subcommand has none) prints the new
+    // MR's URL as a plain-text line, preceded by a progress line. The mapper
+    // reads the URL line and nothing else, and never JSON.parses the reply.
+    // The fixture keys on the command string only, so the argv half is appended
+    // to the recorded calls — the same shape `commandOf` gives a fake executor.
+    const { fn, calls, opts } = mkExec({
+      // The argv exec's `cmd` is the bare word `glab`, so this fixture is keyed on
+      // the full argv form (the shape `commandOf` gives a fake executor) rather
+      // than on `glab` alone — a bare `glab` key would substring-match the
+      // `glab mr view 17` entry above and hand the create a `mr view` reply.
+      "glab mr create -s branch -t T -d the body -b main --draft -y": {
+        stdout: `Creating merge request for branch in acme/widget\n${MR_URL}\n`,
+      },
       "glab mr merge 17": { stdout: "Merged !17" },
       "glab mr diff 17": { stdout: "diff --git a/foo b/foo" },
     });
     const forge = createForge(det, { execFn: fn });
-    await check("mrCreate uses positional source + --target-branch", async () => {
-      const mr = await forge.prCreate("T", "branch", "body", { baseBranch: "main" });
-      assert(mr.number === 17, "round-tripped");
-      const cmd = calls.find((c) => c.includes("glab mr create"));
-      assert(cmd !== undefined, `no create cmd: ${calls}`);
-      assert(cmd!.includes("--target-branch main"), `--target-branch: ${cmd}`);
-      assert(cmd!.includes("--description-file"), `--description-file: ${cmd}`);
+    await check("mrCreate sends the body as one -d argv element and reads the URL line", async () => {
+      const mr = await forge.prCreate("T", "branch", "the body", { baseBranch: "main", draft: true });
+      assert(mr.number === 17, `number ${mr.number}`);
+      assert(mr.url === MR_URL.trim(), `url ${mr.url}`);
+      const argv = (opts.find((o) => o?.argv)?.argv ?? []) as string[];
+      assert(argv.includes("-d") && argv[argv.indexOf("-d") + 1] === "the body", `-d carries the body: ${argv.join(" ")}`);
+      assert(argv.includes("-y"), `-y is pinned so the prompt cannot hang: ${argv.join(" ")}`);
+      assert(argv.includes("--draft"), `--draft on a draft: ${argv.join(" ")}`);
+      assert(
+        calls.some((c) =>
+          c ===
+          "glab mr create -s branch -t T -d the body -b main --draft -y",
+        ),
+        `exec'd as argv of \`glab\`: ${calls}`,
+      );
     });
     await check("mrMerge ALWAYS passes --auto-merge=false (SAFETY)", async () => {
       const out = await forge.prMerge(17, "a1".repeat(20));

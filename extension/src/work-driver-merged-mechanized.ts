@@ -363,8 +363,15 @@ export async function mechanizedMerge(
   // single-commit branch lands with the PR title, not the driver's
   // `chore(handoff):` housekeeping commit subject. Returns undefined for
   // the normal shape (or when the PR title is unreadable) — the command
-  // then stays byte-identical to the pre-#810 form.
-  const subject = await mergeSubjectForState(ctx, state, execFn);
+  // then stays byte-identical to the pre-#810 form. It is GitHub-only for a
+  // second reason: `glab mr merge` has no `--subject`, so a subject reaching that
+  // builder is refused by name rather than quietly dropped. The read inside is
+  // `gh pr view`-based and already answers nothing on a GitLab host; asking the
+  // forge first makes the intent explicit rather than a consequence of which CLI
+  // happens to be installed.
+  const forgeKind = await forgeForCycle({ repoRoot: ctx.repoRoot }, execFn);
+  const subject =
+    forgeKind?.forge === "github" ? await mergeSubjectForState(ctx, state, execFn) : undefined;
   if (subject) trace(`work-driver: merge subject override: ${subject}`);
 
   // Execute and verify the merge.

@@ -111,6 +111,11 @@ export function landDeps(): LandDeps {
  * clipper at the same 64 as `deriveCommitPrTitle`, and only the first line survives — `--subject` is one line.
  * An absent forge, unreadable issue, empty title, or a subject the parser refused all cache `undefined`: no
  * flag, not a blank subject.
+ *
+ * GitLab caches `undefined` on purpose: `glab mr merge` has no `--subject` (it takes `-m/--message` or
+ * `--squash-message`), so a subject reaching that builder is refused by name rather than silently dropped.
+ * Asking here, where the forge is already in hand, is what keeps the lean merge from dying at the merge call
+ * itself.
  */
 export async function primeMergeSubject(
   repoRoot: string,
@@ -118,6 +123,10 @@ export async function primeMergeSubject(
 ): Promise<string | undefined> {
   const f = await forgeFor(repoRoot);
   if (f === undefined) return undefined;
+  if (f.forge !== "github") {
+    subjectCache.set(issue, undefined);
+    return undefined;
+  }
   const viewed = await f.issueView(issue).catch(() => undefined);
   const title = viewed?.title?.trim();
   if (!title) return undefined;

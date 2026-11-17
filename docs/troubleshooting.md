@@ -4024,6 +4024,51 @@ The first line is the persisted note (`UnfenceRecord.note`, which the state file
 
 **Deferred, and what it still parks on:** `verifyConsolidation`'s `declaredPathInDiff` compares declared paths to `git diff --name-only` literally, the same defect class, at a HALT step — a cycle whose deliverables are declared as globs or `new `-annotated paths can still park as `commit-pr-incomplete-consolidation`. That is a follow-up; the converge-side matcher is fixed here.
 
+## A GitLab cycle parks at commit-pr: `Unknown flag: --description-file` / `--output`
+
+### The symptom
+
+A `/work` cycle on a GitLab project reaches the commit-pr step and parks with a forge
+failure. The trace carries glab's own words:
+
+```
+forge pr create: glab mr create … --description-file /tmp/…/mr-body.md … --output json
+ERROR Unknown flag: --description-file
+```
+
+or `glab printed no merge request URL:` with an empty reply. Nothing was opened, and
+re-running the cycle repeats the failure — it is not transient.
+
+### What was wrong
+
+The adapter built the GitLab create by pattern-matching the GitHub one and added flags
+`glab mr create` does not have: a **positional** source branch, `--description-file`, and
+`--output json`. `mr create` takes the source branch as `-s`, the target as `-b`, and the
+body inline as `-d`, and it has no JSON mode at all — so the whole invocation was refused
+before glab reached the API. (The read subcommands — `mr view`, `mr list` — *do* take
+`--output json`, and `mr update` *does* take `--description-file`; that asymmetry is what
+made the invented flags look plausible.)
+
+### The fix
+
+The create is now issued as **argv** of the flags that subcommand lists —
+`glab mr create -s <branch> -t <title> -d <body> [-b <target>] [--draft] -y` — with the body
+as a single argv element rather than shell text, and `-y` so a non-TTY stdin cannot leave
+glab waiting on a prompt. The new MR's URL is read from the plain-text line glab prints on
+success. A blank or `-` body is refused by name before anything is exec'd, because `-d -` on
+a create is the flag that would open the editor.
+
+### What to do
+
+Nothing, if your `glab` is current — a build that lists the flags above works. If a cycle
+still fails here, run `glab mr create --help` and check the FLAGS section for `-s`, `-t`,
+`-d` and `-y`; a build that lacks them is too old to open an MR non-interactively, and
+upgrading is the fix. `PI_ENSEMBLE_GLAB_MR_CREATE=0` restores the pre-fix command for
+comparison only — it reproduces this failure, it does not resolve it. The flags themselves
+are checked against the subcommand's own `--help` by
+`extension/smoke-tests/test-glab-flags.ts`, so an invented flag fails the offline suite
+rather than a live cycle.
+
 ## Every lens failed on a large diff (`#2261`)
 
 ### The symptom
