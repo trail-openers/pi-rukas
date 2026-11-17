@@ -36,6 +36,7 @@ import { spawnSync } from "node:child_process";
 import { ciJobTraceCmd, ciRunJobsCmd, ciRunLogCmd } from "../src/forge-commands.ts";
 import * as cmds from "../src/forge-commands.ts";
 import { mergeEvidenceGlJobsCmd, mergeEvidenceGlPipelinesCmd } from "../src/forge-commands-gl-evidence.ts";
+import { GLAB_FLAGS } from "./lib/glab-flags-pinned.ts";
 
 let exit = 0;
 function assert(cond: unknown, msg: string) {
@@ -52,111 +53,6 @@ function skip(msg: string) {
   skipped++;
 }
 
-// ── The pinned flag sets, captured from `glab 1.130.0 <sub> --help` ────────
-// Each set lists BOTH spellings the help prints for the flags this layer uses.
-// A flag the forge layer does not need is deliberately absent: the offline arm
-// asks only "does every flag we emit appear here", so a set may hold a subset.
-
-/** The flag rows of a `--help` FLAGS block: `--long` and `-x` spellings only. */
-export const GLAB_FLAGS: Record<string, ReadonlySet<string>> = {
-  "mr create": new Set([
-    "-s",
-    "--source-branch",
-    "-b",
-    "--target-branch",
-    "-t",
-    "--title",
-    "-d",
-    "--description",
-    "--draft",
-    "-y",
-    "--yes",
-    "-f",
-    "--fill",
-    "--web",
-    "-R",
-    "--repo",
-  ]),
-  "mr update": new Set(["--draft", "--ready", "--wip", "-t", "--title", "-y", "--yes", "--description", "-R", "--repo"]),
-  "mr merge": new Set([
-    "--squash",
-    "-s",
-    "--rebase",
-    "-r",
-    "--yes",
-    "-y",
-    "--auto-merge=false",
-    "--auto-merge",
-    "--sha",
-    "-m",
-    "--message",
-    "--squash-message",
-    "-d",
-    "--remove-source-branch",
-    "-R",
-    "--repo",
-  ]),
-  "mr view": new Set(["-F", "--output", "-p", "--page", "-P", "--per-page", "-R", "--repo", "-w", "--web"]),
-  "mr list": new Set([
-    "-F",
-    "--output",
-    "-P",
-    "--per-page",
-    "-s",
-    "--source-branch",
-    "-t",
-    "--target-branch",
-    "-c",
-    "--closed",
-    "-M",
-    "--merged",
-    "-A",
-    "--all",
-  ]),
-  "mr diff": new Set(["-R", "--repo", "--raw", "--color"]),
-  "mr cancel": new Set(["-R", "--repo", "-h", "--help"]),
-  "issue view": new Set(["-F", "--output", "-p", "--page", "-P", "--per-page", "-R", "--repo", "-w", "--web"]),
-  "issue create": new Set(["-t", "--title", "-d", "--description", "-l", "--label", "-y", "--yes", "-m", "--milestone"]),
-  "issue list": new Set([
-    "--search",
-    "--all",
-    "-A",
-    "-P",
-    "--per-page",
-    "-O",
-    "--output",
-    "-p",
-    "--page",
-    "-F",
-    "--output-format",
-  ]),
-  "issue close": new Set(["-R", "--repo"]),
-  "issue edit": new Set(["-d", "--description", "-t", "--title", "-l", "--label", "-y", "--yes"]),
-  "label list": new Set(["-g", "--group", "-F", "--output", "-p", "--page", "-P", "--per-page", "-R", "--repo"]),
-  api: new Set([
-    "-X",
-    "--method",
-    "-H",
-    "--header",
-    "-f",
-    "--raw-field",
-    "-F",
-    "--field",
-    "--output",
-    "--paginate",
-    "--silent",
-    "--input",
-    "--form",
-    "--hostname",
-    "--placeholder",
-  ]),
-  "ci trace": new Set(["-b", "--branch", "-p", "--pipeline-id", "-R", "--repo"]),
-  "ci status": new Set(["-l", "--live", "-b", "--branch", "-c", "--compact", "-F", "--output", "-w", "--wait", "-R", "--repo"]),
-  "ci view": new Set(["-b", "--branch", "-p", "--pipelineid", "-R", "--repo", "-w", "--web"]),
-  "ci lint": new Set(["--dry-run", "--include-jobs", "--ref", "-R", "--repo"]),
-  "auth status": new Set(["-a", "--all", "--hostname", "-F", "--output", "-t", "--show-token"]),
-  version: new Set(["-h", "--help"]),
-};
 
 /** One row per GitLab command the forge layer can issue: its subcommand key and
  *  the command text the builders emit. */

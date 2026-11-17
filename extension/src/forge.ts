@@ -11,6 +11,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { glabCreateEnv } from "./child-forge-env.ts";
 import { execp } from "./exec.ts";
 import { forgeChecks } from "./forge-checks.ts";
 import { ciRunLog as ciRunLogImpl } from "./forge-ci-log.ts";
@@ -44,6 +45,7 @@ import {
   parsePrNumberFromResponse,
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
+import { createPullRequest } from "./forge-pr-create.ts";
 import { forgePublishTarget } from "./forge-publish-target.ts";
 import { type NormalizedReview, mapReviews } from "./forge-reviews.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
@@ -343,67 +345,24 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
 
     prListRaw: (opts) => run(cmds.prListCmd(forge, opts), (stdout) => stdout),
 
-    prCreate: async (title, headBranch, body, opts) => {
-      const checkedTitle = (await checkPublicText("pull request title", title)).text;
-      const checkedBody = (await checkPublicText("pull request body", body)).text;
-      // An empty body is not a merge request with no description — it is the
-      // driver having lost the body, and a create with `-d ""` (or, worse, `-d
-      // -`, which asks glab for an editor) is a record nobody can read. Refused
-      // before any command is built, so nothing reaches the forge.
-      if (checkedBody.trim() === "" || checkedBody.trim() === "-") {
-        throw new Error(
-          `forge pr create: refusing to open a merge request with an empty body (branch ${headBranch})`,
-        );
-      }
-      if (forge === "github") {
-        return withBodyFile(`pr-${headBranch.slice(0, 16)}`, checkedBody, (file) =>
-          run(cmds.prCreateCmd(forge, checkedTitle, headBranch, file, opts ?? {}), (stdout) => {
-            // Tolerate both JSON (from --json flag) and plain-text URL responses.
-            const parsed = parsePrNumberFromResponse(stdout);
-            if (!parsed) {
-              throw new Error(
-                `forge pr create: could not parse PR number from response: ${stdout.trim().slice(0, 120)}`,
-              );
-            }
-            try {
-              return mapGhPrWithNumber(asRecord(stdout), parsed.number);
-            } catch {
-              return makeMinimalPr(parsed);
-            }
-          }),
-        );
-      }
-      // GitLab creates with the body as ONE argv element (no file transport at
-      // the versions glab lacks `--description-file`), and prints the new MR's
-      // URL as plain text on success — so stdout is never JSON.parsed here. The
-      // last line carrying `/-/merge_requests/` is the answer; the progress line
-      // above it is not. A create that printed no such line created nothing, and
-      // saying so beats a number 0 that reads as PR #0.
-      const built = cmds.prCreateCmd(forge, checkedTitle, headBranch, checkedBody, opts ?? {});
-      return run(
-        built,
-        (stdout) => {
-          const line = stdout
-            .split("\n")
-            .map((l) => l.trim())
-            .filter((l) => l.includes("/-/merge_requests/"))
-            .pop();
-          const parsed = line ? parsePrNumberFromResponse(line) : undefined;
-          if (!parsed) {
-            throw new Error(
-              `forge pr create: glab printed no merge request URL: ${stdout.trim().slice(0, 120)}`,
-            );
-          }
-          return makeMinimalPr(parsed);
-        },
-        // An explicit env is what closes this call's stdin. execFile inherits
-        // the parent's descriptors through the env it is handed, and a glab that
-        // decides to prompt would then wait on the driver's own terminal forever;
-        // `CI` is the flag glab and its prompt library read as "nobody is here",
-        // and the argv carries `-y` so the submission prompt is skipped anyway.
-        { env: { ...process.env, CI: "1", GIT_TERMINAL_PROMPT: "0" } },
-      );
-    },
+    prCreate: (title, headBranch, body, opts) =>
+      // The public-text checks stay HERE (they are the adapter's publish seam); the
+      // per-forge command shape and its reply mapping live in `forge-pr-create.ts`,
+      // where the gh-shape/GitLab-shape difference is written side by side.
+      checkPublicText("pull request title", title).then((checkedTitle) =>
+        checkPublicText("pull request body", body).then((checkedBody) =>
+          createPullRequest(
+            forge,
+            checkedTitle.text,
+            headBranch,
+            checkedBody.text,
+            opts,
+            run,
+            withBodyFile,
+            () => glabCreateEnv(),
+          ),
+        ),
+      ),
 
     prMerge: async (
       number,

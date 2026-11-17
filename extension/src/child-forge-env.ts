@@ -58,6 +58,29 @@ export const FORGE_CONFIG_DIR_VARS = ["GH_CONFIG_DIR", "GLAB_CONFIG_DIR"] as con
 /** The role that keeps every credential: the one role that lands work. */
 export const OPS_ROLE = "ops";
 
+/**
+ * The env a `glab mr create` is issued with.
+ *
+ * `CI` is the flag glab and its prompt library read as "nobody is here", and
+ * `GIT_TERMINAL_PROMPT=0` is git's own version of the same answer. Together with
+ * the argv's `-y` they are what keeps a create from waiting on a terminal the
+ * driver does not have: an exec that inherits the parent's descriptors can leave
+ * a prompting glab blocked on the driver's own stdin forever.
+ *
+ * The copy comes from `forgeReadChildEnv` — the one child-env construction every
+ * non-ops path funnels through — so the create carries no forge token and no
+ * operator config root, exactly as a spawned child's env does. The adapter hands
+ * `role` "" (a driver exec is not an ops child), which `keepsForgeLogin` answers
+ * "no" to, and no broker pair, so both halves of that pair are deleted rather
+ * than inherited.
+ */
+export function glabCreateEnv(): Record<string, string> {
+  const env = forgeReadChildEnv(process.env, "");
+  env.CI = "1";
+  env.GIT_TERMINAL_PROMPT = "0";
+  return env;
+}
+
 /** True when this role's child keeps the operator's forge login. */
 export function keepsForgeLogin(role: string): boolean {
   return role.trim().toLowerCase() === OPS_ROLE;
