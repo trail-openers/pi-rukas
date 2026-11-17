@@ -326,8 +326,6 @@ export function phase1Handlers(
         ...(seedWhy ? { why: seedWhy } : {}),
         ...(seedInfra ? { infra: true } : {}),
       },
-      // The step's outside calls, wired per run so the deriving child carries this
-      // run's headless trust stamp the way every other role's deps do.
       d,
     );
     // Only the verdict and the rules go on the record. `spec` and `config` stay out:
