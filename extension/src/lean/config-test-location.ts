@@ -138,33 +138,25 @@ export function validateTestGlob(glob: string): string | undefined {
  * a `testGlob`, and the only place the extension is read off a pattern.
  *
  * A glob is a basename pattern whose `*` opens the wildcard, so the extension is
- * the text after it: `test_*.py` names `.py` files and `*.py` names nothing else.
- * The extension has to be the SUFFIX of that tail, not merely a dot-something in
- * the middle — `test_*.pytest.js` names `.js` files, and a probe chosen for it
- * would be the wrong file in the wrong language. `validateTestGlob` already
- * refuses a pattern with no dot after the `*`, so an empty tail cannot reach
- * here; the guard is there because this is called on a hand-built config too.
+ * the text after it. The extension has to be the SUFFIX of that tail, not merely a
+ * dot-something in the middle — `test_*.pytest.js` names `.js` files, and a probe
+ * chosen for it would be the wrong file in the wrong language.
  *
  * Why the language matters at all: pytest is the only runner in the common set
  * whose import step refuses a file it cannot import, so the probe's NAME (not its
  * content) decides whether the runner reaches the point where it can report.
  * See `specify-preflight.ts`.
  *
- * Why the comparison folds CASE: the question is which LANGUAGE the project's tests
- * are written in, and a project whose CI runs `test_*.PY` collects those files
- * exactly as happily as `test_*.py` — git treats the two as one name on a
- * case-insensitive checkout, and pytest's own default pattern is `test_*.py*`, any
- * suffix. The refusal this predicate exists to avoid — pytest's prepend import mode
- * dying on a leading dot — has nothing to do with the extension's case. A
- * case-sensitive comparison therefore sent a Python repo back onto the hidden
- * extensionless probe its own runner cannot read, and the run handed back for a
- * reason that was this step's filename rather than the project's toolchain.
+ * The comparison folds CASE because the question is which LANGUAGE the project's
+ * tests are written in, and a project whose CI runs `test_*.PY` collects those files
+ * as happily as `test_*.py`. The refusal this predicate exists to avoid — pytest's
+ * prepend import mode dying on a leading dot — has nothing to do with the extension's
+ * case, so a case-sensitive comparison would send a Python repo back onto the hidden
+ * extensionless probe its own runner cannot read.
  *
- * Why `.py` in its cased form is still the only thing counted once case is folded:
+ * `.py` in its cased form is still the only thing counted once case is folded:
  * `.pyi` is a stub declaration file rather than an executable test module, so naming
- * a probe for it would hand the runner a file it never imports — the same false
- * negative as the dotfile, arrived at by a different route — and the trailing dot of
- * `test_*.py.` is no extension any interpreter recognises.
+ * a probe for it would hand the runner a file it never imports.
  */
 export function globNamesPythonFiles(glob: string): boolean {
   const star = glob.indexOf("*");

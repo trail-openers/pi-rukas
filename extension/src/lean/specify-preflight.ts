@@ -32,16 +32,12 @@
  *   - a Python project's: `_lean_runner_probe.py` INSIDE the configured
  *     `verify.testDir`, or at the root where no such directory is on the tree. A
  *     hidden file cannot be IMPORTED — pytest's default prepend import mode dies on
- *     the leading dot — so the dotfile probe was refused by every pytest repo for a
- *     reason that was the probe's own name, not the project's toolchain. The stem is
- *     dot-free and visible, and is checked against the project's OWN `testGlob` with
- *     the boundary's matcher, so the probe can never be collected as one of the
- *     project's tests.
+ *     the leading dot. The stem is dot-free and visible, and is checked against the
+ *     project's OWN `testGlob` with the boundary's matcher, so the probe can never be
+ *     collected as one of the project's tests.
  *
  * The two switches that govern the shapes (`preflight-probe-switch.ts`) sit apart
- * from `runner-preflight-switch.ts`, which decides whether a probe runs at all:
- * these change what it looks like and what one answer means, and each `0` restores
- * the shipped behaviour without losing the preflight.
+ * from `runner-preflight-switch.ts`, which decides whether a probe runs at all.
  *
  * It costs one runner invocation and no model call, and the probe file is removed on
  * every path — including the throw. The retry does NOT re-probe: a runner that broke
@@ -85,10 +81,8 @@ const PYTEST_NO_COLLECTOR = 4;
  * Both say the runner started, parsed the file and reported on it — 0 meaning "ran,
  * nothing to say", 5 meaning pytest's "collected 0 items". The status decides, NOT
  * the proof's classification: `runTestFile` calls a non-zero exit that named the
- * file `red`, and a pytest collection error prints the file it could not collect, so
- * the very failure this probe exists to catch arrives as a `red`. Nothing here
- * speaks of the runner's flavour — only which exit statuses mean "nothing was
- * judged".
+ * file `red`, so a pytest collection error arrives as a `red`. Nothing here speaks of
+ * the runner's flavour — only which exit statuses mean "nothing was judged".
  */
 function probeHealthy(proof: Proof): boolean {
   return proof.kind === "green" || (proof.kind !== "infra" && proof.code === PYTEST_NO_TESTS);
@@ -118,9 +112,8 @@ const PY_PROBE_BASENAME = "_lean_runner_probe.py";
  * The root satisfies both whatever the config says, and the hidden name needs no
  * further check because `validateTestGlob` refuses a pattern that starts with `.`.
  * A project whose tests live in a SUBDIRECTORY has a directory free of the
- * constraint already — `testDir`'s parent — and the config vouches it exists, since
- * every frozen acceptance test sits under it; the preflight confirms it on the tree
- * rather than trusting the config, because an uncreated directory would be an
+ * constraint already — `testDir`'s parent — and the config vouches it exists; the
+ * preflight confirms it on the tree, because an uncreated directory would be an
  * untracked byte the step then has to account for. A parent not on the tree falls
  * back to the root.
  *
@@ -136,15 +129,9 @@ const PY_PROBE_BASENAME = "_lean_runner_probe.py";
  */
 function probeRelative(wt: string, testLocation?: TestLocation): { rel: string; py: boolean } {
   // The boundary's own matcher, so "would this project's CI collect the probe?" is
-  // answered by the same predicate that refuses a submitted test for it — and asked
-  // wherever the probe would go, since a name the CI grades is refused whether it
-  // sits in the folder or at the root.
-  //
-  // It names the placement it ACTUALLY chose, because the refusal is the only thing
-  // an operator has to go on: "the probe would go to the root" and "the probe would
-  // go inside the folder" are different diagnoses — one means the configured folder
-  // is not on this tree — and a message that says the other one sends someone to the
-  // wrong file.
+  // answered by the same predicate that refuses a submitted test for it. It names
+  // the placement it ACTUALLY chose, because "the probe would go to the root" and
+  // "inside the folder" are different diagnoses for an operator reading the refusal.
   const refuses = (loc: TestLocation, dir: string): void => {
     if (!globMatches(loc.testGlob, PY_PROBE_BASENAME)) return;
     throw new SpecifyInfraError(
@@ -203,16 +190,15 @@ function containedParent(
   if (!leanPreflightProbeContainEnabled()) return placed;
   const root = real(wt);
   // The directory the write would actually go into, resolved through every link of
-  // its own. `realpath` on the parent NAME — not on a path rebuilt from the
-  // configured string — because the link this check exists to catch sits exactly at
-  // that name, and joining the name back onto a resolved root would resolve the
-  // root and then trust the link.
+  // its own — `realpath` on the parent NAME, not on a path rebuilt from the
+  // configured string, because the link this check exists to catch sits exactly at
+  // that name.
   const dir = real(path.dirname(path.join(wt, placed.rel)));
   if (root !== "" && dir !== "" && within(root, dir)) return placed;
   // Anywhere outside this worktree is no place for the probe. The worktree root is
   // the one directory the step made itself, so a probe whose folder fails the check
   // falls back to it — and a root that cannot even be resolved leaves nowhere to
-  // fall back to, which is infrastructure naming the reason, not a write to guess at.
+  // fall back to, which is infrastructure naming the reason.
   const rootOk = root !== "" && within(root, real(path.dirname(path.join(wt, PROBE_BASENAME))));
   if (!rootOk)
     throw new SpecifyInfraError(
@@ -281,12 +267,9 @@ export type RunProbeFile = (file: string) => Promise<Proof>;
  * write empty, run the template, classify, and remove the file on every path.
  *
  * The `try` opens as soon as the bytes exist. A `finally` that starts after the
- * runner call leaves a throw from the run itself — an executor that died rather than
- * answered — with the probe sitting in the worktree, and "removed on every path" is
- * the claim this step makes about a tree it does not own. `runFile` exists so that
- * claim is observable: {@link runTestFile} is `never throws` by contract and folds
- * every exec rejection into a classified `Proof`, so no rejection an exec can produce
- * reaches the path this `finally` is here for.
+ * runner call leaves a throw from the run itself with the probe sitting in the
+ * worktree, and "removed on every path" is the claim this step makes about a tree it
+ * does not own.
  */
 async function runProbeAt(
   exec: ExecFn,
@@ -307,9 +290,7 @@ async function runProbeAt(
     if (probeHealthy(proof)) return;
     // The reading is a fact about the PROBE's name, so it belongs to the probe that
     // carries the collectable name and not to the switch in the abstract: `pyProbe`
-    // is the answer for the name that was actually written, and a non-Python repo —
-    // or a Python one whose probe fell back to the hidden root name — keeps today's
-    // exit-4 hand-back whatever the switch says.
+    // is the answer for the name that was actually written.
     if (
       pyProbe &&
       leanPreflightProbeCollectableEnabled() &&
