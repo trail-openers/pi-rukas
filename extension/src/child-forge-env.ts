@@ -65,8 +65,8 @@ export const OPS_ROLE = "ops";
  * `GIT_TERMINAL_PROMPT=0` is git's own version of the same answer. Together with
  * the argv's `-y` they are what keeps a create from asking a question the driver
  * cannot answer. The descriptor that question would be read from is closed
- * elsewhere: `execp`'s argv form gives the child `/dev/null` on fd 0, so even a
- * prompt none of these flags suppresses reads EOF instead of blocking.
+ * elsewhere: `execp`'s argv form ends the child's stdin, so even a prompt none
+ * of these flags suppresses reads EOF instead of blocking.
  *
  * The copy comes from `forgeReadChildEnv` — the one child-env construction every
  * non-ops path funnels through — so the create carries no forge token and no

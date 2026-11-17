@@ -110,9 +110,9 @@ export async function createPullRequest(
     },
     // The explicit env strips the forge login and answers "nobody is here"; the
     // argv carries `-y` so the submission prompt is skipped anyway. Closing this
-    // call's stdin is `execp`'s argv form, which gives the child `/dev/null` —
-    // a prompting glab then reads EOF rather than waiting on a terminal the
-    // driver does not have (test-exec-argv-stdin.ts is the pin).
+    // call's stdin is `execp`'s argv form, which ends the child's stdin so a
+    // prompting CLI reads EOF rather than waiting on a terminal the driver does
+    // not have (test-exec-argv-stdin.ts is the pin).
     { env: createEnv() },
   );
 }
