@@ -46,14 +46,19 @@ function statusAlt_(): string {
  *  what a caller uses to recognise a delimiter line on its own. */
 export const FENCE_RE = /^ {0,3}(```|~~~)/;
 
-/** A fence line in CommonMark's sense: up to three spaces of indent, then a run of
- *  three or more of ONE fence character, then either nothing but spaces (a closer,
- *  or a bare opener) or an info string (an opener only, and for a tilde opener an
- *  info string that carries no tilde — the form CommonMark refuses, and the shape
- *  that keeps `~~x~~ text` from being a delimiter at all). The whole line is
+/** A fence line in CommonMark's sense: any leading whitespace, then a run of three
+ *  or more of ONE fence character, then either nothing but spaces (a closer, or a
+ *  bare opener) or an info string (an opener only). Only a BACKTICK fence refuses
+ *  its own character in the info string, so the info class excludes backticks and
+ *  nothing else: `~~~ ~~~` and `~~~x~~~` are openers, while a two-tilde run is never
+ *  a delimiter at all and leaves `~~x~~ text` the ordinary prose line it is. The
+ *  indent is `[ \t]*` rather than CommonMark's three spaces because a line indented
+ *  4+ spaces or by a tab is a fence the reviewer is QUOTING, and a reader that
+ *  opened nothing there let a column-0 signature below it out-rank a real one —
+ *  fencing more lines is the only direction this may ever err in. The whole line is
  *  anchored because a line that merely CONTAINS a backtick run is prose, not a
  *  delimiter. */
-const FENCE_LINE_FULL_RE = /^ {0,3}(`{3,}|~{3,})([^`~]*)$/;
+const FENCE_LINE_FULL_RE = /^[ \t]*(`{3,}|~{3,})([^`]*)$/;
 
 /** Which side of a fenced block a line sits on, decided by a CommonMark fence walk
  *  rather than a parity count.
@@ -85,13 +90,6 @@ export function fencePositions(lines: readonly string[]): FencePosition[] {
     const run = hit[1] as string;
     const info = (hit[2] as string).trim();
     if (open === undefined) {
-      // A tilde opener whose info string carries a tilde is not a delimiter: a
-      // strikethrough with text after it is ordinary prose, and treating it as an
-      // opener would fence the rest of the report.
-      if (run[0] === "~" && info.includes("~")) {
-        out.push("outside");
-        continue;
-      }
       open = { char: run[0] as string, length: run.length };
     } else if (run[0] === open.char && run.length >= open.length && info === "") {
       open = undefined;
@@ -173,8 +171,13 @@ const TAB_LIST_MARKERS = String.raw`(?:[-*+]|[0-9]+[.)])[ 	]`;
  *  than given the `EMPHASIS` quantifier, because a three-asterisk run is refused by
  *  its own cap and must stay NOT a token line at all — the candidate pass reports a
  *  tab-separated bullet as a MARKED refusal, and a doubly decorated decoration has
- *  to report the same silence `***VERDICT:***` already reports. */
-const TAB_EMPHASIS_BULLET = String.raw`(?:\*\*|\*)\t`;
+ *  to report the same silence `***VERDICT:***` already reports. Spaces may sit
+ *  between the run and the tab, because the tab is still what separates the marker
+ *  from its content: `** \tVERDICT:` is the same list item as `**\tVERDICT:`, and the
+ *  space form of the bullet groups cannot refuse it — they stop at the space and
+ *  `EMPHASIS_SEPARATOR` then swallows it, which left such a line as neither a marked
+ *  bullet nor a token line, and the refusal became silence. */
+const TAB_EMPHASIS_BULLET = String.raw`(?:\*\*|\*) *\t`;
 
 /** A block quote, a table row, a line with ANY leading whitespace (a tab, one to
  *  three spaces of markdown list/paragraph slack, or the 4+ spaces that make an

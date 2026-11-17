@@ -170,7 +170,6 @@ function assert(cond: boolean, msg: string) {
     "the line after a blank line is a candidate on its own, not a member of the run above it (F3)",
   );
 
-
   // The incident's own bytes, read off disk: this is the reply that wrote a
   // passed:true row for a review that objected.
   const fixture = readFileSync(

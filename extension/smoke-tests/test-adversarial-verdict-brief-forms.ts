@@ -151,7 +151,8 @@ function assert(cond: boolean, msg: string) {
   {
     // A fence marker ON the value line is not a line inside a fence, so it is
     // the fenced rule that must refuse it — and the lines below the opener are
-    // inside one by parity, so the heading states nothing either way.
+    // inside the block the fence walk opens there and leaves open to the end of the
+    // reply, so the heading states nothing either way.
     const reply = "VERDICT: ISSUES_FOUND\n\n### VERDICT\n```\nAPPROVED\n```";
     assert(
       readAdversarialVerdict(reply) === "ISSUES_FOUND",
