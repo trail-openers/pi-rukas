@@ -25,14 +25,14 @@ export const MAX_TEST_FILES_PER_ROW = 8;
 
 /**
  * How many DISTINCT test paths one `submit_tests` call may get probed for. The row cap bounds one row, not
- * the call; past this many the surplus is refused without a probe, making the breach free.
+ * the call; past this many the surplus is refused without a probe.
  */
 const MAX_TEST_FILES_PER_CALL = 32;
 
 /**
  * A memoised `existsAtBase` for ONE boundary call, plus the count of distinct paths it asked git about. It
  * must not outlive the call: between two calls the step may have committed, and a stale "new" is the fraud
- * the rule exists to refuse. `probed` is what the call cap counts against.
+ * the rule exists to refuse.
  */
 function baseProbe(existsAtBase: ((rel: string) => Promise<boolean>) | undefined): {
   ask: ((rel: string) => Promise<boolean>) | undefined;
@@ -151,8 +151,8 @@ export async function validateSubmitRows(
   for (const [id, files] of Object.entries(opts.frozenByCriterion ?? {})) {
     quota.set(id, files.length);
   }
-  // Paths already kept for a criterion IN THIS CALL — the dedupe. What it forbids is one name appearing
-  // TWICE inside one criterion's kept row, because that row is what the step captures and commits.
+  // Paths already kept for a criterion IN THIS CALL — what it forbids is one name appearing TWICE inside
+  // one criterion's kept row, because that row is what the step captures and commits.
   const keptRels = new Map<string, Set<string>>();
   // One git read per distinct path per call, bounded by `MAX_TEST_FILES_PER_CALL`.
   const base = baseProbe(opts.existsAtBase);
@@ -251,8 +251,8 @@ export async function validateSubmitRows(
       }
       // Already named AND kept earlier in this row? Free: no second read, no second quota spend.
       if (keptRels.get(row.criterionId)?.has(rel) === true) continue;
-      // The size rules are the only ones that cost a read, so a row the cheap rules refused never opens
-      // a descriptor.
+      // The size rules are the only ones that cost a read, so a row the cheap rules refused never opens a
+      // descriptor.
       if (opts.sizeRules !== false) {
         const judgement = sizeJudgement(path.join(opts.wt, rel), rel, opts.statSize ?? statSizeOf);
         if (judgement.kind === "infra") {
