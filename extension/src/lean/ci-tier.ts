@@ -188,7 +188,7 @@ function json(text: string, why: string): unknown {
  * moments, and a green about another head is no evidence about this one.
  *
  * GitLab: readiness is composed from `detailed_merge_status` and its cross-checks, head from
- * `diff_refs.head_sha` of the same reply (`ci-forge-gl.ts`).
+ * `diff_refs.head_sha` of the same reply.
  */
 async function readForge(
   deps: CiDeps,
@@ -198,7 +198,7 @@ async function readForge(
   forge: GlForge,
 ): Promise<ForgeRead> {
   if (gitlab) {
-    // Both reads are the adapter's own argv, so the command strings stay its pinned glab form.
+    // Both reads are the adapter's own argv, so the command strings stay in its pinned glab form.
     const read = await glRead(forge, prNumber);
     return {
       state: undefined,
@@ -230,15 +230,15 @@ async function readForge(
  * The forge's required-check verdict for this PR, POLLED until the checks are terminal, the bound
  * expires, or the run's cycle deadline arrives.
  *
- * A still-running CI makes `mergeStateStatus` UNSTABLE, and a step that reads once right after publish
- * grades that as red and spends a build round on code that is not broken. So a pending or unrecognised
- * row is WAITED, and red is reserved for a row that actually failed. Every iteration re-issues BOTH
- * reads — including the head — so a PR that moves off the verified head mid-wait is caught. An empty
- * rows list is an immediate red: "no checks reported" is the absence of evidence.
+ * A still-running CI makes `mergeStateStatus` UNSTABLE, so a step that read once after publish would grade
+ * that as red and spend a build round on code that is not broken. A pending or unrecognised row is WAITED;
+ * red is reserved for a row that actually failed. Every iteration re-issues BOTH reads — including the
+ * head — so a PR that moves off the verified head mid-wait is caught. An empty rows list is an immediate
+ * red: "no checks reported" is the absence of evidence.
  *
- * The two bounds are SEQUENTIAL and separate: the wait gets the `ci` budget's minutes, and the full tier
- * keeps its own bound afterwards, clamped to the deadline ({@link ciTierBudgetMs}). Still pending when
- * the wait expires is a handback, never a red.
+ * The two bounds are SEQUENTIAL and separate: the wait gets the `ci` budget's minutes and the full tier
+ * keeps its own afterwards ({@link ciTierBudgetMs}). Still pending when the wait expires is a handback,
+ * never a red.
  */
 export async function checksRedReason(
   deps: CiDeps,
@@ -268,18 +268,18 @@ export async function checksRedReason(
       ...namesOf(read.rows, "not-passing", gitlab),
     ];
     if (red.length > 0) return `checks not passing: ${red.join(", ")}`;
-    // A row in no list at all is not evidence of a pass either: it waits, and an expired wait hands
-    // back — an unreadable forge state never becomes red.
+    // A row in no list is not evidence of a pass either: it waits, and an expired wait hands back — an
+    // unreadable forge state never becomes red.
     const waiting = [
       ...namesOf(read.rows, "pending", gitlab),
       ...namesOf(read.rows, "unknown", gitlab),
     ];
-    // GitLab's retryable readiness waits with the rows on the same bound: both mean "the forge has not
-    // finished deciding", and neither is a verdict.
+    // GitLab's retryable readiness waits on the same bound as the rows: both mean the forge has not
+    // finished deciding, and neither is a verdict.
     if (waiting.length > 0 || (gitlab && read.mergeStateStatus !== "CLEAN")) {
-      // The whole-cycle arm is consulted on every WAIT, not only between steps: a poll that ignores it
-      // can outlive the host's deadline and the run dies with no document. Read on the handler context's
-      // injected clock, so poll and engine cannot disagree about where step work ends.
+      // The whole-cycle arm is consulted on every WAIT, not only between steps: a poll that ignores it can
+      // outlive the host's deadline and the run dies with no document. Read on the context's injected
+      // clock so poll and engine cannot disagree about where step work ends.
       const cycle = ctx.run.deadlineMs;
       if (deadlineStopsSteps(cycle, ctx.now(), "ci"))
         throw new VerifyInfraError(
@@ -292,8 +292,8 @@ export async function checksRedReason(
       await deps.sleep(CI_POLL_MS);
       continue;
     }
-    // Every row terminal and none failed: the forge's own word is the last authority,
-    // because it encodes the repo's branch protection.
+    // Every row terminal and none failed: the forge's own word is the last authority, since it encodes
+    // the repo's branch protection.
     if (read.mergeStateStatus !== "CLEAN")
       return `mergeStateStatus is ${read.mergeStateStatus === "" ? "unreadable" : read.mergeStateStatus}`;
     return undefined;
