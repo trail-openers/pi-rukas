@@ -27,17 +27,20 @@
  *     separator tolerance, then a status value (trailing text allowed) — or the
  *     heading form: `### VERDICT` (a trailing colon and surrounding bold are the
  *     same heading) alone on its line at column 0, whose value is the next
- *     non-blank line, which must be exactly one value after trimming and stripping
- *     ``**``, and must itself be a column-0 line: the judgement below applies to
- *     the VALUE line of a heading, not only to its token line (#2322).
+ *     non-blank line, which must state one value at its start (trailing text
+ *     allowed, on the same rule the inline form uses) and must itself be a column-0
+ *     line: the judgement below applies to the VALUE line of a heading, not only to
+ *     its token line (#2322).
  *   - **Exclusions** remove the shapes that are quotation rather than signature:
- *     a line inside a ``` or ~~~ fence (by fence parity, so an unclosed fence
- *     fences everything below it), a line indented by ANY space or by a tab, a
- *     list marker (`- `, `* `, `+ `, `1. `, `1) `), a `>` block quote, a `|` table
- *     row, and every line of a MENU RUN — CONSECUTIVE VERDICT-token lines, with no
- *     blank line between them, that name two or more distinct values and offer the
- *     protocol rather than sign a verdict. See the run walk below for the exact
- *     test and for why it is not simply "two token lines, two values".
+ *     a line inside a ``` or ~~~ fence (by a CommonMark fence walk, so an unclosed
+ *     fence fences everything below it and a ``` line inside a ```` block is
+ *     content), a line indented by ANY space or by a tab, a list marker (`- `,
+ *     `* `, `+ `, `1. `, `1) `, and a tab where those demand a space), a `>` block
+ *     quote, a `|` table row, and every line of a MENU RUN — CONSECUTIVE
+ *     VERDICT-token lines, with no blank line between them, that name two or more
+ *     distinct values and offer the protocol rather than sign a verdict. See the
+ *     run walk below for the exact test and for why it is not simply "two token
+ *     lines, two values".
  *   - **The verdict is the LAST candidate line**, which keeps today's
  *     closing-line rule that the canary in `test-adversarial-verdict.ts` pins.
  *     No candidate line means no verdict was signed: `parseVerdict` reports
@@ -73,6 +76,7 @@
 
 import {
   FENCE_RE,
+  fencePositions,
   headingValueLine,
   inlineValue,
   isTokenLine,
@@ -87,12 +91,12 @@ import type { AdversarialVerdictStatus } from "./types.ts";
  * line for the inline form, the next non-blank line for a heading, whose own
  * indentation and fence position therefore govern it (D1b).
  *
- * `fenced` places `valueIndex` inside a ``` or ~~~ block by parity; `structural`
- * marks a block quote, a list item, a line with any leading whitespace or a
- * table row — for a heading, judged on the VALUE line as well as the token line
- * (#2322); `menuRun` marks every line of a run of CONSECUTIVE token lines (a
- * blank line breaks the run) that names two or more distinct values and signs
- * none of them — the protocol laid out and picked from rather than a verdict
+ * `fenced` places `valueIndex` inside a ``` or ~~~ block by the fence walk;
+ * `structural` marks a block quote, a list item, a line with any leading
+ * whitespace or a table row — for a heading, judged on the VALUE line as well as
+ * the token line (#2322); `menuRun` marks every line of a run of CONSECUTIVE token
+ * lines (a blank line breaks the run) that names two or more distinct values and
+ * signs none of them — the protocol laid out and picked from rather than a verdict
  * somebody wrote.
  */
 export interface VerdictLine {
@@ -118,9 +122,9 @@ export interface VerdictLine {
 /** The value a token line states, or undefined for a line that carries the token
  *  but signs nothing: a placeholder template (`VERDICT: <APPROVED|…>`), a bullet
  *  (`* VERDICT: APPROVED` — a bullet is markdown structure, not emphasis, so it
- *  never signs), or a heading whose value line is prose. The prefix still matches
- *  these shapes so the candidate pass can MARK them refused rather than let them
- *  read as a line that was never there. */
+ *  never signs), or a heading whose value line names no verdict. The prefix still
+ *  matches these shapes so the candidate pass can MARK them refused rather than let
+ *  them read as a line that was never there. */
 function tokenLineValue(
   lines: string[],
   index: number,
@@ -151,17 +155,19 @@ function tokenLineValue(
  * way a shape removed from the candidate set is ever observed failing.
  */
 export function verdictCandidateLines(text: string): VerdictLine[] {
-  const lines = text.split("\n");
+  // One trailing carriage return per line, dropped before any pattern sees a line.
+  // Every column-0 rule here is a `$`-anchored test on a single line, so a reply
+  // that arrived with CRLF endings failed all of them while a `$`-free matcher
+  // still read it — the loop reported "no verdict" for bytes the live stop had
+  // ended as APPROVED. A lone `\r` inside a line is content and stays.
+  const lines = text.split("\n").map((line) => line.replace(/\r$/, ""));
 
-  // Fence parity from the number of markers ABOVE each line. An unclosed fence
-  // leaves every later line odd, which is D2's rule: a reply that opens a block
-  // and never closes it has fenced everything below the opener.
-  const fencesAbove: number[] = [];
-  let fences = 0;
-  for (const line of lines) {
-    fencesAbove.push(fences);
-    if (FENCE_RE.test(line)) fences += 1;
-  }
+  // Where each line sits relative to the fenced blocks above it. A CommonMark
+  // fence walk, not a parity count: a ``` line inside a ```` block is content, a
+  // ~~~ line inside a ``` block is content, and a block the reply never closed runs
+  // to the end of it — D2's rule, kept: a reply that opens a block and never closes
+  // it has fenced everything below the opener.
+  const position = fencePositions(lines);
 
   // The menu runs. A run is a maximal group of token-bearing lines that are
   // CONSECUTIVE — no blank line between them — the shape `buildAdversarialPrompt`
@@ -216,7 +222,7 @@ export function verdictCandidateLines(text: string): VerdictLine[] {
     tokenValue.set(i, tokenLineValue(lines, i));
   }
   // Whether that line would survive the other exclusions on its own — the fence
-  // parity and the quote/indent/table/list test, decided from the same pair the
+  // walk and the quote/indent/table/list test, decided from the same pair the
   // candidate pass below reports, so the two cannot disagree about eligibility.
   const ownEligible = new Map<number, boolean>();
   for (const i of tokenIdx) {
@@ -232,7 +238,7 @@ export function verdictCandidateLines(text: string): VerdictLine[] {
         // column-0 heading is a quotation (#2322). The inline form's value line IS
         // its token line, so this term is the same test twice there.
         !structuralLine(lines[value.valueIndex] as string) &&
-        (fencesAbove[value.valueIndex] ?? 0) % 2 === 0,
+        position[value.valueIndex] !== "inside",
     );
   }
   let run: number[] = [];
@@ -275,8 +281,8 @@ export function verdictCandidateLines(text: string): VerdictLine[] {
   const out: VerdictLine[] = [];
   for (const i of tokenIdx) {
     const line = lines[i] as string;
-    // A fence line is never itself a candidate: it is the delimiter, and the
-    // parity below is what decides about the lines it delimits.
+    // A fence line is never itself a candidate: it is the delimiter, and the walk
+    // above is what decides about the lines it delimits.
     if (FENCE_RE.test(line)) continue;
     // Already judged, and judged once: `isTokenLine` accepted this line, so the
     // only reason it carries no value is a placeholder or a prose heading.
@@ -286,7 +292,7 @@ export function verdictCandidateLines(text: string): VerdictLine[] {
       status: value.status,
       index: i,
       valueIndex: value.valueIndex,
-      fenced: (fencesAbove[value.valueIndex] ?? 0) % 2 === 1,
+      fenced: position[value.valueIndex] === "inside",
       // Structure is judged on BOTH lines of the heading form: leading whitespace,
       // a `>` or a list marker on the TOKEN line makes the pair a quotation, and so
       // does wearing them on the VALUE line — `### VERDICT` at column 0 over an

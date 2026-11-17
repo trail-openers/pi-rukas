@@ -81,9 +81,21 @@ function assert(cond: boolean, msg: string) {
     readAdversarialVerdict("### VERDICT\n\nAPPROVED") === "APPROVED",
     "…and reads as the value on its next non-blank line",
   );
+  // A heading's value line accepts what the inline form accepts after `VERDICT:`,
+  // so a verdict with its reason attached signs (`APPROVED, because the gate covers
+  // it` — the same tolerance `VERDICT: APPROVED (per the doctrine)` has always had).
+  // What states no verdict is a line with no value in marker position at all.
   assert(
-    c("### VERDICT\nAPPROVED, because the gate covers it").length === 0,
-    "a heading whose value line is prose states no verdict",
+    c("### VERDICT\nAPPROVED, because the gate covers it").length === 1,
+    "a heading whose value line is a verdict with its reason attached is a candidate — the same tolerance the inline form has",
+  );
+  assert(
+    c("### VERDICT\nthe gate covers it").length === 0,
+    "a heading whose value line names no verdict states none",
+  );
+  assert(
+    c("### VERDICT\nsee the ISSUES_FOUND rows above").length === 0,
+    "…and neither does a value line that merely mentions one further in",
   );
   assert(
     c(" ## VERDICT\n\nAPPROVED").length === 0,

@@ -34,8 +34,72 @@ function statusAlt_(): string {
 
 /** A line that opens or closes a ``` or ~~~ fenced block. `~~~` needs three
  *  markers, like CommonMark: `~~x~~` is a strikethrough idiom, and reading two
- *  tildes as a fence would fence half a report. */
+ *  tildes as a fence would fence half a report.
+ *
+ *  This is only the SHAPE of a fence line, not its role. A fence has direction —
+ *  an opener is closed only by a bare run of the SAME character at least as long
+ *  — and a reader that asks "how many of these sit above me" (a parity count) gets
+ *  that direction wrong in both directions: a ``` line inside a ```` block flips
+ *  the count and puts a forged signature OUTSIDE a block the reviewer pasted, and
+ *  a ```js opener whose only closer is two backticks flips it back.
+ *  `fencePositions` below is the walk that answers the question; this pattern is
+ *  what a caller uses to recognise a delimiter line on its own. */
 export const FENCE_RE = /^ {0,3}(```|~~~)/;
+
+/** A fence line in CommonMark's sense: up to three spaces of indent, then a run of
+ *  three or more of ONE fence character, then either nothing but spaces (a closer,
+ *  or a bare opener) or an info string (an opener only, and for a tilde opener an
+ *  info string that carries no tilde — the form CommonMark refuses, and the shape
+ *  that keeps `~~x~~ text` from being a delimiter at all). The whole line is
+ *  anchored because a line that merely CONTAINS a backtick run is prose, not a
+ *  delimiter. */
+const FENCE_LINE_FULL_RE = /^ {0,3}(`{3,}|~{3,})([^`~]*)$/;
+
+/** Which side of a fenced block a line sits on, decided by a CommonMark fence walk
+ *  rather than a parity count.
+ *
+ *  `outside` — no fence was open above it. `inside` — an opener above it is still
+ *  open at this line, which includes an opener the reply never closed: a reviewer
+ *  that opens a block and dies mid-fence has fenced everything below it, so an
+ *  unclosed fence fails closed. `fence` — the line IS a delimiter; no signature
+ *  begins on one, and the caller decides what it delimits.
+ *
+ *  The walk keeps one piece of state: the character and run length of the opener
+ *  that is still live. A line closes it only when it uses the SAME character in a
+ *  run at least as long with no info string, which is what makes a ``` line inside
+ *  a ```` block content rather than a closer, and a ~~~ line inside a ``` block
+ *  content too. */
+export type FencePosition = "outside" | "inside" | "fence";
+
+export function fencePositions(lines: readonly string[]): FencePosition[] {
+  const out: FencePosition[] = [];
+  // undefined — no block is open. Otherwise the character and run length of the
+  // opener that is still live.
+  let open: { char: string; length: number } | undefined;
+  for (const line of lines) {
+    const hit = FENCE_LINE_FULL_RE.exec(line);
+    if (hit === null) {
+      out.push(open === undefined ? "outside" : "inside");
+      continue;
+    }
+    const run = hit[1] as string;
+    const info = (hit[2] as string).trim();
+    if (open === undefined) {
+      // A tilde opener whose info string carries a tilde is not a delimiter: a
+      // strikethrough with text after it is ordinary prose, and treating it as an
+      // opener would fence the rest of the report.
+      if (run[0] === "~" && info.includes("~")) {
+        out.push("outside");
+        continue;
+      }
+      open = { char: run[0] as string, length: run.length };
+    } else if (run[0] === open.char && run.length >= open.length && info === "") {
+      open = undefined;
+    }
+    out.push("fence");
+  }
+  return out;
+}
 
 /** The markdown emphasis run a marker may wear on either side — `\*{0,2}`, never
  *  `\**`. Two asterisks are what reviewers write (`**VERDICT:**`); three or more
@@ -53,6 +117,22 @@ const EMPHASIS = String.raw`\*{0,2}`;
  *  token (`VERDICT:** `), as opposed to the run *before* it, which is capped by
  *  `EMPHASIS`. */
 const EMPHASIS_ONE = String.raw`\*`;
+
+/** The separator a markdown decoration may sit in front of what it decorates:
+ *  leading whitespace before a bullet or an ordinal — the indent a pasted or quoted
+ *  line carries. Never `\s`, which matches a newline and would judge a line against
+ *  text that is not on it. */
+const DECORATION_SPACE = String.raw`[ \t]*`;
+
+/** What may sit between an emphasis run and the token it decorates: a space, or
+ *  nothing at all — but never a TAB, which `TAB_EMPHASIS_BULLET` below refuses as a
+ *  list item's separator. A tab IS whitespace, so a group written `EMPHASIS[ \t]*`
+ *  accepted `**\tVERDICT:` on its face while the space-form bullet groups above did
+ *  not, and a line that fell between the two rules read as a clean column-0
+ *  signature. A tab is a tab-stop, not a separator an author put between `**` and
+ *  the word it bolds, and markdown needs the space form to be optional: `**VERDICT**`
+ *  is bold and signs, so this group is `*` and not `+` (#2322). */
+const EMPHASIS_SEPARATOR = String.raw` *`;
 
 /** The character that turns an inline `VERDICT:` into a table cell rather than a
  *  line of prose. Held as a constant so it is never written bare in a `new RegExp`
@@ -83,6 +163,19 @@ const LIST_ORDINALS = String.raw`[0-9]+[.)] `;
  *  hence the fragment. */
 const TAB_LIST_MARKERS = String.raw`(?:[-*+]|[0-9]+[.)])[ 	]`;
 
+/** The same shape one level up: a TAB-separated bullet whose marker is itself an
+ *  emphasis run (`**\tVERDICT:`, `*\tVERDICT:`). `TAB_LIST_MARKERS` covers a single
+ *  marker, and the emphasis cap admits two asterisks, so an emphasis run followed
+ *  by a tab fell between that group and the space-form bullet groups — which demand
+ *  a literal space — and the line read as a clean column-0 signature while no
+ *  markdown renderer puts a token in marker position there: content behind a tab is
+ *  content of a list item, not a signature. The run is written out per count rather
+ *  than given the `EMPHASIS` quantifier, because a three-asterisk run is refused by
+ *  its own cap and must stay NOT a token line at all — the candidate pass reports a
+ *  tab-separated bullet as a MARKED refusal, and a doubly decorated decoration has
+ *  to report the same silence `***VERDICT:***` already reports. */
+const TAB_EMPHASIS_BULLET = String.raw`(?:\*\*|\*)\t`;
+
 /** A block quote, a table row, a line with ANY leading whitespace (a tab, one to
  *  three spaces of markdown list/paragraph slack, or the 4+ spaces that make an
  *  indented code block), or a markdown list marker — space-separated or
@@ -92,7 +185,7 @@ const TAB_LIST_MARKERS = String.raw`(?:[-*+]|[0-9]+[.)])[ 	]`;
  *  space indent cannot be told apart from a code block quoting a verdict, so it
  *  fails closed with the rest: unparsed, never guessed. */
 const QUOTED_OR_TABLE_RE = new RegExp(
-  `^(?:>|[ \t]|${TABLE_DELIMITER}|${LIST_BULLETS}|${LIST_ORDINALS}|${TAB_LIST_MARKERS})`,
+  `^(?:>|[ \t]|${TABLE_DELIMITER}|${LIST_BULLETS}|${LIST_ORDINALS}|${TAB_LIST_MARKERS}|${TAB_EMPHASIS_BULLET})`,
 );
 
 /** `#{1,6} VERDICT` with nothing else on the line: the heading form, at column 0.
@@ -153,18 +246,38 @@ let inlinePrefix: RegExp | undefined;
 function inlinePrefix_(): RegExp {
   if (inlinePrefix === undefined) {
     inlinePrefix = new RegExp(
-      `^(?:>|${TABLE_DELIMITER}|[ \\t]*${LIST_BULLETS}|[ \\t]*${LIST_ORDINALS}|${TAB_LIST_MARKERS})?[ \\t]*(?:${EMPHASIS}[ \\t]*)?VERDICT(?:[ \\t]*:?[ \\t]*${EMPHASIS_ONE}*[ \\t]*:?[ \\t]*)?`,
+      `^(?:>|${TABLE_DELIMITER}|${DECORATION_SPACE}${LIST_BULLETS}|${DECORATION_SPACE}${LIST_ORDINALS}|${TAB_LIST_MARKERS}|${TAB_EMPHASIS_BULLET})?[ \t]*(?:${EMPHASIS}${EMPHASIS_SEPARATOR})?VERDICT(?:[ \t]*:?[ \t]*${EMPHASIS_ONE}*[ \t]*:?[ \t]*)?`,
       "i",
     );
   }
   return inlinePrefix;
 }
 
-/** The bare value form: exactly one enum value with nothing but optional
- *  emphasis around it — the spelling the heading form's value line takes. The
- *  value is matched against the enum rather than a permissive `[A-Z_]+` so a
- *  heading whose value line is prose (`APPROVED, because the gate covers it`)
- *  states no verdict; the inline form is the one that tolerates trailing text.
+let valueToken: string | undefined;
+/** A value in enum spelling, positioned the way both readers require it: at the
+ *  start of what is being judged, and followed by nothing that could continue a
+ *  word. ONE fragment for `bareValueRe_` and `inlineValueRe_` — a heading's value
+ *  line and an inline value are the same token under the same rule, and two copies
+ *  of it is how a heading came to refuse `APPROVED.` while the inline line
+ *  `VERDICT: APPROVED.` signed. Everything outside the fragment — the emphasis a
+ *  value may wear, the text that may trail it — is decided by the caller, so the
+ *  caller decides shape and this decides vocabulary. */
+function valueToken_(): string {
+  if (valueToken === undefined) {
+    valueToken = `(${statusAlt_()})(?![A-Za-z0-9_])`;
+  }
+  return valueToken;
+}
+
+/** The bare value form: one enum value at the start of the line — optional
+ *  emphasis in front, then optional emphasis and any trailing text — the spelling a
+ *  heading's value line takes. The value has to be the FIRST thing on the line,
+ *  which is what keeps a heading over prose that merely names a verdict
+ *  (`— no call yet`) unsigned while `APPROVED: no blocking issues` — a verdict with
+ *  its reason — signs. That trailing tolerance is the inline form's: both spellings
+ *  take their value from `valueToken_`, so neither can accept a suffix the other
+ *  refuses. The value is matched against the enum rather than a permissive
+ *  `[A-Z_]+` so a heading whose value line is prose states no verdict.
  *
  *  The emphasis run it strips is `EMPHASIS`, the same cap the token line wears:
  *  a value line is judged by the inline rules (#2322), so the number of asterisks
@@ -181,10 +294,7 @@ function inlinePrefix_(): RegExp {
 let bareValueRe: RegExp | undefined;
 function bareValueRe_(): RegExp {
   if (bareValueRe === undefined) {
-    bareValueRe = new RegExp(
-      `^(?:${EMPHASIS}[\\s]*)?(${statusAlt_()})(?:[\\s]*${EMPHASIS})?$`,
-      "i",
-    );
+    bareValueRe = new RegExp(`^(?:${EMPHASIS}[\\s]*)?${valueToken_()}[\\s\\S]*$`, "i");
   }
   return bareValueRe;
 }
@@ -194,7 +304,7 @@ function bareValueRe_(): RegExp {
 let inlineValueRe: RegExp | undefined;
 function inlineValueRe_(): RegExp {
   if (inlineValueRe === undefined) {
-    inlineValueRe = new RegExp(`^(${statusAlt_()})(?![A-Za-z0-9_])`, "i");
+    inlineValueRe = new RegExp(`^${valueToken_()}`, "i");
   }
   return inlineValueRe;
 }
@@ -231,9 +341,11 @@ export function inlineValue(line: string): AdversarialVerdictStatus | undefined 
   return VERDICT_STATUSES.find((s) => s.toLowerCase() === matched.toLowerCase());
 }
 
-/** The status value a heading's value line states: exactly one value after
- *  trimming and stripping `**`, on a line that could itself be a signature —
- *  column 0, outside any fence — or undefined.
+/** The status value a heading's value line states: one value at the start of the
+ *  line, on a line that could itself be a signature — column 0, outside any fence
+ *  — or undefined. Trailing text after the value is tolerated exactly as the inline
+ *  form tolerates it (see `bareValueRe_`): a reviewer that writes its reason after
+ *  the value signed a verdict, it just did not write only one word.
  *
  *  The value line is judged, not just the token line (#2322): the heading form
  *  used to ask only whether `### VERDICT` sat at column 0, so
@@ -244,9 +356,9 @@ export function inlineValue(line: string): AdversarialVerdictStatus | undefined 
  *  per-line rules the inline form obeys, so the two forms cannot disagree about
  *  what a quotation looks like.
  *
- *  The fence test is `FENCE_RE` rather than parity, because the caller's parity
- *  is what decided about the token line: a value line that IS the ``` opener is
- *  outside the block by that count, yet no signature can begin on a fence
+ *  The fence test is `FENCE_RE` rather than the caller's walk, because the caller's
+ *  walk is what decided about the token line: a value line that IS the ``` opener
+ *  is outside the block by that walk, yet no signature can begin on a fence
  *  delimiter — and the value the reviewer meant, if it follows the opener, sits
  *  inside the block and is refused there. */
 export function headingValueLine(line: string): AdversarialVerdictStatus | undefined {
