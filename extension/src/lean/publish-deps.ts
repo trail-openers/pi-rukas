@@ -2,11 +2,11 @@
  * lean/publish-deps — the outside world `lean/publish` reaches, in production form, plus the
  * error its throws are instances of.
  *
- * Split from `publish.ts` along the seam the file already had: the step body is the algorithm
- * and its preconditions; this file is the wiring to git, the forge and the issue.
+ * Split from `publish.ts` along the seam the file already had: the step body is the algorithm and its
+ * preconditions, this file is the wiring to git, the forge and the issue.
  *
- * `PublishInfraError` lives here because both halves raise it: the step for a claim it could
- * not verify, a dependency for a machine that would not answer.
+ * `PublishInfraError` lives here because both halves raise it: the step for a claim it could not verify, a
+ * dependency for a machine that would not answer.
  */
 
 import { execp } from "../exec.ts";
@@ -26,19 +26,17 @@ export class PublishInfraError extends Error {
 }
 
 /**
- * The executor this step needs: the argv form plus `execp`'s `killGroup`, which
- * the push carries so a hung `git push` cannot leave an ssh grandchild holding
- * the pipe open. Same intersection `verify-types.ts` documents.
+ * The executor this step needs: the argv form plus `execp`'s `killGroup`, which the push carries so a hung
+ * `git push` cannot leave an ssh grandchild holding the pipe open. See `verify-types.ts`.
  */
 type PublishExec = VerifyExec;
 
 /**
  * The forge in the shape the step uses: list, read, (re)draft, then create. Nothing else.
  *
- * `prDraft` is here because a REUSED PR carries the draft state the previous run left on it —
- * `prCreate`'s `draft` option only applies to a PR this step opens. `prView` exists because
- * `gh pr list --json` does not carry `isDraft`, so the list reply alone cannot tell a reused
- * PR's state.
+ * `prDraft` is here because a REUSED PR carries the draft state a previous run left on it — `prCreate`'s
+ * `draft` option applies only to a PR this step opens. `prView` exists because `gh pr list --json` carries
+ * no `isDraft`, so the list reply alone cannot tell a reused PR's state.
  */
 export type PublishForge = Pick<Forge, "prList" | "prView" | "prDraft" | "prCreate">;
 
@@ -52,18 +50,16 @@ export interface PublishDeps {
 /**
  * The push target must be a lean branch, and never the mainline.
  *
- * `branch` arrives from the run's persisted state file, so it is data a stale or edited file
- * supplies rather than a name this cycle chose. Pushing it raw is how a run whose state named
- * `main` writes unreviewed work onto the mainline: `assertSafeRef` says only that the string
- * is a legal ref, which `main` is.
+ * `branch` arrives from the run's persisted state file — data a stale or edited file supplies, not a name
+ * this cycle chose. Pushing it raw is how a run whose state named `main` writes unreviewed work onto the
+ * mainline; `assertSafeRef` only says the string is a legal ref, which `main` is.
  *
- * Rule 1 is the load-bearing one — a lean run's branch is `lean/…` by construction
- * (`specifyBranch`), so requiring that prefix also rejects a `refs/heads/` or `origin/` prefix.
- * Rule 2 catches a mainline that does not spell `main`; when it cannot be read the guard asks
- * origin instead of assuming.
+ * Rule 1 is load-bearing: a lean run's branch is `lean/…` by construction, so the prefix also rejects
+ * `refs/heads/` and `origin/`. Rule 2 catches a mainline that does not spell `main`, asking origin when it
+ * cannot be read.
  *
- * `exec` is the caller's own executor, a requirement rather than a convenience: the probes that
- * decide whether a force-push happens must be made over the transport the push will use.
+ * `exec` is the caller's own executor — a requirement, not a convenience: the probes deciding whether a
+ * force-push happens must go over the transport the push will use.
  *
  * Throws `PublishInfraError`, which the engine turns into a handed-back run.
  */
@@ -72,8 +68,8 @@ export async function assertPublishableBranch(
   branch: string,
   exec: MainlineExec,
 ): Promise<void> {
-  // The ref's own charset first — every other lean git call site validates its ref before it
-  // reaches a command line; the error is re-wrapped so the engine sees a PublishInfraError.
+  // The ref's own charset first — every other lean git call site validates its ref before a command
+  // line; re-wrapped so the engine sees a PublishInfraError.
   try {
     assertSafeRef(branch);
   } catch (err) {
@@ -84,9 +80,8 @@ export async function assertPublishableBranch(
       `refusing to publish to ${branch}: work-lean pushes only lean/ branches`,
     );
   const local = await resolveMainline(repoRoot, shellForm(exec)).catch((err: unknown) => ({
-    // `resolveMainline` is total, so this arm is a rejecting executor — and it is the SAME
-    // refusal, because silence is never a pass here. The cause is kept because it is the only
-    // thing that will say which of the two faults the machine had.
+    // `resolveMainline` is total, so this arm is a rejecting executor — and the SAME refusal, because
+    // silence is never a pass. The cause is the only thing that says which fault the machine had.
     ok: false as const,
     reason: `mainline probe threw: ${causeOf(err)}`,
   }));
@@ -113,10 +108,9 @@ export type MainlineExec = (
 /**
  * The origin probe's command line, in one place.
  *
- * The guard issues it through the harness's own network-git wrapper rather than calling the
- * executor directly: the wrapper is what gives a network git call its non-interactive env, its
- * process-group kill and its bound — the three things that make a wedged probe a refusal rather
- * than a publish step that never answers.
+ * The guard issues it through the harness's network-git wrapper rather than the executor directly: the
+ * wrapper gives a network git call its non-interactive env, process-group kill and bound — what makes a
+ * wedged probe a refusal rather than a step that never answers.
  */
 export const ORIGIN_PROBE_COMMAND = "git ls-remote --symref origin HEAD";
 
@@ -124,9 +118,8 @@ export const ORIGIN_PROBE_COMMAND = "git ls-remote --symref origin HEAD";
 const ORIGIN_PROBE_WHY = `${ORIGIN_PROBE_COMMAND} did not answer`;
 
 /**
- * The adapter from the guard's seam to the executor shape the probes declare: the probes never
- * use the argv arm, so the argv field is dropped here rather than widening `MainlineExecFn`
- * with a field no probe can send.
+ * The adapter from the guard's seam to the executor shape the probes declare: they never use the argv arm,
+ * so argv is dropped here rather than widening `MainlineExecFn` with a field no probe can send.
  */
 function shellForm(exec: MainlineExec): MainlineExecFn {
   return (cmd, opts) => {
@@ -152,7 +145,7 @@ async function originHeadBranch(repoRoot: string, exec: MainlineExec): Promise<s
   return branch === "" ? undefined : branch;
 }
 
-/** Rule 2's refusal: the pushed branch IS the mainline, whatever spelled it. */
+/** Rule 2's refusal: the pushed branch IS the mainline, however it was spelled. */
 function mainlineRefusal(branch: string): PublishInfraError {
   return new PublishInfraError(`refusing to push to the mainline ${branch}`);
 }
@@ -160,18 +153,16 @@ function mainlineRefusal(branch: string): PublishInfraError {
 /**
  * The non-interactive env a publish push runs with, in the production seam only.
  *
- * This IS the driver's env — `netGitEnv` from `work-driver-net-git.ts`, imported
- * directly at the executor rather than wrapped. Every other network git call in the
- * harness already goes through that seam, so a publish push cannot drift from a
- * driver push on what makes ssh fail instead of reading a passphrase from /dev/tty
- * (`GIT_TERMINAL_PROMPT=0` + `-o BatchMode=yes`).
+ * This IS the driver's env — `netGitEnv`, imported directly at the executor. Every other network git call
+ * in the harness uses that seam, so a publish push cannot drift from a driver push on what makes ssh fail
+ * instead of reading a passphrase from /dev/tty.
  */
 
 /**
  * The three command lines the guard asks its executor, in the order it asks them.
  *
- * Exported for the suites: a "no push" claim means something only if the probes the case
- * scripted are the probes the guard actually makes.
+ * Exported for the suites: a "no push" claim means something only if the probes a case scripted are the
+ * probes the guard actually makes.
  */
 export const MAINLINE_PROBE_COMMANDS = [
   "git symbolic-ref --short refs/remotes/origin/HEAD",
@@ -182,25 +173,22 @@ export const MAINLINE_PROBE_COMMANDS = [
 /** Production dependencies: the real executor, the real issue read, the real forge. */
 export function publishDeps(): PublishDeps {
   return {
-    // One executor for both shapes: `execp`'s own opts type declares every field this step
-    // passes, so the production seam is that executor.
+    // One executor for both shapes: `execp`'s opts type declares every field this step passes.
     //
-    // The push is the one call that leaves the clone, so it is the one call this seam gives the
-    // driver's non-interactive env to. Every other git call the step makes is local.
+    // The push is the one call that leaves the clone, so it is the one this seam gives the driver's
+    // non-interactive env to. Every other git call the step makes is local.
     //
-    // `o?.cwd` is passed through because `netGitEnv` reads the repo's own `core.sshCommand` in
-    // that directory: with no cwd the lookup is skipped and a repo that selects its ssh with
-    // `git config core.sshCommand` would have the plain `ssh` promoted ahead of the config.
+    // `o?.cwd` is passed through because `netGitEnv` reads the repo's `core.sshCommand` in that directory:
+    // with no cwd the lookup is skipped and plain `ssh` is promoted ahead of the config.
     exec: (cmd, o) =>
       execp(cmd, {
         ...(o ?? {}),
         ...(cmd === "git" && o?.env === undefined ? { env: netGitEnv(process.env, o?.cwd) } : {}),
       }),
     fetchBody: fetchIssueBody,
-    // `forgeFor` is io.ts's one lookup. `Forge` is structurally assignable to `PublishForge`
-    // (a `Pick` of it), so no cast. `undefined` is an ANSWER ("this clone has no forge the
-    // harness can drive"), and a detection that THREW also comes back undefined here — a forge
-    // that cannot be resolved is not a step the run can finish either way.
+    // `forgeFor` is io.ts's one lookup; `Forge` is structurally assignable to the `Pick`, so no cast.
+    // `undefined` is an ANSWER ("this clone has no forge the harness can drive"), and a detection that
+    // THREW also comes back undefined — an unresolvable forge is not a step the run can finish either way.
     forge: forgeFor,
   };
 }
