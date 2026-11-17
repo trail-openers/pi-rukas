@@ -27,9 +27,14 @@
  *      prompt's own end can arrive while the child is still running and still
  *      burning reads.
  *   2. `createVerdictStop` — on each live assistant `message_end`, reads the
- *      verdict with the SAME `readEnumMarker(text, "VERDICT", VERDICT_STATUSES)`
- *      the consumer (`parseVerdict`) runs, but only out of the FINAL text
- *      block of a message that made NO tool calls. Concretely, a stop needs
+ *      verdict out of the FINAL text block of a message that made NO tool calls,
+ *      with its own `readEnumMarker(text, "VERDICT", VERDICT_STATUSES)` read of
+ *      that one block. It is NOT the reader the loop's consumer `parseVerdict`
+ *      runs: since #2312 that one takes the candidate lines of
+ *      `adversarial-verdict-read.ts`, and the two rules answer different
+ *      questions — "did this message END the review" versus "is this the reply's
+ *      verdict" — so `test-adversarial-verdict-reader-stop-agreement.ts` is what
+ *      keeps them from disagreeing silently. Concretely, a stop needs
  *      all four: the message carries no `toolCall` block; the marker comes from
  *      its LAST non-empty text block alone (no cross-message window); that one
  *      block names exactly ONE distinct value of `VERDICT_STATUSES` (the

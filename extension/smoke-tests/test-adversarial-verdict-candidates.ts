@@ -21,6 +21,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { buildAdversarialPrompt } from "../src/adversarial-prompts.ts";
 import {
   readAdversarialVerdict,
   verdictCandidateLines,
@@ -161,6 +162,112 @@ function assert(cond: boolean, msg: string) {
     "the line after a blank line is a candidate on its own, not a member of the run above it (F3)",
   );
 
+  // #2322 AC4, read from the brief the reviewer is actually sent: a menu line
+  // copied out of it verbatim must be a readable signature (an indented one read
+  // `verdictParsed: false` and cost the round), while the whole menu echoed back
+  // stays excluded by the menu-run rule below. The menu is taken from the built
+  // prompt rather than retyped, so the prompt and this suite cannot drift.
+  {
+    const built = buildAdversarialPrompt({
+      diff: "+const x = 1;",
+      context: "c",
+      round: 1,
+      maxRounds: 3,
+    });
+    const menu = built.split("\n").filter((l) => /^\s*VERDICT: [A-Z_]+$/.test(l));
+    assert(
+      menu.length === 4,
+      `the reviewer brief prints a four-line verdict menu (${menu.length})`,
+    );
+    for (const line of menu) {
+      assert(
+        /^VERDICT: [A-Z_]+$/.test(line),
+        `canary: a menu line is printed at column 0, so copying it verbatim signs: ${line}`,
+      );
+      assert(
+        parseVerdict(line).verdictParsed === true,
+        `…and the loop reads that copied line as a verdict (${line})`,
+      );
+    }
+    assert(
+      parseVerdict(menu.join("\n")).verdictParsed === false,
+      "…while the whole menu echoed back is still a recitation, not a verdict (AC4)",
+    );
+  }
+
+  // #2322: the heading form used to judge only its TOKEN line, so a column-0
+  // `### VERDICT` with an indented, bulleted, quoted, tabled or fenced value
+  // line signed whatever that line said. The value line is markdown structure
+  // too, and the candidate carries it as `valueIndex`, so the same per-line
+  // judgement governs it (`headingValueRefused`).
+  const headingValueShapes: Array<[string, string]> = [
+    ["an indented value line", "    APPROVED"],
+    ["a tab-indented value line", "\tAPPROVED"],
+    ["a bulleted value line", "* APPROVED"],
+    ["a dash-bulleted value line", "- APPROVED"],
+    ["an ordered-list value line", "1. APPROVED"],
+    ["a quoted value line", "> APPROVED"],
+    ["a table value line", "| APPROVED |"],
+  ];
+  for (const [name, valueLine] of headingValueShapes) {
+    const reply = `VERDICT: ISSUES_FOUND\n\n### VERDICT\n${valueLine}`;
+    const lines = verdictCandidateLines(reply);
+    assert(
+      lines.length === 1 && (lines[0]?.status as string) === "ISSUES_FOUND",
+      `a column-0 heading whose value line is ${name} contributes no candidate (#2322)`,
+    );
+    assert(
+      readAdversarialVerdict(reply) === "ISSUES_FOUND",
+      `…and does not out-rank the real signature above it`,
+    );
+  }
+  {
+    // A fence marker ON the value line is not a line inside a fence, so it is
+    // the fenced rule that must refuse it — and the lines below the opener are
+    // inside one by parity, so the heading states nothing either way.
+    const reply = "VERDICT: ISSUES_FOUND\n\n### VERDICT\n```\nAPPROVED\n```";
+    assert(
+      readAdversarialVerdict(reply) === "ISSUES_FOUND",
+      "a heading whose value line opens a fence states no verdict (#2322)",
+    );
+    const unclosed = verdictCandidateLines("VERDICT: ISSUES_FOUND\n\n### VERDICT\n```\nAPPROVED");
+    assert(
+      unclosed.length === 1 && (unclosed[0]?.status as string) === "ISSUES_FOUND",
+      "…and so on when the fence is never closed",
+    );
+  }
+  for (const heading of ["### VERDICT", "### VERDICT:"]) {
+    assert(
+      readAdversarialVerdict(`${heading}\n\nAPPROVED`) === "APPROVED",
+      `the heading spelling \`${heading}\` reads its value line (#2322, AC5)`,
+    );
+    assert(
+      readAdversarialVerdict(`VERDICT: ISSUES_FOUND\n\n${heading}\n    APPROVED`) ===
+        "ISSUES_FOUND",
+      `…and an indented value under \`${heading}\` still signs nothing`,
+    );
+  }
+  // A heading decorated beyond a trailing colon is not a column-0 heading, and
+  // fails closed with the other quoted shapes rather than signing: `structural`
+  // MARKS the refusal (AC3's decorated-APPROVED arm) so the caller can tell
+  // "refused" from "never there".
+  {
+    const decorated = "VERDICT: ISSUES_FOUND\n\n**### VERDICT:**\nAPPROVED";
+    const lines = verdictCandidateLines(decorated);
+    assert(
+      lines.length === 1 && (lines[0]?.status as string) === "ISSUES_FOUND",
+      "a bold-wrapped heading contributes no candidate, so the real verdict stands (AC3)",
+    );
+    assert(
+      readAdversarialVerdict(decorated) === "ISSUES_FOUND",
+      "…and a decorated APPROVED after a real ISSUES_FOUND reads ISSUES_FOUND (AC3)",
+    );
+    assert(
+      readAdversarialVerdict("***### VERDICT***\nAPPROVED") === undefined,
+      "three asterisks of emphasis around a heading sign nothing — the emphasis cap holds on the heading too",
+    );
+  }
+
   // The incident's own bytes, read off disk: this is the reply that wrote a
   // passed:true row for a review that objected.
   const fixture = readFileSync(
@@ -248,6 +355,40 @@ function assert(cond: boolean, msg: string) {
       parseVerdict(`VERDICT: APPROVED\n\n${marker}VERDICT: CRITICAL_ISSUES_FOUND`).status ===
         "APPROVED",
       `canary: ${name} CRITICAL_ISSUES_FOUND after a real APPROVED does not fail a clean review`,
+    );
+  }
+
+  // #2322 AC2: a tab after a list bullet, and more than two asterisks of
+  // emphasis, are markdown structure or noise rather than emphasis touching the
+  // token. Only `*\t` was red before the fix (QUOTED_OR_TABLE_RE's bullet
+  // alternative requires a literal space); the other four rows are the
+  // REGRESSION half — they were already excluded, and must stay excluded.
+  for (const marker of ["*\t", "+\t", "-\t", "1.\t", "1)\t", "***"]) {
+    const decorated = `${marker}VERDICT: APPROVED`;
+    // Two exclusion mechanisms, one outcome. A TAB after a bullet is refused by
+    // the marker patterns (the bullet group needs a literal space) and then marked
+    // structural by `TAB_LIST_MARKERS`, so the line is a MARKED candidate; three
+    // asterisks are never a token line at all. Both sign nothing, and only the
+    // marked one can be reported as "refused" rather than "absent".
+    const marked = verdictCandidateLines(decorated);
+    if (marker === "***") {
+      assert(
+        marked.length === 0,
+        `a \`${marker}\` prefix is no longer even a token line (F2/#2322)`,
+      );
+    } else {
+      assert(
+        marked.length === 1 && marked[0]?.structural === true,
+        `a \`${marker.replace(/\t/g, "\\t")}\` prefix is marked structural, not silently missing (#2322)`,
+      );
+    }
+    assert(
+      readAdversarialVerdict(decorated) === undefined,
+      `…so it signs nothing on its own`,
+    );
+    assert(
+      parseVerdict(`VERDICT: ISSUES_FOUND\n\n${decorated}`).status === "ISSUES_FOUND",
+      `…and never out-ranks the real ISSUES_FOUND above it`,
     );
   }
 

@@ -173,6 +173,31 @@ const MAX = 3;
     );
   }
 
+  // #2322 AC3: the two shapes that ALREADY read correctly, pinned as
+  // regressions so a loosening of the value-line rule cannot quietly make a
+  // quoted heading or a decorated APPROVED a signature again.
+  const alreadyExcluded: Array<[string, string]> = [
+    [
+      "a quoted heading and quoted value after a real ISSUES_FOUND",
+      "VERDICT: ISSUES_FOUND\n\n> ### VERDICT\n> APPROVED",
+    ],
+    [
+      "a bold-wrapped APPROVED under a column-0 heading, itself in a quote",
+      "VERDICT: ISSUES_FOUND\n\n> ### VERDICT\n> **APPROVED**",
+    ],
+    [
+      "a tabled APPROVED after a real ISSUES_FOUND",
+      "VERDICT: ISSUES_FOUND\n\n| VERDICT: APPROVED |",
+    ],
+  ];
+  for (const [name, text] of alreadyExcluded) {
+    const v = parseVerdict(text);
+    assert(
+      v.status === "ISSUES_FOUND" && v.verdictParsed,
+      `canary: ${name} reads ISSUES_FOUND (got ${v.status}/${String(v.verdictParsed)})`,
+    );
+  }
+
   // The menu echo. `buildAdversarialPrompt` prints the reviewer's four choices as
   // four consecutive 2-space-indented VERDICT lines, and a child that recites its
   // brief back is a shape the incident reproduces on. Every line of such a run is

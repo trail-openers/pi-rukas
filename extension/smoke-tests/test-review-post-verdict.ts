@@ -60,6 +60,10 @@ function turnEndingWith(first: string, last: string): PiJsonEvent {
 
 // The four-line menu the reviewer's brief really contains, taken out of the
 // built prompt rather than retyped, so the prompt and this test cannot drift.
+// The lines are matched at column 0 and trimmed: #2322 de-dented them, because a
+// menu line a reviewer copies verbatim has to be a signature the reader accepts
+// (an indented one read as unparsed, which cost the round), and this expression
+// keeps working on either spelling so the canary below cannot go vacuous.
 const MENU = (() => {
   const prompt = buildAdversarialPrompt({
     diff: "+const x = 1;",
@@ -69,7 +73,7 @@ const MENU = (() => {
   });
   const lines = prompt
     .split("\n")
-    .filter((l) => /^\s+VERDICT: [A-Z_]+$/.test(l))
+    .filter((l) => /^\s*VERDICT: [A-Z_]+$/.test(l))
     .map((l) => l.trim());
   return lines;
 })();
@@ -110,6 +114,21 @@ const MENU = (() => {
 // to be ended at that turn with a verdict it never issued.
 {
   assert(MENU.length === 4, `the built prompt carries the four-line menu (${MENU.length})`);
+  // #2322 AC4, canary one: a reviewer that copies a menu line out of its brief
+  // verbatim has written a column-0 signature, so the loop must read a verdict
+  // rather than fall through to a fix round on bytes it was told to print. The
+  // second half of AC4 — the echoed MENU above stays excluded — is this block's
+  // own assertion.
+  for (const line of MENU) {
+    assert(
+      /^VERDICT: [A-Z_]+$/.test(line),
+      `canary: a menu line the reviewer copies verbatim sits at column 0, so it is a signature it can sign: ${line}`,
+    );
+    assert(
+      parseVerdict(line).verdictParsed === true,
+      `…and the loop reads a copied menu line as a verdict (${line})`,
+    );
+  }
   const s = createVerdictStop();
   assert(
     !s.observe(turn(text(MENU.join("\n")))),

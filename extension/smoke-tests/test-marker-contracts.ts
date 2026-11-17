@@ -110,7 +110,12 @@ for (const c of MARKER_CONTRACTS) {
 // MARKER_CONTRACTS — that is the point.
 {
   const KNOWN_CONSUMERS = [
-    "adversarial-verdict.ts",
+    // The loop's VERDICT row points at the module that HOLDS the candidate rule
+    // (`adversarial-verdict-read.ts`, added to this list by that change), not at
+    // `adversarial-verdict.ts`: since #2312 that module no longer reads the token
+    // itself — it asks the reader — and a row may not name a file that merely
+    // calls the one which decides.
+    "adversarial-verdict-read.ts",
     "review-bounds-verdict.ts",
     "work-driver-stepback-ci.ts",
     "work-driver-intent.ts",
