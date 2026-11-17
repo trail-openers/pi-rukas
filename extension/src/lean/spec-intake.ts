@@ -11,27 +11,40 @@
  * `require` declining byte-for-byte as before and `derive` sending the prose to one
  * bounded child, unless the body is blank, which is a ticket with nothing in it and
  * is declined without billing a child. A failed derivation is an `infra` verdict,
- * never a decline — that difference is what keeps the run retryable. The mode
- * itself is `spec-intake-switch.ts`'s: env, then the committed `lean.specIntake`,
- * then `require`.
+ * never a decline — that difference is what keeps the run retryable, and it is also
+ * what a config the loader REFUSED (`LeanConfigError`) becomes: reading the mode from
+ * bytes nobody read is not an intake decision. A mode value the switch refuses is the
+ * repo's own defect and declines, naming the knob. The mode itself is
+ * `spec-intake-switch.ts`'s: env, then the committed `lean.specIntake`, then `require`.
  */
 
 import { execp } from "../exec.ts";
 import { resolveModel } from "../models.ts";
-import { type WorkConfig, loadWorkConfig } from "./config.ts";
+import { type WorkConfig, LeanConfigError, loadWorkConfig } from "./config.ts";
 import type { LeanSeed } from "./seed.ts";
-import { type DeriveDeps, SpecDeriveError, deriveSpecForRun, traceDerive } from "./spec-derive.ts";
-import { type SpecIntake, resolveSpecIntake } from "./spec-intake-switch.ts";
+import {
+  type DeriveDeps,
+  type DeriveOutcome,
+  SpecDeriveError,
+  deriveSpecForRun,
+  traceDerive,
+} from "./spec-derive.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
+import { type SpecIntake, SpecIntakeError, resolveSpecIntake } from "./spec-intake-switch.ts";
 import type { PiSpec } from "./spec.ts";
 import { parsePiSpec } from "./spec.ts";
-import type { DerivedSpec } from "./state-derived-spec.ts";
+import type { DispatchUsageRow } from "./step-budget.ts";
 import { oneLine } from "./text-fence.ts";
 
 /** The text a prose ticket's missing block is reported as, in both modes. */
 export const NO_BLOCK_RULE = "no pi-spec v1 block";
 
-/** What the decision came to: a contract, or the rule that stopped the run. */
-export type Contract = { spec: PiSpec; derived?: DerivedSpec } | { rule: string; infra?: boolean };
+/** What the decision came to: a contract, or the rule that stopped the run. A
+ * contract carries the cost rows of the child that drafted it (empty when the
+ * contract came from the issue and no child was billed). */
+export type Contract =
+  | { spec: PiSpec; derived?: DerivedSpec; dispatches: DispatchUsageRow[] }
+  | { rule: string; infra?: boolean; dispatches?: DispatchUsageRow[] };
 
 /** Decide the run's contract from its issue body. `derive` is optional because the
  * derivation needs the run's wiring (forge read, child dispatch): a caller with no deps
@@ -43,34 +56,70 @@ export async function contractOf(
   body: string,
   base: Pick<LeanSeed, "baseSha">,
   derive?: DeriveDeps,
+  loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig> = defaultLoadConfig,
 ): Promise<Contract> {
   const parsed = parsePiSpec(body);
-  if (parsed.ok) return { spec: parsed.spec };
+  if (parsed.ok) return { spec: parsed.spec, dispatches: [] };
   if (parsed.reason !== NO_BLOCK_RULE) return { rule: parsed.reason };
   // Env first (the operator's word), then the committed `lean.specIntake`, then
   // `require` — so a repo that sets `derive` in `.pi/work.json` is read before its prose
-  // is derived from. The read is at the run's base and NON-FATAL: the fallback stays
-  // `require` and `readyOutcome`'s own full read still reports a broken config, so an
-  // unreadable config neither silently arms a derivation nor loses that error.
-  const config =
-    base.baseSha === ""
-      ? undefined
-      : await loadWorkConfig(execp, repoRoot, base.baseSha).catch(() => undefined);
-  const intake: SpecIntake = resolveSpecIntake(config);
+  // is derived from. The read is at the run's base, and its three outcomes stay three:
+  // a file that is ABSENT is the normal case and gets the shipped default; a file that
+  // EXISTS AND CANNOT BE READ (`LeanConfigError` — git show failed, or the bytes are
+  // not valid JSON) is infrastructure, so it hands back rather than posting a not-ready
+  // comment on a ticket whose own text was never the problem; and a mode value the
+  // switch refuses is a refusal naming the knob, never a raw throw out of the step.
+  let config: WorkConfig | undefined;
+  if (base.baseSha !== "") {
+    try {
+      config = await loadConfig(repoRoot, base.baseSha);
+    } catch (err) {
+      if (!(err instanceof LeanConfigError)) throw err;
+      return {
+        rule: `could not read .pi/work.json at the run's base: ${oneLine(err.message, 200)}`,
+        infra: true,
+      };
+    }
+  }
+  let intake: SpecIntake;
+  try {
+    intake = resolveSpecIntake(config);
+  } catch (err) {
+    if (!(err instanceof SpecIntakeError)) throw err;
+    // The repo's own defect, not infrastructure: a knob set to a value it cannot mean
+    // is the author's mistake, so it declines and says so rather than handing back.
+    return { rule: oneLine(err.message, 240) };
+  }
   if (intake !== "derive" || derive === undefined) return { rule: NO_BLOCK_RULE };
   // A blank ticket is not "prose to derive from": decline, and bill no child for a
   // blank page a model would fill in from the title.
   if (body.trim() === "") return { rule: NO_BLOCK_RULE };
   try {
-    const spec = await deriveSpecForRun(derive, repoRoot, issue, base.baseSha, body);
-    return { spec, derived: { spec, model: deriveModel(), at: Date.now() } };
+    const derived = await deriveSpecForRun(derive, repoRoot, issue, base.baseSha, body);
+    return {
+      spec: derived.spec,
+      derived: { spec: derived.spec, model: deriveModel(), at: Date.now() },
+      dispatches: derived.dispatches,
+    };
   } catch (err) {
     if (!(err instanceof SpecDeriveError)) throw err;
     traceDerive(issue, "refused", err.message);
     // Clipped: the derivation's cause is a model's text put into a rule an
-    // operator reads verbatim on the issue's handback comment.
-    return { rule: `spec derivation failed: ${oneLine(err.message, 240)}`, infra: true };
+    // operator reads verbatim on the issue's handback comment. The child's cost rows
+    // ride on the handback: a child that died before it drafted anything still spent
+    // tokens, and this record is the only place the run can still account for them.
+    return {
+      rule: `spec derivation failed: ${oneLine(err.message, 240)}`,
+      infra: true,
+      dispatches: err.dispatches ?? [],
+    };
   }
+}
+
+/** The loader a run with no wiring of its own reads its mode through: the committed
+ bytes at its base, which is where a run's config lives. */
+function defaultLoadConfig(repoRoot: string, baseSha: string): Promise<WorkConfig> {
+  return loadWorkConfig(execp, repoRoot, baseSha);
 }
 
 /** The model the deriving child will be resolved to, for the record's provenance.

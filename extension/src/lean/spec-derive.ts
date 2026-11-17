@@ -153,15 +153,23 @@ export function deriveBudget(config?: WorkConfig): Budget {
   return config?.budgets?.derive ?? DERIVE_DEFAULT_BUDGET;
 }
 
-/** Derive the contract for one issue from its title and body. Every outcome but a
- * usable spec throws {@link SpecDeriveError} naming its own cause (the causes are
- * listed in this file's header). The child's cost rows ride on every throw: a child
- * that died still cost tokens. */
+/** What one derivation observed of the child it paid for, on either outcome. */
+export interface DeriveOutcome {
+  spec: PiSpec;
+  /** The one child's cost row, as the dispatching steps record it. */
+  dispatches: DispatchUsageRow[];
+}
+
+/** Derive the contract for one issue from its title and body, and report the cost of
+ * the child that produced it. Every outcome but a usable spec throws
+ * {@link SpecDeriveError} naming its own cause (the causes are listed in this file's
+ * header). The child's cost rows ride on every throw: a child that died still cost
+ * tokens. */
 export async function deriveSpec(
   input: { title: string; body: string },
   dispatch: DeriveDispatch,
   opts: { budget?: Budget; arms?: (b: Budget | undefined) => BudgetArms } = {},
-): Promise<PiSpec> {
+): Promise<DeriveOutcome> {
   const arms = (opts.arms ?? armBudget)(opts.budget ?? deriveBudget());
   const spec: DispatchSpec = {
     role: DERIVE_ROLE,
@@ -175,9 +183,9 @@ export async function deriveSpec(
     throw new SpecDeriveError(`the spec-derive child could not be run: ${(err as Error).message}`);
   }
   const row = dispatchUsageRow(result);
-  // Every failure below is the child's own — a ceiling it blew, a death, or a reply
-  // that is not a contract — so each names its own cause and carries the cost row: a
-  // child that died still spent tokens.
+  // Every failure from here on is the child's own — a ceiling it blew, a death, or a
+  // reply that is not a contract — so each names its own cause and carries the cost
+  // row: a child that died still spent tokens.
   const fired = arms.fired(result);
   if (fired !== undefined)
     throw new SpecDeriveError(
@@ -194,7 +202,7 @@ export async function deriveSpec(
     throw new SpecDeriveError("the spec-derive child returned no parsable pi-spec v1 block", [row]);
   const problem = derivedSpecProblem({ spec: derived, model: "", at: 0 });
   if (problem !== undefined) throw new SpecDeriveError(problem, [row]);
-  return derived;
+  return { spec: derived, dispatches: [row] };
 }
 
 /** The derivation as the command drives it: the title read through the forge, the
@@ -208,13 +216,17 @@ export async function deriveSpecForRun(
   issue: number,
   baseSha: string,
   body: string,
-): Promise<PiSpec> {
-  // A missing title is not fatal (the body is the substance); the cause is traced, not
-  // discarded, so a run that derived from no title is tellable.
-  const title = await deps.issueTitle(repoRoot, issue).catch((err: unknown) => {
-    traceDerive(issue, "refused", `title read: ${String((err as Error)?.message ?? err)}`);
-    return "";
-  });
+): Promise<DeriveOutcome> {
+  // A missing title is not fatal (the body is the substance). It is derived from and
+  // the failure is TRACED under its own cause name rather than folded into an
+  // expression's side effect: a run that built its contract from no title has to be
+  // tellable from the log, not only by the shape of the spec.
+  let title = "";
+  try {
+    title = await deps.issueTitle(repoRoot, issue);
+  } catch (err) {
+    traceDerive(issue, "refused", `issueTitle: ${String((err as Error)?.message ?? err)}`);
+  }
   const config = await deps.loadConfig(repoRoot, baseSha);
   return deriveSpec({ title, body }, deps.dispatch, {
     budget: deriveBudget(config),

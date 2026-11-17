@@ -21,9 +21,11 @@ import {
   DERIVE_MAX_CRITERIA,
   DERIVE_ROLE,
   SpecDeriveError,
+  type DeriveDeps,
   deriveBudget,
   derivePrompt,
   deriveSpec,
+  deriveSpecForRun,
   parseDerivedBlock,
 } from "../src/lean/spec-derive.ts";
 import { type SpecSource, specFor, specSource } from "../src/lean/spec-for.ts";
@@ -31,6 +33,7 @@ import type { PiSpec } from "../src/lean/spec.ts";
 import { parsePiSpec, readiness, renderPiSpec } from "../src/lean/spec.ts";
 import type { BudgetArms } from "../src/lean/step-budget.ts";
 import type { DispatchResult } from "../src/types.ts";
+import { captureWarns } from "./lib/lean-review-bound-fixtures.ts";
 import { deriveReply, specBlock } from "./lib/lean-spec-intake-fixtures.ts";
 
 let failed = 0;
@@ -184,6 +187,32 @@ for (const [count, expectOk, label] of [
   }
 }
 
+// ── A child whose reply is a valid block carrying NO criteria at all is reported
+// as the empty contract it is, not as "no parsable block": the child wrote a block,
+// and the reason the operator reads has to say what is wrong with it.
+{
+  let threw: unknown;
+  try {
+    await deriveSpec({ title: "t", body: "b" }, () =>
+      Promise.resolve(
+        reply('prefix ```pi-spec v1\n{"problem":"p","criteria":[],"size":"S"}\n``` suffix'),
+      ),
+    );
+  } catch (err) {
+    threw = err;
+  }
+  assert(threw instanceof SpecDeriveError, `a zero-criteria block is refused (got ${String(threw)})`);
+  const message = threw instanceof Error ? threw.message : "";
+  assert(
+    message.includes("no acceptance criteria"),
+    `…and the reason is the EMPTY-CONTRACT sentence, not the generic one (got ${JSON.stringify(message)})`,
+  );
+  assert(
+    !message.includes("no parsable"),
+    "…and it never claims the child returned nothing when it returned a block",
+  );
+}
+
 // ── The parser refuses the shapes that are not a contract.
 for (const [text, needle, label] of [
   ["no block at all, just prose", "no", "no block"],
@@ -335,6 +364,10 @@ for (const [bullets, needle, label] of [
   );
   assert(spec !== undefined, "the happy path still yields a spec");
   assert(
+    spec.spec.criteria.length === BULLETS.length,
+    `…as the contract the child drafted (${String(spec?.spec?.criteria?.length)})`,
+  );
+  assert(
     seenPrompt.includes("```text\n") && seenPrompt.includes("\u02cb"),
     "the title and body arrive inside a fence with their own backtick runs disarmed",
   );
@@ -347,6 +380,41 @@ for (const [bullets, needle, label] of [
   assert(
     seenPrompt.includes("untrusted") || seenPrompt.includes("data"),
     "the brief says the issue text is data, not instructions",
+  );
+}
+
+// ── A title read that REJECTS still derives — from the body alone — and the
+// failure is traced under its own cause name, not swallowed.
+{
+  const warns: string[] = [];
+  let outcome: Awaited<ReturnType<typeof deriveSpecForRun>> | undefined;
+  let thrown: unknown;
+  await captureWarns("spec-derive", warns, async () => {
+    try {
+      outcome = await deriveSpecForRun(
+        {
+          issueTitle: () => Promise.reject(new Error("forge is down")),
+          loadConfig: async () => undefined as never,
+          dispatch: () => Promise.resolve(reply(deriveReply(BULLETS))),
+        },
+        "/repo",
+        1234,
+        "abc",
+        "the body is the substance",
+      );
+    } catch (err) {
+      thrown = err;
+    }
+  });
+  assert(
+    thrown === undefined && outcome?.spec.criteria.length === 2,
+    `a rejecting title read still derives the contract from the body (got ${String(thrown)})`,
+  );
+  assert(
+    warns.some(
+      (w) => w.includes("#1234") && w.includes("issueTitle") && w.includes("forge is down"),
+    ),
+    `…and the trace names the cause, the issue, and the failure it absorbed (got ${JSON.stringify(warns)})`,
   );
 }
 

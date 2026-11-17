@@ -126,8 +126,14 @@ export const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challen
  * `review` is in this set but NOT in `BUDGET_STATES`: it pays for a reviewer, six lenses
  * and a fixer per round, so it MUST record cost — but a review breach THROWS rather than
  * routing a `budget` kind, so it owns no `limit`/`value`/`used` trio.
+ *
+ * `ready` is in it for the same reason on a smaller scale: in `derive` intake mode it is
+ * the step that pays for the drafting child, and a cost this set does not admit is a cost
+ * that never reaches `usage.byRole` — silently, because a state outside the set has its
+ * rows DROPPED rather than refused. `ready` arms no child ceiling of its own (`derive` is
+ * its own budget row), so like `review` it owns no budget trio.
  */
-export const DISPATCH_STATES: readonly LeanState[] = [...BUDGET_STATES, "review"];
+export const DISPATCH_STATES: readonly LeanState[] = [...BUDGET_STATES, "review", "ready"];
 
 /**
  * Which state is allowed to record which evidence-bearing field. One table, one `includes`

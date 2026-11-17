@@ -44,7 +44,7 @@ import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import { type DerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
 import type { Step } from "./state.ts";
-import type { BudgetArms, BudgetOpts } from "./step-budget.ts";
+import type { BudgetArms, BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
 import { oneLine } from "./text-fence.ts";
 import { verifyDeps } from "./verify-deps.ts";
 import { verifyOutcome } from "./verify.ts";
@@ -60,6 +60,8 @@ export { leanSeed } from "./seed.ts";
 
 /** What `ready` learned: kept for the run's seed and for the not-ready comment. */
 interface ReadyFacts {
+  /** The cost rows of the child the intake paid for, on whichever verdict records them. */
+  dispatches?: DispatchUsageRow[];
   spec?: PiSpec;
   baseSha?: string;
   failedRules: string[];
@@ -138,7 +140,7 @@ export async function readyOutcome(
   issue: number,
   base: Pick<LeanSeed, "baseSha" | "why" | "infra">,
   deps: ReadyDeps = readyDeps(false),
-): Promise<{ kind: "ok" | "fail"; facts: ReadyFacts }> {
+): Promise<{ kind: "ok" | "fail" | "infra"; facts: ReadyFacts }> {
   const d = deps;
   let body: string;
   try {
@@ -156,12 +158,24 @@ export async function readyOutcome(
     ...(d.arm === undefined ? {} : { arm: d.arm }),
   };
   const contract = await contractOf(repoRoot, issue, body, base, derive);
+  // The cost rows of the child the intake paid for, read off the contract the step is
+  // now recording. A deriving child that died still spent tokens, and the step log is
+  // the only place a host can read that; `contractOf` returns rows ONLY on a contract,
+  // so a run that never billed a child records no key at all.
+  // `contractOf` reports the rows of every child the INTAKE paid for — the drafting
+  // child on a contract, and on the `infra` rule the child whose derivation failed: a
+  // child that died before it drafted anything still spent tokens, and this step's
+  // record is the only place the run can still account for them.
+  const rows = contract.dispatches ?? [];
   if ("rule" in contract)
     return {
-      kind: "fail",
+      kind: contract.infra === true ? "infra" : "fail",
       facts: {
         failedRules: [contract.rule],
         ...(contract.infra === true ? { infra: true } : {}),
+        ...(contract.dispatches === undefined || contract.dispatches.length === 0
+          ? {}
+          : { dispatches: contract.dispatches }),
       },
     };
   const parsed = { ok: true as const, spec: contract.spec };
@@ -226,6 +240,7 @@ export async function readyOutcome(
         baseSha: base.baseSha,
         failedRules: [],
         ...(contract.derived === undefined ? {} : { derived: contract.derived }),
+        ...(rows.length === 0 ? {} : { dispatches: rows }),
       },
     };
   } catch (err) {
@@ -237,6 +252,9 @@ export async function readyOutcome(
         failedRules: [
           `.pi/work.json is unusable: ${oneLine(err instanceof Error ? err.message : String(err), 160)}`,
         ],
+        // The child was paid for before this refusal, so its cost rides on the verdict
+        // that says the config it was armed from is unusable.
+        ...(rows.length === 0 ? {} : { dispatches: rows }),
       },
     };
   }
@@ -357,10 +375,30 @@ export function phase1Handlers(
           ? {}
           : { baseSha: facts.baseSha }),
         ...(facts.derived === undefined ? {} : { derivedSpec: facts.derived }),
+        ...(facts.dispatches === undefined || facts.dispatches.length === 0
+          ? {}
+          : { dispatches: facts.dispatches }),
       };
     }
-    if (facts.infra === true) return { kind: "infra", reason: facts.failedRules.join("; ") };
-    return { kind, failedRules: facts.failedRules };
+    if (facts.infra === true) {
+      return {
+        kind: "infra",
+        reason: facts.failedRules.join("; "),
+        // A derivation that FAILED still billed its child, and the handback record is
+        // the only place that cost can still be read. `ready` is one of the states
+        // `DISPATCH_STATES` admits.
+        ...(facts.dispatches === undefined || facts.dispatches.length === 0
+          ? {}
+          : { dispatches: facts.dispatches }),
+      };
+    }
+    return {
+      kind,
+      failedRules: facts.failedRules,
+      ...(facts.dispatches === undefined || facts.dispatches.length === 0
+        ? {}
+        : { dispatches: facts.dispatches }),
+    };
   };
   handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps(headless));
   handlers.build = (ctx) => buildOutcome(ctx, buildDeps(headless));

@@ -8,7 +8,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { gitTestEnv } from "./git-test-env.ts";
 
@@ -165,4 +166,25 @@ function linesOf(file: string): string[] {
 /** Remove a stub dir. */
 export function removeDir(dir: string): void {
   rmSync(dir, { recursive: true, force: true });
+}
+
+/**
+ * A temp git repo with git identity configured, so a case can commit a config at the
+ * base the run reads. `git init` plus one empty commit: a run's base must be a commit
+ * that EXISTS before `contractOf` asks git for `.pi/work.json` at it.
+ */
+export function tempGitRepo(tag: string): { dir: string; cleanup: () => void } {
+  const dir = mkdtempSync(path.join(tmpdir(), `lean-intake-${tag}-`));
+  const git = (args: string[]): void => {
+    const r = spawnSync("git", ["-C", dir, ...args], {
+      encoding: "utf8",
+      env: { ...gitTestEnv(), GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t" },
+    });
+    if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr ?? ""}`);
+  };
+  git(["init", "-q", "-b", "main"]);
+  git(["config", "user.email", "t@t"]);
+  git(["config", "user.name", "t"]);
+  git(["commit", "-q", "--allow-empty", "-m", "fixture"]);
+  return { dir, cleanup: () => removeDir(dir) };
 }
