@@ -65,11 +65,31 @@ export const FENCE_RE = /^[ \t]*(`{3,}|~{3,})/;
 
 /** A delimiter line's fence character and run length, or null when the line is
  *  prose. The walk below is the only caller: it needs the run's character and
- *  length to decide the closer, and asks nothing else of the line. What follows the
- *  run is an info string to CommonMark and is not consulted here — which is the whole
- *  difference between this walk and a reader that follows the spec. */
+ *  length for both roles, and asks nothing else of the line. */
 function fenceRun(line: string): { char: string; length: number } | null {
   const hit = FENCE_RE.exec(line);
+  if (hit === null) return null;
+  const run = hit[1] as string;
+  return { char: run[0] as string, length: run.length };
+}
+
+/** A line that CLOSES a fenced block: the fence character written as a bare run —
+ *  nothing before it but whitespace, nothing after it but whitespace. The closer
+ *  rule is deliberately NARROWER than `FENCE_RE`, and the asymmetry is the point:
+ *  a line that shows an info string is content the reviewer is displaying, not the
+ *  end of a block, so reading one as a closer hands a forger every line beneath it
+ *  (`~~~` opener, `~~~~bash` presented as its closer, then a forged signature that
+ *  now sits outside the block and signs). Refusing to close can only ever fence too
+ *  much, which is the one direction this reader is allowed to err in; refusing to
+ *  open exposes lines, which is why the OPENER rule stays the broad `FENCE_RE`.
+ *  `CLOSER_RE` is this rule and `closerRun` reads it, so the walk and the pattern
+ *  cannot disagree about what a bare run looks like. */
+const CLOSER_RE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
+
+/** The run of a line that closes a block, or null when the line is content — a
+ *  paragraph, or a delimiter carrying an info string. */
+function closerRun(line: string): { char: string; length: number } | null {
+  const hit = CLOSER_RE.exec(line);
   if (hit === null) return null;
   const run = hit[1] as string;
   return { char: run[0] as string, length: run.length };
@@ -93,12 +113,15 @@ function fenceRun(line: string): { char: string; length: number } | null {
  *     reader is built to err in. The refusal was not moved from tildes to backticks
  *     — a rule with an info-string exception anywhere in it has one more spelling
  *     that opens nothing, and every one of them is a forgery that signs.
- *   - **Closer.** With a block open, a line closes it only when it is a delimiter of
- *     the SAME character and its run is at least as long as the opener's — nothing
- *     else about the line is consulted, so a closer carrying an info string is a
- *     fence the reviewer is showing, not the end of the block. That is what makes a
- *     ``` line inside a ```` block content rather than a closer, and a ~~~ line
- *     inside a ``` block too.
+ *   - **Closer.** With a block open, a line closes it only when it is a BARE run of
+ *     the SAME character, at least as long as the opener's run: whitespace on either
+ *     side and nothing else (`CLOSER_RE`). A line that shows an info string is not a
+ *     closer but content the reviewer is displaying — `~~~~bash` under a `~~~` block
+ *     does not end it, exactly as a ``` line does not end a ```` block. The two
+ *     directions are deliberately asymmetric: an opener that refuses to open EXPOSES
+ *     lines, so the opener test is the broad `FENCE_RE`; a closer that refuses to
+ *     close only HIDES them, so the closer test is the narrow bare-run one, and
+ *     failing closed is the single error this reader may make.
  *   - **Content.** Every other line under an open block is fenced, and a block the
  *     reply never closes fences to the end of it. */
 export type FencePosition = "outside" | "inside" | "fence";
@@ -115,7 +138,13 @@ export function fencePositions(lines: readonly string[]): FencePosition[] {
       continue;
     }
     if (open === undefined) open = run;
-    else if (run.char === open.char && run.length >= open.length) open = undefined;
+    else {
+      // The closer is read by its own, narrower rule: a delimiter that carries an
+      // info string is content under the open block, not the line that ends it.
+      const closing = closerRun(line);
+      if (closing !== null && closing.char === open.char && closing.length >= open.length)
+        open = undefined;
+    }
     out.push("fence");
   }
   return out;
@@ -153,6 +182,21 @@ const DECORATION_SPACE = String.raw`[ \t]*`;
  *  the word it bolds, and markdown needs the space form to be optional: `**VERDICT**`
  *  is bold and signs, so this group is `*` and not `+` (#2322). */
 const EMPHASIS_SEPARATOR = String.raw` *`;
+
+/** The emphasis run an inline token line may wear: exactly TWO asterisks — or none.
+ *  One asterisk immediately touching the token is refused, and the reason is what
+ *  makes it a signature rather than decoration: `*VERDICT: APPROVED` has no closing
+ *  run, so markdown does not bold it — it opens a list item whose content is the
+ *  token, a line the reviewer is showing under a bullet it wrote in passing. It also
+ *  happens to be the single most convenient forgery, because it sits at column 0 and
+ *  looks like emphasis, so it out-ranked a real `VERDICT: ISSUES_FOUND` above it.
+ *  Two asterisks stay readable on both sides of the token (`**VERDICT:** APPROVED`,
+ *  `**VERDICT: APPROVED**`): balanced emphasis is what a reviewer actually writes,
+ *  and the shapes that sign are pinned in `test-adversarial-verdict-candidates.ts`.
+ *  Three or more are refused by `EMPHASIS`'s cap, so the run admitted here is a
+ *  subset of what that cap allows rather than a second opinion on it — one fragment
+ *  still owns the maximum. */
+const TOKEN_EMPHASIS = String.raw`\*{2}`;
 
 /** The character that turns an inline `VERDICT:` into a table cell rather than a
  *  line of prose. Held as a constant so it is never written bare in a `new RegExp`
@@ -201,6 +245,18 @@ const TAB_LIST_MARKERS = String.raw`(?:[-*+]|[0-9]+[.)])[ 	]`;
  *  bullet nor a token line, and the refusal became silence. */
 const TAB_EMPHASIS_BULLET = String.raw`(?:\*\*|\*) *\t`;
 
+/** A list marker whose separator is missing rather than a tab: `-VERDICT:`,
+ *  `+VERDICT:`, `1.VERDICT:`, `1)VERDICT:`. The space-form bullet groups require a
+ *  literal space and `TAB_LIST_MARKERS` requires a tab, so a marker that lost its
+ *  separator entirely matches neither: the decoration is skipped and the rest of the
+ *  line is judged as if it began at column 0. No markdown renders such a line as a
+ *  list item, so it signs nothing — and it is a MARKED structural refusal rather than
+ *  silence, because a forgery that leaves no trace in the candidate list is the one
+ *  failure this reader cannot report. A single `*` is NOT in this group: `*VERDICT:`
+ *  is one asterisk of emphasis touching the token, refused by the emphasis rules
+ *  rather than as a list item, and marked the same way (`NOT_A_TOKEN_LINE`). */
+const SEPARATORLESS_LIST_MARKER = String.raw`(?:[-+]|[0-9]+[.)])(?=VERDICT)`;
+
 /** A block quote, a table row, a line with ANY leading whitespace (a tab, one to
  *  three spaces of markdown list/paragraph slack, or the 4+ spaces that make an
  *  indented code block), or a markdown list marker — space-separated or
@@ -210,7 +266,7 @@ const TAB_EMPHASIS_BULLET = String.raw`(?:\*\*|\*) *\t`;
  *  space indent cannot be told apart from a code block quoting a verdict, so it
  *  fails closed with the rest: unparsed, never guessed. */
 const QUOTED_OR_TABLE_RE = new RegExp(
-  `^(?:>|[ \t]|${TABLE_DELIMITER}|${LIST_BULLETS}|${LIST_ORDINALS}|${TAB_LIST_MARKERS}|${TAB_EMPHASIS_BULLET})`,
+  `^(?:>|[ \t]|${TABLE_DELIMITER}|${LIST_BULLETS}|${LIST_ORDINALS}|${TAB_LIST_MARKERS}|${TAB_EMPHASIS_BULLET}|${SEPARATORLESS_LIST_MARKER})`,
 );
 
 /** `#{1,6} VERDICT` with nothing else on the line: the heading form, at column 0.
@@ -266,12 +322,22 @@ function headingRe_(): RegExp {
  *  and a prefix that simply did not match them would report a forged verdict as
  *  silence. `|` is never written unescaped inside this source: an unescaped one
  *  would swallow the alternation bar of the whole group, so the structural test
- *  is what carries it. */
+ *  is what carries it.
+ *
+ *  A list marker that LOST its separator (`-VERDICT:`, `1.VERDICT:`) is in this
+ *  prefix for exactly that reason: `QUOTED_OR_TABLE_RE` refuses the line, and a
+ *  prefix that did not match it at all would leave no candidate to mark — the
+ *  refusal would be invisible, which is the one outcome this reader must not
+ *  produce. A single `*` immediately before the token is NOT added here: one
+ *  asterisk touching the token is emphasis, and the emphasis rules refuse it by
+ *  never matching, so `*VERDICT:` is no token line at all — the same silence
+ *  `***VERDICT:***` already reports, and a line no markdown renders as a marker.
+ *  It signs nothing either way, and the canary beside it proves it. */
 let inlinePrefix: RegExp | undefined;
 function inlinePrefix_(): RegExp {
   if (inlinePrefix === undefined) {
     inlinePrefix = new RegExp(
-      `^(?:>|${TABLE_DELIMITER}|${DECORATION_SPACE}${LIST_BULLETS}|${DECORATION_SPACE}${LIST_ORDINALS}|${TAB_LIST_MARKERS}|${TAB_EMPHASIS_BULLET})?[ \t]*(?:${EMPHASIS}${EMPHASIS_SEPARATOR})?VERDICT(?:[ \t]*:?[ \t]*${EMPHASIS_ONE}*[ \t]*:?[ \t]*)?`,
+      `^(?:>|${TABLE_DELIMITER}|${DECORATION_SPACE}${LIST_BULLETS}|${DECORATION_SPACE}${LIST_ORDINALS}|${TAB_LIST_MARKERS}|${TAB_EMPHASIS_BULLET}|${SEPARATORLESS_LIST_MARKER})?[ \t]*(?:${TOKEN_EMPHASIS}${EMPHASIS_SEPARATOR})?VERDICT(?:[ \t]*:?[ \t]*${EMPHASIS_ONE}*[ \t]*:?[ \t]*)?`,
       "i",
     );
   }

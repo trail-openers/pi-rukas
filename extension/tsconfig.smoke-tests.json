@@ -463,6 +463,9 @@
     "smoke-tests/lib/lean-review-acceptance-fixtures.ts",
     "smoke-tests/test-lean-review-acceptance-briefs.ts",
     "smoke-tests/test-lean-review-acceptance-briefs-derived.ts",
-    "smoke-tests/test-adversarial-verdict-fence-matrix.ts"
+    "smoke-tests/test-adversarial-verdict-fence-matrix.ts",
+    "smoke-tests/test-adversarial-verdict-brief-forms.ts",
+    "smoke-tests/test-adversarial-verdict-reader-stop-agreement.ts",
+    "smoke-tests/test-adversarial-verdict-reply-shapes.ts"
   ]
 }
