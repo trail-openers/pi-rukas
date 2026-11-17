@@ -3,8 +3,8 @@
  * #2329 — a reviewer child in a throwaway tree is told which codebase-memory
  * project to query. The tree under TMPDIR has no index, and no indexed root
  * contains it, so a project name derived from the child's own cwd answers
- * "project not found". The name it is given is the main checkout's, which is
- * the root a reviewed `.worktrees/` tree sits under.
+ * "project not found". The name it is given is the reviewed checkout's own,
+ * or the main checkout's when the reviewed tree sits under its `.worktrees/`.
  *
  * Drives `runWithReviewerTree` with a capturing dispatch against a real temp
  * repo: what the dispatch receives is what the child's prompt carries.
@@ -52,9 +52,9 @@ const reviewed = path.join(main, ".worktrees", "issue-7");
 git.run("worktree", "add", "-q", "-b", "issue-7", reviewed);
 const head = git.out("rev-parse", "HEAD");
 
-const capture = async (role: string) => {
+const capture = async (role: string, cwd = reviewed) => {
   let seen: DispatchSpec | undefined;
-  await runWithReviewerTree({ role, prompt: "REVIEW THIS", cwd: reviewed }, async (s) => {
+  await runWithReviewerTree({ role, prompt: "REVIEW THIS", cwd }, async (s) => {
     seen = s;
     return { role, ok: true, text: "", toolUses: [] } as unknown as DispatchResult;
   });
@@ -62,25 +62,30 @@ const capture = async (role: string) => {
 };
 
 const lens = await capture("code-review-specialist");
-const expected = main.slice(1).replaceAll("/", "-");
+const expected = codebaseMemoryProject(main);
 assert(
   lens.cwd !== reviewed && lens.cwd?.includes("pi-rukas-review-") === true,
   "the lens child runs in a throwaway tree",
 );
 assert(
   lens.prompt.includes(`project "${expected}"`),
-  `the lens child is given the main checkout's project (${expected})`,
+  `a .worktrees/ tree's reviewer is given the main checkout's project (${expected})`,
 );
 assert(
-  lens.prompt.includes(`copy of ${main} at commit ${head}`),
-  "the prompt names the copied root and the pinned SHA",
+  lens.prompt.includes(`commit ${head}`) && !lens.prompt.includes(main),
+  "the prompt names the pinned SHA and not the live checkout's path",
 );
 assert(lens.prompt.endsWith("REVIEW THIS"), "the caller's prompt follows the note unchanged");
 
-const dev = await capture("developer");
+const adv = await capture("adversarial-developer");
+assert(adv.prompt.includes(`project "${expected}"`), "the adversarial child is given it too");
+
+const sibling = `${main}-sibling`;
+git.run("worktree", "add", "-q", "-b", "issue-8", sibling);
+const sib = await capture("code-review-specialist", sibling);
 assert(
-  dev.prompt === "REVIEW THIS" && dev.cwd === reviewed,
-  "a non-reviewer role is neither relocated nor told a project",
+  sib.prompt.includes(`project "${codebaseMemoryProject(sibling)}"`),
+  "a sibling worktree's reviewer is given that worktree's own project",
 );
 
 process.exit(exit);

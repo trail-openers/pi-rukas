@@ -663,7 +663,7 @@ The verdict is the last surviving candidate, so a reviewer that muses about one 
 
 **Cause:** reviewer children run in a throwaway tree under `$TMPDIR` (`reviewer-tree.ts`). That directory has no index, and no indexed root contains it, so a project name derived from the child's own cwd matches nothing.
 
-**Fix:** the child's prompt names the project to use: the one codebase-memory-mcp derives from the main checkout the tree was made from. That index answers for every file the diff did not change. If the child still fails, the main checkout is not indexed: index it once with `index_repository`. A bare repository has no checkout to name, so its reviewers get no project.
+**Fix:** the child's prompt names the project to use: the reviewed checkout's, or the main checkout's when the reviewed tree sits inside it under `.worktrees/`. That index follows the checkout, not the pinned commit, so the child reads a file when a result disagrees with it. If the child still fails, that checkout is not indexed: index it once with `index_repository`. A reviewer that runs unisolated gets no note.
 
 ### A reviewer says it never saw the acceptance criteria
 

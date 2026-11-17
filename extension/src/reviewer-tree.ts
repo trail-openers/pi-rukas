@@ -25,8 +25,8 @@
  *   - **The child is told which code index to query.** The tree has no
  *     codebase-memory index and no indexed root contains it, so a project
  *     name derived from the child's cwd is "not found". The tree reports the
- *     main checkout it was made from, and the spawn path names that project
- *     in the child's prompt; the base index answers for unchanged files.
+ *     checkout whose index covers the reviewed cwd, and the spawn path names
+ *     that project in the child's prompt. That index may lag the pinned SHA.
  *   - **Every failure falls back to the caller's cwd** and says so (the same
  *     fail-open-with-a-disclosed-reason rule as `plan-base-tree.ts`). A reviewer
  *     is a gate; gate plumbing that cannot start must not cost the gate its
@@ -65,7 +65,7 @@ export type ReviewerTree =
       cwd: string;
       /** Remove this tree. Best-effort; never throws. */
       release: () => Promise<void>;
-      /** The main checkout whose code index answers for this tree, when there is one. */
+      /** The checkout whose code index covers the reviewed cwd, when there is one. */
       indexedRoot: string | undefined;
     }
   | { kind: "unisolated"; reason: string };
@@ -197,11 +197,21 @@ export async function openReviewerTree(
     // verified anything — so it is WARN-visible, not DEBUG-gated.
     traceWarn(`reviewer-tree: provisioning incomplete — ${provisioned.problem}`);
   }
-  // The main checkout, not the reviewed cwd: a `.worktrees/` tree sits under
-  // it, so it is the root an index covering the reviewed tree was built for.
-  // A bare repo has no checkout to name.
-  const main = path.basename(commonDir) === ".git" ? path.dirname(commonDir) : undefined;
-  const indexedRoot = main && (await fs.realpath(main).catch(() => main));
+  // The indexed root is the reviewed checkout's own toplevel, or the main
+  // checkout when that toplevel sits inside it, as a `.worktrees/` tree does.
+  const real = (p: string) => fs.realpath(p).catch(() => p);
+  const top = await execFn("git", {
+    cwd: repoRoot,
+    maxBuffer: 8 * 1024,
+    timeout: 60_000,
+    argv: [...NO_HOOKS, "-C", repoRoot, "rev-parse", "--show-toplevel"],
+  }).then(
+    (r) => real(r.stdout.trim()),
+    () => "",
+  );
+  const main = path.basename(commonDir) === ".git" ? await real(path.dirname(commonDir)) : "";
+  const nested = main !== "" && top !== "" && !path.relative(main, top).startsWith("..");
+  const indexedRoot = (nested ? main : top) || undefined;
   return { kind: "tree", cwd: dir, release, indexedRoot };
 }
 
@@ -225,7 +235,7 @@ export function codebaseMemoryProject(root: string): string {
 
 /** The prompt note that points a reviewer child's code search at `root`'s index. */
 export function codeIndexNote(root: string, headSha: string): string {
-  return `[code index: this directory is a throwaway copy of ${root} at commit ${headSha} and has no code index of its own. Pass project "${codebaseMemoryProject(root)}" to every mcp__codebase_memory__* call. That index is of ${root}, so it answers for every file the diff did not change; read the changed files from this directory.]\n\n`;
+  return `[code index: this directory is a throwaway copy at commit ${headSha} with no code index. For mcp__codebase_memory__ lookups (search_code, search_graph, trace_path, get_code_snippet, get_architecture, query_graph) pass project "${codebaseMemoryProject(root)}". That index is of the reviewed checkout as it stands, not of this commit, so read the changed files here, and read the file whenever a result disagrees with it or the project is not found. Do not use detect_changes: it diffs that checkout, not this one.]\n\n`;
 }
 
 /**
