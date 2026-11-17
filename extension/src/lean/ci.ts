@@ -78,11 +78,6 @@ function ciMinutes(cfg: WorkConfig): number {
   return configured > 0 ? configured : (DEFAULT_BUDGETS.ci?.minutes ?? 30);
 }
 
-/** The newest decided `verify`'s full head, which is what CI must run against. */
-function verifiedHead(ctx: HandlerCtx): string | undefined {
-  return newestVerifiedHead(ctx.steps);
-}
-
 /**
  * Is the disk still the head this run was certified at?
  *
@@ -184,7 +179,8 @@ function contractCriteria(steps: Step[]): string[] {
  * since (`assertDiskAtVerifiedHead`).
  */
 export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome> {
-  const verified = verifiedHead(ctx);
+  // The newest decided `verify`'s full head, which is what CI must run against.
+  const verified = newestVerifiedHead(ctx.steps);
   if (verified === undefined)
     throw new VerifyInfraError("the step log records no verified head to run CI against");
   const prNumber = prNumberFromLog(ctx.steps);

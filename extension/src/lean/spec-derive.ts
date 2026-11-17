@@ -181,6 +181,9 @@ export async function deriveSpec(
     throw new SpecDeriveError(`the spec-derive child could not be run: ${(err as Error).message}`);
   }
   const row = dispatchUsageRow(result);
+  // Every failure below is the child's own — a ceiling it blew, a death, or a reply
+  // that is not a contract — so each names its own cause and carries the cost row: a
+  // child that died still spent tokens.
   const fired = arms.fired(result);
   if (fired !== undefined)
     throw new SpecDeriveError(

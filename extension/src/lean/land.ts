@@ -50,18 +50,14 @@ import type { LandDeps } from "./land-deps.ts";
 import { specifyBranch } from "./specify-tree.ts";
 import { type Outcome, newestVerifiedHead } from "./state.ts";
 
-/** The newest decided `verify`'s head, which is what the merge must be about. */
-function verifiedHead(ctx: HandlerCtx): string | undefined {
-  return newestVerifiedHead(ctx.steps);
-}
-
 /** The `land` step. Returns `merged` | `refused`; never throws. */
 export async function landOutcome(ctx: HandlerCtx, deps: LandDeps): Promise<Outcome> {
   const refuse = (why: string): Outcome => ({
     kind: "refused",
     reason: `land refused: ${why}`,
   });
-  const head = verifiedHead(ctx);
+  // The newest decided `verify`'s head, which is what the merge must be about.
+  const head = newestVerifiedHead(ctx.steps);
   if (head === undefined) return refuse("no verified head on the step log");
 
   // Two states, deliberately not collapsed into one `false`: the `.then` arm is
