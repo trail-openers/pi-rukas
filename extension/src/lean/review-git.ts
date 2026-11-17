@@ -1,25 +1,30 @@
 /**
- * lean/review-git — the ref-moving half of the review step's git surface, and the fix round that
- * produces the ref.
+ * lean/review-git — the ref-moving half of the review step's git surface, and
+ * the fix round that produces the ref.
  *
- * `review.ts` is the decision procedure (WHEN the loop runs); `review-gates.ts` adapts the two frozen
- * review layers; `review-deps.ts` wires the outside world and composes the briefs. This file owns the
- * three things none of them can do from where they sit: reading origin as the commit the gates review,
- * reading the diff they range over, and moving the run's branch onto the fixer's commits — the only
- * place in the whole step that touches origin.
+ * `review.ts` is the decision procedure (WHEN the loop runs); `review-gates.ts`
+ * adapts the two frozen review layers; `review-deps.ts` wires the outside world
+ * and composes the briefs. This file owns the three things none of them can do
+ * from where they sit: reading origin as the commit the gates review, reading
+ * the diff they range over, and moving the run's branch onto the fixer's commits
+ * — the only place in the whole step that touches origin.
  *
  * Two invariants the caller depends on and cannot re-check:
  *
- * - **No read returns an empty string for "there is nothing."** A missing branch is a throw, never
- *   `""`, because `""` is also what a clean diff looks like and a review step that confuses the two
- *   approves code nobody looked at. "git could not run" and "git found no such ref" are answered
- *   DIFFERENTLY, via `resolveHeadShaOutcome`.
- * - **Nothing here is forced.** The fixer's tree is disposable and detached (see `review-tree.ts`);
- *   the run's own tree is only the vehicle for a ref update. A concurrent push is refused by git
- *   rather than overwritten by us.
+ * - **No read returns an empty string for "there is nothing."** A missing branch
+ *   is a throw, never `""`, because `""` is also what a clean diff looks like and
+ *   a review step that confuses the two approves code nobody looked at. "git could
+ *   not run" and "git found no such ref" are answered DIFFERENTLY, via
+ *   `resolveHeadShaOutcome` — the resolver the frozen driver's own review path
+ *   uses — because "the review cannot approve a head it cannot resolve" and "there
+ *   is nothing to review" are different facts for an operator.
+ * - **Nothing here is forced.** The fixer's tree is disposable and detached (see
+ *   `review-tree.ts`); the run's own tree is only the vehicle for a ref update. A
+ *   concurrent push is refused by git rather than overwritten by us.
  *
- * All of it takes `ReviewDeps.exec`, so a test drives these claims against a real temp repo without a
- * model in the loop.
+ * All of it takes `ReviewDeps.exec`, so a test drives these claims against a real
+ * temp repo without a model in the loop — which is the only way a claim like "the
+ * frozen blob still hashes to its record" is a test rather than a comment.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
@@ -51,11 +56,14 @@ import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts
 /**
  * The commit this round reviews: origin's branch, as a full sha.
  *
- * A read that could not run and a branch that does not exist are both fatal and are stated
- * DIFFERENTLY: the first says the review cannot approve a head it cannot resolve, the second says
- * there is nothing to review. Neither reads as "an empty diff, nothing to change" — that is an
- * approval with no bytes behind it. The split comes from `resolveHeadShaOutcome` rather than a local
- * `rev-parse` whose stderr and exit code were discarded.
+ * A read that could not run and a branch that does not exist are both fatal and
+ * are stated DIFFERENTLY: the first says the review cannot approve a head it
+ * cannot resolve, the second says there is nothing to review. Neither reads as
+ * "an empty diff, nothing to change" — that is an approval with no bytes behind
+ * it, and it is the failure this step's whole shape exists to make impossible.
+ * The split comes from `resolveHeadShaOutcome`, the resolver the frozen driver's
+ * review path already uses, rather than a local `rev-parse` whose stderr and exit
+ * code were discarded and both answers collapsed into one.
  */
 export async function reviewedHead(
   deps: ReviewDeps,
@@ -68,8 +76,8 @@ export async function reviewedHead(
   // Narrowed on `sha` first, so `failed` is only read on the arm that has it.
   if (outcome.sha !== undefined) {
     if (isFullCommitSha(outcome.sha)) return outcome.sha;
-    // A resolver that printed something which is not an oid is "git found no such commit", not "git
-    // could not be asked" — the shape rule is this step's.
+    // A resolver that printed something which is not an oid is "git found no such
+    // commit", not "git could not be asked" — the shape rule is this step's.
     return await refused(ref, false, rows);
   }
   return await refused(ref, outcome.failed, rows);
@@ -88,11 +96,12 @@ async function refused(ref: string, failed: boolean, rows: DispatchUsageRow[]): 
 /**
  * The diff `base...head` as text.
  *
- * The step needs it for two reasons and pays for it once: the evidence builders cannot answer "could
- * not read the branch" differently from "found nothing", so the caller has to establish that the
- * branch is readable BEFORE asking them — and the way it does that is to read the diff itself, which
- * is the same range the lenses range over. `undefined` is the only honest answer for a read that
- * failed, and the caller turns it into a throw.
+ * The step needs it for two reasons and pays for it once: the evidence builders
+ * (`buildEvidence`, `runClaimScan`) cannot answer "could not read the branch"
+ * differently from "found nothing", so the caller has to establish that the branch
+ * is readable BEFORE asking them — and the way it establishes that is to read the
+ * diff itself, which is the same range the lenses range over. `undefined` is the
+ * only honest answer for a read that failed, and the caller turns it into a throw.
  */
 export async function rangeDiff(
   deps: ReviewDeps,
@@ -101,10 +110,12 @@ export async function rangeDiff(
   head: string,
   rows: DispatchUsageRow[],
 ): Promise<string | undefined> {
-  // Both bounds are resolved to commits before the range is asked for. `base` and `head` reach here as
-  // strings the step did not mint, and a range whose bound does not name a commit is indistinguishable,
-  // in this read, from a range with no changes — so the ambiguity is removed here: an unresolvable
-  // bound is a failed read, and the caller turns a failed read into a throw.
+  // Both bounds are resolved to commits before the range is asked for. `base` and
+  // `head` reach here as strings the step did not mint (a ledger-resolved delta
+  // base, a head the layer recorded), and a range whose bound does not name a
+  // commit is indistinguishable, in this read, from a range with no changes — so
+  // the ambiguity is removed here rather than passed down: an unresolvable bound
+  // is a failed read, and the caller turns a failed read into a throw.
   const from = await resolveCommitArg(deps, repoRoot, base);
   const to = await resolveCommitArg(deps, repoRoot, head);
   if (from === undefined || to === undefined)
@@ -146,19 +157,22 @@ export function noteFixDisclosure<R extends { reason?: string }>(
 }
 
 /**
- * What a fix round hands back: the head now on origin, or the budget's verdict when the step's own
- * ceiling stopped the fixer. `submodules` is the integration's own clause, present only when there was
- * something to say.
+ * What a fix round hands back: the head now on origin, or the budget's verdict when the step's
+ * own ceiling stopped the fixer. `stop` is optional on both arms so the caller narrows on one
+ * field rather than a union of two shapes. `submodules` is the integration's own clause, present
+ * only when there was something to say — handed up because the caller owns the step's reason.
  */
 type FixRoundOutcome = { head?: string; stop?: BudgetFired; submodules?: string };
 
 /**
- * One fix wave: the child in its disposable tree, then its commits moved onto the branch.
+ * One fix wave: the child in its disposable tree, then its commits moved onto the
+ * branch.
  *
- * The step dispatches exactly one fixer, so `wave` and `arm` are constants rather than loop counters —
- * kept because the tree's NAME must be reproducible from the durable run (see `fixTreeName`), which is
- * what a resumed attempt re-enters. The head it returns is read back from git rather than assumed from
- * the child; `runFixer` appends the row it cost, on both arms.
+ * The step dispatches exactly one fixer, so `wave` and `arm` are constants rather
+ * than loop counters — kept because the tree's NAME must be reproducible from the
+ * durable run (see `fixTreeName`), which is what a resumed attempt re-enters. The
+ * head it returns is the head now on origin, read back from git rather than assumed
+ * from the child; `runFixer` appends the row it cost, on both arms.
  */
 export async function fixRound(
   deps: ReviewDeps,
@@ -178,7 +192,8 @@ export async function fixRound(
     budget: BudgetArms;
   },
 ): Promise<FixRoundOutcome> {
-  // The tree's name comes from the durable run alone, so a resume recomputes the same path.
+  // The tree's name comes from the durable run alone, so a resume recomputes the
+  // same path (see `fixTreeName`); a counter would restart at zero there.
   const treeSuffix = `${opts.arm}-${opts.wave}-${String(opts.attempt)}`;
   const wt = await fixTree(
     deps,
