@@ -107,18 +107,27 @@ async function main() {
   // the repository does have would read as unreadable. Read it through the real
   // consumer, not just the field.
   // A git repo of our own, so the probe below answers locally and its wording is
-  // git's real absence text rather than whatever a network remote says.
+  // git's real absence text rather than "not a git repository" — the classifier
+  // returns false for a non-repo, which would make the pin below vacuous. The
+  // directory is created empty and passed as `cwd` to `git init`, because bun's
+  // spawn reports ENOENT for a cwd that does not exist yet.
   const repo = mkdtempSync(path.join(tmpdir(), "pi-ens-2342-"));
-  await execp("git", { argv: ["init", "-q", repo] });
+  await execp("git", { argv: ["init", "-q"], cwd: repo });
+  const isRepo = await execp("git", { argv: ["rev-parse", "--is-inside-work-tree"], cwd: repo });
+  assert(
+    isRepo.stdout.trim() === "true",
+    `the fixture really is a git repository, so the classifier below is not being handed a non-repo (got ${JSON.stringify(isRepo.stdout.trim())})`,
+  );
 
   const absent = await errOf(
     execp("git", {
-      argv: ["-C", repo, "cat-file", "-t", "1111111111111111111111111111111111111111:.pi/merge-authors"],
+      argv: ["cat-file", "-t", "1111111111111111111111111111111111111111:.pi/merge-authors"],
+      cwd: repo,
     }),
   );
   assert(
-    typeof absent?.stderr === "string" && absent.stderr.length > 0,
-    `a git probe rejection carries stderr on the Error (got ${JSON.stringify(String(absent?.stderr)).slice(0, 60)})`,
+    typeof absent?.stderr === "string" && /does not exist/i.test(absent.stderr),
+    `a git probe rejection carries git's own absence text on the Error (got ${JSON.stringify(String(absent?.stderr)).slice(0, 70)})`,
   );
   assert(
     gitCatFileSaysAbsent(absent) === true,
