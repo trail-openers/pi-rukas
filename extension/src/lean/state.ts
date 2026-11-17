@@ -103,10 +103,9 @@ export function newestDecided(steps: Step[], state: LeanState): Step | undefined
  * The newest decided `verify`'s full head, or `undefined` when it named none.
  *
  * The one reader of "which commit did this run's own gate certify", shared by every
- * step that must act on the certified tree (`ci` runs its full tier against it, `land`
- * pins the merge to it) so they cannot disagree about what was verified. An outcome
- * that named no full sha — or a verify that never decided — is `undefined`, never a
- * fallback to whatever HEAD happens to be checked out.
+ * step that acts on the certified tree (`ci`'s full tier, `land`'s merge) so they
+ * cannot disagree about what was verified. An outcome that named no full sha — or a
+ * verify that never decided — is `undefined`, never a fallback to checked-out HEAD.
  */
 export function newestVerifiedHead(steps: Step[]): string | undefined {
   const head = newestDecided(steps, "verify")?.outcome?.verifiedHead;
@@ -153,10 +152,10 @@ export interface LeanRun {
   deadlineMs?: number;
   /**
    * The contract this run DERIVED for itself (`derive` mode, no block on its
-   * issue). Persisted, not recomputed: a step resuming after a crash must build
-   * against the criteria its earlier steps were graded on, and a resume must not
-   * bill a second drafting child for a contract the run holds. Absent is the whole
-   * of `require` mode, so old state files keep loading — same schema version.
+   * issue). Persisted, not recomputed: a resume must build against the criteria its
+   * earlier steps were graded on and must not bill a second drafting child for a
+   * contract the run holds. Absent is the whole of `require` mode, so old state
+   * files keep loading — same schema version.
    */
   derivedSpec?: DerivedSpec;
 }

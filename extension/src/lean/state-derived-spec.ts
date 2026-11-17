@@ -30,8 +30,12 @@ export type ContractSource = { derivedSpec?: DerivedSpec };
 
 /** A candidate derived spec, or `undefined` with the reason it is not one. The
  * result is canonicalised — `parsePiSpec`'s own object, not the caller's — so a field
- * order or an omitted optional in the file cannot leak into what the steps execute. */
+ * order or an omitted optional in the file cannot leak into what the steps execute.
+ * Every refusal quotes the RENDERED block: an operator told a contract was wrong
+ * without being shown it cannot tell a bad derivation from a broken validator. */
 export function derivedSpecProblem(value: unknown): string | undefined {
+  const quoted = (reason: string): string =>
+    `${reason}\n\n${renderPiSpecSafe((value as { spec: PiSpec }).spec) ?? ""}`;
   if (typeof value !== "object" || value === null || Array.isArray(value))
     return "derivedSpec must be an object";
   const d = value as Record<string, unknown>;
@@ -44,11 +48,11 @@ export function derivedSpecProblem(value: unknown): string | undefined {
   const rendered = renderPiSpecSafe(spec as PiSpec);
   if (rendered === undefined) return "derivedSpec.spec is not a renderable pi-spec";
   const back = parsePiSpec(rendered);
-  if (!back.ok) return `derivedSpec.spec does not parse: ${back.reason}`;
+  if (!back.ok) return quoted(`derivedSpec.spec does not parse: ${back.reason}`);
   if (JSON.stringify(back.spec) !== JSON.stringify(spec))
-    return "derivedSpec.spec does not round-trip through its own rendering";
+    return quoted("derivedSpec.spec does not round-trip through its own rendering");
   const unready = readiness(back.spec);
-  if (unready.length > 0) return `derivedSpec.spec is not ready: ${unready.join("; ")}`;
+  if (unready.length > 0) return quoted(`derivedSpec.spec is not ready: ${unready.join("; ")}`);
   // Two rules the ENGINE adds to the contract's own, stated here because a persisted
   // derived contract is the only document nine steps execute that no author signed:
   // every criterion is a `test`, and there is no `scope`. The mapper

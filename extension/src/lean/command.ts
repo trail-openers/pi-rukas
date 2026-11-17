@@ -39,8 +39,7 @@ import { reviewOutcome } from "./review.ts";
 import { type LeanSeed, leanSeed } from "./seed.ts";
 import { type DeriveDeps, type DeriveDispatch, deriveDeps, traceDerive } from "./spec-derive.ts";
 import { specFor } from "./spec-for.ts";
-import { configAtBase, contractOf } from "./spec-intake.ts";
-import { type DerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
+import { contractOf } from "./spec-intake.ts";import { type DerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { Step } from "./state.ts";
@@ -67,11 +66,9 @@ interface ReadyFacts {
    * handler routes to `handback` rather than `decline` and the run stays retryable.
    */
   infra?: boolean;
-  /**
-   * The contract the run DERIVED for itself, when its issue carried no block and
-   * intake mode is `derive`. Only `ready` mints one, and only through the
-   * accessor's own gate — so a record can carry a derived spec only because a
-   * `ready` validated it.
+  /** The contract the run DERIVED for itself, when its issue carried no block and
+   * intake mode is `derive`. Only `ready` mints one, and only through the accessor's
+   * own gate — so a record carries a derived spec only because a `ready` validated it.
    */
   derived?: DerivedSpec;
 }
@@ -79,14 +76,10 @@ interface ReadyFacts {
 /**
  * What `ready` needs from the outside world, all of it injectable.
  *
- * The step makes five outside calls: the issue body, the run's config at its base
- * (for the intake mode and the child's budget), that base's mainline probe when the
- * record carries no cause, the derived contract's comment, and — for a prose ticket
- * in `derive` mode — one drafting child. A case that wants to drive the posting
- * rule, the derived-record rule or the refusal wording has to be able to answer
- * them, and a case that replaces the whole `ready` handler is judging its own stub
- * instead of the step. So the seam is these fields, all required on the interface
- * and all optional at the call site.
+ * The step makes five outside calls. A case that wants to drive the posting rule,
+ * the derived-record rule or the refusal wording has to answer them, and a case that
+ * replaces the whole `ready` handler is judging its own stub instead of the step. So
+ * the seam is these fields, all required on the interface, optional at the call site.
  */
 export interface ReadyDeps {
   /** The issue body, as the forge answers it. */
@@ -118,8 +111,6 @@ export function readyDeps(headless: boolean): ReadyDeps {
     post: postDerivedSpec,
   };
 }
-
-/** The shipped wiring is built once per run, by `phase1Handlers`. */
 
 /**
  * The `ready` verdict: fetch, parse, judge readiness, load config at the base.
@@ -163,14 +154,7 @@ export async function readyOutcome(
     dispatch: d.dispatch,
     ...(d.arm === undefined ? {} : { arm: d.arm }),
   };
-  const contract = await contractOf(
-    repoRoot,
-    issue,
-    body,
-    base,
-    derive,
-    await configAtBase(d.loadConfig, repoRoot, base),
-  );
+  const contract = await contractOf(repoRoot, issue, body, base, derive);
   if ("rule" in contract)
     return {
       kind: "fail",
@@ -341,29 +325,23 @@ export function phase1Handlers(
         ...(seedWhy ? { why: seedWhy } : {}),
         ...(seedInfra ? { infra: true } : {}),
       },
-      // The derivation's one child and the step's other outside calls, wired per run
-      // so the child carries this run's headless trust stamp the way every other
-      // role's deps do.
+      // The step's outside calls, wired per run so the deriving child carries this
+      // run's headless trust stamp the way every other role's deps do.
       d,
     );
     // Only the verdict and the rules go on the record. `spec` and `config` stay out:
     // the step log is the durable record of what a run DECIDED, and a parsed document
-    // or a loaded config written into it is a second copy of a file that can change
-    // underneath a resume. `failedRules` alone is what `decline` posts.
-    //
-    // `derivedSpec` is the one exception, and the reason is that it is the only
-    // copy: an authored contract can be re-read from the issue on a resume, but a
-    // derived contract exists nowhere else, and re-deriving it would pay a second
-    // child for a document that could come back DIFFERENT — every step after that
-    // building against criteria the earlier ones never saw.
+    // or a loaded config in it is a second copy of a file that can change underneath a
+    // resume. `failedRules` alone is what `decline` posts. `derivedSpec` is the one
+    // exception because it is the only copy: an authored contract can be re-read from
+    // the issue, a derived one exists nowhere else.
     if (kind === "ok") {
       // The derived contract is published where it is minted: a `derive` run puts a
       // machine-written acceptance table on a human's issue and the author has to see
-      // it before the run spends a build cycle on it. `ready` posts it, which the step
-      // log guarantees runs at most once with an outcome, so a resume that re-reads
-      // the persisted contract never re-posts. The host channel owns its delivery, so
-      // nothing posts there — the rule the two reporting steps already follow. A
-      // failed post is traced, not fatal: a run is not destroyed over a comment.
+      // it before the run spends a build cycle on it. `ready` posts it, and the step
+      // log runs it at most once with an outcome, so a resume never re-posts. The host
+      // channel owns its delivery, so nothing posts there. A failed post is traced, not
+      // fatal: a run is not destroyed over a comment.
       if (facts.derived !== undefined && handoffChannel() !== "host") {
         try {
           await d.post(repoRoot, issue, facts.derived.spec, facts.derived.model);
@@ -373,10 +351,9 @@ export function phase1Handlers(
       }
       return {
         kind,
-        // The base sha rides only with a derived contract. Every step already reads
-        // the run's base off the record the SEED wrote; stamping it on `ready`'s
-        // outcome too would add an outcome field no `require` run had, and this
-        // step's `ok` record is one the byte-identity golden pins.
+        // The base sha rides only with a derived contract: every step already reads the
+        // run's base off the record the SEED wrote, and this step's `ok` record is one
+        // the byte-identity golden pins.
         ...(facts.derived === undefined || facts.baseSha === undefined
           ? {}
           : { baseSha: facts.baseSha }),

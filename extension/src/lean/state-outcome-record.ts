@@ -74,9 +74,7 @@ export interface Outcome {
    * `applyReadyFacts`): the commit the config was read at, and — for a `derive`
    * run — the contract the engine drafted for it. The derived spec is the one that
    * has to be durable: an authored contract can be re-read from the issue on a
-   * resume, but a derived one exists nowhere else, and re-deriving would pay a
-   * second child for a document that could come back DIFFERENT, with every later
-   * step building criteria the earlier ones never saw. Checked on load against the
+   * resume, a derived one exists nowhere else. Checked on load against the
    * contract's own rules (`state-derived-spec.ts`), so no record can carry a
    * document `parsePiSpec` could never have produced.
    */

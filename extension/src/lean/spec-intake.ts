@@ -49,13 +49,20 @@ export async function contractOf(
   body: string,
   base: Pick<LeanSeed, "baseSha">,
   derive?: DeriveDeps,
-  config?: WorkConfig,
 ): Promise<Contract> {
   const parsed = parsePiSpec(body);
   if (parsed.ok) return { spec: parsed.spec };
   if (parsed.reason !== NO_BLOCK_RULE) return { rule: parsed.reason };
-  // Env first (the operator's word), then the committed field, then `require`. A
-  // config naming a value the loader would refuse cannot reach here — it throws.
+  // Env first (the operator's word), then the committed `lean.specIntake`, then
+  // `require` — so a repo that sets `derive` in `.pi/work.json` is read before its
+  // prose is derived from. The read is at the run's base and NON-FATAL: the switch's
+  // fallback is `require`, and the full config read in `readyOutcome` still reports a
+  // broken config exactly as it does today, so a run whose config is unreadable
+  // neither derives a contract by default nor loses that error.
+  const config =
+    base.baseSha === ""
+      ? undefined
+      : await loadWorkConfig(execp, repoRoot, base.baseSha).catch(() => undefined);
   const intake: SpecIntake = resolveSpecIntake(config);
   if (intake !== "derive" || derive === undefined) return { rule: NO_BLOCK_RULE };
   // A blank ticket is not "prose to derive from": decline, and bill no child for a
@@ -72,38 +79,12 @@ export async function contractOf(
   }
 }
 
-/**
- * The run's config, read at its base, before the contract decision needs it —
- * `lean.specIntake` lives in that file, so a repo that sets `derive` in
- * `.pi/work.json` has to be read before its prose can be derived from.
+/** The model the deriving child will be resolved to, for the record's provenance.
  *
- * A config that cannot be read yields `undefined` rather than throwing: the
- * switch's fallback is `require`, and the full config read in `readyOutcome`
- * still reports the fault exactly as it does today. A run whose config is broken
- * must neither derive a contract by default nor lose the error `ready` would have
- * given it — both of which hold only while this read stays non-fatal.
- */
-export async function configAtBase(
-  load: (repoRoot: string, baseSha: string) => Promise<WorkConfig>,
-  repoRoot: string,
-  base: Pick<LeanSeed, "baseSha">,
-): Promise<WorkConfig | undefined> {
-  if (base.baseSha === "") return undefined;
-  try {
-    return await load(repoRoot, base.baseSha);
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * The model the deriving child will be resolved to, for the record's provenance.
- *
- * Resolution is the run's own — role env, config, the global default — so the
- * record names the model that actually drafted the contract rather than a guess.
- * `""` is honest for the shipped default, where no model is configured: a
- * fabricated name would mislead the operator reading back a bad derivation.
- */
+ * Resolution is the run's own — role env, config, the global default — so the record
+ * names the model that actually drafted the contract rather than a guess. `""` is
+ * honest for the shipped default, where no model is configured: a fabricated name
+ * would mislead the operator reading back a bad derivation. */
 export function deriveModel(): string {
   try {
     return resolveModel("explore").model ?? "";

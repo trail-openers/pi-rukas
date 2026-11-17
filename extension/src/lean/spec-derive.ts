@@ -128,22 +128,20 @@ export function parseDerivedBlock(text: string): PiSpec | undefined {
   if (text.length > REPLY_MAX_CHARS) return undefined;
   const parsed = parsePiSpec(text);
   if (!parsed.ok) return undefined;
-  // An EMPTY criteria array is not "nothing parsable": the child did write a
-  // block, and `readiness` has the sentence that says what is wrong with it
-  // ("no acceptance criteria"). Handing that shape to the mapper would drop it
-  // into the no-block arm and the operator would be told the child returned
-  // nothing when it returned a contract with no criteria in it.
+  // An EMPTY criteria array is not "nothing parsable": the child wrote a block, and
+  // `readiness` has the sentence that says what is wrong with it ("no acceptance
+  // criteria"). The mapper would drop that shape into its no-block arm and tell the
+  // operator the child returned nothing.
   if (parsed.spec.criteria.length === 0)
     return {
       problem: parsed.spec.problem,
       criteria: [],
       size: parsed.spec.size,
     } satisfies PiSpec;
-  const derived = piSpecFromBullets(
+  return piSpecFromBullets(
     parsed.spec.problem,
     parsed.spec.criteria.map((c) => c.text),
   );
-  return derived;
 }
 
 /** What one derivation needs from the outside world, all of it injectable. */
@@ -163,13 +161,10 @@ export function deriveBudget(config?: WorkConfig): Budget {
   return config?.budgets?.derive ?? DERIVE_DEFAULT_BUDGET;
 }
 
-/**
- * Derive the contract for one issue from its title and body. Every outcome but a
- * usable spec throws {@link SpecDeriveError} naming its own cause (the five
- * causes are listed in this file's header), so the operator is never left to work
- * out which one it was. The child's cost rows ride on every throw: a child that
- * died still cost tokens.
- */
+/** Derive the contract for one issue from its title and body. Every outcome but a
+ * usable spec throws {@link SpecDeriveError} naming its own cause (the causes are
+ * listed in this file's header). The child's cost rows ride on every throw: a child
+ * that died still cost tokens. */
 export async function deriveSpec(
   input: DeriveInput,
   dispatch: DeriveDispatch,
