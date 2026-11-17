@@ -58,7 +58,8 @@ import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 
 /**
  * The outcome of one executed `command` criterion, kept for the record.
- */interface CommandCriterionRecord {
+ */
+interface CommandCriterionRecord {
   /** `passed` — the criterion ran through the gate's own runner and exited 0. */
   kind: "passed";
   /**
@@ -227,7 +228,7 @@ export async function commandCriteriaOutcome(
       trace(`lean/verify: command criterion ${c.id} not run — ${problem}`);
       continue;
     }
-  const rel = normaliseRelPath(c.command as string);
+    const rel = normaliseRelPath(c.command as string);
     const accepted = { oid: "" };
     const treeProblem = await unchangedFileProblem(exec, wt, baseSha, rel, accepted);
     if (treeProblem !== undefined) {

@@ -181,7 +181,8 @@ export async function assertSpecifyWorktreeOwned(
  * and the provisioning result that says which dependency links the tree has.
  *
  * Missing → created. Present → owned-checked, then reset to the base.
- */export async function ensureSpecifyWorktreeWithProvision(
+ */
+export async function ensureSpecifyWorktreeWithProvision(
   exec: ExecFn,
   opts: {
     repoRoot: string;
