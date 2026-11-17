@@ -65,13 +65,6 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // `forgeReadOffGuardEnabled` in forge-read-off-switch.ts; the off decision
   // itself is `forgeEnvIsOff` in forge-off.ts, which the driver shares.
   flag("FORGE_READ_OFF_GUARD", true),
-  // The adapter's `glab mr create` transport: on, argv of the flags that
-  // subcommand lists with the body as one argv element; "0" puts the pre-fix
-  // shell string back byte for byte (a known-broken baseline — see the
-  // configuration.md row). The reader is `glabMrCreateArgvEnabled` in
-  // gl-mr-create-switch.ts; the flags themselves are judged against
-  // `glab mr create --help` by smoke-tests/test-glab-flags.ts.
-  flag("GLAB_MR_CREATE", true),
   // #2160 — the parent's per-spawn `forge_read` broker pair, both set by the
   // spawn layer and both read by the child's tool. `internal`: the parent mints
   // them, so a host never sets either, and an absent pair means the child has no
@@ -83,6 +76,13 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   dir("FORGE_READ_SOCKET", null, "internal"),
   list("FRONTEND_ONLY_GLOBS", ",", null),
   ms("GIT_NET_TIMEOUT_MS", 300_000),
+  // The adapter's `glab mr create` transport: on, argv of the flags that
+  // subcommand lists with the body as one argv element; "0" puts the pre-fix
+  // shell string back byte for byte (a known-broken baseline — see the
+  // configuration.md row). The reader is `glabMrCreateArgvEnabled` in
+  // gl-mr-create-switch.ts; the flags themselves are judged against
+  // `glab mr create --help` by smoke-tests/test-glab-flags.ts.
+  flag("GLAB_MR_CREATE", true),
   // forge: the driver posts the handoff comment and label; host: the result carries it instead.
   input("HANDOFF_CHANNEL", "enum", "forge", "cycle", { values: ["forge", "host"] }),
   flag("HANDOFF_CONSOLIDATE", true),
