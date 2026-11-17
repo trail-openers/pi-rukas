@@ -51,6 +51,7 @@ import { gitDirsOf, listSubmodules, localSource, superprojectRoot } from "./subm
 import { firstTrackedFile } from "./submodule-expect.ts";
 import { ask, handback, run } from "./submodule-reads.ts";
 import { leanSubmodulesLocalEnabled } from "./submodules-local-switch.ts";
+import { clipList, oneLine } from "./text-fence.ts";
 
 /** The wall clock on the short reads that decide where a submodule comes from. */
 const QUICK_GIT_MS = 30_000;
@@ -125,15 +126,32 @@ export function submoduleNoteClause(notes: readonly SubmoduleNote[]): string | u
     if (n.kind !== "seeded" || n.emptyCheckout === true) unpopulated.add(n.path);
   for (const p of notes.flatMap((n) => n.unproven ?? [])) unpopulated.add(p);
   if (unpopulated.size === 0) return undefined;
-  const listed = [...unpopulated].map((p) => `"${p}"`).join(", ");
-  // "some" only when a named path is not among the unpopulated ones. Counted over PATHS, not
-  // notes: three `absent` notes make three paths, so a note-count read `3 < 3` as "all of them"
-  // for a run where every submodule was missing, and said nothing for a genuine mixture.
-  const named = new Set(notes.map((n) => n.path));
-  for (const p of notes.flatMap((n) => n.unproven ?? [])) named.add(p);
-  const local = named.size > unpopulated.size ? "some " : "";
-  return `${local}submodules are not populated: ${listed} — nothing on this host could supply them; the base commit's verify ran without them too`;
+  // Bounded, because the clause rides in a reason line the consumer clips from the END: an
+  // unbounded path list made a 200-submodule base a 26 806-character clause, and the clipping
+  // deleted the disclosure — the one part of the reason the operator was meant to read.
+  const listed = clipList(
+    [...unpopulated].map((p) => `"${oneLine(p, PATH_CLIP)}"`),
+    PATH_CAP,
+  );
+  // "some" only when a path the step knows about is NOT among the unpopulated ones — a path that
+  // came back, which is the counter-evidence that the tree holds more than what is missing.
+  // Counted over PATHS on both sides and never against the note count: a note is an act of
+  // bookkeeping, not a submodule, so three notes naming two distinct paths made the old read
+  // compare `2 < 3` and announce "some" about a base whose every submodule was missing — the
+  // disclosure reassuring a reader about exactly the tree it should have flagged.
+  const named = new Set<string>();
+  for (const n of notes) {
+    if (n.kind === "seeded" && n.emptyCheckout !== true) named.add(n.path);
+    for (const p of n.unproven ?? []) named.add(p);
+  }
+  const local = [...named].some((p) => !unpopulated.has(p)) ? "some " : "";
+  return `${local}submodules are not populated: ${listed} — the superproject holds neither a module store nor a populated checkout for these paths, so this step seeded nothing there`;
 }
+
+/** How many unpopulated paths one clause names before it switches to a count. */
+const PATH_CAP = 8;
+/** How long one quoted path may run inside the clause before it is clipped. */
+const PATH_CLIP = 80;
 
 /**
  * Unpopulated notes for paths git itself says have no git dir behind them — the other half of the

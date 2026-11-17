@@ -159,7 +159,7 @@ const agreeToEverything =
     `(a) a reset whose submodule came back empty names the submodule in the problem it returns (got ${String(problem)})`,
   );
   assert(
-    problem !== undefined && /nothing on this host could supply them/.test(problem),
+    problem !== undefined && /seeded nothing there/.test(problem),
     `(a) and says why rather than leaving it a bare path (got ${String(problem)})`,
   );
   // The disclosure has to be ASKED for, not assumed: a step that reasoned about the tree

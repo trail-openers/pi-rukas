@@ -346,8 +346,8 @@ const carryingText = (calls: Calls, a: string): readonly (readonly string[])[] =
   );
   assert(
     problem !== undefined &&
-      /absent from the superproject|nothing on this host could supply/.test(problem),
-    `(c) and says why: nothing here could supply it (got ${String(problem)})`,
+      /absent from the superproject|seeded nothing there/.test(problem),
+    `(c) and says what it measured: this step seeded nothing for that path (got ${String(problem)})`,
   );
   assert(
     wt !== "" && gitIn(wt, "status", "--porcelain", "-uall") === "",
