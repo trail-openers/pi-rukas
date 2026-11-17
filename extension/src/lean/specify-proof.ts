@@ -1,25 +1,18 @@
 /**
  * lean/specify-proof — runs one captured test file and reads its verdict.
  *
- * The step's claim is "these tests are red on the code as it stands", and that is worth
- * nothing unless something executed the file. This module runs the project's `verify.test`
- * template with `{file}` replaced and classifies the result. Four kinds, and they do NOT
- * all mean the same thing:
+ * The step's claim is "these tests are red on the code as it stands", which is worth nothing unless
+ * something executed the file. This module runs the project's `verify.test` template with `{file}` replaced
+ * and classifies the result. Four kinds, and they do NOT all mean the same thing:
  *
- *   - `red`     — non-zero exit AND the output named this file (path or basename). The
- *                 only kind that counts as proof.
- *   - `green`   — exit 0 on the base commit. Not a test of the feature, so the file is
- *                 dropped and its criterion goes uncovered.
+ *   - `red`     — non-zero exit AND the output named this file. The only kind that counts as proof.
+ *   - `green`   — exit 0 on the base. Not a test of the feature; the file is dropped.
  *   - `unclear` — non-zero without naming the file. Dropped with a reason.
- *   - `infra`   — the ONLY kind that throws: killed by the wall clock (`"killed"`),
- *                 flooded its output past the executor's bound (`"overflowed"` — a
- *                 chatty run, not a hung one), could not be STARTED (non-numeric
- *                 `code`), or the template named nothing to run.
+ *   - `infra`   — the ONLY kind that throws: killed by the wall clock, flooded past the executor's bound
+ *                 (a chatty run, not a hung one), could not be STARTED, or nothing named to run.
  *
- * There is deliberately no fifth shape: a classifier that threw on any output containing
- * `Cannot find module` would punish the canonical TDD red — what a test prints when it
- * imports a module not written yet. Whether the TOOLCHAIN works at all is answered once,
- * before the child is dispatched, by the base-health check in specify.ts.
+ * Deliberately no fifth shape: throwing on output containing `Cannot find module` would punish the canonical
+ * TDD red. Whether the TOOLCHAIN works is answered once, before the child, by the base-health check.
  */
 
 import { createHash } from "node:crypto";
@@ -32,23 +25,19 @@ import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 export const TEST_TIMEOUT_MS = 120_000;
 
 /**
- * The ceiling for one run, overridable so a test can inject a short one —
- * production never sets them.
+ * The ceiling for one run, overridable so a test can inject a short one; production never sets them.
  */
 export interface TestRunLimits {
   timeoutMs?: number;
   /**
-   * The run's output ceiling, for a case that wants to watch the executor's own
-   * overflow kill: a test that could not shrink the bound could not reach the
-   * maxBuffer path without printing eight megabytes.
+   * The output ceiling, for a case that wants to watch the executor's own overflow kill — without
+   * shrinking it a test cannot reach the maxBuffer path without printing eight megabytes.
    */
   maxBuffer?: number;
   /**
-   * The child's environment. The command-criteria tier passes the driver's
-   * scrubbed env (`verifyChildEnv()`) so a headless runner's own knobs cannot
-   * change what the project's tests see; absent, the ambient env — what the
-   * freeze-time proof runs want, since they judge the tree as the developer sees
-   * it.
+   * The child's environment. The command-criteria tier passes the scrubbed env so a headless runner's
+   * own knobs cannot change what the project's tests see; absent, the ambient env, which is what the
+   * freeze-time proof runs want.
    */
   env?: NodeJS.ProcessEnv;
 }
@@ -59,16 +48,13 @@ const TEST_MAX_BUFFER = 8 * 1024 * 1024;
 /**
  * The shape of a run that produced no verdict, as `runTestFile` classified it.
  *
- * The four say different things to the caller and must not be collapsed: a
- * wall-clock kill means the code under test never returned (and for a FROZEN file
- * already proven red at freeze time, that is a verdict — `frozenTestFailure` in
- * `verify-steps.ts`), while an output flood, a runner that could not be started and
- * a template that named nothing observed nothing at all. An overflow is a kill
- * (`killed: true`) but NOT a hang.
+ * The four say different things to the caller and must not be collapsed: a wall-clock kill means the code
+ * under test never returned (and for a FROZEN file already proven red at freeze time, that IS a verdict —
+ * `frozenTestFailure` in `verify-steps.ts`), while a flood, an un-startable runner and an empty template
+ * observed nothing. An overflow is a kill (`killed: true`) but NOT a hang.
  *
- * The shape is carried out REQUIRED: a caller that re-derived it from the returned
- * `Proof` would find no `killed`/`timedOutKill`/`code` on it and would read every
- * kill as a template problem.
+ * Carried out REQUIRED: a caller re-deriving it from the returned `Proof` would find no
+ * `killed`/`timedOutKill`/`code` on it and would read every kill as a template problem.
  */
 type ProofInfraShape = "killed" | "overflowed" | "never-started" | "nothing-to-run";
 
