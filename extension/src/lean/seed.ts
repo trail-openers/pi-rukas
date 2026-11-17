@@ -1,7 +1,7 @@
 /**
  * lean/seed — what a brand-new run starts knowing: its version and its base.
  *
- * Split out of `lean/command.ts` at AGENTS.md §12's line cap. It is its own
+ * Split out of `lean/command.ts` at the 500-line file-size cap. It is its own
  * seam: the seed is a RUN-START fact, read once before the record exists, while
  * `command.ts` is the per-step handler table. The two share nothing but
  * `leanVersion`, which lives in `lean/version.ts`.
