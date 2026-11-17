@@ -8,14 +8,15 @@
  * of them and nothing in `lens-review*.ts` or `adversarial.ts` learns the tree
  * exists. The rules themselves (when a tree is made, what it is detached at,
  * what a failure means) are `reviewer-tree.ts`'s contract; this module adds only
- * the shape the spawn path needs — run the dispatch with a relocated spec, and
- * remove the tree however the dispatch ends.
+ * the shape the spawn path needs — run the dispatch with a relocated spec whose
+ * prompt names the code index to query, and remove the tree however the
+ * dispatch ends.
  */
 
 import { execp } from "./exec.ts";
 import { isReviewerRole } from "./review-bounds.ts";
 import { resolveHeadShaOutcome } from "./review-head-sha.ts";
-import { openReviewerTree } from "./reviewer-tree.ts";
+import { codeIndexNote, openReviewerTree } from "./reviewer-tree.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 
@@ -63,7 +64,8 @@ export async function runWithReviewerTree(
   const treeCwd = tree.cwd;
   trace(`reviewer-tree: ${spec.role} runs in ${treeCwd} at ${headSha.slice(0, 12)}`);
   try {
-    return await dispatch({ ...spec, cwd: treeCwd });
+    const note = tree.indexedRoot ? codeIndexNote(tree.indexedRoot, headSha) : "";
+    return await dispatch({ ...spec, cwd: treeCwd, prompt: note + spec.prompt });
   } finally {
     await tree.release();
   }

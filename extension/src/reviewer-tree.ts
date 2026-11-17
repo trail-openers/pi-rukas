@@ -15,13 +15,18 @@
  * tree, points the child's `cwd` at it, and removes it in a `finally`. Nothing
  * in `lens-review*.ts` or `adversarial.ts` knows the tree exists.
  *
- * Three rules this module keeps:
+ * Four rules this module keeps:
  *
  *   - **A tree is created only for a caller-named cwd that is a git worktree.**
  *     No cwd, or a plain directory, is not ours to relocate.
  *   - **The tree is created at a 40-char SHA, never a ref.** `HEAD` answers with
  *     whatever the tree holds at the moment of creation, and a review must be
  *     able to name the commit it read.
+ *   - **The child is told which code index to query.** The tree has no
+ *     codebase-memory index and no indexed root contains it, so a project
+ *     name derived from the child's cwd is "not found". The tree reports the
+ *     checkout whose index covers the reviewed cwd, and the spawn path names
+ *     that project in the child's prompt. That index may lag the pinned SHA.
  *   - **Every failure falls back to the caller's cwd** and says so (the same
  *     fail-open-with-a-disclosed-reason rule as `plan-base-tree.ts`). A reviewer
  *     is a gate; gate plumbing that cannot start must not cost the gate its
@@ -60,6 +65,8 @@ export type ReviewerTree =
       cwd: string;
       /** Remove this tree. Best-effort; never throws. */
       release: () => Promise<void>;
+      /** The checkout whose code index covers the reviewed cwd, when there is one. */
+      indexedRoot: string | undefined;
     }
   | { kind: "unisolated"; reason: string };
 
@@ -190,7 +197,45 @@ export async function openReviewerTree(
     // verified anything — so it is WARN-visible, not DEBUG-gated.
     traceWarn(`reviewer-tree: provisioning incomplete — ${provisioned.problem}`);
   }
-  return { kind: "tree", cwd: dir, release };
+  // The indexed root is the reviewed checkout's own toplevel, or the main
+  // checkout when that toplevel sits inside it, as a `.worktrees/` tree does.
+  const real = (p: string) => fs.realpath(p).catch(() => p);
+  const top = await execFn("git", {
+    cwd: repoRoot,
+    maxBuffer: 8 * 1024,
+    timeout: 60_000,
+    argv: [...NO_HOOKS, "-C", repoRoot, "rev-parse", "--show-toplevel"],
+  }).then(
+    (r) => real(r.stdout.trim()),
+    () => "",
+  );
+  const main = path.basename(commonDir) === ".git" ? await real(path.dirname(commonDir)) : "";
+  const nested = main !== "" && top !== "" && !path.relative(main, top).startsWith("..");
+  const indexedRoot = (nested ? main : top) || undefined;
+  return { kind: "tree", cwd: dir, release, indexedRoot };
+}
+
+/**
+ * The codebase-memory-mcp project name for `root`, as the server derives it
+ * (`cbm_project_name_from_path`), so a child needs no `list_projects` call.
+ * Names over 200 bytes, which the server shortens with a hash, are not covered.
+ */
+export function codebaseMemoryProject(root: string): string {
+  let name = "";
+  for (const byte of Buffer.from(root)) {
+    const c = String.fromCharCode(byte);
+    name += /[A-Za-z0-9._-]/.test(c) ? c : byte >= 0x80 ? byte.toString(16) : "-";
+  }
+  const trimmed = name
+    .replace(/-+/g, "-")
+    .replace(/\.+/g, ".")
+    .replace(/^[-.]+/, "");
+  return trimmed.replace(/-+$/, "") || "root";
+}
+
+/** The prompt note that points a reviewer child's code search at `root`'s index. */
+export function codeIndexNote(root: string, headSha: string): string {
+  return `[code index: this directory is a throwaway copy at commit ${headSha} with no code index. For mcp__codebase_memory__ lookups (search_code, search_graph, trace_path, get_code_snippet, get_architecture, query_graph) pass project "${codebaseMemoryProject(root)}". That index is of the reviewed checkout as it stands, not of this commit, so read the changed files here, and read the file whenever a result disagrees with it or the project is not found. Do not use detect_changes: it diffs that checkout, not this one.]\n\n`;
 }
 
 /**

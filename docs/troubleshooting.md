@@ -657,6 +657,14 @@ The verdict is the last surviving candidate, so a reviewer that muses about one 
 
 **If a reviewer still seems to be judging only part of a change:** the notice in its prompt says how much was inlined; re-run the review against a narrower range, or have it read the named files directly.
 
+### A reviewer's code search says "project not found or not indexed" (#2329)
+
+**Symptom:** a lens or adversarial child's `mcp__codebase_memory__*` call fails with `project not found or not indexed`, and the project it passed looks like `tmp-pi-rukas-review-AjkI4F`.
+
+**Cause:** reviewer children run in a throwaway tree under `$TMPDIR` (`reviewer-tree.ts`). That directory has no index, and no indexed root contains it, so a project name derived from the child's own cwd matches nothing.
+
+**Fix:** the child's prompt names the project to use: the reviewed checkout's, or the main checkout's when the reviewed tree sits inside it under `.worktrees/`. That index follows the checkout, not the pinned commit, so the child reads a file when a result disagrees with it. If the child still fails, that checkout is not indexed: index it once with `index_repository`. A reviewer that runs unisolated gets no note.
+
 ### A reviewer says it never saw the acceptance criteria
 
 **Symptom:** a lean review's adversarial verdict or a lens finding argues about behaviour the issue's `pi-spec v1` block specified, and the child's own transcript shows it reasoning from the prose only — or it says the issue "does not state" a criterion that is in the issue.
