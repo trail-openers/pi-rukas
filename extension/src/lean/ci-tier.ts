@@ -3,10 +3,10 @@
  * the PR/MR.
  *
  * Split out of `ci.ts` because the step grew a second question about a red tier — was every test it
- * named already red at the base commit — and the two questions have different owners. This file runs
- * the tier and turns a failed exec into an infrastructure throw or a red reason;
- * {@link fullTierExcuse} in `ci-excuse.ts` owns the base-commit question. The forge half is here so
- * `readForge` owns both forges' argv and row grading while `ci.ts` keeps the decision.
+ * named already red at the base commit — and the two have different owners. This file runs the tier and
+ * turns a failed exec into an infrastructure throw or a red reason; {@link fullTierExcuse} in
+ * `ci-excuse.ts` owns the base-commit question. The forge half is here so `readForge` owns both forges'
+ * argv and row grading while `ci.ts` keeps the decision.
  */
 import { isFullCommitSha } from "../commit-sha.ts";
 import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
@@ -25,9 +25,9 @@ import { TIER_TAIL_LINES, tailLines } from "./verify-steps.ts";
 import { VerifyInfraError } from "./verify-types.ts";
 
 /**
- * The project config, read ONCE per step by `ciOutcome` and passed down. Three halves of this step
- * want it — the configured full tier, the wait bound and the tier's bound — and all three read it
- * through this one call, so they cannot disagree about which commit's `.pi/work.json` they obeyed.
+ * The project config, read ONCE per step and passed down. Three halves of this step want it — the
+ * configured full tier, the wait bound and the tier's bound — so all three obey the same commit's
+ * `.pi/work.json`.
  */
 export async function ciConfig(deps: CiDeps, ctx: HandlerCtx): Promise<WorkConfig> {
   return await deps.loadConfig(ctx.repoRoot, ctx.run.baseSha).catch((err: unknown) => {
@@ -38,11 +38,10 @@ export async function ciConfig(deps: CiDeps, ctx: HandlerCtx): Promise<WorkConfi
 /**
  * Run the full tier in the worktree.
  *
- * `undefined` is a pass. A kill, a timeout or a command that never started is an infrastructure fault
- * — the tier never got to answer a question about the code, so the run hands back rather than taking a
- * build round. Anything else exiting non-zero is a real red, returned with the reason a red step
- * records, the combined stream the baseline excuse parses test names from, and the executor's own
- * result object `ciTierObserved` decides admissibility from.
+ * `undefined` is a pass. A kill, a timeout or a command that never started is an infrastructure fault —
+ * the tier never got to answer, so the run hands back rather than taking a build round. Anything else
+ * non-zero is a real red, with the reason a red step records, the stream the baseline excuse parses, and
+ * the executor's result object `ciTierObserved` decides admissibility from.
  */
 export async function tierFailure(
   deps: CiDeps,
@@ -65,9 +64,8 @@ export async function tierFailure(
     throw new VerifyInfraError(
       `the ci full tier could not be started: ${cmd}: ${oneLine(out, 300)}`,
     );
-  // The tail and the bound are `verify`'s own, not a second copy of them: the step log is one JSON
-  // document and `build`'s re-entry pastes a red reason into a prompt, so one very long line must not
-  // carry a whole log into the record.
+  // The tail and the bound are `verify`'s own: the step log is one JSON document and `build`'s re-entry
+  // pastes a red reason into a prompt, so one long line must not carry a whole log into the record.
   const tail = tailLines(out, TIER_TAIL_LINES);
   return {
     reason: clipReason(`the full verify tier exited ${String(e.code)}: ${cmd}\n${tail}`),
@@ -77,24 +75,21 @@ export async function tierFailure(
 }
 
 /**
- * `gh pr checks` exits **8** while checks are still pending. The shared executor rejects on any
- * non-zero exit, so without this the pending reply — the whole point of the poll — would read as an
- * infra throw. A `gh` contract, so it stays on the gh path alone.
+ * `gh pr checks` exits **8** while checks are still pending. The shared executor rejects on any non-zero
+ * exit, so without this the pending reply — the whole point of the poll — would read as an infra throw.
  */
 const GH_CHECKS_PENDING_EXIT = 8;
 
-/** A row's grade, read the way the driver's merge gate reads one: gh's bucket
- *  first, the raw check state only as the fallback. */
+/** The states the merge gate's read calls pending, queued or in progress. */
 const PENDING_ROWS = ["pending", "queued", "in_progress", "waiting"];
 const RED_ROWS = ["fail", "failure", "cancelled", "cancel", "timed_out", "error"];
 /** GitHub counts these as success and this step does not: a `paths-ignore:` gate then always reads
  *  green, which is a gate that cannot fail. */
 const NOT_PASSING_ROWS = ["skipped", "skipping", "neutral"];
 /**
- * A row's grade, read the way the driver's merge gate reads one: gh's bucket
- * first, the raw check state only as the fallback. GitLab rows carry no bucket
- * and are graded by `glRowGrade`, the shared table in `forge-gl-grade.ts`, so
- * neither side can drift on whether `skipped` counts as green.
+ * A row's grade, read the way the driver's merge gate reads one: gh's bucket first, the raw check state
+ * only as the fallback. GitLab rows carry no bucket and are graded by `glRowGrade`, the shared table in
+ * `forge-gl-grade.ts`, so neither side can drift on whether `skipped` counts as green.
  */
 type RowGrade = "pending" | "red" | "not-passing" | "unknown";
 
@@ -118,14 +113,13 @@ function gradeRow(
   gitlab: boolean,
 ): RowGrade | undefined {
   // GitLab's job rows have no bucket and their `status` words are not gh's, so the shared table decides
-  // them — with the row's own `blocking` flag, the one field that tells a gate that ran from a gate that
-  // could not have failed.
+  // them, with the row's own `blocking` flag.
   if (gitlab) return glRowGrade({ state: row.state, blocking: row.blocking });
   const v = String(row.bucket ?? row.state ?? "")
     .toLowerCase()
     .trim();
-  // "Nothing said" is not a pass: graded passing it would be waited on by nobody and the step would
-  // merge on it. Graded `unknown` it waits, and an expired wait hands the run back.
+  // "Nothing said" is not a pass: graded passing, nobody would wait on it and the step would merge on
+  // it. Graded `unknown` it waits, and an expired wait hands the run back.
   if (v === "pass" || v === "success" || v === "none") return undefined;
   if (PENDING_ROWS.includes(v)) return "pending";
   if (RED_ROWS.includes(v)) return "red";
@@ -133,9 +127,8 @@ function gradeRow(
   return "unknown";
 }
 /**
- * The names shown to a human for rows graded in `want`. Both bounds exist because these strings come
- * from the forge: a handback line that quotes them must not grow with however many rows (or however
- * long a name) a repo runs.
+ * The names shown to a human for rows graded in `want`. Both bounds exist because the strings come from
+ * the forge: a handback line that quotes them must not grow with however many rows a repo runs.
  */
 const HANDBACK_NAME_CHARS = 80;
 const HANDBACK_NAMES = 10;
@@ -157,8 +150,8 @@ async function cli(
   repoRoot: string,
   cmd: string,
   why: string,
-  /** Exit codes whose rejection still carries a usable stdout (see
-   *  {@link GH_CHECKS_PENDING_EXIT}). A pending reply is DATA, not a failed read. */
+  /** Exit codes whose rejection still carries usable stdout ({@link GH_CHECKS_PENDING_EXIT}): a pending
+   *  reply is DATA, not a failed read. */
   okExitCodes: readonly number[] = [],
 ): Promise<string> {
   const ran = await deps
@@ -166,8 +159,7 @@ async function cli(
       cwd: repoRoot,
       timeout: 60_000,
       maxBuffer: 512 * 1024,
-      // The driver's own forge read, so the host env: a project tier is scrubbed of driver knobs, but
-      // this `gh` is the driver's own host-channel call (see `verifyHostEnv`).
+      // The driver's own forge read, so the host env — this `gh` is the driver's host-channel call.
       env: verifyHostEnv(),
     })
     .then((r) => ({ err: undefined as unknown, out: r as { stdout?: string } | undefined }))
@@ -197,11 +189,11 @@ function json(text: string, why: string): unknown {
 /**
  * One read of the forge, from ONE moment: the verdict and the head it is about.
  *
- * GitHub: the verdict, the check rows and the head out of the same `gh pr view` — two reads of a moving
- * PR are two moments, and a green about another head is no evidence about this one.
+ * GitHub: verdict, rows and head out of the same `gh pr view` — two reads of a moving PR are two
+ * moments, and a green about another head is no evidence about this one.
  *
- * GitLab: `mergeStateStatus` is composed from `detailed_merge_status` and its three cross-checks, and
- * the head is `diff_refs.head_sha` from the same reply (`ci-forge-gl.ts`).
+ * GitLab: readiness is composed from `detailed_merge_status` and its cross-checks, head from
+ * `diff_refs.head_sha` of the same reply (`ci-forge-gl.ts`).
  */
 async function readForge(
   deps: CiDeps,
@@ -211,8 +203,7 @@ async function readForge(
   forge: GlForge,
 ): Promise<ForgeRead> {
   if (gitlab) {
-    // Both reads are the adapter's own argv, so the command strings the step issued
-    // stay the adapter's pinned glab form.
+    // Both reads are the adapter's own argv, so the command strings stay its pinned glab form.
     const read = await glRead(forge, prNumber);
     return {
       state: undefined,
@@ -241,19 +232,18 @@ async function readForge(
 }
 
 /**
- * The forge's required-check verdict for this PR, POLLED until the checks are terminal,
- * the bound expires, or the run's cycle deadline arrives.
+ * The forge's required-check verdict for this PR, POLLED until the checks are terminal, the bound
+ * expires, or the run's cycle deadline arrives.
  *
- * A still-running CI makes `mergeStateStatus` UNSTABLE, and a step that reads once right
- * after publish grades that as red and spends a build round on code that is not broken.
- * So a pending (or unrecognised) row is WAITED, and red is reserved for a row that actually
- * failed. Every iteration re-issues BOTH reads — including the head — so a PR that moves off
- * the verified head mid-wait is caught on the iteration that sees it. An empty rows list is an
- * immediate red: "no checks reported" is the absence of evidence, not evidence of green.
+ * A still-running CI makes `mergeStateStatus` UNSTABLE, and a step that reads once right after publish
+ * grades that as red and spends a build round on code that is not broken. So a pending or unrecognised
+ * row is WAITED, and red is reserved for a row that actually failed. Every iteration re-issues BOTH
+ * reads — including the head — so a PR that moves off the verified head mid-wait is caught. An empty
+ * rows list is an immediate red: "no checks reported" is the absence of evidence.
  *
- * The two bounds are SEQUENTIAL and separate: the wait gets the `ci` budget's minutes, and the
- * full tier keeps its own bound of the same size afterwards, clamped to the deadline
- * ({@link ciTierBudgetMs}). Still pending when the wait expires is a handback, never a red.
+ * The two bounds are SEQUENTIAL and separate: the wait gets the `ci` budget's minutes, and the full tier
+ * keeps its own bound afterwards, clamped to the deadline ({@link ciTierBudgetMs}). Still pending when
+ * the wait expires is a handback, never a red.
  */
 export async function checksRedReason(
   deps: CiDeps,
@@ -283,20 +273,18 @@ export async function checksRedReason(
       ...namesOf(read.rows, "not-passing", gitlab),
     ];
     if (red.length > 0) return `checks not passing: ${red.join(", ")}`;
-    // A row in no list at all is not evidence of a pass either: it waits, and
-    // an expired wait hands back — an unreadable forge state never becomes red.
+    // A row in no list at all is not evidence of a pass either: it waits, and an expired wait hands
+    // back — an unreadable forge state never becomes red.
     const waiting = [
       ...namesOf(read.rows, "pending", gitlab),
       ...namesOf(read.rows, "unknown", gitlab),
     ];
-    // GitLab's retryable readiness waits with the rows, on the same bound: both mean
-    // "the forge has not finished deciding", and neither is a verdict.
+    // GitLab's retryable readiness waits with the rows on the same bound: both mean "the forge has not
+    // finished deciding", and neither is a verdict.
     if (waiting.length > 0 || (gitlab && read.mergeStateStatus !== "CLEAN")) {
-      // The caller's whole-cycle arm is consulted on every WAIT, not only between
-      // steps: a poll that ignores it can outlive the host's deadline and the run dies
-      // with no document. The answer is `deadlineStopsSteps`, read on the handler
-      // context's injected clock, so the poll and the engine cannot disagree about
-      // where step work ends.
+      // The whole-cycle arm is consulted on every WAIT, not only between steps: a poll that ignores it
+      // can outlive the host's deadline and the run dies with no document. Read on the handler context's
+      // injected clock, so poll and engine cannot disagree about where step work ends.
       const cycle = ctx.run.deadlineMs;
       if (deadlineStopsSteps(cycle, ctx.now(), "ci"))
         throw new VerifyInfraError(
