@@ -199,9 +199,13 @@ const MAX = 3;
   }
 
   // The menu echo. `buildAdversarialPrompt` prints the reviewer's four choices as
-  // four consecutive 2-space-indented VERDICT lines, and a child that recites its
-  // brief back is a shape the incident reproduces on. Every line of such a run is
-  // excluded, so the verdict stays the real one above it.
+  // four consecutive VERDICT lines at column 0 (#2322 de-dented them so a copied
+  // line is a signature), and a child that recites its brief back is a shape the
+  // incident reproduces on. Every line of such a run is excluded, so the verdict
+  // stays the real one above it. The fixture below is the indented spelling — the
+  // shape a reviewer PASTES out of a quoted or code-blocked block, which the
+  // column-0 rule refuses line by line (every candidate of it is `structural`) so
+  // the reply reads as having signed nothing rather than as carrying no verdict.
   const MENU = [
     "  VERDICT: APPROVED",
     "  VERDICT: MINOR_OBSERVATIONS",

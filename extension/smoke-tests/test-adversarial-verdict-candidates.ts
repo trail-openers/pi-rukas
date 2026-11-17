@@ -54,15 +54,11 @@ function assert(cond: boolean, msg: string) {
     JSON.stringify(c("**VERDICT:** APPROVED")) === '["APPROVED:0"]',
     "…including the bold-split spelling reviewers write",
   );
-  // #2312 fix wave F1: indentation is decoration only up to one space of slack.
-  // Markdown itself tolerates a little drift, but a reviewer quoting somebody
-  // else's verdict line indents it, and a two-space indent is exactly what the
-  // brief's own menu is written in. Only column 0 signs.
   // #2312 fix wave F1: the signature sits at column 0. Indentation is decoration —
-  // a reviewer quoting somebody else's verdict line indents it, and a two-space
-  // indent is exactly what the brief's own menu is written in. The line is still
+  // a reviewer quoting somebody else's verdict line indents it. The line is still
   // MARKED (so a forged verdict reads as refused, not as absent) but `structural`,
-  // so it signs nothing.
+  // so it signs nothing. (#2322 moved the brief's own menu to column 0, so an
+  // indent is now purely quotation; AC4's arms below pin that menu spelling.)
   const ind1 = verdictCandidateLines(" VERDICT: APPROVED")[0];
   assert(
     ind1?.status === "APPROVED" && ind1?.structural === true,
@@ -71,7 +67,7 @@ function assert(cond: boolean, msg: string) {
   const ind2 = verdictCandidateLines("  VERDICT: APPROVED")[0];
   assert(
     ind2?.status === "APPROVED" && ind2?.structural === true,
-    "…nor two, which is the brief menu's own indent (F1)",
+    "…nor two, the indent a quoted or pasted line carries (F1)",
   );
   assert(
     JSON.stringify(c("VERDICT: APPROVED (per the doctrine)")) === '["APPROVED:0"]',
