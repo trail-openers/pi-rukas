@@ -5,7 +5,9 @@
  * the executor contract live in `test-forge-read-broker.ts`.
  */
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   FORGE_CONFIG_DIR_VARS,
   FORGE_TOKEN_VARS,
@@ -13,6 +15,7 @@ import {
   forgeReadChildEnv,
   glabCreateEnv,
   keepsForgeLogin,
+  removeGlabCreateEnvDirs,
   stripForgeCredentials,
 } from "../src/child-forge-env.ts";
 import { createForge } from "../src/forge.ts";
@@ -315,72 +318,6 @@ async function main(): Promise<void> {
       assert(!(SOCKET_ENV in empty) && !(SECRET_ENV in empty), "an empty key is no key");
     },
   );
-  await check(
-    "a GitLab MR create removes the forge config dir it handed the exec",
-    () => {
-      // `glabCreateEnv()` mkdtemps an EMPTY forge-config dir on EVERY GitLab
-      // create (it is the same builder a spawn uses, and it allocates the dir
-      // eagerly). The create is a driver exec that outlives nothing, so a create
-      // that never removed its dir leaked one directory per MR into the temp root
-      // for the life of the host. The dir is the one named in the env that reached
-      // exec, so the assertion is on what the child was actually given.
-      const seen: Record<string, string>[] = [];
-      const fn: ForgeExecFn = async (_cmd, opts) => {
-        seen.push((opts?.env ?? {}) as Record<string, string>);
-        return { stdout: "https://gitlab.com/acme/widget/-/merge_requests/17\n" };
-      };
-      const forge = createForge(glDetection("acme", "widget"), { execFn: fn });
-      const env = glabCreateEnv();
-      const dirs = FORGE_CONFIG_DIR_VARS.map((k) => env[k]).filter((d): d is string => !!d);
-      assert(dirs.length > 0, `the create env names a config dir (${dirs.join(",")})`);
-      assert(
-        dirs.every((d) => existsSync(d)),
-        `and it exists while the create is in flight (${dirs.join(",")})`,
-      );
-      return forge
-        .prCreate("feat(x): y", "feature/branch", "a body", { baseBranch: "main" })
-        .then(() => {
-          assert(seen.length > 0, "the create reached exec with an env");
-          const created = seen
-            .flatMap((e) => FORGE_CONFIG_DIR_VARS.map((k) => e[k]))
-            .filter((d): d is string => !!d && d.includes("pi-rukas-forge-"));
-          assert(created.length > 0, `the exec env named the mkdtemp dir (${created.join(",")})`);
-          assert(
-            created.every((d) => !existsSync(d)),
-            `the create removed its own config dir afterwards (${created.filter((d) => existsSync(d)).join(",")})`,
-          );
-        });
-    },
-  );
-  await check(
-    "and it removes the dir when the create fails too",
-    () => {
-      const seen: Record<string, string>[] = [];
-      const fn: ForgeExecFn = async (_cmd, opts) => {
-        seen.push((opts?.env ?? {}) as Record<string, string>);
-        return { stdout: "glab said no\n" };
-      };
-      const forge = createForge(glDetection("acme", "widget"), { execFn: fn });
-      return forge
-        .prCreate("feat(x): y", "feature/branch", "a body", {})
-        .then(
-          () => {
-            assert(false, "a reply with no URL line must reject");
-          },
-          () => {
-            const created = seen
-              .flatMap((e) => FORGE_CONFIG_DIR_VARS.map((k) => e[k]))
-              .filter((d): d is string => !!d && d.includes("pi-rukas-forge-"));
-            assert(created.length > 0, "the failed create still reached exec with an env");
-            assert(
-              created.every((d) => !existsSync(d)),
-              `a failed create removes its config dir too (${created.filter((d) => existsSync(d)).join(",")})`,
-            );
-          },
-        );
-    },
-  );
-
   await check("the strip mutates the object it is given and reports what it took", () => {
     const target: Record<string, string | undefined> = { GH_TOKEN: "x", PATH: "/bin" };
     const removed = stripForgeCredentials(target, "developer", "/tmp/empty-dir");

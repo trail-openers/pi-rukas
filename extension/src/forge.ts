@@ -364,8 +364,8 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
             // an MR or throws (see `createPullRequest`). A bare getter would
             // hand the dir out and forget it.
             () => {
-              const env = glabCreateEnv();
-              return { env, dispose: () => removeGlabCreateEnvDirs(env) };
+              const { env, owned } = glabCreateEnv();
+              return { env, dispose: () => removeGlabCreateEnvDirs(owned) };
             },
           ),
         ),

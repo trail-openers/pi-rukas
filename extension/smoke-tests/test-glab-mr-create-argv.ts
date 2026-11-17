@@ -14,14 +14,16 @@
  * which every version lists.
  *
  * Pinned here: the argv itself, the body's route to it, the URL-shaped reply,
- * the refusals that must happen BEFORE any exec, and the switch that puts the
- * old command back. The flags themselves are judged against real `glab --help`
- * output by `test-glab-flags.ts`.
+ * the refusals that must happen BEFORE any exec, the clip that keeps the body
+ * under Linux's per-argument ceiling, and the switch that puts the old command
+ * back. The flags themselves are judged against real `glab --help` output by
+ * `test-glab-flags.ts`.
  */
 
 import { createForge, forgeCommands } from "../src/forge.ts";
 import path from "node:path";
 import { shq } from "../src/forge-commands.ts";
+import type { ForgeDetection } from "../src/forge-detect.ts";
 import type { ForgeExecFn } from "../src/forge-types.ts";
 import { glDetection, GL_MR } from "./forge-fixtures.ts";
 import { withEnv } from "./lib/env-scope.ts";

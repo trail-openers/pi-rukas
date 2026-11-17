@@ -59,7 +59,27 @@ export const FORGE_CONFIG_DIR_VARS = ["GH_CONFIG_DIR", "GLAB_CONFIG_DIR"] as con
 export const OPS_ROLE = "ops";
 
 /**
- * The env a `glab mr create` is issued with.
+ * What one `glabCreateEnv()` allocated, so its owner can take exactly that back.
+ *
+ * `parent` is the `mkdtemp` directory `createChildForgeConfigDir` made IN when it
+ * was called without a `root`, and `configDir` the empty config dir made inside
+ * it. The parent's name is held by no one else, so no one else will remove it —
+ * which is why both are handed back rather than only the inner dir the env names.
+ * `undefined` on the shared/spawn path, where a broker owns the parent and one
+ * teardown removes the socket and this dir together.
+ */
+export interface GlabCreateEnvOwned {
+  configDir: string;
+  parent?: string;
+}
+
+/**
+ * The env a `glab mr create` is issued with, and what it allocated.
+ *
+ * `owned` is whatever this call mkdtemp'd and nobody else can name. The create
+ * owns the teardown of everything its own env builder allocated — the config dir
+ * AND its mkdtemp parent — so they are returned together rather than left for a
+ * teardown that only knows the half it can see.
  *
  * `CI` is the flag glab and its prompt library read as "nobody is here", and
  * `GIT_TERMINAL_PROMPT=0` is git's own version of the same answer. Together with
@@ -75,29 +95,43 @@ export const OPS_ROLE = "ops";
  * "no" to, and no broker pair, so both halves of that pair are deleted rather
  * than inherited.
  */
-export function glabCreateEnv(): Record<string, string> {
-  const env = forgeReadChildEnv(process.env, "");
+export function glabCreateEnv(): {
+  env: Record<string, string>;
+  owned: GlabCreateEnvOwned[];
+} {
+  const owned: GlabCreateEnvOwned[] = [];
+  const env = forgeReadChildEnv(process.env, "", undefined, undefined, undefined, owned);
   env.CI = "1";
   env.GIT_TERMINAL_PROMPT = "0";
-  return env;
+  return { env, owned };
 }
 
 /**
- * Remove the forge-config directory a `glabCreateEnv()` allocated, when it
- * allocated one. The create is a short-lived driver exec, so unlike a spawned
- * child — whose config dir a teardown removes when the child exits — nothing
- * else ever takes this directory back, and one leaks per MR create.
+ * Remove what a `glabCreateEnv()` allocated, when it allocated any. The create is
+ * a short-lived driver exec, so unlike a spawned child — whose config dir a
+ * teardown removes when the child exits — nothing else ever takes this directory
+ * back, and one leaks per MR create.
  *
- * Only a directory this module created is ever removed: a name the caller owns
- * (a broker's own temp tree passed as `configDir`, a path carried in from
- * outside) is not this module's to delete, so it is left alone.
+ * Only a directory this module created and handed back through `owned` is ever
+ * removed: a name the caller owns (a broker's own temp tree passed as
+ * `configDir`, a path carried in from outside) is not this module's to delete, so
+ * it is left alone. The path is matched exactly and never by substring — an
+ * inner config dir sits INSIDE a `pi-rukas-forge-` parent, and a substring test
+ * would either miss that parent or reach into a tree someone else made.
  */
-export function removeGlabCreateEnvDirs(env: Record<string, string | undefined>): void {
-  for (const name of FORGE_CONFIG_DIR_VARS) {
-    const dir = env[name];
-    if (dir?.includes("/pi-rukas-forge-")) {
-      rmSync(dir, { recursive: true, force: true });
-    }
+export function removeGlabCreateEnvDirs(owned: GlabCreateEnvOwned[]): void {
+  for (const dir of owned) {
+    // The path that used to leak is the `mkdtemp` PARENT, whose name is held nowhere
+    // but the list handed in here: `createChildForgeConfigDir` makes it when called
+    // without a `root`, and the predecessor of this teardown removed only the inner
+    // config dir — which it found by SUBSTRING of the env value — so one empty parent
+    // per create stood in the temp root for the life of the host. The parent is not
+    // removed separately because it cannot be reached separately: the config dir sits
+    // INSIDE it, so one recursive removal of the config dir takes both. What the fix is,
+    // is that the path is taken from `owned` — the exact path this module allocated —
+    // rather than inferred from a name, which is what made the parent reachable at all.
+    // `force` keeps a path another teardown already took from erroring in a `finally`.
+    if (dir.configDir) rmSync(dir.configDir, { recursive: true, force: true });
   }
 }
 
@@ -123,10 +157,18 @@ export function keepsForgeLogin(role: string): boolean {
  * reattach path, and any path that strips without serving a broker — it makes a
  * private `mkdtemp` dir of its own, so the returned path is always a whole
  * directory the caller may `rmSync`: never a sibling name inside a temp root
- * someone else owns.
+ * someone else owns. `owned` collects exactly that private parent, the one path
+ * this call made that no one else holds a name for.
  */
-export function createChildForgeConfigDir(root?: string): string {
-  const parent = root ?? mkdtempSync(join(tmpdir(), "pi-rukas-forge-"));
+export function createChildForgeConfigDir(root?: string, owned?: GlabCreateEnvOwned[]): string {
+  let parent = root ?? "";
+  if (!parent) {
+    parent = mkdtempSync(join(tmpdir(), "pi-rukas-forge-"));
+    // Recorded HERE, at the allocation, rather than returned and recorded by the
+    // caller: the caller that cannot see this name is the one that needs it, and
+    // a value handed back through a closure can be lost where an append cannot.
+    owned?.push({ configDir: parent, parent });
+  }
   const dir = join(
     parent,
     `pi-rukas-forge-config-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -250,6 +292,18 @@ export function buildChildForgeEnv(
  *
  * `secret` is the broker's other half (#2160 adversarial round 1) and is handed
  * to the child only beside the socket that needs it — see `buildChildForgeEnv`.
+ *
+ * `owned` collects every directory THIS call allocated and nobody else can name
+ * (see `GlabCreateEnvOwned`): the private `mkdtemp` parent it made when no
+ * `configDir` was passed, which recursively covers the config dir inside it. A
+ * caller that passes its own `configDir` owns that dir, so nothing is recorded
+ * for it and it is left for that caller's teardown. It is an ARRAY the callee
+ * fills rather than a value returned through a callback: the only reference to it
+ * would otherwise sit in a closure handed to a third function, where this runtime
+ * has mis-bound such a binding before — a parameter that read as `undefined` at
+ * the moment of the call, inside a `try` that would have swallowed the TypeError
+ * and left the create with no config root at all. An append either happened or it
+ * did not, and the caller can see which.
  */
 export function forgeReadChildEnv(
   source: NodeJS.ProcessEnv,
@@ -257,13 +311,14 @@ export function forgeReadChildEnv(
   socketPath?: string,
   configDir?: string,
   secret?: string,
+  owned?: GlabCreateEnvOwned[],
 ): Record<string, string> {
   let dir = "";
   if (!keepsForgeLogin(role)) {
     dir = configDir ?? "";
     if (!dir) {
       try {
-        dir = createChildForgeConfigDir();
+        dir = createChildForgeConfigDir(undefined, owned);
       } catch (err) {
         trace(
           `child-forge-env: no forge config root could be made — the child gets no config root at all: ${err instanceof Error ? err.message : String(err)}`,

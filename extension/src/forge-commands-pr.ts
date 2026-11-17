@@ -78,6 +78,32 @@ export interface ForgeArgvCmd {
 }
 
 /**
+ * The most characters this module will put in the `-d` argv element.
+ *
+ * WHY: Linux caps a SINGLE argv string at `MAX_ARG_STRLEN` = 131072 bytes, so a
+ * body at or over that ceiling makes `execFile` fail with E2BIG and the create
+ * dies before `glab` starts. 60,000 sits under GitHub's own 65,536-character
+ * PR-body limit, which is the largest body any driver legitimately needs, so
+ * this clip can only ever fire on a body that could not have been exec'd.
+ */
+export const GLAB_MR_CREATE_BODY_MAX_CHARS = 60_000;
+
+/**
+ * Clip `body` for the GitLab argv transport, naming what was dropped.
+ *
+ * The truncation note is appended on its own line so a reader of the MR sees
+ * that the description is short, not that the author wrote little. The returned
+ * text is always a prefix of what it was given plus that note, which is what
+ * keeps it inside the public-text check the caller ran on the whole body: a
+ * checked string covers every one of its prefixes.
+ */
+function clipGlabMrCreateBody(body: string): string {
+  if (body.length <= GLAB_MR_CREATE_BODY_MAX_CHARS) return body;
+  const dropped = body.length - GLAB_MR_CREATE_BODY_MAX_CHARS;
+  return `${body.slice(0, GLAB_MR_CREATE_BODY_MAX_CHARS)}\n[pi-rukas: body truncated, ${dropped} characters dropped]`;
+}
+
+/**
  * `gh pr create` does NOT support `--json` (verified: `gh pr create --help`
  * — no `--json` in the flag list, and the doc text explicitly states
  * "Upon success, the URL of the created pull request will be printed").
@@ -104,6 +130,10 @@ export interface ForgeArgvCmd {
  * verbatim — a known-broken baseline on every version (its positional source and
  * `--output` are refused even where `--description-file` is accepted), kept only
  * so a cycle can be compared against it.
+ *
+ * The clip in `clipGlabMrCreateBody` applies to the argv arm alone. The GitHub
+ * arm and the off arm carry the body in a FILE, which has no per-argument
+ * ceiling, so they receive the body untouched.
  */
 export function prCreateCmd(
   forge: ForgeType,
@@ -127,7 +157,9 @@ export function prCreateCmd(
       cmd: `glab mr create ${shq(headBranch)} -t ${shq(title)} --description-file ${shq(body)}${baseBranch ? ` --target-branch ${shq(baseBranch)}` : ""}${draftFlag} --output json`,
     };
   }
-  const argv = ["mr", "create", "-s", headBranch, "-t", title, "-d", body];
+  // The clip is on the argv arm only, and here rather than in the caller so the
+  // ceiling cannot be bypassed by a call site that builds this command directly.
+  const argv = ["mr", "create", "-s", headBranch, "-t", title, "-d", clipGlabMrCreateBody(body)];
   if (baseBranch) argv.push("-b", baseBranch);
   if (opts.draft) argv.push("--draft");
   // Pinned last and unconditionally: without it glab asks for confirmation and
