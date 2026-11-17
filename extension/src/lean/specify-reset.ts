@@ -3,23 +3,19 @@
  * re-initialisation that reset makes necessary, and the verification of the COMMIT
  * that follows it.
  *
- * Both halves exist because the step's claims are git claims, and a git claim nobody
- * checked is a claim. This module does not consult HEAD at all — it names the base
- * sha, discards everything else, and then proves the tree actually got there.
+ * Both halves exist because the step's claims are git claims, and a git claim nobody checked is a claim. This
+ * module never consults HEAD — it names the base sha, discards everything else, then proves the tree got there.
  *
- * `clean -fdx` (not `-fd`) is deliberate: `-x` also removes ignored files, and a
- * child that wrote a `.gitignore` hiding a stray file would otherwise keep that file
- * through the reset, outside what `git status` reports. There is no exemption list:
- * the provisioned dependency links go with everything else and are rebuilt, so the
- * tree after a reset is built by one code path.
+ * `clean -fdx` (not `-fd`) is deliberate: `-x` also removes ignored files, and a child that wrote a
+ * `.gitignore` hiding a stray file would keep it through the reset, outside what `git status` reports. No
+ * exemption list: the provisioned dependency links go with everything else and are rebuilt, so the tree after
+ * a reset is built by one code path.
  *
- * `writeCaptured` follows no link either way: every ancestor of a target must be a
- * real directory, and each file lands through a `wx` temp write plus a rename, so an
- * existing name is never written through.
+ * `writeCaptured` follows no link: every ancestor must be a real directory, and each file lands through a `wx`
+ * temp write plus a rename, so an existing name is never written through.
  *
- * The COMMIT that follows the freeze — `commitTestFiles`, and the `committedBlob` the
- * freeze hashes — is `specify-commit.ts`: discard-and-prove and record-and-prove are
- * two contracts, and the commit is the seam between them.
+ * The COMMIT that follows the freeze — `commitTestFiles` and the `committedBlob` the freeze hashes — is
+ * `specify-commit.ts`: discard-and-prove and record-and-prove are two contracts, and the commit is the seam.
  */
 
 import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -47,9 +43,8 @@ export class SpecifyCommitError extends Error {
   override readonly name = "SpecifyCommitError";
 }
 
-// `NO_HOOKS`, the flags every lean git call carries, arrives from `submodule-reads.ts`, a leaf, so
-// the submodule modules carry it without importing the reset back; it is re-exported for the call
-// sites outside `lean/` that read it from here.
+// `NO_HOOKS`, the flags every lean git call carries, arrives from `submodule-reads.ts` — a leaf — so the
+// submodule modules carry it without importing the reset back. Re-exported for call sites outside `lean/`.
 import { NO_HOOKS } from "./submodule-reads.ts";
 export { NO_HOOKS } from "./submodule-reads.ts";
 /** The wall clock on a local git write (`checkout`, `reset`, `worktree add`). */
@@ -62,9 +57,9 @@ export const GIT_MAX_BUFFER = 16 * 1024 * 1024;
 /**
  * One local git call as argv, or `undefined` when git refused rather than said no.
  *
- * The shared shape — the `NO_HOOKS` prefix, the 120s bound, the buffer cap, the
- * swallow-to-`undefined` — that every lean step except `build` wants. A refusal is
- * `undefined` rather than a throw by design: callers decide what a failed read means.
+ * The shared shape — `NO_HOOKS` prefix, 120s bound, buffer cap, swallow-to-`undefined` — that every lean
+ * step except `build` wants. A refusal is `undefined` not a throw by design: callers decide what a failed
+ * read means.
  */
 export async function gitQuiet(
   exec: ExecFn,
@@ -91,13 +86,12 @@ let writeSeq = 0;
 /**
  * Why writing `abs` would follow a link, or undefined when it would not.
  *
- * Every EXISTING ancestor from `wt` down to `abs`'s parent is `lstat`'d. A symlinked
- * directory anywhere on that path turns "write the test back into the worktree" into
- * "write it wherever the link points", and the clean-tree assertion would still pass.
+ * Every EXISTING ancestor from `wt` down to `abs`'s parent is `lstat`'d. A symlinked directory anywhere on
+ * that path turns "write the test back into the worktree" into "write it wherever the link points" — and the
+ * clean-tree assertion would still pass.
  */
 function ancestorProblem(wt: string, abs: string): string | undefined {
-  // The chain is the ancestors BELOW `wt`, innermost last: `wt` itself is the boundary the
-  // step owns and is not inspected.
+  // Ancestors BELOW `wt`, innermost last — `wt` itself is the boundary the step owns, not inspected.
   const chain: string[] = [];
   for (let dir = path.dirname(abs); dir !== wt && dir !== path.dirname(dir); ) {
     chain.unshift(dir);
@@ -119,10 +113,9 @@ function ancestorProblem(wt: string, abs: string): string | undefined {
 }
 
 /**
- * Create the missing ancestors of `abs`, ONE LEVEL AT A TIME, `lstat`ing each new directory
- * to prove it is a directory and not a link. `mkdirSync(recursive: true)` is not used: it
- * creates every component in one call and reports nothing about them, so a component that
- * already existed as a symlink would be accepted silently.
+ * Create the missing ancestors of `abs`, ONE LEVEL AT A TIME, `lstat`ing each new directory to prove it is a
+ * directory and not a link. `mkdirSync(recursive: true)` is not used: it creates every component in one call
+ * and reports nothing about them, so one that already existed as a symlink would be accepted silently.
  */
 function ensureRealDirs(wt: string, abs: string): void {
   const segments = path.relative(wt, abs).split(path.sep).slice(0, -1);
@@ -146,9 +139,8 @@ function ensureRealDirs(wt: string, abs: string): void {
 /**
  * A write the step refuses because following it would leave the worktree.
  *
- * Also the type the `specify` dispatch throws for a child that died, and it carries that
- * dispatch's cost rows (`BuildInfraError` says why): the child spent tokens before it
- * died and a throw records no outcome.
+ * Also the type the `specify` dispatch throws for a child that died, carrying that dispatch's cost rows
+ * (`BuildInfraError` says why): the child spent tokens before it died and a throw records no outcome.
  */
 export class SpecifyInfraError extends Error {
   override readonly name = "SpecifyInfraError";
@@ -165,10 +157,9 @@ export class SpecifyInfraError extends Error {
 /**
  * Write captured bytes back to their paths, creating parent directories.
  *
- * Three rules, each against a way the rewrite could land somewhere other than the path it
- * names: no symlinked ancestor (`ancestorProblem` before the write, `ensureRealDirs` after
- * each creation), and a `wx` write to a temp name in the FINAL directory followed by
- * `renameSync` into place — the bytes appear atomically and a link is never opened.
+ * Three rules, each against a way the rewrite could land somewhere other than the path it names: no symlinked
+ * ancestor (`ancestorProblem` before the write, `ensureRealDirs` after each creation), and a `wx` write to a
+ * temp name in the FINAL directory then `renameSync` into place — bytes appear atomically, a link never opens.
  */
 export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
   for (const [rel, bytes] of captured) {
@@ -177,8 +168,8 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
     if (problem !== undefined) throw new SpecifyInfraError(`could not write ${rel}: ${problem}`);
     ensureRealDirs(wt, abs);
     const dir = path.dirname(abs);
-    // `wx` — fail if the name exists. A name already there means the tree is not the tree
-    // the reset made, and the caller resets again rather than writing through it.
+    // `wx` — fail if the name exists: a name already there means the tree is not the one the reset made,
+    // and the caller resets again rather than writing through it.
     let tmp = `${dir}/.lean-capture-${process.pid}-${writeSeq++}`;
     for (let n = 0; ; n++) {
       try {
@@ -195,7 +186,7 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
       renameSync(tmp, abs);
     } catch (err) {
       try {
-        // Never leave the temp file behind for the clean-tree assertion to trip on.
+        // Never leave the temp file for the clean-tree assertion to trip on.
         rmSync(tmp, { force: true });
       } catch {
         /* nothing else to do */
@@ -206,36 +197,31 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
 }
 
 /**
- * Reset `wt` completely to `baseSha`: child commits, staged changes, untracked files,
- * ignore tricks AND the provisioned dependency links all go, and the run's branch is
- * pointed at the base. A caller whose tree owns no branch passes `""` for `branch` and is
- * checked out detached, since git refuses to `-B` a name onto a tree whose branch
- * somebody else holds.
+ * Reset `wt` completely to `baseSha`: child commits, staged changes, untracked files, ignore tricks AND the
+ * provisioned dependency links all go, and the run's branch is pointed at the base. A caller whose tree owns no
+ * branch passes `""` and is checked out detached — git refuses to `-B` a name onto a tree whose branch somebody
+ * else holds.
  *
- * Both checkout forms carry `-f`. Without it git refuses to move a tree whose tracked
- * files are dirty (exit 1) — exactly what a build child leaves behind when it committed a
- * file and then kept editing it, so a routine budget stop would hand the run back as a
- * reset failure.
+ * Both checkout forms carry `-f`. Without it git refuses to move a tree with dirty tracked files (exit 1) —
+ * exactly what a build child leaves behind after committing a file and keeping edits, so a routine budget stop
+ * would hand the run back as a reset failure.
  *
- * The clean carries no `-e` exemptions: exempting the links by name meant a leftover tree
- * kept whatever links its first provisioning made, with nothing checking they still
- * pointed anywhere. The clean-tree assertion runs AFTER the submodule re-initialisation,
- * so proof and product describe the same bytes.
+ * The clean carries no `-e` exemptions: exempting the links by name meant a leftover tree kept whatever links
+ * its first provisioning made, nothing checking they still pointed anywhere. The clean-tree assertion runs AFTER
+ * the submodule re-initialisation, so proof and product describe the same bytes.
  *
- * `git clean -fdx` de-populates every submodule the base carries, and a test that imports
- * from one then fails before collection — so a runner that cannot collect is blamed on the
- * adversary. `initSubmodules` runs inside this function because every reset has to restore
- * them, and `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` is honoured HERE for the same reason:
- * the one place that makes no reset ask git to populate anything.
+ * `git clean -fdx` de-populates every submodule the base carries, and a test importing from one fails before
+ * collection — so a runner that cannot collect is blamed on the adversary. `initSubmodules` runs inside this
+ * function because every reset must restore them, and `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` is honoured HERE for
+ * the same reason: the one place that makes no reset ask git to populate anything.
  *
- * Throws `SpecifyResetError` unless `rev-parse HEAD` equals `baseSha` and
- * `status --porcelain` reports nothing — that confirmation is the function: the commands
- * are routine, and the only failure that matters is the one where they did not do what
- * they say.
+ * Throws `SpecifyResetError` unless `rev-parse HEAD` equals `baseSha` and `status --porcelain` reports nothing —
+ * that confirmation IS the function: the commands are routine, and the only failure that matters is the one
+ * where they did not do what they say.
  *
- * It RETURNS what the submodule pass did (see `lean/specify-submodules.ts`) rather than
- * only tracing it: a disclosure that lives in one caller's log is one most steps never
- * report, and the same empty gitlink is a fact the later verdicts have to be able to say.
+ * It RETURNS what the submodule pass did (see `lean/specify-submodules.ts`) rather than only tracing it: a
+ * disclosure in one caller's log is one most steps never report, and the same empty gitlink is a fact the later
+ * verdicts must be able to say.
  */
 export async function resetWorktreeToBase(
   exec: ExecFn,
@@ -243,19 +229,16 @@ export async function resetWorktreeToBase(
   baseSha: string,
   branch: string,
   /**
-   * Called with the tree the clean left — a submodule the base carries present as a
-   * gitlink, nothing fetched — before this function asks git to populate it. Product code
-   * never supplies it; it is how a smoke test sabotages a submodule between the clean and
-   * the command that has to recover it.
+   * Called with the tree the clean left — a submodule the base carries present as a gitlink, nothing fetched —
+   * before this function asks git to populate it. Product code never supplies it; it is how a smoke test
+   * sabotages a submodule between the clean and the command that must recover it.
    */
   beforeSubmoduleInit?: (wt: string) => void | Promise<void>,
 ): Promise<SubmoduleNote[]> {
-  // The tree is put at the base in THREE steps, and the order is load-bearing: `-B` first so
-  // the branch (not a detached HEAD) is what `reset --hard` moves — the frozen commit has
-  // to land on the run's branch and a leftover branch from a previous attempt must move to
-  // the base rather than keep its commits — and `clean -fdx` LAST because it is what takes
-  // the dependency links away, so every shape of leftover is gone before the pass below is
-  // asked to rebuild any of them.
+  // THREE steps, order load-bearing: `-B` first so the branch (not a detached HEAD) is what `reset --hard`
+  // moves — the frozen commit must land on the run's branch, and a leftover branch from a previous attempt
+  // moves to the base rather than keep its commits — and `clean -fdx` LAST because it takes the dependency
+  // links away, so every leftover shape is gone before the pass below rebuilds them.
   const steps: string[][] = [
     branch === ""
       ? [...NO_HOOKS, "checkout", "-f", "--detach", baseSha]
@@ -272,28 +255,25 @@ export async function resetWorktreeToBase(
       );
     }
   }
-  // What the pass did, kept for the caller: `challenge` and the review fix round fold it into
-  // their own reason, since an unseeded submodule is a fact about the tree they are about to
-  // judge. The clean-tree proof below runs AFTER the pass, so the tree it proves is the one the
-  // child gets — including any gitlink this step left empty.
+  // What the pass did, kept for the caller: `challenge` and the review fix round fold it into their reason,
+  // since an unseeded submodule is a fact about the tree they judge. The clean-tree proof below runs AFTER the
+  // pass, so the tree it proves is the one the child gets — including any gitlink this step left empty.
   //
-  // The outer gate is honoured HERE, not only inside the pass: with the runner untrusted the
-  // switch's claim is that the step asks git to populate NOTHING. The case pinning this shape
-  // reads the argv the step issued.
+  // The outer gate is honoured HERE, not only inside the pass: with the runner untrusted the switch's claim is
+  // that the step asks git to populate NOTHING. The case pinning this reads the argv the step issued.
   if (!leanRunnerPreflightEnabled()) return [];
   const notes = await initSubmodules(exec, wt, beforeSubmoduleInit);
-  // Two reads decide whether the tree is asked about, and they are decided differently.
+  // Two reads decide whether the tree is asked about, decided differently:
   //
-  //   - the local rule off: the switch-off arm is the release's own argv byte for byte (which
-  //     a case pins), and that argv contained no submodule call of any kind.
-  //   - nothing seeded: with no populating call there is no pass to disbelieve. The test is
-  //     asked of the pass's OWN account rather than of the file system.
+  //   - local rule off: the switch-off arm is the release's argv byte for byte (a case pins it), and that
+  //     argv contained no submodule call of any kind.
+  //   - nothing seeded: with no populating call there is no pass to disbelieve — the test is asked of the
+  //     pass's OWN account, not the file system.
   if (!leanSubmodulesLocalEnabled() || !notes.some((n) => n.kind === "seeded")) return notes;
-  // And then git is asked what the tree actually holds, because a step's own account of a pass
-  // it ran is not evidence the tree ended up populated. `git submodule status` marks a gitlink
-  // nothing checked out (see the parser in `specify-submodules.ts`), and a seeded submodule
-  // whose checkout does not hold the file its recorded commit names is empty whatever the pass
-  // reported. Both reads are of the tree, never of the source the step chose.
+  // Then git is asked what the tree holds, because a step's account of a pass it ran is not evidence the tree
+  // ended up populated. `git submodule status` marks a gitlink nothing checked out (parser in
+  // `specify-submodules.ts`), and a seeded submodule whose checkout lacks the file its recorded commit names
+  // is empty whatever the pass reported. Both reads are of the tree, never the source the step chose.
   const withContent = notes.map((n) =>
     n.kind === "seeded" && n.expect !== undefined && !checkoutHolds(wt, n.path, n.expect)
       ? { ...n, emptyCheckout: true }
@@ -302,16 +282,15 @@ export async function resetWorktreeToBase(
   const state = await submoduleState(exec, wt);
   const claimed = new Set(notes.filter((n) => n.kind !== "seeded").map((n) => n.path));
   const unproven = state.unpopulated.filter((p) => !claimed.has(p));
-  // The backstop's own death is a finding, not an absence: either it becomes one note of its own
-  // or it rides on the first, but either way the clause says the tree could not be proved.
+  // The backstop's own death is a finding, not an absence: it either becomes a note of its own or rides on
+  // the first, but either way the clause says the tree could not be proved.
   if (state.unreadable === true) {
     const head = withContent[0];
     const marked: SubmoduleNote = { path: "", kind: "failure", detail: "", unreadable: true };
     return head === undefined ? [marked] : [{ ...head, unreadable: true }, ...withContent.slice(1)];
   }
-  // Three shapes of the same carry: nothing unproven, the pass's own account stands; nothing in
-  // the account, git's answer IS the account; both, git's finding rides on the first note rather
-  // than becoming one of its own.
+  // Three shapes of one carry: nothing unproven, the pass's account stands; nothing in the account, git's
+  // answer IS the account; both, git's finding rides on the first note rather than becoming its own.
   const first = withContent[0];
   const carried: SubmoduleNote[] =
     unproven.length === 0
@@ -319,29 +298,26 @@ export async function resetWorktreeToBase(
       : first === undefined
         ? notesFor(unproven)
         : [{ ...first, unproven }, ...withContent.slice(1)];
-  // The seeding's ONLY durable write is the submodule's own checkout, which is what the step was
-  // asked to create, and which the clean-tree proof below is entitled to see. `submodule set-url`
-  // is what leaves residue — it rewrites `.gitmodules` in this work tree AND writes
-  // `submodule.<name>.url` into the superproject's shared `.git/config` — so both assignments here
-  // are command-line `-c` on the one call that reads them.
-  // Restored ONLY where the pass seeded something: a tree it never touched must stay
-  // dirty-if-dirty, or the proof would be forgiving a child's edit.
+  // The seeding's ONLY durable write is the submodule's own checkout — what the step was asked to create and
+  // what the clean-tree proof is entitled to see. `submodule set-url` is what leaves residue: it rewrites
+  // `.gitmodules` in this work tree AND writes `submodule.<name>.url` into the shared `.git/config`, so both
+  // assignments here are command-line `-c` on the one call that reads them.
+  // Restored ONLY where the pass seeded something: a tree it never touched stays dirty-if-dirty, or the proof
+  // would be forgiving a child's edit.
   if (withContent.some((n) => n.kind === "seeded")) {
     try {
       await exec("git", {
-        // `--no-overlay` is not an aesthetic choice. The plain form of this command resolves its
-        // pathspec through the index, and a path registered as a gitlink is not a file the index
-        // can resolve — so `git checkout -- .gitmodules` in a tree WITH a submodule dies. Asking
-        // git to read the version out of the commit is the one form that works in both a tree with
-        // submodules and a tree without.
+        // `--no-overlay` is not aesthetic: the plain form resolves its pathspec through the index, and a path
+        // registered as a gitlink is not a file the index can resolve — so `git checkout -- .gitmodules` in a
+        // tree WITH a submodule dies. Reading the version out of the commit is the one form that works either way.
         argv: [...NO_HOOKS, "checkout", "--no-overlay", "HEAD", "--", ".gitmodules"],
         cwd: wt,
         timeout: QUICK_GIT_MS,
         maxBuffer: 1024 * 1024,
       });
     } catch {
-      // Best-effort: a tree whose `.gitmodules` this cannot restore is caught two lines later
-      // by the clean-tree proof, which refuses it.
+      // Best-effort: a tree whose `.gitmodules` this cannot restore is refused two lines later by the
+      // clean-tree proof.
     }
   }
   const head = await exec("git", {
@@ -367,21 +343,19 @@ export async function resetWorktreeToBase(
 }
 
 /**
- * Populate the worktree's submodules, when its commit has any — the seam into
- * `lean/specify-submodules.ts`, which owns WHERE submodules come from, both arms of
- * `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL`, and the disclosure of a submodule this host never had.
+ * Populate the worktree's submodules when its commit has any — the seam into `lean/specify-submodules.ts`,
+ * which owns WHERE submodules come from, both arms of `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL`, and the disclosure
+ * of a submodule this host never had.
  *
- * Why it sits INSIDE the reset rather than beside it: the reset's own `git clean -fdx` is the
- * most reliable de-populator a submodule has, so a tree that looks clean is not a tree that is
- * complete. The disclosure its pass produces is reported by the worktree's owner
- * (`ensureSpecifyWorktreeWithProvision`) and kept out of this signature on purpose.
- *
- * `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` still returns before git is asked anything.
+ * It sits INSIDE the reset rather than beside it because the reset's own `git clean -fdx` is the most reliable
+ * de-populator a submodule has — a tree that looks clean is not a complete one. The disclosure its pass
+ * produces is reported by the worktree's owner (`ensureSpecifyWorktreeWithProvision`), kept out of this
+ * signature on purpose. `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` returns before git is asked anything.
  */
 async function initSubmodules(
   exec: ExecFn,
   wt: string,
-  /** Passed through from {@link resetWorktreeToBase}; product code never supplies it. */
+  /** From {@link resetWorktreeToBase}; product code never supplies it. */
   beforeInit?: (wt: string) => void | Promise<void>,
 ): Promise<SubmoduleNote[]> {
   return initWorktreeSubmodules(exec, wt, beforeInit);
