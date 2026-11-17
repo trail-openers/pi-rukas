@@ -8,7 +8,7 @@
  * to drift. The judgement is `spec.ts`'s own reader applied to the contract's own
  * rendering plus the readiness rules `ready` applied before persisting; a spec that
  * would not survive that round trip is one the run never validated, and it is
- * refused at load like any other corruption rather than executed by nine steps that
+ * refused at load like any other corruption rather than executed by the steps that
  * would each read it differently.
  */
 
