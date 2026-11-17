@@ -1,38 +1,33 @@
 /**
  * lean/verify-commands — the `command` criteria tier of the verify gate.
  *
- * A `command` criterion is the only place a `pi-spec` carries text the pipeline is meant to RUN, and
- * the only kind whose pass condition is GREEN: it states behaviour that already holds, so it belongs at
- * the gate, not at the freeze.
+ * A `command` criterion is the only place a `pi-spec` carries text the pipeline is meant to RUN, and the
+ * only kind whose pass condition is GREEN: it states behaviour that already holds, so it belongs at the
+ * gate, not at the freeze.
  *
- * **A residual the reader must not misread as isolation.** The test FILE is pinned to the base commit,
- * but the CODE it loads is HEAD's, by design: a preservation criterion asks whether the new code still
- * holds the old contract.
+ * **A residual the reader must not misread as isolation.** The test FILE is pinned to the base commit, but
+ * the CODE it loads is HEAD's, by design: a preservation criterion asks whether the new code still holds
+ * the old contract.
  *
  * Six rules make running text out of an issue body safe enough to try:
  *
- *   1. **A `command` is a FILE, never a command line.** Accepted only as a plain repo-relative
- *      path, checked by the frozen tests' own path rule (`normaliseRelPath` + `pathProblem`)
- *      plus a no-whitespace/no-shell-metacharacter test, then handed to `verify.test` through
- *      `runTestFile` in **argv form** — so no shell ever parses it and a traversal, an absolute
- *      path, `.git`, `.pi` or `node_modules` is refused before anything is spawned.
- *   2. **A `command` names an EXISTING test that has not changed since the base — in the commit
- *      AND on disk.** The only file that can evidence it is one the base already held, byte for
- *      byte: `git ls-tree` answers for both trees and `git hash-object` for the working file, since
- *      `--assume-unchanged` keeps `git status` quiet about a changed blob. Checking HEAD alone would
- *      let a developer author a destructive script, exit 0, and record it as preservation.
- *   3. **Not-runnable is not a verdict.** A criterion refused by any rule above is absent from the
- *      record — no throw, no red — with its own reason in `notRunnable[id]`, treated like `manual`.
- *      Reading it as red punishes the developer for the spec's defect; as passed, it is the lie.
- *   4. **An unrunnable runner is infrastructure.** A killed, timed-out or un-startable run
- *      THROWS, exactly as `frozenTestFailure` does. So is a tier that cannot finish inside its
- *      budget.
- *   5. **The tier is bounded.** At {@link COMMAND_CRITERION_MAX} criteria run per gate and the
- *      whole tier shares {@link COMMAND_TIER_BUDGET_MS}; each run's timeout is the time the
- *      budget still has.
- *   6. **The `command` text is untrusted.** Every reason interpolates the clipped {@link quoted}
- *      form, and the assembled reason is clipped again by {@link reason} — a legal path can
- *      overshoot the record's bound and refuse the whole outcome rather than one criterion.
+ *   1. **A `command` is a FILE, never a command line.** Accepted only as a plain repo-relative path, checked
+ *      by the frozen tests' own path rule plus a no-whitespace/no-shell-metacharacter test, then handed to
+ *      `verify.test` through `runTestFile` in **argv form** — no shell ever parses it.
+ *   2. **A `command` names an EXISTING test, unchanged since the base — in the commit AND on disk.**
+ *      `git ls-tree` answers for both trees and `git hash-object` for the working file, since
+ *      `--assume-unchanged` keeps `git status` quiet about a changed blob. Checking HEAD alone would let a
+ *      developer author a destructive script, exit 0, and record it as preservation.
+ *   3. **Not-runnable is not a verdict.** A refused criterion is absent from the record — no throw, no red
+ *      — with its reason in `notRunnable[id]`, treated like `manual`. As red it punishes the developer for
+ *      the spec's defect; as passed it is the lie.
+ *   4. **An unrunnable runner is infrastructure.** A killed, timed-out or un-startable run THROWS, as
+ *      `frozenTestFailure` does. So does a tier that cannot finish inside its budget.
+ *   5. **The tier is bounded.** {@link COMMAND_CRITERION_MAX} criteria per gate, all sharing
+ *      {@link COMMAND_TIER_BUDGET_MS}; each run's timeout is what the budget still has.
+ *   6. **The `command` text is untrusted.** Every reason interpolates the clipped {@link quoted} form and is
+ *      clipped again by {@link reason} — a legal path can overshoot the record's bound and refuse the whole
+ *      outcome rather than one criterion.
  */
 
 import { trace } from "../trace.ts";
@@ -57,8 +52,8 @@ interface CommandCriterionRecord {
   /** `passed` — the criterion ran through the gate's own runner and exited 0. */
   kind: "passed";
   /**
-   * The base blob the pre-run check accepted, kept so the post-run re-check has its own expectation:
-   * read from the tree again afterwards, an oid would agree with itself whatever the tier did.
+   * The base blob the pre-run check accepted, so the post-run re-check has its own expectation: read from
+   * the tree again afterwards, an oid would agree with itself whatever the tier did.
    */
   oid: string;
   /** The repo-relative path, so the re-check can find the file by more than its id. */
@@ -72,8 +67,8 @@ export const COMMAND_CRITERION_MAX = 32;
 const COMMAND_TIER_BUDGET_MS = 600_000;
 
 /**
- * How much of a `command` a refusal may quote. The `command` is untrusted text out of the issue
- * body and every refusal quotes it, so the bound lives here rather than at each interpolation.
+ * How much of a `command` a refusal may quote. The text is untrusted out of the issue body and every
+ * refusal quotes it, so the bound lives here rather than at each interpolation.
  */
 const COMMAND_QUOTE_MAX = 80;
 
