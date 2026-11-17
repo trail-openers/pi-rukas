@@ -183,38 +183,24 @@ const DIVIDER = "| --- | --- | --- | --- | --- |";
 /** The section a review seat reads, or `undefined` when it has nothing to say — the
  * switch's off arm, and an unparsable spec. Read ONCE per step.
  *
- * Lives beside the renderer it wraps, because the two rules are one rule: the switch
- * is read here and never inside `renderAcceptanceSection`, so the step's call sites
- * stay the only place the switch is consulted, and "no table" is one answer (`undefined`)
- * rather than two (`""` and a missing key) a caller could conflate.
+ * The switch is read here and never in the renderer, so the step's call sites stay
+ * the only place it is consulted, and "no table" is one answer (`undefined`) rather
+ * than two (`""` and a missing key) a caller could conflate.
  */
 export function acceptanceSection(
   steps: Step[],
   issueBody: string | undefined,
-  run: { derivedSpec?: DerivedSpec },
+  run: { derivedSpec?: DerivedSpec } = {},
 ): string | undefined {
   if (!leanReviewAcceptanceEnabled()) return undefined;
-  const section = renderAcceptanceSection(steps, issueBody, run);
-  return section === "" ? undefined : section;
-}
-
-/** The section a review seat reads, or `""` when it has nothing to say: no body, no
- * parsable block, no criteria. A body whose spec cannot be parsed has no criteria,
- * and a table invented from prose would be a contract nothing enforces. */
-export function renderAcceptanceSection(
-  steps: Step[],
-  issueBody: string | undefined,
-  run: { derivedSpec?: DerivedSpec } = {},
-): string {
-  if (issueBody === undefined || issueBody.trim() === "") return "";
-  // The accessor, with the record consulted: a table printed for a derived run
-  // must be a table of the criteria it was built to, and an empty string remains
-  // the answer whenever no contract exists to tabulate — never a table invented
-  // from prose.
+  if (issueBody === undefined || issueBody.trim() === "") return undefined;
+  // The accessor, with the record consulted: a table printed for a derived run must
+  // be a table of the criteria it was built to, and "nothing to say" stays the answer
+  // whenever no contract exists to tabulate — never a table invented from prose.
   const read = specFor(issueBody, run);
-  if (!read.ok) return "";
+  if (!read.ok) return undefined;
   const rows = acceptanceRows(steps, read.spec);
-  if (rows.length === 0) return "";
+  if (rows.length === 0) return undefined;
   const head = certifiedHead(steps);
   // Which absence the reader is told about is a separate question from whether there
   // is one: a run whose newest decided verify came back RED (the shape a CI-fix round
@@ -232,6 +218,16 @@ export function renderAcceptanceSection(
     MAX_TABLE_CHARS,
     TABLE_TRUNCATION_MARKER,
   )}`;
+}
+
+/** The section with the switch not consulted, for the renderers that own their own
+ * absence rule (`acceptanceComment`) and for the suites that pin the rendering. */
+export function renderAcceptanceSection(
+  steps: Step[],
+  issueBody: string | undefined,
+  run: { derivedSpec?: DerivedSpec } = {},
+): string {
+  return acceptanceSection(steps, issueBody, run) ?? "";
 }
 
 /** The comment the step posts on its own PR, once per attempt. `publish` wrote the
