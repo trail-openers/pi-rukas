@@ -1,22 +1,19 @@
 /**
  * lean/config-test-location — where the adversary's acceptance tests live.
  *
- * Split from `config.ts` for the file-size cap; it is the same `.pi/work.json`
- * `verify` block, read the same way, validated at the same boundary. The three
- * questions here are the three a project answers when it wants its OWN CI to
- * run the tests a lean run freezes:
+ * Split from `config.ts` for the file-size cap; it is the same `.pi/work.json` `verify` block,
+ * read the same way, validated at the same boundary. The three questions here are the three a
+ * project answers when it wants its OWN CI to run the tests a lean run freezes:
  *
- *   - `validateTestDir`  — is this a repo-relative directory, or something that
- *     only looks like one (absolute, traversing, hidden, trailing-slash, a
- *     pattern wearing a directory's name)?
+ *   - `validateTestDir`  — is this a repo-relative directory, or something that only looks
+ *     like one (absolute, traversing, hidden, trailing-slash, a pattern wearing a
+ *     directory's name)?
  *   - `validateTestGlob` — is this a single-`*` BASENAME pattern?
- *   - `testLocationProblem` — does a submitted test path sit directly inside
- *     that directory under that name? This is what the boundary in
- *     `specify-tree.ts` calls, after `pathProblem` has already ruled out
- *     traversal.
+ *   - `testLocationProblem` — does a submitted test path sit directly inside that directory
+ *     under that name? This is what the boundary in `specify-tree.ts` calls.
  *
- * The pair is configured together or not at all: `loadWorkConfig` refuses a
- * half-set pair, so the steps never have to guess which half the author meant.
+ * The pair is configured together or not at all: `loadWorkConfig` refuses a half-set pair, so
+ * the steps never have to guess which half the author meant.
  */
 
 /** The pair of settings that say where the adversary's tests live. */
@@ -26,22 +23,18 @@ export interface TestLocation {
 }
 
 /**
- * Characters neither setting may contain. Shell metacharacters and quotes have
- * no business in a name the prompt quotes back to a child.
+ * Characters neither setting may contain. Shell metacharacters and quotes have no business
+ * in a name the prompt quotes back to a child.
  *
- * The second class is INVISIBLE: zero-width and bidi characters, BOM, the
- * line/paragraph separators and every other C0/C1 control. A value like
- * `"tests\u200b"` looks exactly like `"tests"` in the config file and in the
- * prompt, but the boundary compares the string verbatim, so it matches nothing
- * and every test the adversary writes is refused while the reason blames the
- * child — the same failure the whitespace rule above refuses, one the eye
- * cannot see. `\p{Cc}` covers C0 (incl. NUL) and C1 but not U+0085, U+2028/9,
- * the U+200B–U+2064 formatting group or U+FEFF, which are spelled out.
+ * The second class is INVISIBLE: zero-width and bidi characters, BOM, the line/paragraph
+ * separators and every other C0/C1 control. A value like `"tests\u200b"` looks exactly like
+ * `"tests"` in the config file and in the prompt, but the boundary compares the string
+ * verbatim, so it matches nothing and every test the adversary writes is refused. `\p{Cc}`
+ * covers C0 (incl. NUL) and C1 but not U+0085, U+2028/9, the U+200B–U+2064 formatting group
+ * or U+FEFF, which are spelled out.
  *
- * `*` and `?` are refused in a DIRECTORY only, and checked there separately: a
- * lone `*` IS the `testGlob` pattern, so a shared set that refused it would
- * reject every legal glob (a validator that cannot express the one shape it
- * exists to accept is the bug this split prevents).
+ * `*` and `?` are refused in a DIRECTORY only, and checked there separately: a lone `*` IS
+ * the `testGlob` pattern, so a shared set that refused it would reject every legal glob.
  */
 const TEST_LOCATION_FORBIDDEN =
   /[;&|`$<>"'\\\n\r]|\p{Cc}|\u0085|\u2028|\u2029|[\u200b-\u200f\u2060-\u2064\ufeff]/u;
@@ -52,19 +45,16 @@ const TEST_DIR_FORBIDDEN = /[?*]/;
 /**
  * Why this `verify.testDir` is not usable, or undefined when it is.
  *
- * The shape rule for a repo-relative directory: the same refusals `pathProblem`
- * applies to a submitted test path (`..` traversal, absolute paths, drive
- * letters, empty segments) plus the two a directory adds — no trailing slash,
- * and nothing inside a hidden directory, which is where `pathProblem`'s
- * forbidden-segment list would otherwise have caught it.
+ * The shape rule for a repo-relative directory: the same refusals `pathProblem` applies to a
+ * submitted test path (`..` traversal, absolute paths, drive letters, empty segments) plus
+ * the two a directory adds — no trailing slash, and nothing inside a hidden directory.
  *
- * And ONE canonical form: the value must equal its own normalised form (no `.`
- * segments, no doubled separators). The boundary compares this string against a
- * submitted path's NORMALISED directory, so a value that merely *spells* the
- * same folder differently — `./tests`, `tests//unit` — matches nothing, and the
- * child is told its own tests are misplaced. The refusal prints the form to
- * write rather than quietly normalising, because a config whose value the code
- * silently rewrites is a config nobody can read off the file.
+ * And ONE canonical form: the value must equal its own normalised form (no `.` segments, no
+ * doubled separators). The boundary compares this string against a submitted path's
+ * NORMALISED directory, so a value that merely *spells* the same folder differently —
+ * `./tests`, `tests//unit` — matches nothing. The refusal prints the form to write rather
+ * than quietly normalising, because a config whose value the code silently rewrites is a
+ * config nobody can read off the file.
  */
 export function validateTestDir(dir: string): string | undefined {
   if (dir.trim() === "") return ".pi/work.json verify.testDir must not be empty";
@@ -81,15 +71,11 @@ export function validateTestDir(dir: string): string | undefined {
   const segments = dir.split(/[\\/]+/).filter((s) => s !== "");
   if (segments.length === 0) return `.pi/work.json verify.testDir must name a directory (${dir})`;
   if (segments.includes("..")) return `.pi/work.json verify.testDir must not contain ".." (${dir})`;
-  // Compared against the NORMALISED form, so a `.` segment (`./tests`) is
-  // reported as the spelling mistake it is and not swallowed by the hidden-
-  // directory rule below — whose message ("do not put your tests in a hidden
-  // folder") is the wrong instruction for a value that only *starts* with a dot
-  // because of punctuation.
+  // Compared against the NORMALISED form, so a `.` segment (`./tests`) is reported as the
+  // spelling mistake it is and not swallowed by the hidden-directory rule below.
   const normalised = segments.filter((s) => s !== ".").join("/");
-  // `.` alone (or `./.`) normalises to nothing, which is the repo root — not a
-  // directory the author named. The hidden-directory rule below still owns it,
-  // so the message says "a directory", not "write the empty string".
+  // `.` alone (or `./.`) normalises to nothing, which is the repo root — not a directory the
+  // author named. The hidden-directory rule below still owns it.
   if (normalised !== "" && dir !== normalised)
     return `.pi/work.json verify.testDir has exactly one spelling — write \`${normalised}\` (the value is compared verbatim against a submitted test's directory, so \`${dir}\` would match nothing)`;
   if (segments.some((s) => s.startsWith(".")))
@@ -131,29 +117,21 @@ export function validateTestGlob(glob: string): string | undefined {
 }
 
 /**
- * Whether `glob` names Python files — the one question the runner probe asks of
- * a `testGlob`, and the only place the extension is read off a pattern.
+ * Whether `glob` names Python files — the one question the runner probe asks of a `testGlob`,
+ * and the only place the extension is read off a pattern.
  *
- * A glob is a basename pattern whose `*` opens the wildcard, so the extension is
- * the text after it. The extension has to be the SUFFIX of that tail, not merely a
- * dot-something in the middle — `test_*.pytest.js` names `.js` files, and a probe
- * chosen for it would be the wrong file in the wrong language.
+ * A glob is a basename pattern whose `*` opens the wildcard, so the extension is the text
+ * after it. The extension has to be the SUFFIX of that tail, not merely a dot-something in
+ * the middle — `test_*.pytest.js` names `.js` files, and a probe chosen for it would be the
+ * wrong file in the wrong language.
  *
- * Why the language matters at all: pytest is the only runner in the common set
- * whose import step refuses a file it cannot import, so the probe's NAME (not its
- * content) decides whether the runner reaches the point where it can report.
- * See `specify-preflight.ts`.
+ * Why the language matters at all: pytest is the only runner in the common set whose import
+ * step refuses a file it cannot import, so the probe's NAME (not its content) decides whether
+ * the runner reaches the point where it can report. See `specify-preflight.ts`.
  *
- * The comparison folds CASE because the question is which LANGUAGE the project's
- * tests are written in, and a project whose CI runs `test_*.PY` collects those files
- * as happily as `test_*.py`. The refusal this predicate exists to avoid — pytest's
- * prepend import mode dying on a leading dot — has nothing to do with the extension's
- * case, so a case-sensitive comparison would send a Python repo back onto the hidden
- * extensionless probe its own runner cannot read.
- *
- * `.py` in its cased form is still the only thing counted once case is folded:
- * `.pyi` is a stub declaration file rather than an executable test module, so naming
- * a probe for it would hand the runner a file it never imports.
+ * The comparison folds CASE because the question is which LANGUAGE the project's tests are
+ * written in. `.py` in its cased form is still the only thing counted once case is folded:
+ * `.pyi` is a stub declaration file rather than an executable test module.
  */
 export function globNamesPythonFiles(glob: string): boolean {
   const star = glob.indexOf("*");
@@ -185,13 +163,11 @@ export function testLocationOf(verify: {
 }
 
 /**
- * `pattern` with its single `*` turned into a regex, anchored and escaped.
- * `test-*.ts` becomes `^test-[^/]*\.ts$` — a basename pattern, which is what
- * the boundary matches a submitted file's last segment against.
+ * `pattern` with its single `*` turned into a regex, anchored and escaped. `test-*.ts` becomes
+ * `^test-[^/]*\.ts$` — a basename pattern, which is what the boundary matches a submitted
+ * file's last segment against.
  *
- * Module-private: every caller asks the question in the form `globMatches` asks
- * it, and a second exported entry point is a second shape for the same rule to
- * drift in.
+ * Module-private: every caller asks the question in the form `globMatches` asks it.
  */
 function globToRegex(pattern: string): RegExp {
   const source = pattern
@@ -202,25 +178,21 @@ function globToRegex(pattern: string): RegExp {
 }
 
 /**
- * Does this project's `verify.testGlob` match the basename `name`? The one
- * matcher, exported because a second caller has to ask the SAME question the
- * boundary asks: `specify-preflight.ts` refuses to write a probe whose name the
- * project's CI would collect, and a probe-check with its own matcher is a rule
- * that can drift from the rule it is meant to agree with.
+ * Does this project's `verify.testGlob` match the basename `name`? The one matcher, exported
+ * because a second caller has to ask the SAME question the boundary asks:
+ * `specify-preflight.ts` refuses to write a probe whose name the project's CI would collect.
  */
 export function globMatches(pattern: string, name: string): boolean {
   return globToRegex(pattern).test(name);
 }
 
 /**
- * Why this worktree-relative test path is not inside the configured test
- * location, or undefined when it is.
+ * Why this worktree-relative test path is not inside the configured test location, or
+ * undefined when it is.
  *
- * Two questions, both answered on the NORMALISED path the boundary already
- * computed: is the file DIRECTLY inside `testDir` (a nested subdirectory is
- * outside it — the project's CI glob would not reach it), and does its basename
- * match `testGlob`. Called after `pathProblem`, so the path is already known
- * traversal-free and slash-clean.
+ * Two questions, both answered on the NORMALISED path the boundary already computed: is the
+ * file DIRECTLY inside `testDir` (a nested subdirectory is outside it — the project's CI glob
+ * would not reach it), and does its basename match `testGlob`. Called after `pathProblem`.
  */
 export function testLocationProblem(loc: TestLocation, rel: string): string | undefined {
   const segments = rel.split("/");
