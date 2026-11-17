@@ -83,13 +83,11 @@ export async function listSubmodules(
     const rawName = hit?.[1] ?? hit?.[2] ?? hit?.groups?.name;
     const rawValue = hit?.[3] ?? hit?.groups?.value;
     // Two alternatives: `--get-regexp` prints a name containing `=` or a space UNQUOTED and a
-    // tab-containing one C-quoted, so neither branch alone reads every key — and a skip on a line
-    // neither reads would drop a submodule the base registers. The unquoted branch cannot be
-    // `(.*)` either: `git config` answers a `.`-bearing name as its own section, so a section
-    // literally named `x.path` would read as the name `x.path <path>`.
-    // One refusal for both ways a key fails to be a name and a path — a line the regexes cannot
-    // split, and a pair of tokens the unquoter below cannot prove it read. The base's own line,
-    // verbatim, is what an operator needs to go and look at.
+    // tab-containing one C-quoted, so neither branch alone reads every key. The unquoted branch
+    // cannot be `(.*)` either: `git config` answers a `.`-bearing name as its own section, so a
+    // section literally named `x.path` would read as the name `x.path <path>`.
+    // One refusal for both ways a key fails to be a name and a path. The base's own line, verbatim,
+    // is what an operator needs to go and look at.
     const name = rawName === undefined ? undefined : unquoteGitConfig(rawName);
     const value = rawValue === undefined ? undefined : unquoteGitConfig(rawValue.trim());
     if (name === undefined || value === undefined || value === "")
@@ -98,10 +96,9 @@ export async function listSubmodules(
       );
     // The name is not a label: it is the KEY of the `-c submodule.<name>.url=…` the seeding names
     // its source with, and git splits a command-line assignment at its FIRST `=`. A name carrying
-    // one sets a key git never consults (`-c submodule.a=b.url=SRC` leaves `submodule.a` =
-    // `b.url=SRC`), so `submodule update` falls back to the URL the base records while
-    // `protocol.file.allow=always` on the same call licenses the transport — the offline rule
-    // failing OPEN to a network fetch with every case green.
+    // one sets a key git never consults, so `submodule update` falls back to the URL the base
+    // records while `protocol.file.allow=always` on the same call licenses the transport — the
+    // offline rule failing OPEN to a network fetch with every case green.
     if (/[="\s]/u.test(name))
       throw new SpecifyInfraError(
         `could not use the submodule name ${JSON.stringify(name)} from ${wt}/.gitmodules: it cannot be named on a command-line config assignment without changing the key git reads, so this step would seed that entry from the URL the base records rather than from this superproject`,
@@ -217,23 +214,18 @@ export function localSource(
 }
 
 /**
- * The superproject whose bytes to copy: the MAIN working tree, asked of git rather than
- * derived from the caller's path or from `--show-toplevel`.
+ * The superproject whose bytes to copy: the MAIN working tree, asked of git rather than derived
+ * from the caller's path or from `--show-toplevel`.
  *
- * `--show-toplevel` is the wrong question here: asked inside a linked worktree it answers with
- * THAT worktree, so a step seeding "from the superproject" would be seeding from the very tree it
- * is about to populate — a clone of a repository into itself, which ends not in an error but in a
- * checkout that quietly holds nothing. `--git-common-dir` answers with the shared store and its
- * parent is the main checkout: the one tree whose submodule content the base's verify ran against,
- * and the only one no run of this harness can have written.
+ * `--show-toplevel` is the wrong question here: asked inside a linked worktree it answers with THAT
+ * worktree, so a step seeding "from the superproject" would be seeding from the very tree it is
+ * about to populate. `--git-common-dir` answers with the shared store and its parent is the main
+ * checkout: the one tree whose submodule content the base's verify ran against.
  *
- * The main checkout is then derived from git's SHAPE — `<…>/.git`, or `<…>/.git/worktrees/<name>`
- * — never from the caller's path. Counting components off `wt` is the trap: a run's worktree lives
- * at `<repo>/.worktrees/lean-<issue>`, as deep as a linked tree's gitdir, so an answer derived from
- * it points at `<repo>/.worktrees` — a directory that exists, so no existence check catches it.
- * Reading the shape makes a run's scaffolding unpayable as a source: `rev-parse` answers
- * `<…>/.worktrees/lean-1` (or echoes an unrecognised `--git-*` question back) and neither has the
- * shape of a common dir, so the step refuses rather than seeding from a directory nobody populated.
+ * The main checkout is then derived from git's SHAPE — `<…>/.git`, or `<…>/.git/worktrees/<name>` —
+ * never from the caller's path. Counting components off `wt` is the trap: a run's worktree lives at
+ * `<repo>/.worktrees/lean-<issue>`, as deep as a linked tree's gitdir, so an answer derived from it
+ * points at `<repo>/.worktrees` — a directory that exists, so no existence check catches it.
  */
 export async function superprojectRoot(exec: ExecFn, wt: string): Promise<string> {
   const r = await exec("git", {
@@ -244,9 +236,8 @@ export async function superprojectRoot(exec: ExecFn, wt: string): Promise<string
   }).catch(() => undefined);
   const raw = trim((r as { stdout?: string } | undefined)?.stdout ?? "");
   const dir = raw === "" ? "" : path.isAbsolute(raw) ? raw : path.resolve(wt, raw);
-  // git's two answers, matched as PATHS rather than substrings: `<repo>/.git` for a normal
-  // checkout, `<repo>/.git/worktrees/<name>` for a LINKED one (main checkout three up). Anything
-  // else — a bare repository, a stray `GIT_DIR`, a probe that echoed its own question — has
+  // git's two answers, matched as PATHS rather than substrings: `<repo>/.git` for a normal checkout,
+  // `<repo>/.git/worktrees/<name>` for a LINKED one (main checkout three up). Anything else has
   // neither shape and is refused rather than guessed at.
   const main =
     path.basename(dir) === ".git"
