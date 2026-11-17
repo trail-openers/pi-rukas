@@ -1,16 +1,14 @@
 /**
  * lean/engine-report — the reporting step a stopped run is routed into.
  *
- * The split from `engine.ts` is by concern: `engine.ts` owns the runner; this module owns the one
- * move the runner makes that is not a step the table routes — the clock stopping a working step,
- * and what the run becomes because of it. `deadline-handback.ts` decides WHETHER the routing
- * happens; this module performs it and stamps the run either way, so the two records a stopped run
- * can leave are written by one reader.
+ * The split from `engine.ts` is by concern: `engine.ts` owns the runner; this module owns the one move
+ * the runner makes that is not a step the table routes — the clock stopping a working step, and what
+ * the run becomes because of it. `deadline-handback.ts` decides WHETHER the routing happens; this
+ * module performs it and stamps the run either way.
  *
  * `HandbackHandler` is injected rather than reached around, so this module never reads the handler
- * table itself. The three helpers it needs to write a step — the visit's key, the outcome attach,
- * the terminal stamp — arrive on the request, so this module writes a step exactly the way the
- * runner does.
+ * table itself; the three helpers it needs to write a step arrive on the request, so a step is written
+ * exactly the way the runner writes one.
  */
 import { traceWarn } from "../trace.ts";
 import { deadlineStopShouldReport } from "./deadline-handback.ts";
@@ -34,19 +32,15 @@ export type HandbackHandler = (ctx: {
 /**
  * The routed report's own wall: the handoff allowance plus a fraction of headroom.
  *
- * The allowance is the time the run was already told the report owns, but not the time it needs:
- * the per-call git and forge ceilings on the reporting path sum past it (570 s against the 480 s
- * default), so a bound equal to the allowance cuts a report in which nothing hung and loses the
- * rewind. The bound is therefore allowance × (1 + {@link REPORT_BOUND_HEADROOM_RATIO}) — 480 s ×
- * 1.2 = 576 s covers that sum and still fires strictly before the grace. `handoffAllowanceMs()` is
- * what the bound multiplies; {@link REPORT_BOUND_HEADROOM_RATIO} is the one place the ratio is read.
- * The headroom is a RATIO of the allowance because the allowance is the knob an operator moves
- * (`PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`).
+ * The allowance is the time the run was already told the report owns, but not the time it needs: the
+ * per-call git and forge ceilings on the reporting path sum past it, so a bound equal to the allowance
+ * cuts a report in which nothing hung and loses the rewind. Hence allowance × (1 +
+ * {@link REPORT_BOUND_HEADROOM_RATIO}), which still fires strictly before the grace. The headroom is a
+ * RATIO of the allowance because the allowance is the knob an operator moves.
  *
- * The limit on it is the child-bound grace (`PI_ENSEMBLE_CHILD_BOUND_GRACE_MS`), past which the
- * run is killed and the kill — not the handback — is what gets recorded.
- * `test-lean-report-bound-ceiling.ts` is the witness: it reads both shipped constants and holds the
- * bound strictly inside that grace.
+ * The limit on it is the child-bound grace, past which the run is killed and the kill — not the
+ * handback — is what gets recorded. `test-lean-report-bound-ceiling.ts` holds the bound strictly
+ * inside that grace.
  */
 export function handoffReportBoundMs(): number {
   return Math.round(handoffAllowanceMs() * (1 + REPORT_BOUND_HEADROOM_RATIO));
@@ -125,7 +119,7 @@ export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | u
       // Branded object rather than a sentinel string: `Outcome.kind` is an open `string`.
       const settled = await Promise.race([call, overrun]);
       if ("overrun" in settled) {
-        // Disclosed on the same UNGATED channel as the throw arm beside it: the run loses its report.
+        // UNGATED channel, as the throw arm beside it: the run loses its report.
         traceWarn(
           `lean #${String(req.issue)} ${key} bound reached: ${reportBoundSentence(boundMs)} — the run takes the plain deadline stamp`,
         );
@@ -149,9 +143,8 @@ export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | u
 }
 
 /**
- * The reason line a routed run carries: the report's own reason leads (it answers why what the
- * operator was sent is not what the gate approved), and the refused step is named so a reader can
- * tell this from a plain deadline stop.
+ * The reason line a routed run carries: the report's own reason leads, and the refused step is named
+ * so a reader can tell this from a plain deadline stop.
  */
 function reportReason(stoppedAt: LeanState, outcome: Outcome): string {
   const said =
@@ -182,15 +175,15 @@ export interface DeadlineStop {
 /**
  * Stop a run whose deadline refused a working step, and return the ended run.
  *
- * Most such runs are stamped where they stand — but a run whose newest work step is a `fixed`
- * review holds origin over bytes no gate certified, and the step that says so (and moves origin
- * back) is `handback`, so the run is routed to the report. The predicate reads the same log the
- * reporting step reads, and a run with no reporting step built takes the plain stamp.
+ * Most such runs are stamped where they stand — but a run whose newest work step is a `fixed` review
+ * holds origin over bytes no gate certified, and the step that says so (and moves origin back) is
+ * `handback`, so the run is routed to the report. A run with no reporting step built takes the plain
+ * stamp.
  *
  * The report lands its verdict through `end` — the writer every terminal stamp uses — not through
  * `apply()` on an entry the table never routed. The log keeps the unanswered entry the loop wrote
- * ahead, which is the premise `handback-heads.ts` acts on; the fold consequence is `isReportRoute`
- * in `resume.ts`. Nothing here starts WORK: the only handler reached is the reporting one.
+ * ahead, which is the premise `handback-heads.ts` acts on. Nothing here starts WORK: the only handler
+ * reached is the reporting one.
  */
 export async function stopForDeadline(stop: DeadlineStop): Promise<LeanRun> {
   const { run, stoppedAt, deadline, now } = stop;
