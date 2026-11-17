@@ -12,6 +12,7 @@
  * would each read it differently.
  */
 
+import { mappingDisagrees } from "../pi-spec-map.ts";
 import { type PiSpec, parsePiSpec, readiness, renderPiSpec } from "./spec.ts";
 
 /** The persisted derivation: the spec, the model that drafted it, and the epoch ms
@@ -65,6 +66,11 @@ export function derivedSpecProblem(value: unknown): string | undefined {
       return `derivedSpec.spec criterion ${c.id} verifies by "${c.verify}" — a derived contract is tests only`;
   if (back.spec.scope !== undefined)
     return "derivedSpec.spec declares a scope — a derived contract has none";
+  // …and the mapper's own shape (its embedding ceiling and its size band), asked of
+  // the leaf that enforces them: `readiness` polices neither, so without this a
+  // hand-edited 9-criteria block stamped `M` would be served to nine steps.
+  const mapping = mappingDisagrees(back.spec);
+  if (mapping !== undefined) return quoted(`derivedSpec.spec is not a mapping: ${mapping}`);
   return undefined;
 }
 

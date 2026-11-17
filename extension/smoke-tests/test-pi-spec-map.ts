@@ -22,6 +22,7 @@ import {
   PROBLEM_MAX_CHARS,
   clip,
   criterionText,
+  mappingDisagrees,
   neutraliseFenceRuns,
   oneLine,
   piSpecFromBullets,
@@ -175,6 +176,43 @@ for (const [problem, bullets, label] of [
   assert(
     !/[\ud800-\udbff]$/.test(cut),
     "a trailing high surrogate is dropped rather than left dangling",
+  );
+}
+
+// ── `mappingDisagrees` is what a persisted contract is checked against: only what
+// the mapper itself enforces, so it cannot refuse a contract the mapper produces.
+{
+  const built = piSpecFromBullets(
+    "p",
+    Array.from({ length: 12 }, (_, i) => `b${String(i)}`),
+  );
+  assert(
+    built !== undefined && mappingDisagrees(built) === undefined,
+    "a spec the mapper produced never disagrees with the mapper — 12 bullets and all",
+  );
+  const mk = (n: number, size: "S" | "M" | "L") => ({
+    criteria: Array.from({ length: n }, (_, i) => ({
+      id: `AC${String(i + 1)}`,
+      text: `c${String(i)}`,
+      verify: "test" as const,
+    })),
+    size,
+  });
+  assert(
+    mappingDisagrees(mk(9, "L")) === undefined,
+    "a 9-criterion block honestly stamped L agrees with the mapper — whether that is too big for one run is `readiness`'s call, not this leaf's",
+  );
+  assert(
+    mappingDisagrees(mk(9, "M"))?.includes("stamped") === true,
+    "…but the same count stamped M is refused: a mapping counts the embedded criteria, so the band is derived, not declared",
+  );
+  assert(
+    mappingDisagrees(mk(13, "L")) !== undefined,
+    "…but a count past the embedding ceiling is, whatever band it carries",
+  );
+  assert(
+    mappingDisagrees(mk(2, "M"))?.includes("stamped") === true,
+    "…and a band that disagrees with the count names the stamp",
   );
 }
 

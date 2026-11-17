@@ -438,11 +438,16 @@ async function reviewPass(
     // still owes the reader what the gate said), in the order and with the failure
     // handling `postReviewDisclosures` states. What the forge refused travels out through
     // `lost`, which `reviewOutcome` reads once this `finally` has settled it.
-    postsOwed = await postReviewDisclosures(deps, repoRoot, issue, ctx.steps, issueBody, head, {
-      pr,
-      acceptanceTable,
-      bound: boundRecord,
-    });
+    postsOwed = await postReviewDisclosures(
+      deps,
+      repoRoot,
+      issue,
+      ctx.steps,
+      issueBody,
+      head,
+      { pr, acceptanceTable, bound: boundRecord },
+      ctx.run,
+    );
     lost.owed = postsOwed;
     // Scoped to THIS attempt's trees (issue, attempt, epoch) — see `closeFixTrees`.
     // An unscoped `-fix-` match would tear down a concurrent attempt's live tree.

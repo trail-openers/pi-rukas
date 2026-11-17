@@ -222,6 +222,54 @@ const realFrozen = (repoRoot: string, head: string): Record<string, string> => (
     acceptanceComment(logFor(head), ISSUE_BODY, head).includes(section(head)),
     "(b) acceptanceComment is the section plus its head anchor, nothing else",
   );
+  // The regression, at the surface that had the bug: the step's own post path for a
+  // run whose contract the record holds rather than the issue. A prose body with a
+  // derived spec on the run rendered `""` at the comment (so nothing posted) while
+  // the briefs were handed a full table — the disclosure existed everywhere but the
+  // one place a PR reviewer would read it.
+  {
+    const derivedBody = "Add a quota check to the meter, in prose only.\n";
+    const derivedRun = {
+      spec: {
+        problem: "The meter must refuse the draw once the quota is spent.",
+        criteria: CRITERIA.map((c) => ({ ...c })),
+        size: "M" as const,
+      },
+      model: "some/model",
+      at: 1_700_000_000_000,
+    };
+    const { repoRoot, baseSha } = makeRepo();
+    const dHead = await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
+    const dPosts: string[] = [];
+    const dCtx = ctxFor(repoRoot, baseSha, BRANCH);
+    dCtx.run = { ...dCtx.run, derivedSpec: derivedRun };
+    dCtx.steps.push(...logFor(dHead, realFrozen(repoRoot, dHead)));
+    const derivedStep = await runStep(
+      dCtx,
+      depsWith({
+        fetchIssueBody: async () => derivedBody,
+        prComment: async (_repo, _pr, bodyText) => {
+          dPosts.push(bodyText);
+        },
+        lens: async (a) => lensRoundFor({ wave: a.wave, since: a.since, head: a.head }, "APPROVED", []),
+        adversarial: async () => result({ loopOutcome: "approved" }),
+      }),
+    );
+    assert(
+      derivedStep.outcome !== undefined && derivedStep.threw === undefined,
+      `(b) the derived run's step passed (${String(derivedStep.outcome?.kind)})`,
+    );
+    assert(
+      dPosts.filter((p) => p.startsWith("## The acceptance table")).length === 1,
+      `(b) a derived run posts exactly ONE acceptance comment (${String(dPosts.filter((p) => p.startsWith("## The acceptance table")).length)}: ${JSON.stringify(dPosts.map((p) => p.slice(0, 24)))}) — the mutant: dropping the record at the post site, which posts none and leaves every other file green`,
+    );
+    assert(
+      renderAcceptanceSection(logFor(dHead), derivedBody, { derivedSpec: derivedRun }) !== "" &&
+        (dPosts[0] ?? "").includes("AC1") &&
+        (dPosts[0] ?? "").includes(`pass at ${dHead.slice(0, 12)}`),
+      "(b) …and that comment is the table of the DERIVED criteria, at the head the gate certified",
+    );
+  }
   cleanupRoots();
 }
 

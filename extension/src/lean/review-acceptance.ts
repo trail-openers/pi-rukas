@@ -240,8 +240,9 @@ export function acceptanceComment(
   steps: Step[],
   issueBody: string | undefined,
   reviewedHead: string,
+  run: ContractSource = {},
 ): string {
-  const section = renderAcceptanceSection(steps, issueBody);
+  const section = renderAcceptanceSection(steps, issueBody, run);
   if (section === "") return "";
   const same = certifiedHead(steps) === reviewedHead;
   return `${section}\n\nReviewed head: \`${oneLine(reviewedHead, HEAD_MAX_CHARS)}\` — the commit the gates read, ${

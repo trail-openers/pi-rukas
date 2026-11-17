@@ -209,9 +209,12 @@ export async function deriveSpecForRun(
   baseSha: string,
   body: string,
 ): Promise<PiSpec> {
-  const title = await deps
-    .issueTitle(repoRoot, issue)
-    .catch((err: unknown) => oneLine(String((err as Error)?.message ?? err), 200) && "");
+  // A missing title is not fatal (the body is the substance); the cause is traced, not
+  // discarded, so a run that derived from no title is tellable.
+  const title = await deps.issueTitle(repoRoot, issue).catch((err: unknown) => {
+    traceDerive(issue, "refused", `title read: ${String((err as Error)?.message ?? err)}`);
+    return "";
+  });
   const config = await deps.loadConfig(repoRoot, baseSha);
   return deriveSpec({ title, body }, deps.dispatch, {
     budget: deriveBudget(config),

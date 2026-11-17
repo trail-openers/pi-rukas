@@ -127,6 +127,22 @@ export function problemText(problem: string): string {
   return clip(neutraliseFenceRuns(oneLine(problem)), PROBLEM_MAX_CHARS);
 }
 
+/** Whether a block is one {@link piSpecFromBullets} could have produced, or the
+ * disagreement to report. Its own function because the two callers read different
+ * fields — `criteria`/`size` (a caller validating a spec, not a block) and `verify`/
+ * `scope` (the load gate for a spec a model could never have made executable) — and
+ * must not answer them twice. Only `size` is checked against the count, never the
+ * count itself: this leaf bounds what a mapping embeds, it does not decide when a
+ * change is too big for one run — `readiness`'s size-`L` rule owns that. */
+export function mappingDisagrees(spec: Pick<PiSpec, "criteria" | "size">): string | undefined {
+  const n = spec.criteria.length;
+  if (n > MAX_CRITERIA)
+    return `carries ${String(n)} criteria where a mapping embeds ${String(MAX_CRITERIA)}`;
+  if (spec.size !== sizeOf(n))
+    return `is stamped ${spec.size} for ${String(n)} criteria where the mapping says ${sizeOf(n)}`;
+  return undefined;
+}
+
 /**
  * The bullets → the contract, bounded by construction: positional ids `AC1…`,
  * every criterion `verify: "test"` with no command, at most

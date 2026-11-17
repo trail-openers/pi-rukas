@@ -172,6 +172,40 @@ function runWith(derived?: DerivedSpec) {
       `…and the shared validator refuses ${label} too`,
     );
   }
+  // The count rule beside the other two: the mapper embeds at most 12, so a longer
+  // list is no derivation — and `readiness` alone would carry one whose `size` lied
+  // about its own length (9 or 12 criteria marked `M`, which no mapping produces).
+  const many = (n: number, size: PiSpec["size"]): PiSpec => ({
+    ...SPEC,
+    criteria: Array.from({ length: n }, (_, i) => ({
+      id: `AC${String(i + 1)}`,
+      text: `criterion ${String(i + 1)}`,
+      verify: "test" as const,
+    })),
+    size,
+  });
+  for (const [n, size] of [
+    [9, "M"],
+    [12, "M"],
+    [13, "M"],
+  ] as const) {
+    assert(
+      bad({ spec: many(n, size), model: "m", at: 1 }).includes("criteria"),
+      `…${String(n)} criteria stamped size ${size} is refused at load, not served to nine steps`,
+    );
+  }
+  assert(
+    bad({ spec: many(3, "M"), model: "m", at: 1 }).includes("stamped"),
+    "…and a size band that disagrees with its own length is refused too, under the mapper's ceiling",
+  );
+  assert(
+    bad({ spec: many(8, "M"), model: "m", at: 1 }) === "",
+    "…and eight criteria (the derive brief's own ceiling) still loads",
+  );
+  assert(
+    bad({ spec: many(12, "L"), model: "m", at: 1 }).includes("ready"),
+    "…and the full 12 the mapper embeds is refused as size L, which readiness refuses",
+  );
   assert(
     derivedSpecProblem({ spec: SPEC, model: "m", at: 1 }) === undefined,
     "the shared validator accepts what the run validator accepts",
