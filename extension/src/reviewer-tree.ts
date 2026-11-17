@@ -15,13 +15,18 @@
  * tree, points the child's `cwd` at it, and removes it in a `finally`. Nothing
  * in `lens-review*.ts` or `adversarial.ts` knows the tree exists.
  *
- * Three rules this module keeps:
+ * Four rules this module keeps:
  *
  *   - **A tree is created only for a caller-named cwd that is a git worktree.**
  *     No cwd, or a plain directory, is not ours to relocate.
  *   - **The tree is created at a 40-char SHA, never a ref.** `HEAD` answers with
  *     whatever the tree holds at the moment of creation, and a review must be
  *     able to name the commit it read.
+ *   - **The child is told which code index to query.** The tree has no
+ *     codebase-memory index and no indexed root contains it, so a project
+ *     name derived from the child's cwd is "not found". The tree reports the
+ *     main checkout it was made from, and the spawn path names that project
+ *     in the child's prompt; the base index answers for unchanged files.
  *   - **Every failure falls back to the caller's cwd** and says so (the same
  *     fail-open-with-a-disclosed-reason rule as `plan-base-tree.ts`). A reviewer
  *     is a gate; gate plumbing that cannot start must not cost the gate its
@@ -60,6 +65,8 @@ export type ReviewerTree =
       cwd: string;
       /** Remove this tree. Best-effort; never throws. */
       release: () => Promise<void>;
+      /** The main checkout whose code index answers for this tree, when there is one. */
+      indexedRoot: string | undefined;
     }
   | { kind: "unisolated"; reason: string };
 
@@ -190,7 +197,35 @@ export async function openReviewerTree(
     // verified anything — so it is WARN-visible, not DEBUG-gated.
     traceWarn(`reviewer-tree: provisioning incomplete — ${provisioned.problem}`);
   }
-  return { kind: "tree", cwd: dir, release };
+  // The main checkout, not the reviewed cwd: a `.worktrees/` tree sits under
+  // it, so it is the root an index covering the reviewed tree was built for.
+  // A bare repo has no checkout to name.
+  const main = path.basename(commonDir) === ".git" ? path.dirname(commonDir) : undefined;
+  const indexedRoot = main && (await fs.realpath(main).catch(() => main));
+  return { kind: "tree", cwd: dir, release, indexedRoot };
+}
+
+/**
+ * The codebase-memory-mcp project name for `root`, as the server derives it
+ * (`cbm_project_name_from_path`), so a child needs no `list_projects` call.
+ * Names over 200 bytes, which the server shortens with a hash, are not covered.
+ */
+export function codebaseMemoryProject(root: string): string {
+  let name = "";
+  for (const byte of Buffer.from(root)) {
+    const c = String.fromCharCode(byte);
+    name += /[A-Za-z0-9._-]/.test(c) ? c : byte >= 0x80 ? byte.toString(16) : "-";
+  }
+  const trimmed = name
+    .replace(/-+/g, "-")
+    .replace(/\.+/g, ".")
+    .replace(/^[-.]+/, "");
+  return trimmed.replace(/-+$/, "") || "root";
+}
+
+/** The prompt note that points a reviewer child's code search at `root`'s index. */
+export function codeIndexNote(root: string, headSha: string): string {
+  return `[code index: this directory is a throwaway copy of ${root} at commit ${headSha} and has no code index of its own. Pass project "${codebaseMemoryProject(root)}" to every mcp__codebase_memory__* call. That index is of ${root}, so it answers for every file the diff did not change; read the changed files from this directory.]\n\n`;
 }
 
 /**
