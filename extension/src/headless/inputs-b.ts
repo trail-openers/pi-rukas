@@ -189,6 +189,16 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // only on `"0"`, which restores v0.14.71's specify (no probe, no submodule
   // call, exit 11 where the preflight would have handed back at 10).
   flag("LEAN_RUNNER_PREFLIGHT", true),
+  // #2319 — where a lean worktree's submodules are initialised FROM. On (the default)
+  // each first level is seeded from the superproject — its module store under
+  // `.git/modules/<path>`, else its populated checkout — through a per-path URL this
+  // harness computes, and one this host never held is disclosed rather than fetched;
+  // `0` puts the release's own `git submodule update --init --recursive` back byte for
+  // byte, listing probe included, for an operator whose submodule lives on a remote.
+  // The outer gate is `LEAN_RUNNER_PREFLIGHT`, which wins: with it at `0` no submodule
+  // code runs at all. The reader is `leanSubmodulesLocalEnabled` in
+  // lean/submodules-local-switch.ts.
+  flag("LEAN_SUBMODULES_LOCAL", true),
   // The rewind rule itself: reader `leanVerifiedHandbackEnabled`, same module.
   flag("LEAN_VERIFIED_HANDBACK", true),
   // Unset: derived from the host budget (CPUs, memory, pids.max); 0 = unbounded.

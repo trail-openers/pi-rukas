@@ -27,10 +27,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
-import type { ExecFn } from "../src/worktree.ts";
 import { resetWorktreeToBase } from "../src/lean/specify-reset.ts";
-import { gitTestEnv, trackedTempDir } from "./lib/git-test-env.ts";
+import type { ExecFn } from "../src/worktree.ts";
 import { withEnv } from "./lib/env-scope.ts";
+import { gitTestEnv, trackedTempDir } from "./lib/git-test-env.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -141,7 +141,10 @@ const submoduleCalls = (argvs: readonly (readonly string[])[]): readonly (readon
     threw === undefined,
     `(f) preparing the fresh tree does not throw (${threw?.message?.split("\n")[0] ?? "clean"})`,
   );
-  assert(existsSync(path.join(wt, INSIDE)) === true, "(f) the prepared tree has the submodule populated");
+  assert(
+    existsSync(path.join(wt, INSIDE)) === true,
+    "(f) the prepared tree has the submodule populated",
+  );
   // The sabotage: empty it as a stale tree would be, then reset again. A reset whose
   // initialisation sat OUTSIDE it leaves the directory empty and hands the child a
   // test it cannot collect.

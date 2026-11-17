@@ -314,9 +314,17 @@ export async function runTestPipeline(
   // run blocks nothing but is disclosed below either way.
   let baseCheck: FreezeCheck | undefined;
   let baseCheckRan = false;
+  // What the preparation's submodule pass could not supply. The reset above and the
+  // `prepare` below are where an unseeded gitlink is discovered, and this is the last
+  // place before the commit that will be built on that tree — so the caveat has to ride
+  // out on the reason, where the operator and the next step both read it. A step that
+  // knew the tree was incomplete and reported a clean `ok` is the failure this guards:
+  // the child's red would then read as a failing feature rather than a missing vendored
+  // import, and the commit would be reproduced against bytes nobody has.
+  let treeProblem: string | undefined;
   try {
     await resetWorktreeToBase(exec, wt, headBefore, branch);
-    await args.prepare();
+    treeProblem = (await args.prepare()).problem;
     if (args.freezeCheck !== undefined && captured.size > 0) {
       baseCheckRan = true;
       baseCheck = await runFreezeCheck(
@@ -328,6 +336,13 @@ export async function runTestPipeline(
     }
     writeCaptured(wt, captured);
   } catch (err) {
+    // A handback this window already named keeps its own words. The submodule pass raises
+    // `SpecifyInfraError` naming the command and git's reason for refusing it, and re-wrapping
+    // that here as "could not rewrite the captured tests" would attribute a transport failure
+    // to the file write that ran after it — the operator would repair the wrong thing. Only an
+    // error this window genuinely owns (a write that failed, a freeze check that could not run)
+    // is wrapped.
+    if (err instanceof SpecifyInfraError) throw err;
     if (err instanceof SpecifyResetError) throw new SpecifyInfraError(err.message);
     throw new SpecifyInfraError(
       `could not rewrite the captured tests in ${wt}: ${(err as Error).message}`,
@@ -419,6 +434,12 @@ export async function runTestPipeline(
       reason: [
         `no submitted test was red against ${headBefore}${skippedNote}`,
         lead,
+        // #2319 Resolution 4: every kind's reason carries the tree's caveat, and `empty` is the
+        // kind that needs it most. Its own reset is where an unseeded gitlink is discovered, and
+        // this is the record the operator reads to find out why nothing was frozen: a submitted
+        // test that died on a missing vendored import reads exactly like an adversary that wrote
+        // nothing red, unless the reason says the submodule was never populated.
+        treeProblem ?? "",
         [evidence, checkNote].filter((s) => s !== "").join(" "),
       ]
         .filter((s) => s !== "")
@@ -471,6 +492,7 @@ export async function runTestPipeline(
     droppedNote,
     dropNote(dropped),
     checkNote,
+    treeProblem ?? "",
   ]
     .filter((s) => s !== "")
     .join("; ");

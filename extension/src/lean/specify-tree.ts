@@ -36,9 +36,12 @@
  */
 
 import { existsSync, realpathSync } from "node:fs";
+import { traceWarn } from "../trace.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
 import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
+import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
+import { joinNotes } from "./text-fence.ts";
 export { type DroppedRow, NEWNESS_REASON, validateSubmitRows } from "./submit-tests-cap.ts";
 
 /** The worktree directory name for one issue's specify step. */
@@ -206,9 +209,15 @@ export async function ensureSpecifyWorktreeWithProvision(
     // path for a created tree and a leftover one, so neither can keep a link the
     // other did not — and the reset re-initialises the submodules the clean
     // emptied itself, whether or not this reset moved anything.
-    await resetWorktreeToBase(exec, wt, opts.fromRef, opts.branch, opts.beforeSubmoduleInit);
+    const notes = await resetWorktreeToBase(
+      exec,
+      wt,
+      opts.fromRef,
+      opts.branch,
+      opts.beforeSubmoduleInit,
+    );
     const provision = await provisionWorktree(exec, opts.repoRoot, wt);
-    return { wt, linked: provision.linked, ...problemOf(provision) };
+    return { wt, linked: provision.linked, ...problemOf(provision, notes, wt) };
   }
   const name = specifyWorktreeName(opts.issue);
   const created = await worktreeCreate(exec, {
@@ -221,9 +230,15 @@ export async function ensureSpecifyWorktreeWithProvision(
   // is pointed at the base rather than left detached at it — the commit that
   // freezes the tests is then a commit ON the run's branch. `resetWorktreeToBase`
   // does the `-B` and the `--hard` together and then proves the tree got there.
-  await resetWorktreeToBase(exec, tree, opts.fromRef, opts.branch, opts.beforeSubmoduleInit);
+  const notes = await resetWorktreeToBase(
+    exec,
+    tree,
+    opts.fromRef,
+    opts.branch,
+    opts.beforeSubmoduleInit,
+  );
   const provision = await provisionWorktree(exec, opts.repoRoot, tree);
-  return { wt: tree, linked: provision.linked, ...problemOf(provision) };
+  return { wt: tree, linked: provision.linked, ...problemOf(provision, notes, tree) };
 }
 
 /**
@@ -246,9 +261,27 @@ async function headDescends(exec: ExecFn, wt: string, sha: string): Promise<bool
   throw new Error(`could not tell whether HEAD in ${wt} descends from ${sha}`);
 }
 
-/** The `problem` field of a provisioning result, spread only when present. */
-function problemOf(p: { problem?: string }): { problem?: string } {
-  return p.problem === undefined ? {} : { problem: p.problem };
+/**
+ * The `problem` field of a provisioning result, spread only when present — with the
+ * submodule clause appended when the reset's pass could not supply one.
+ *
+ * Both notes share one field because they are the same kind of thing: a step that went
+ * ahead on an incomplete tree, and said so. Provisioning's own wording stays verbatim in
+ * front, since that is the sentence its gates and its tests quote. The trace line is the
+ * durable record — this `problem` reaches a driver note and a trace, and nothing else;
+ * the steps whose verdicts a missing submodule actually corrupts (`challenge`, `build`,
+ * the review fix round) fold `submoduleNoteClause` into their own reasons instead.
+ */
+function problemOf(
+  p: { problem?: string },
+  notes: readonly SubmoduleNote[],
+  wt: string,
+): { problem?: string } {
+  const note = submoduleNoteClause(notes);
+  if (note === undefined) return p.problem === undefined ? {} : { problem: p.problem };
+  traceWarn(`lean worktree ${wt}: ${note}`);
+  const parts = [p.problem, note].filter((x): x is string => x !== undefined && x !== "");
+  return { problem: joinNotes(parts) };
 }
 
 /** A porcelain `v1 -z` record: the status letters and the path. */

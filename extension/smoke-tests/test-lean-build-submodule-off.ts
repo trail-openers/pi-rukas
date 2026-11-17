@@ -23,18 +23,23 @@
  * restatement of (a).
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
+import { emptyRunningState } from "../src/progress.ts";
+import { defaultConfig } from "../src/lean/config.ts";
 import { withEnv } from "./lib/env-scope.ts";
+import { buildFixture, runBuild } from "./lib/lean-build-fixture.ts";
+import { configWithRunner } from "./lib/lean-build-asserts.ts";
 import {
   INSIDE,
+  SUB,
   attachSubmodule,
   makeSubmoduleUnfetchable,
+  moduleStores,
   putIn,
   remoteRepo,
   submoduleCalls,
 } from "./lib/lean-submodule-off-fixture.ts";
-import { buildFixture, runBuild } from "./lib/lean-build-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -48,9 +53,19 @@ function assert(cond: boolean, msg: string): void {
 /**
  * One build round over a base whose submodule has no source left.
  */
-async function drive(issue: number): Promise<{
+async function drive(
+  issue: number,
+  // Which arm of the inner rule the fold runs on. `undefined` keeps the shipped default (local
+  // seeding); `"0"` selects the release's single `submodule update --init --recursive` — the
+  // only arm that hands a recorded URL to git, and so the only one (b) can control.
+  local?: "0",
+  // The OUTER gate. `"0"` makes the step ask git to populate nothing at all — which is (a)'s
+  // claim, and also why the disclosure cannot be asserted there: with no pass there is nothing
+  // to disclose, and the switch's whole contract is that the run looks as if it never had one.
+  preflight?: "0",
+): Promise<{
   threw?: Error;
-  outcome?: { kind?: string };
+  outcome?: { kind?: string; reason?: string };
   submoduleArgv: readonly (readonly string[])[];
   committed: string;
   /** Whether the submodule's file exists in the run's tree AFTER the step returned. */
@@ -58,32 +73,76 @@ async function drive(issue: number): Promise<{
 }> {
   const built = buildFixture(issue);
   const remote = remoteRepo("build-off");
-  // The gitlink joins the run's BRANCH at `headBefore` — the commit the fold
-  // resets to and the commit it commits its kept files on top of — so the reset is
-  // the thing that has to put the submodule back, and it is committed where the
-  // fold's `reset --hard headBefore` will find it.
   attachSubmodule(built.worktree, remote, "add the vendored submodule");
-  const headWithSub = gitHead(built.worktree);
+  // The commit the fold resets to is the gitlink's own commit — read BEFORE anything is
+  // taken away, because `makeSubmoduleUnfetchable` removes the bytes that make the
+  // gitlink's tree checkable, and a head read after it would be a head the fixture could
+  // not verify. Nothing else here commits, so the branch tip stays this commit and the
+  // reset rebuilds a tree that carries the submodule entry.
+  const headBefore = gitHead(built.worktree);
+  if (headBefore === built.headBefore)
+    throw new Error(
+      `the build submodule fixture's gitlink commit is not the branch tip the fold resets to (${headBefore})`,
+    );
+  if (git(built.worktree, "ls-tree", headBefore, SUB).split(" ")[0] !== "160000")
+    throw new Error(
+      `the build submodule fixture's base holds no gitlink at ${SUB} in ${headBefore} — both arms would test nothing`,
+    );
+  if (git(built.worktree, "rev-parse", "HEAD") !== headBefore)
+    throw new Error(
+      `the build submodule fixture read its head from a tree the run does not work in (${headBefore})`,
+    );
+  // The sabotage, and it has to be complete before the switch's control arm runs: the
+  // source deleted, the checkout emptied, and the SUPERPROJECT's own copy of the objects
+  // gone too. Any local copy left behind and the seeding arm of #2319 restores the
+  // submodule, the fold does not throw, and the control below reads "no throw" as though
+  // the step had recovered — the opposite of what this file exists to pin.
   makeSubmoduleUnfetchable(remote, built.worktree);
+  // The seeding arm of #2319 looks in the SUPERPROJECT, not the run's worktree: a linked
+  // tree's `rev-parse` answers name its own gitdir, and the operator's copy of the
+  // objects lives under the superproject's shared store. Deleting only what the worktree
+  // names therefore leaves a control that silently seeds, does not throw, and reports "no
+  // throw" as though the step had recovered — the precise opposite of what (b) pins. So
+  // both trees are swept, and the check is asked of both.
+  const swept = new Set([...moduleStores(built.worktree), ...moduleStores(built.repoRoot)]);
+  for (const dir of swept) rmSync(path.join(dir, "modules"), { recursive: true, force: true });
+  if ([...swept].some((dir) => existsSync(path.join(dir, "modules", "vendor"))))
+    throw new Error(
+      `the build submodule fixture left a module store behind in ${built.repoRoot} — the control would seed instead of failing`,
+    );
 
-  const r = await runBuild({
-    issue,
-    built: { ...built, headBefore: headWithSub },
-    // The child commits its work itself, so `classify` finds a change and the fold
-    // reaches its reset. The fold forgives a great deal: a child that produced
-    // nothing ends in `exhausted`, a child that broke the contract ends in `blocked`,
-    // and neither route reaches a throw — so the control arm cannot be "a child that
-    // changed nothing", it has to be a round that WOULD have committed.
-    child: (wt) => {
-      write(wt, "src/feature.ts", "export const f = 1;\n");
-      commit(wt, "build: the child's work");
-    },
-  });
+  let r: Awaited<ReturnType<typeof runBuild>> | undefined;
+  const run = async (): Promise<void> => {
+    r = await runBuild({
+      issue,
+      built: { ...built, headBefore },
+      // The child commits its work itself, so `classify` finds a change and the fold
+      // reaches its reset. The fold forgives a great deal: a child that produced
+      // nothing ends in `exhausted`, a child that broke the contract ends in `blocked`,
+      // and neither route reaches a throw — so the control arm cannot be "a child that
+      // changed nothing", it has to be a round that WOULD have committed.
+      child: (wt) => {
+        write(wt, "src/feature.ts", "export const f = 1;\n");
+        commit(wt, "build: the child's work");
+      },
+    });
+  };
+  await (
+    local === undefined && preflight === undefined
+      ? run()
+      : withEnv(
+          {
+            ...(local === undefined ? {} : { PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: local }),
+            ...(preflight === undefined ? {} : { PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: preflight }),
+          },
+          run,
+        )
+  );
   return {
-    threw: r.threw,
-    outcome: r.outcome,
-    submoduleArgv: submoduleCalls(r.gitArgvs),
-    committed: r.headAfter,
+    threw: r?.threw,
+    outcome: r?.outcome,
+    submoduleArgv: submoduleCalls(r?.gitArgvs ?? []),
+    committed: r?.headAfter ?? "",
     // Read after the step returned, so it is the OUTCOME of the reset rather than
     // a claim about it: the switch-on arm's call ran and did not put the file back.
     insideAfter: existsSync(path.join(built.worktree, INSIDE)),
@@ -139,9 +198,14 @@ function commit(wt: string, message: string): void {
   );
 }
 
-// ── (b) the control: the same fold throws, naming the submodule step
+// ── (b) the control: the same fold on the arm that asks git, throwing
 {
-  const on = await drive(912);
+  // (a) is the OUTER switch at `0` — the claim being that the step then issues nothing about
+  // submodules. The control has to be the same fold on the arm that DOES ask git. Under #2319's
+  // local rule a sabotaged submodule with no local copy is a disclosure, not a failure, so a
+  // local-arm fold that quietly succeeds separates nothing; `=0` selects the release's single
+  // `submodule update --init --recursive`, which is handed the recorded URL and must fail on it.
+  const on = await drive(912, "0");
   assert(
     on.threw !== undefined && /submodule/i.test(on.threw.message),
     `(b) the same fold DOES throw with the switch on (${on.threw?.constructor.name}: ${on.threw?.message.split("\n")[0] ?? "no throw"})`,
@@ -153,6 +217,65 @@ function commit(wt: string, message: string): void {
   assert(
     on.insideAfter === false,
     `(b) and its recovery FAILED — the tree the fold left still held no submodule (found ${String(on.insideAfter)}), which is what the throw says`,
+  );
+}
+
+// ── (c) #2319 Resolution 4: the fold says the disclosure in its OWN reason
+{
+  // The arm that owes it: preflight ON (so a pass actually ran and had something to report) and
+  // the local rule ON (so the missing submodule is a disclosure rather than a hand-back). The
+  // fold commits bytes built against a tree with nothing at that path, and the reason line is the
+  // only surface a reader judging the commit has — the log is not it. Deleting the
+  // `report.submodules ?? ""` entry from the fold's `joinNotes` in `build.ts` turns this red.
+  const folded = await drive(913);
+  assert(
+    folded.threw === undefined && folded.outcome?.kind === "ok",
+    `(c) the fold ran over the sabotaged submodule and committed (${folded.threw?.message?.split("\n")[0] ?? `kind ${String(folded.outcome?.kind)}`})`,
+  );
+  assert(
+    folded.outcome?.reason?.includes(SUB) === true &&
+      /seeded nothing there/.test(folded.outcome?.reason ?? ""),
+    `(c) and the fold's own reason carries the submodule disclosure, not just the trace (reason ${JSON.stringify(folded.outcome?.reason)})`,
+  );
+}
+
+// ── (d) #2319 Resolution 4: the BUDGET-stopped fold carries it too
+{
+  // The fold a ceiling stops is a DIFFERENT call site from (c)'s: `foldStoppedBuild` builds its
+  // verdict's reason itself rather than through the `ok` arm's `joinNotes`, so a disclosure
+  // folded into one can be missing from the other. Same shape as the field bug — the run hands
+  // back a budget verdict, and the tree its commit was built on held nothing at that path.
+  const BUILD_TURNS = 3;
+  const built = buildFixture(914);
+  const remote = remoteRepo("build-stopped");
+  attachSubmodule(built.worktree, remote, "add the vendored submodule");
+  const headBefore = gitHead(built.worktree);
+  makeSubmoduleUnfetchable(remote, built.worktree);
+  const swept = new Set([...moduleStores(built.worktree), ...moduleStores(built.repoRoot)]);
+  for (const dir of swept) rmSync(path.join(dir, "modules"), { recursive: true, force: true });
+  let r: Awaited<ReturnType<typeof runBuild>> | undefined;
+  r = await runBuild({
+    issue: 914,
+    built: { ...built, headBefore },
+    config: {
+      ...configWithRunner(),
+      budgets: { ...defaultConfig().budgets, build: { turns: BUILD_TURNS, tokens: 0, minutes: 0 } },
+    },
+    child: (wt) => {
+      write(wt, "src/feature.ts", "export const f = 1;\n");
+      commit(wt, "build: the child's work");
+    },
+    onProgressTick: (onProgress) =>
+      onProgress?.({ ...emptyRunningState("developer"), turns: BUILD_TURNS + 1 }),
+  });
+  const outcome = r?.outcome as { kind?: string; reason?: string } | undefined;
+  assert(
+    outcome?.kind === "budget",
+    `(d) the round stopped at its own ceiling and gave a budget verdict (got ${JSON.stringify(outcome?.kind)}, threw ${r?.threw?.message?.split("\n")[0] ?? "no"})`,
+  );
+  assert(
+    outcome?.reason?.includes(SUB) === true && /seeded nothing there/.test(outcome?.reason ?? ""),
+    `(d) and the budget verdict's reason carries the submodule disclosure too (reason ${JSON.stringify(outcome?.reason)})`,
   );
 }
 

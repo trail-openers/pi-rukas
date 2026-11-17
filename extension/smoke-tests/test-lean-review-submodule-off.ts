@@ -28,19 +28,12 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { withEnv } from "./lib/env-scope.ts";
-import {
-  INSIDE,
-  attachSubmodule,
-  makeSubmoduleUnfetchable,
-  remoteRepo,
-  submoduleCalls,
-} from "./lib/lean-submodule-off-fixture.ts";
 import { put } from "./lib/lean-build-fixture.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   BRANCH,
-  FIXER_ROLE,
   type DispatchSpec,
+  FIXER_ROLE,
   cleanupRoots,
   ctxFor,
   depsWith,
@@ -52,6 +45,14 @@ import {
   runStep as run,
   setup,
 } from "./lib/lean-review-fixtures.ts";
+import {
+  INSIDE,
+  SUB,
+  attachSubmodule,
+  makeSubmoduleUnfetchable,
+  remoteRepo,
+  submoduleCalls,
+} from "./lib/lean-submodule-off-fixture.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -64,7 +65,7 @@ const { assert, failures } = makeAssert();
  * the submodule is in every commit the reset can land on and the step's `clean
  * -fdx` is what empties it.
  */
-async function drive(tag: string) {
+async function drive(tag: string, local?: "0", preflight?: "0") {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
   // The submodule's source is deleted before ANY checkout of it exists — the run's
@@ -100,15 +101,29 @@ async function drive(tag: string) {
       return result({ role: FIXER_ROLE });
     },
   });
-  const { outcome, threw } = await run(
-    ctxFor(repoRoot, baseSha, BRANCH),
-    {
+  let outcome: Awaited<ReturnType<typeof run>>["outcome"] | undefined;
+  let threw: Awaited<ReturnType<typeof run>>["threw"];
+  const round = async (): Promise<void> => {
+    ({ outcome, threw } = await run(ctxFor(repoRoot, baseSha, BRANCH), {
       ...inner,
       exec: (cmd, o) => {
         if (cmd === "git" && o?.argv !== undefined) argvs.push([...o.argv]);
         return inner.exec(cmd, o);
       },
-    },
+    }));
+  };
+  // The inner switch selects WHICH submodule call the integration's reset makes; `undefined`
+  // keeps the shipped local arm, `"0"` the release's own. See (b) for why the control needs it.
+  await (
+    local === undefined && preflight === undefined
+      ? round()
+      : withEnv(
+          {
+            ...(local === undefined ? {} : { PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: local }),
+            ...(preflight === undefined ? {} : { PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: preflight }),
+          },
+          round,
+        )
   );
   return {
     outcome,
@@ -154,9 +169,14 @@ async function drive(tag: string) {
   );
 }
 
-// ── (b) the control: the same round throws, naming the submodule step
+// ── (b) the control: the same round on the arm that asks git, throwing
 {
-  const on = await drive("on");
+  // (a) is the OUTER switch at `0`, whose claim is that the step then issues nothing about
+  // submodules; the control has to be the same round on the arm that DOES ask git. Under #2319's
+  // local rule a sabotaged submodule with no local copy is a disclosure rather than a failure,
+  // so a local-arm round that succeeds separates nothing. `=0` selects the release's single
+  // `submodule update --init --recursive`, which is handed the recorded URL and must fail on it.
+  const on = await drive("on", "0");
   assert(
     on.threw !== undefined && /submodule/i.test(on.threw.message),
     `(b) the same round DOES throw with the switch on (${on.threw?.constructor.name}: ${on.threw?.message.split("\n")[0] ?? "no throw"})`,
@@ -168,6 +188,28 @@ async function drive(tag: string) {
   assert(
     on.insideAfter === false,
     "(b) and its recovery FAILED — the tree the step handed on still held no submodule, which is what the throw says",
+  );
+}
+
+// ── (c) #2319 Resolution 4: the fix round says the disclosure in the step's OWN reason
+{
+  // The arm that owes it: preflight ON, so a pass ran and had something to report. A fix
+  // integrated from a tree whose submodule was never populated is a fix nobody can re-run, and
+  // the reason the caller composes is what lands on the run record, the PR and the handoff — the
+  // surfaces an operator who never opens the log sees. Deleting the `submodules` field from
+  // `fixRound`'s return in `review-git.ts`, or the `fixDisclosure` fold in `review.ts`, turns
+  // this red.
+  const folded = await drive("fold");
+  assert(
+    folded.threw === undefined && folded.origin !== folded.baseSha,
+    `(c) the round integrated and pushed over the sabotaged submodule (${folded.threw?.message?.split("\n")[0] ?? `origin ${folded.origin.slice(0, 12)}`})`,
+  );
+  assert(
+    (folded.outcome as { reason?: string } | undefined)?.reason?.includes(SUB) === true &&
+      /seeded nothing there/.test(
+        (folded.outcome as { reason?: string } | undefined)?.reason ?? "",
+      ),
+    `(c) and the step's own reason carries the submodule disclosure, not just the trace (reason ${JSON.stringify((folded.outcome as { reason?: string } | undefined)?.reason)})`,
   );
 }
 

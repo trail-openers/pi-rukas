@@ -58,10 +58,7 @@ export function putIn(dir: string, rel: string, text: string, mode?: number): vo
  * configure the same run, and `protocol.file.allow` is `denied by default` since
  * git's CVE-2022-39253 hardening, so it must be stated where git can see it.
  */
-export const SUBMODULE_ADD_FLAGS = [
-  "-c",
-  "protocol.file.allow=always",
-] as const;
+export const SUBMODULE_ADD_FLAGS = ["-c", "protocol.file.allow=always"] as const;
 
 /**
  * A standalone repo to mount as a submodule, with one committed file.
@@ -149,7 +146,7 @@ export function makeSubmoduleUnfetchable(remote: string, tree: string): void {
  * join. All of them are tried, because guessing wrong here does not fail loudly —
  * it silently makes a control pass.
  */
-function moduleStores(tree: string): string[] {
+export function moduleStores(tree: string): string[] {
   const dirs = new Set<string>();
   for (const arg of ["--git-common-dir", "--git-dir", "--absolute-git-dir"]) {
     const r = spawnSync("git", ["rev-parse", arg], {

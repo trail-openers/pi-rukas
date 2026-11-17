@@ -60,15 +60,27 @@ export function repoWithSubmodule(
   url?: string,
   from?: string,
 ): { repoRoot: string; baseSha: string } {
-  const remote = from ?? makeRepo({ lib: "the submodule's own content\n" }).repoRoot;
+  const remote = from ?? submoduleRemote().repoRoot;
   const { repoRoot } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
   addSubmodule(repoRoot, remote, SUB);
   if (url !== undefined) {
     const gitmodules = path.join(repoRoot, ".gitmodules");
     writeFileSync(gitmodules, readFileSync(gitmodules, "utf8").replace(/url = .*/, `url = ${url}`));
+    // The module store has to go as well as the checkout, or the "cannot be fetched"
+    // case is not one: git completes `submodule update` from the objects the
+    // superproject already holds and the unreachable URL is never contacted — which is
+    // exactly what would make the infrastructure cases below pass for the wrong reason.
     rmSync(path.join(repoRoot, SUB), { recursive: true, force: true });
+    rmSync(path.join(repoRoot, ".git", "modules", ...SUB.split("/")), {
+      recursive: true,
+      force: true,
+    });
   }
   git(repoRoot, "add", "-A");
+  if (url !== undefined && git(repoRoot, "status", "--porcelain").trim() === "")
+    throw new Error(
+      "the un-fetchable submodule fixture staged nothing — the sabotage would be invisible",
+    );
   git(
     repoRoot,
     "commit",

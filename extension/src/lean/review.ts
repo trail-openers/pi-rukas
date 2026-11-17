@@ -80,7 +80,7 @@ import { assertHeadIsVerified, renderAcceptanceSection } from "./review-acceptan
 import { type StepStop, reviewBoundRecord, stepBound, unjudgedLenses } from "./review-bound.ts";
 import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
-import { fixRound, reviewedHead } from "./review-git.ts";
+import { fixRound, noteFixDisclosure, reviewedHead } from "./review-git.ts";
 import {
   fixRunId,
   fixRunIdFromLog,
@@ -269,10 +269,13 @@ async function reviewPass(
   const noteWave = (wave: "full" | "fix", pushed: string): void => {
     if (waves.length < WAVES_MAX) waves.push({ wave, head: pushed });
   };
+  /** What the fix wave could not supply; `withRecord` appends it — see `noteFixDisclosure`. */
+  let fixDisclosure: string | undefined;
   /** Attach what the step judged, so every exit — pass, wave, or stopped mid-wave —
    *  carries the rounds it actually judged rather than losing them on a stopped arm. */
   const withRecord = (pass: Outcome): Outcome => ({
     ...pass,
+    ...noteFixDisclosure(pass, fixDisclosure),
     ...(rounds.length === 0 && waves.length === 0
       ? {}
       : { review: { rounds: rounds.map((r) => ({ ...r })), waves: waves.map((w) => ({ ...w })) } }),
@@ -399,6 +402,7 @@ async function reviewPass(
     // prints a 12-char prefix, and a host that has to check out what the fixer left
     // cannot clone a prefix.
     noteWave("fix", head);
+    fixDisclosure = fix.submodules ?? fixDisclosure;
 
     // R2: the fixer pushed, so the head origin holds is one nobody has re-judged. A stop
     // here is `fixed` — not a handback (the fix is already on the branch) and not a `done`

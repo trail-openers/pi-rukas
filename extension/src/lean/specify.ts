@@ -423,7 +423,23 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     allRows.push(attempt.dispatched);
     attempts += 1;
   }
-  const final = attempts > 1 ? afterRetry(attempt.outcome) : attempt.outcome;
+  let final = attempts > 1 ? afterRetry(attempt.outcome) : attempt.outcome;
+  // The tree's own caveat, on whatever verdict the step records. The preparation knows
+  // a submodule could not be supplied and the outcome otherwise would not: a `no-red-test`
+  // whose dropped-file line says `exited 4 without naming …` is the child reading an empty
+  // vendored directory, and the only way an operator can tell that apart from a genuine
+  // red is the clause that says the submodule was never populated. It rides on `ok` too,
+  // because a frozen test written against a tree with no vendored code behind it is a
+  // claim the next step has to be able to discount. A `budget` stop keeps its canonical
+  // sentence (see `afterRetry`), so the caveat is folded in wherever the reason is free.
+  if (provisioning?.problem !== undefined && final.kind !== "budget")
+    final = {
+      ...final,
+      reason: joinNotes([
+        ...(final.reason === undefined ? [] : [final.reason]),
+        provisioning.problem,
+      ]),
+    };
   // The same fold `build` makes, and the same refusal `afterRetry` makes: a budget
   // stop keeps its canonical sentence, so a waited round does not append a wait
   // clause to the one reason the operator is taught to read.

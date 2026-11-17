@@ -29,8 +29,8 @@ import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switc
 import { leanReportBoundEnabled } from "../../src/lean/handback-report-bound-switch.ts";
 import { leanBuildIssueProseEnabled, leanIssueProseEnabled } from "../../src/lean/issue-prose.ts";
 import { leanResultGatesEnabled } from "../../src/lean/result-gates-switch.ts";
-import { leanReviewProblemEnabled } from "../../src/lean/review-problem-switch.ts";
 import { leanReviewAcceptanceEnabled } from "../../src/lean/review-acceptance-switch.ts";
+import { leanReviewProblemEnabled } from "../../src/lean/review-problem-switch.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRewindLeaseBinds } from "../../src/lean/rewind-lease-switch.ts";
 import {
@@ -38,6 +38,7 @@ import {
   leanPreflightProbeContainEnabled,
 } from "../../src/lean/preflight-probe-switch.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
+import { leanSubmodulesLocalEnabled } from "../../src/lean/submodules-local-switch.ts";
 import {
   leanHandbackNoHeadRecordEnabled,
   leanVerifiedHandbackEnabled,
@@ -202,6 +203,11 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // #2212 — #2179's preflight/submodule behaviour. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT", leanRunnerPreflightEnabled],
+  // #2319 — where a lean worktree's submodules are seeded from. The reader is `v !== "0"`, so
+  // the gate's LIVE loop (env deleted) pins "unset means on"; the truth table, the docs row and
+  // the off arm's argv are pinned by test-lean-submodules-local-switch.ts and
+  // test-lean-submodule-local-source.ts (e).
+  ["PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL", leanSubmodulesLocalEnabled],
   ["PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK", leanVerifiedHandbackEnabled],
   // The verified-handback rule. The reader is `v !== "0"`, so the gate's LIVE
   // loop (env deleted) pins "unset means on".

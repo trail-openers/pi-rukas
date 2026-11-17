@@ -26,9 +26,16 @@ import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } f
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";
 import { leanRunnerPreflightEnabled } from "./runner-preflight-switch.ts";
-import { trim } from "./specify-proof.ts";
+import {
+  type SubmoduleNote,
+  initSubmodules as initWorktreeSubmodules,
+  notesFor,
+  submoduleState,
+} from "./specify-submodules.ts";
 import { changedPaths } from "./specify-tree.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
+import { checkoutHolds } from "./submodule-verify.ts";
+import { leanSubmodulesLocalEnabled } from "./submodules-local-switch.ts";
 
 /** A reset the step cannot confirm. The engine turns this into handed-back 10. */
 export class SpecifyResetError extends Error {
@@ -40,13 +47,11 @@ export class SpecifyCommitError extends Error {
   override readonly name = "SpecifyCommitError";
 }
 
-/**
- * The git flags every lean step's git calls carry. The hooks a repository has are
- * somebody else's policy, and a repo-supplied fsmonitor is a program git runs on
- * every status: either could write into a commit the step never captured.
- */
-export const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"] as const;
-
+// `NO_HOOKS`, the flags every lean git call carries, arrives from `submodule-reads.ts`, a leaf, so
+// the submodule modules carry it without importing the reset back; it is re-exported for the call
+// sites outside `lean/` that have always read it from here.
+import { NO_HOOKS } from "./submodule-reads.ts";
+export { NO_HOOKS } from "./submodule-reads.ts";
 /** The wall clock on a local git write (`checkout`, `reset`, `worktree add`). */
 const LOCAL_GIT_MS = 120_000;
 /** The wall clock on a short local read (`rev-parse`). */
@@ -242,6 +247,13 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
  * `status --porcelain` reports nothing — that confirmation is the function: the
  * commands are routine, and the only failure that matters is the one where they did
  * not do what they say.
+ *
+ * It RETURNS what the submodule pass did (see `lean/specify-submodules.ts`) rather
+ * than only tracing it: a disclosure that lives in one caller's log is a disclosure
+ * most steps never report, and the same empty gitlink is a fact `challenge`'s verdict,
+ * `build`'s fold and the review fix round all have to be able to say. Callers that have
+ * nowhere to put it ignore the value, which is why widening the return rather than
+ * adding a note-list parameter leaves all six call sites compiling unchanged.
  */
 export async function resetWorktreeToBase(
   exec: ExecFn,
@@ -256,10 +268,17 @@ export async function resetWorktreeToBase(
    * fail that command rather than assert what it would have done.
    */
   beforeSubmoduleInit?: (wt: string) => void | Promise<void>,
-): Promise<void> {
+): Promise<SubmoduleNote[]> {
   // `-B` first so the branch — not a detached HEAD — is what `reset --hard` moves:
   // the frozen commit has to land on the run's branch, and a leftover branch from a
   // previous attempt must move to the base rather than keep its commits.
+  // The tree is put at the base in THREE steps rather than one `worktree add --detach` +
+  // `reset --hard`, and the order is load-bearing: `-B` first so the branch (not a detached
+  // HEAD) is what `reset --hard` moves — the frozen commit has to land on the run's branch and
+  // a leftover branch from a previous attempt must move to the base rather than keep its
+  // commits — and `clean -fdx` LAST because it is what takes the dependency links away, so
+  // every shape of leftover (child commits, staging, untracked files, ignore tricks, links,
+  // and a submodule's checkout) is gone before the pass below is asked to rebuild any of them.
   const steps: string[][] = [
     branch === ""
       ? [...NO_HOOKS, "checkout", "-f", "--detach", baseSha]
@@ -276,7 +295,101 @@ export async function resetWorktreeToBase(
       );
     }
   }
-  await initSubmodules(exec, wt, beforeSubmoduleInit);
+  // What the pass did, kept for the caller: `challenge` and the review fix round fold it into
+  // their own reason, since an unseeded submodule is a fact about the tree they are about to
+  // judge. The clean-tree proof below runs AFTER the pass, so the tree it proves is the one the
+  // child gets — including any gitlink this step left empty.
+  //
+  // The outer gate is honoured HERE, not only inside the pass: with the runner untrusted the
+  // switch's claim is that the step asks git to populate NOTHING, and a probe after the pass
+  // would contradict that in the argv even though it fetches nothing. The case pinning this
+  // shape reads the argv the step issued.
+  if (!leanRunnerPreflightEnabled()) return [];
+  const notes = await initSubmodules(exec, wt, beforeSubmoduleInit);
+  // Two reads decide whether the tree is asked about, and they are decided differently.
+  //
+  //   - the local rule off: the switch-off arm is the release's own argv byte for byte (which
+  //     a case pins), and that argv contained no submodule call of any kind — so with
+  //     `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL=0` nothing further leaves here, not even a read.
+  //   - nothing seeded: with no populating call there is no pass to disbelieve. A tree nobody
+  //     populated needs no disclosure either — the pass said so itself, with an `absent` note
+  //     for every path it could not supply — and a read would put a submodule command on a run
+  //     that issued none, which is the claim `test-lean-specify-submodule-steps.ts` (g) reads off
+  //     the argv. The test is asked of the pass's OWN account rather than of the file system:
+  //     whether something was seeded is what this step knows about its own work, and asking
+  //     the tree whether anything arrived is the question the read below exists to answer — a
+  //     pass that seeded nothing and a pass that seeded nothing-into-place must not be
+  //     distinguished by the very probe under test, or the probe decides its own case.
+  if (!leanSubmodulesLocalEnabled() || !notes.some((n) => n.kind === "seeded")) return notes;
+  // And then git is asked what the tree actually holds, because a step's own account of a pass it
+  // ran is not evidence the tree ended up populated. `git submodule status` marks a gitlink
+  // nothing checked out (`-`, or `U` for an unmerged path — see the parser in
+  // `specify-submodules.ts`), and a seeded submodule whose checkout does not hold the file its
+  // recorded commit names is empty whatever the pass reported. Both reads are of the tree, never
+  // of the source the step chose — which is the case they catch, a local source that quietly lost
+  // its content. Anything this step already named keeps its own account; these reads fill silence.
+  const withContent = notes.map((n) =>
+    n.kind === "seeded" && n.expect !== undefined && !checkoutHolds(wt, n.path, n.expect)
+      ? { ...n, emptyCheckout: true }
+      : n,
+  );
+  const state = await submoduleState(exec, wt);
+  const claimed = new Set(notes.filter((n) => n.kind !== "seeded").map((n) => n.path));
+  const unproven = state.unpopulated.filter((p) => !claimed.has(p));
+  // The backstop's own death is a finding, not an absence. With nothing in the account to carry it
+  // it becomes one note of its own; with an account, it rides on the first note. Either way the
+  // clause says the tree could not be proved, which is the case a reader must not be able to
+  // mistake for "git checked and everything was fine".
+  if (state.unreadable === true) {
+    const head = withContent[0];
+    const marked: SubmoduleNote = { path: "", kind: "failure", detail: "", unreadable: true };
+    return head === undefined ? [marked] : [{ ...head, unreadable: true }, ...withContent.slice(1)];
+  }
+  // Three shapes of the same carry. Nothing unproven: the pass's own account stands. Nothing in
+  // the account at all: git's answer IS the account. Both: git's finding rides on the first note
+  // rather than becoming one of its own, because the clause the caller builds reads one list and a
+  // reader must not have to know which read produced a path. (`withContent.length === 0` already
+  // covers `first === undefined`, so the two empty arms collapse to one.)
+  const first = withContent[0];
+  const carried: SubmoduleNote[] =
+    unproven.length === 0
+      ? withContent
+      : first === undefined
+        ? notesFor(unproven)
+        : [{ ...first, unproven }, ...withContent.slice(1)];
+  // The seeding's ONLY durable write is the submodule's own checkout, which is what the step was
+  // asked to create, and which the clean-tree proof below is entitled to see. Retargeting an
+  // entry by `submodule set-url` is what used to leave residue: it rewrites `.gitmodules` in this
+  // work tree AND writes `submodule.<name>.url` into the superproject's shared `.git/config`
+  // (measured, git 2.53, from a linked worktree), and only the first of the two was ever put
+  // back. Both assignments are now command-line `-c` on the one call that reads them, so the
+  // pass leaves nothing behind for this block to undo. It stays because it is the proof's own
+  // guarantee, not a repair: whatever a future form of this pass writes at that tracked path,
+  // the tree the child is handed is the tree the base records, and a step that had to restore a
+  // file it had dirtied would be saying so here rather than failing the clean-tree check below.
+  // Restored ONLY where the pass seeded something: a tree it never touched
+  // must stay dirty-if-dirty, or the proof would be forgiving a child's edit.
+  if (withContent.some((n) => n.kind === "seeded")) {
+    try {
+      await exec("git", {
+        // `--no-overlay` is not an aesthetic choice. The plain form of this command
+        // resolves its pathspec through the index, and a path registered as a gitlink
+        // is not a file the index can resolve — so `git checkout -- .gitmodules` in a
+        // tree WITH a submodule dies with `pathspec '.gitmodules' did not match any
+        // file(s) known to git` and the rewrite survives. Asking git to read the
+        // version out of the commit rather than through the index is the one form that
+        // works in both a tree with submodules and a tree without.
+        argv: [...NO_HOOKS, "checkout", "--no-overlay", "HEAD", "--", ".gitmodules"],
+        cwd: wt,
+        timeout: QUICK_GIT_MS,
+        maxBuffer: 1024 * 1024,
+      });
+    } catch {
+      // Best-effort: a tree whose `.gitmodules` this cannot restore is caught two lines
+      // later by the clean-tree proof, which refuses it. Silence here cannot make an
+      // unproven tree look proven.
+    }
+  }
   const head = await exec("git", {
     argv: [...NO_HOOKS, "rev-parse", "HEAD"],
     cwd: wt,
@@ -296,84 +409,34 @@ export async function resetWorktreeToBase(
         .map((e) => `${e.status} ${e.path}`)
         .join(", ")}${dirty.length > 8 ? ` (+${dirty.length - 8} more)` : ""}`,
     );
+  return carried;
 }
 
 /**
- * Populate the worktree's submodules, when its commit has any.
+ * Populate the worktree's submodules, when its commit has any — the seam into
+ * `lean/specify-submodules.ts`, which owns WHERE submodules come from, both arms of
+ * `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL`, and the disclosure of a submodule this host
+ * never had. This is the one call the reset makes.
  *
- * "Does this base have submodules" is answered by the working tree and by git rather
- * than a heuristic. `.gitmodules` absent means none — the normal case, costing one
- * `existsSync` and no spawn. A tracked `.gitmodules` is then asked what it lists:
- * `git config --file .gitmodules --get-regexp path` exits 1 on a file that lists
- * nothing and non-zero-but-1 on a file it could not read, so "could not tell"
- * refuses the run rather than skipping an initialisation it was asked for.
+ * Why it sits INSIDE the reset rather than beside it: the reset's own
+ * `git clean -fdx` is the most reliable de-populator a submodule has — it takes the
+ * submodule contents along with `node_modules` and the dependency links — so a tree
+ * that looks clean is not a tree that is complete. Anything that runs after the
+ * reset and before a child inherits the emptiness. The disclosure its pass produces
+ * is reported by the worktree's owner (`ensureSpecifyWorktreeWithProvision`) and kept
+ * out of this signature on purpose: the six reset call sites — `specify`'s two,
+ * `build`'s fold, `challenge`'s two and the review fix round's — stay as they were,
+ * which matters because the switch's claim covers every one of them.
  *
- * `git submodule update --init --recursive` is bounded, because it may reach the
- * network — and a clone with no network, or a submodule whose remote is gone, is the
- * same infrastructure handback as a runner that cannot collect.
- *
- * `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` returns before any of that, so no lean reset
- * asks git to populate anything. The test-only `beforeInit` seam fires only when the
- * real command would have.
+ * `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` still returns before git is asked anything;
+ * that gate lives in the module called here, so the switch-off state holds for
+ * `build`'s fold and the review fix round exactly as it does for `specify`.
  */
 async function initSubmodules(
   exec: ExecFn,
   wt: string,
   /** Passed through from {@link resetWorktreeToBase}; product code never supplies it. */
   beforeInit?: (wt: string) => void | Promise<void>,
-): Promise<void> {
-  if (!leanRunnerPreflightEnabled()) return;
-  if (!existsSync(path.join(wt, ".gitmodules"))) return;
-  await beforeInit?.(wt);
-  const listed = await exec("git", {
-    argv: submoduleArgv("config", "--file", ".gitmodules", "--get-regexp", "path"),
-    cwd: wt,
-    timeout: QUICK_GIT_MS,
-    maxBuffer: 1024 * 1024,
-  }).catch((err: unknown) => ({ __err: err }) as never);
-  const err = (listed as { __err?: unknown })?.__err;
-  if (err !== undefined) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === "number" && code <= 1) return;
-    throw new SpecifyInfraError(
-      `could not tell whether ${wt} has submodules: git config --file .gitmodules --get-regexp path exited ${String(code)}`,
-    );
-  }
-  const ran = await exec("git", {
-    argv: submoduleArgv("submodule", "update", "--init", "--recursive"),
-    cwd: wt,
-    timeout: SUBMODULE_TIMEOUT_MS,
-    maxBuffer: 8 * 1024 * 1024,
-  }).catch((err: unknown) => ({ __err: err }) as never);
-  const failed = (ran as { __err?: unknown })?.__err;
-  if (failed === undefined) return;
-  const e = failed as { stdout?: unknown; stderr?: unknown; message?: unknown };
-  const out = [e.stdout, e.stderr, e.message]
-    .filter((s): s is string => typeof s === "string" && s !== "")
-    .join("\n");
-  throw new SpecifyInfraError(
-    `the worktree's submodules could not be initialised in ${wt}: git submodule update --init --recursive — ${trim(out)}`,
-  );
+): Promise<SubmoduleNote[]> {
+  return initWorktreeSubmodules(exec, wt, beforeInit);
 }
-
-/**
- * The submodule calls' own `-c` flags, added to {@link NO_HOOKS} at the call.
- *
- * There are none, and that is the point: the step asks git to populate submodules
- * with git's OWN transport policy. `protocol.file.allow` is `user` by default — the
- * CVE fix that made git refuse the `file` transport for submodules — and widening it
- * here would let a `file`-protocol URL in the base's `.gitmodules`, at any depth of
- * `--recursive`, clone an arbitrary repository that already exists on this host into
- * the worktree the run then tests and commits. A tracked `.gitmodules` is reviewed as
- * code, but a submodule's own `.gitmodules` is content of ANOTHER repository, so "the
- * URL is tracked content" does not hold past the first level. A base whose submodule
- * genuinely lives on a local path is served by the operator's own
- * `protocol.allow`/`protocol.file.allow` configuration; the step adds no licence of
- * its own. Hooks stay refused, whatever the repository carries.
- */
-function submoduleArgv(...argv: string[]): string[] {
-  return [...NO_HOOKS, ...argv];
-}
-
-/** The wall clock on `git submodule update --init --recursive`, which may reach the network. */
-const SUBMODULE_TIMEOUT_MS = 5 * 60_000;
