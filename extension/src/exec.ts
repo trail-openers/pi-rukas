@@ -2,7 +2,8 @@
  * exec — the one shell-or-argv executor the driver and forge code run through.
  *
  * `execp(cmd, { argv })` runs `cmd` as the executable with `argv` as its
- * arguments, through execFile: no shell re-parse. Without `argv`, `cmd` is a
+ * arguments through `spawn` with no shell (`stdio` fd 0 closed, so a CLI that
+ * would prompt reads EOF instead of blocking). Without `argv`, `cmd` is a
  * shell string. Either way it resolves `{ stdout, stderr }` and rejects with
  * `promisify(exec)`'s error shape (`stdout` / `stderr` / `code` on the Error).
  *
@@ -23,11 +24,10 @@
  * The driver's `VerifyExecFn` compatibility is checked in work-driver-git.ts.
  */
 
-import { exec, execFile, spawn } from "node:child_process";
+import { exec, spawn } from "node:child_process";
 import { promisify } from "node:util";
 
 const execShell = promisify(exec);
-const execFileP = promisify(execFile);
 
 export interface ExecOpts {
   /** argv form: `cmd` is the executable, `argv` its arguments. */
@@ -149,13 +149,108 @@ function execGroup(cmd: string, argv: string[] | undefined, opts: ExecOpts): Pro
   });
 }
 
+/**
+ * #2342 R3 — the argv form without a shell, with fd 0 closed.
+ *
+ * Deliberately `spawn` and not `promisify(execFile)`: `execFile` constructs its
+ * own stdio and a caller's `stdio` option is dropped, so it cannot be handed
+ * `"ignore"`. Everything else is kept the same on purpose — same
+ * `cwd`/`env`/`timeout`/`maxBuffer`, the same `Command failed:`/overflow/timeout
+ * rejection shape that `execFile` stamps (characterised against the real
+ * `execFile`, so the swap is invisible to the callers that read `code`,
+ * `killed`, `signal` and `message`), and the `encoding` honoured on both
+ * streams so a `latin1` blob read still returns exact bytes.
+ */
+function execArgv(cmd: string, argv: string[], opts: ExecOpts): Promise<ExecResult> {
+  const maxBuffer = opts.maxBuffer ?? 1024 * 1024;
+  const encoding = opts.stdoutEncoding ?? "utf8";
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, argv, {
+      cwd: opts.cwd,
+      env: opts.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let done = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (settle: () => void) => {
+      if (done) return;
+      done = true;
+      if (timer !== undefined) clearTimeout(timer);
+      settle();
+    };
+    if (opts.timeout !== undefined) {
+      timer = setTimeout(() => {
+        child.kill("SIGTERM");
+        finish(() =>
+          reject(
+            // execFile's own timeout error: `Command failed:` + the (empty)
+            // stderr, `code` null, `killed` true, the terminating signal. No
+            // `timedOutKill` — that field belongs to the group-kill paths, and
+            // a caller reading it must not see a shape here that execFile never
+            // stamped.
+            Object.assign(new Error(`Command failed: ${cmd}\n${stderr}`), {
+              code: null,
+              killed: true,
+              signal: "SIGTERM",
+            }),
+          ),
+        );
+      }, opts.timeout);
+    }
+    child.stdout?.setEncoding(encoding);
+    child.stderr?.setEncoding(encoding);
+    child.stdout?.on("data", (d: string) => {
+      stdout += d;
+      if (stdout.length > maxBuffer) {
+        child.kill("SIGTERM");
+        finish(() =>
+          reject(
+            Object.assign(new RangeError("stdout maxBuffer length exceeded"), {
+              code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+            }),
+          ),
+        );
+      }
+    });
+    child.stderr?.on("data", (d: string) => {
+      if (stderr.length < maxBuffer) stderr += d;
+    });
+    child.on("error", (err) => finish(() => reject(err)));
+    child.on("close", (code, signal) =>
+      finish(() =>
+        code === 0
+          ? resolve({ stdout, stderr })
+          : reject(
+              Object.assign(new Error(`Command failed: ${cmd}\n${stderr}`), {
+                code,
+                signal: signal ?? null,
+                killed: false,
+              }),
+            ),
+      ),
+    );
+  });
+}
+
 /** The shared executor. The argv form never reaches a shell, so `opts.shell` is not forwarded to it. */
 export function execp(cmd: string, opts: ExecOpts = {}): Promise<ExecResult> {
   if (opts.killGroup) return execGroup(cmd, opts.argv, opts);
   const { cwd, timeout, maxBuffer, env, shell } = opts;
   const encoding = opts.stdoutEncoding ?? "utf8";
   if (opts.argv) {
-    return execFileP(cmd, opts.argv, { cwd, timeout, maxBuffer, env, encoding });
+    // #2342 R3 — the argv form goes through `spawn`, not `execFile`, so fd 0 can
+    // be `ignore`. `execFile` builds its own stdio and a caller's `stdio` option
+    // is dropped (verified on node and bun alike), so `promisify(execFile)` leaves
+    // the child on a fresh PIPE: a CLI that decides to prompt — `glab mr create`
+    // without its `-y`, anything that reads `GIT_TERMINAL_PROMPT` — sits on that
+    // pipe reading, and this form carries no timeout unless the caller passes one.
+    // `/dev/null` answers EOF at once, so a prompt fails instead of hanging the
+    // driver, and it is the same answer the `killGroup` path above already gives
+    // with its explicit `"ignore"`. `maxBuffer` is the shared default, as it is
+    // for `execGroup`; `execFile`'s own 1 MiB default is the same figure.
+    return execArgv(cmd, opts.argv, opts);
   }
   return execShell(cmd, { cwd, timeout, maxBuffer, env, shell, encoding });
 }

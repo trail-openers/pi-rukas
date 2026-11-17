@@ -146,7 +146,7 @@ const MR_FLAGS = new Set([
   );
   assert(
     call?.opts?.env !== undefined,
-    "the create is given an explicit env, which is what closes its stdin (execFile inherits env's descriptors)",
+    "the create is given an explicit env, which strips the forge login and says non-interactive (its stdin is closed by execp's argv form — see test-exec-argv-stdin.ts)",
   );
   assert(
     (call?.opts?.env as Record<string, string> | undefined)?.CI === "1",

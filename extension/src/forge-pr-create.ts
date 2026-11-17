@@ -108,11 +108,11 @@ export async function createPullRequest(
       }
       return makeMinimalPr(parsed);
     },
-    // The explicit env is what closes this call's stdin: execFile inherits the
-    // parent's descriptors through the env it is handed, and a glab that decides
-    // to prompt would then wait on the driver's own terminal forever. `glabCreateEnv`
-    // adds `CI`/`GIT_TERMINAL_PROMPT` and strips the forge login, and the argv
-    // carries `-y` so the submission prompt is skipped anyway.
+    // The explicit env strips the forge login and answers "nobody is here"; the
+    // argv carries `-y` so the submission prompt is skipped anyway. Closing this
+    // call's stdin is `execp`'s argv form, which gives the child `/dev/null` —
+    // a prompting glab then reads EOF rather than waiting on a terminal the
+    // driver does not have (test-exec-argv-stdin.ts is the pin).
     { env: createEnv() },
   );
 }
