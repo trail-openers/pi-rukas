@@ -27,6 +27,7 @@
 
 import { exec, execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { attachStdinErrorGuard } from "./stdin-guard.ts";
 
 const execShell = promisify(exec);
 const execFileP = promisify(execFile);
@@ -167,7 +168,15 @@ export function execp(cmd: string, opts: ExecOpts = {}): Promise<ExecResult> {
     // the ChildProcess as `.child`, which is what makes this one line; the
     // rejection keeps execFile's own captured `stdout`/`stderr` on the Error,
     // which `gitCatFileSaysAbsent` classifies a git probe out of.
+    //
+    // The `end()` is preceded by the SAME #932 backstop `spawn.ts` attaches to
+    // its children (stdin-guard.ts): EPIPE arrives on a later tick, so a child
+    // that exits before stdin closed leaves an `error` event on the handle with
+    // no listener, and an unhandled `error` on a stream terminates the host
+    // process — which would take down every argv caller of `execp`, not just
+    // this call (test-exec-argv-stdin.ts witnesses it as a non-zero child exit).
     const run = execFileP(cmd, opts.argv, { cwd, timeout, maxBuffer, env, encoding });
+    if (run.child.stdin) attachStdinErrorGuard(run.child.stdin, `execp:${cmd}`);
     run.child.stdin?.end();
     return run;
   }

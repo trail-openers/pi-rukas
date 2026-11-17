@@ -22,6 +22,7 @@ import {
   parsePrNumberFromResponse,
 } from "./forge-mapping.ts";
 import type { NormalizedPullRequest } from "./forge-types.ts";
+import { glabMrCreateArgvEnabled } from "./gl-mr-create-switch.ts";
 
 /** Run one forge command and map its stdout — the adapter's `run` seam. */
 export type ForgeRunCmd = <T>(
@@ -36,6 +37,15 @@ export type WithBodyFile = <T>(
   body: string,
   use: (file: string) => Promise<T>,
 ) => Promise<T>;
+
+/**
+ * A trimmed stdout line that IS a merge request URL, and nothing else. The
+ * whole-line anchor is load-bearing: the unanchored read accepted a prose line
+ * that merely quoted such a URL, and `parsePrNumberFromResponse` happily
+ * returned a number out of it — a `glab` warning that mentioned some other MR
+ * would have been reported as the MR this create opened.
+ */
+const GL_MR_URL_LINE = /^https?:\/\/\S+\/-\/merge_requests\/\d+$/;
 
 /**
  * The create itself, after the caller's public-text checks.
@@ -67,7 +77,15 @@ export async function createPullRequest(
       `forge pr create: refusing to open a merge request with an empty body (branch ${headBranch})`,
     );
   }
-  if (forge === "github") {
+  // The body's transport differs three ways, and the file/argv split is one of
+  // them: GitHub always takes a body FILE, GitLab ON takes the body as ONE argv
+  // element (no file transport at the versions glab lacks a description-from-file
+  // flag), and GitLab OFF takes a body FILE exactly as `main` did — the switch's
+  // contract is that `"0"` IS the pre-fix command byte for byte, so handing the
+  // off arm the body STRING would have emitted a `--description-file` whose value
+  // is the whole body: a DIFFERENT breakage from the known-broken baseline the
+  // switch exists to be compared against.
+  if (forge === "github" || !glabMrCreateArgvEnabled()) {
     return withBodyFile(`pr-${headBranch.slice(0, 16)}`, body, (file) =>
       run(cmds.prCreateCmd(forge, title, headBranch, file, opts ?? {}), (stdout) => {
         // Tolerate both JSON (from --json flag) and plain-text URL responses.
@@ -77,20 +95,24 @@ export async function createPullRequest(
             `forge pr create: could not parse PR number from response: ${stdout.trim().slice(0, 120)}`,
           );
         }
-        try {
-          return mapGhPrWithNumber(asRecord(stdout), parsed.number);
-        } catch {
-          return makeMinimalPr(parsed);
+        if (forge === "github") {
+          try {
+            return mapGhPrWithNumber(asRecord(stdout), parsed.number);
+          } catch {
+            return makeMinimalPr(parsed);
+          }
         }
+        // The off arm is the pre-fix command, whose `--output json` meant stdout
+        // WAS a JSON row — so its reply keeps the pre-fix read, and a plain URL
+        // line still parses out of it.
+        return makeMinimalPr(parsed);
       }),
     );
   }
-  // GitLab creates with the body as ONE argv element (no file transport at the
-  // versions glab lacks a description-from-file flag), and prints the new MR's
-  // URL as plain text on success — so stdout is never JSON.parsed here. The last
-  // line carrying `/-/merge_requests/` is the answer; the progress line above it
-  // is not. A create that printed no such line created nothing, and saying so
-  // beats a number 0 that reads as MR #0.
+  // GitLab ON: argv transport, plain-text reply. The answer is the LAST line
+  // that IS a merge request URL — not a line that merely mentions one (see
+  // `GL_MR_URL_LINE`). A create that printed no such line created nothing, and
+  // saying so beats a number 0 that reads as MR #0.
   const built = cmds.prCreateCmd(forge, title, headBranch, body, opts ?? {});
   return run(
     built,
@@ -98,7 +120,7 @@ export async function createPullRequest(
       const line = stdout
         .split("\n")
         .map((l) => l.trim())
-        .filter((l) => l.includes("/-/merge_requests/"))
+        .filter((l) => GL_MR_URL_LINE.test(l))
         .pop();
       const parsed = line ? parsePrNumberFromResponse(line) : undefined;
       if (!parsed) {

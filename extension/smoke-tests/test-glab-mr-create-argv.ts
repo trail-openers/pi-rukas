@@ -17,6 +17,8 @@
  */
 
 import { createForge, forgeCommands } from "../src/forge.ts";
+import path from "node:path";
+import { shq } from "../src/forge-commands.ts";
 import type { ForgeExecFn } from "../src/forge-types.ts";
 import { glDetection, GL_MR } from "./forge-fixtures.ts";
 import { withEnv } from "./lib/env-scope.ts";
@@ -63,6 +65,17 @@ const MR_FLAGS = new Set([
   "-y",
   "--yes",
 ]);
+
+/**
+ * Undo `shq` on one emitted token: one it left bare IS the string; a quoted one
+ * is the string with the `'\\''` escapes put back. Needed so the byte-comparison
+ * can feed the adapter's temp path back into the builder it is judged against.
+ */
+function unshq(token: string | undefined): string | undefined {
+  if (token === undefined) return undefined;
+  if (!token.startsWith("'")) return token;
+  return token.slice(1, -1).replaceAll("'\\''", "'");
+}
 
 // ── 1. the builder: argv form, real flags only ────────────────────────────
 
@@ -166,19 +179,34 @@ const MR_FLAGS = new Set([
 }
 
 {
-  // stdout is never JSON.parsed on this path. A JSON MR row that also carries
-  // its web URL is the shape `mr view` answers, and reading the URL out of it is
-  // the mapper's `makeMinimalPr` contract: number and url from the line, nothing
-  // invented from the row's other fields.
-  const row = { ...GL_MR, web_url: MR_URL.trim() };
-  const { fn } = recorder(JSON.stringify(row));
+  // What a real `glab mr create` answers: the new MR's URL on its own line. The
+  // read is anchored to that line, and the two rows below are the mutants that
+  // prove it: a whole JSON row (the shape the OFF arm's `--output json` printed
+  // pre-fix) and a prose line quoting a URL are both refusals, because an
+  // unanchored read finds `iid: 17` / the quoted number in either and reports an
+  // MR this create never printed.
+  const { fn } = recorder(MR_URL);
   const forge = createForge(glDetection("acme", "widget"), { execFn: fn });
   const mr = await forge.prCreate(TITLE, BRANCH, BODY, {});
-  assert(mr.number === 17, `the URL line inside the reply is what is read (${mr.number})`);
-  assert(mr.title === "", "no field is lifted out of a JSON row — this path has no row mapper");
+  assert(mr.number === 17, `the URL line is what is read (${mr.number})`);
+  assert(mr.url === MR_URL.trim(), `url ${mr.url}`);
 
-  // A JSON row with no URL is not an answer, and must reject rather than be
+  // A JSON row is not an answer on this path, and must reject rather than be
   // mapped through the `mr view` row mapper as it used to be.
+  const row = { ...GL_MR, web_url: MR_URL.trim() };
+  const { fn: rowFn } = recorder(JSON.stringify(row));
+  const forgeRow = createForge(glDetection("acme", "widget"), { execFn: rowFn });
+  let rejectedRow: Error | undefined;
+  await forgeRow.prCreate(TITLE, BRANCH, BODY, {}).catch((e) => {
+    rejectedRow = e as Error;
+  });
+  assert(
+    rejectedRow !== undefined && /no merge request URL/.test(rejectedRow?.message ?? ""),
+    `a JSON row with no URL line refuses by name (${String(rejectedRow?.message).slice(0, 60)})`,
+  );
+
+  // A JSON row with no URL is not an answer either (the shape without the field
+  // the anchored read was matching against).
   const { web_url: _dropped, ...rowWithoutUrl } = GL_MR;
   const { fn: noUrl } = recorder(JSON.stringify(rowWithoutUrl));
   const forgeNoUrl = createForge(glDetection("acme", "widget"), { execFn: noUrl });
@@ -205,6 +233,35 @@ const MR_FLAGS = new Set([
   );
 }
 
+{
+  // The read must be the URL ITSELF, not any line mentioning one. A `glab`
+  // warning that quotes an MR URL (an existing MR, a lint notice) is prose, and
+  // `parsePrNumberFromResponse` finds a number anywhere in its input — so a
+  // substring filter read that line as the create's answer. Refused by name.
+  const prose = `Warning: this duplicates https://gitlab.com/acme/widget/-/merge_requests/99 already\n`;
+  const { fn } = recorder(prose);
+  const forge = createForge(glDetection("acme", "widget"), { execFn: fn });
+  let rejected: Error | undefined;
+  await forge.prCreate(TITLE, BRANCH, BODY, {}).catch((e) => {
+    rejected = e as Error;
+  });
+  assert(
+    rejected !== undefined && /no merge request URL/.test(rejected?.message ?? ""),
+    `a prose line MENTIONING a merge_requests URL is not accepted (${String(rejected?.message)})`,
+  );
+
+  // …and when a real URL line also appears, the number is THAT one, not the
+  // number the prose mentioned.
+  const both = `Warning: see https://gitlab.com/acme/widget/-/merge_requests/99\n${MR_URL}`;
+  const { fn: fnBoth } = recorder(both);
+  const forgeBoth = createForge(glDetection("acme", "widget"), { execFn: fnBoth });
+  const mrBoth = await forgeBoth.prCreate(TITLE, BRANCH, BODY, {});
+  assert(
+    mrBoth.number === 17 && mrBoth.url === MR_URL.trim(),
+    `only the line that IS the URL is read (got ${mrBoth.number} ${mrBoth.url})`,
+  );
+}
+
 // ── 4. an empty body refuses BEFORE the command is built ───────────────────
 
 {
@@ -228,13 +285,76 @@ const MR_FLAGS = new Set([
 {
   const OLD =
     "glab mr create feature/branch -t Title --description-file /tmp/b --target-branch main --draft --output json";
-  await withEnv({ PI_ENSEMBLE_GLAB_MR_CREATE: "0" }, () => {
+  await withEnv({ PI_ENSEMBLE_GLAB_MR_CREATE: "0" }, async () => {
     const legacy = forgeCommands.prCreateCmd("gitlab", "Title", "feature/branch", "/tmp/b", {
       baseBranch: "main",
       draft: true,
     });
     assert(legacy.cmd === OLD, `off value emits the pre-fix shell string (${legacy.cmd})`);
     assert(legacy.argv === undefined, "off value emits no argv — the pre-fix path had none");
+
+    // The switch's contract is that `"0"` IS the old behaviour, so the adapter
+    // must not merely emit an old-shaped command — it must emit the SAME bytes
+    // the pre-fix builder produced for the same inputs. The pre-fix `prCreate`
+    // wrote the body to a temp file and passed that PATH; handing the off arm
+    // the body STRING turned the quoted `--description-file` value into the body
+    // itself, so the "known-broken baseline" was broken differently (glab read a
+    // nonexistent file named after the whole body) and a cycle compared against
+    // it was not comparing against the baseline.
+    //
+    // Pinned against a transcription of that builder — the one on `origin/main`
+    // at this PR's base, kept here verbatim — rather than a hand-written string,
+    // so a drift in either half fails this row.
+    const originMainOffArmBuilder = (
+      title: string,
+      headBranch: string,
+      bodyFile: string,
+      baseBranch?: string,
+      draft?: boolean,
+    ): string => {
+      const draftFlag = draft ? " --draft" : "";
+      const target = baseBranch ? ` --target-branch ${shq(baseBranch)}` : "";
+      return `glab mr create ${shq(headBranch)} -t ${shq(title)} --description-file ${shq(bodyFile)}${target}${draftFlag} --output json`;
+    };
+
+    const seen: Call[] = [];
+    // The temp path the adapter hands the builder is the half under test, so it
+    // is read back OUT of the emitted command and fed to the transcription of the
+    // origin/main builder. Comparing the WHOLE string (not a `/tmp/…` regex) is
+    // what makes "byte-identical" mean what the switch's contract says.
+    const emittedCommands: string[] = [];
+    const fn: ForgeExecFn = async (cmd, opts) => {
+      seen.push({ cmd, argv: opts?.argv });
+      emittedCommands.push(cmd);
+      return { stdout: MR_URL };
+    };
+    const forge = createForge(glDetection("acme", "widget"), { execFn: fn });
+    await forge.prCreate(TITLE, BRANCH, BODY, { baseBranch: "main", draft: true });
+    const offArm = emittedCommands.find((c) => c.startsWith("glab mr create "));
+    assert(
+      offArm !== undefined,
+      `the off arm ran a shell string (${JSON.stringify(emittedCommands.map((c) => c.slice(0, 24)))})`,
+    );
+    assert(
+      seen.every((c) => c.argv === undefined),
+      `the off arm ran with no argv — the pre-fix path had none (got ${JSON.stringify(seen.map((c) => c.argv))})`,
+    );
+    // A body that cannot be confused with a path, so a body-string leak is loud.
+    const emitted = offArm ?? "";
+    assert(
+      !emitted.includes("not-a-subshell") && !emitted.includes("## Summary"),
+      `the body is NOT shell text on the off arm (${emitted.slice(0, 90)}…)`,
+    );
+    const bodyFile = unshq(emitted.match(/ --description-file (\S+)/)?.[1]);
+    assert(
+      bodyFile !== undefined && path.basename(bodyFile) === "body.md",
+      `--description-file names the adapter's temp body file, not the body (got ${String(bodyFile).slice(0, 60)})`,
+    );
+    const expected = originMainOffArmBuilder(TITLE, BRANCH, bodyFile ?? "", "main", true);
+    assert(
+      emitted === expected,
+      `byte-identical to the origin/main builder for the same inputs\n  got      ${emitted.slice(0, 150)}\n  expected ${expected.slice(0, 150)}`,
+    );
   });
   await withEnv({ PI_ENSEMBLE_GLAB_MR_CREATE: undefined }, () => {
     const modern = forgeCommands.prCreateCmd("gitlab", "Title", "feature/branch", "/tmp/b", {});
