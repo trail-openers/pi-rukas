@@ -60,7 +60,8 @@ export const NO_MAINLINE_WHY = "no mainline ref resolved (origin/HEAD, origin/ma
  * What a mainline probe returned: the sha, or the reason there is none.
  *
  * A failure CAUSE travels back with the answer rather than sitting in a module global: the global version read
- * the LAST probe's causes, so a second probe after a failure reported one run's cause against another's.
+ * the LAST probe's causes, so a second probe after a failure — a retry, or two issues in one process — reported
+ * one run's cause against another's, and the comment said something git never did.
  */
 interface MainlineSha {
   sha?: string;
@@ -116,7 +117,10 @@ export async function mainlineSha(repoRoot: string): Promise<MainlineSha> {
   return { why: `${causesText}${NO_MAINLINE_WHY}` };
 }
 
-/** What a ref probe printed when it printed nothing: "" → the ref simply does not exist. */
+/**
+ * What a ref probe printed when it printed nothing: "" → the ref simply does not exist; anything else is
+ * output git should not have given, so it is quoted verbatim rather than read as absence.
+ */
 function noSuchRef(printed: string): string {
   return printed === "" ? "no such ref" : `unexpected output ${JSON.stringify(printed)}`;
 }

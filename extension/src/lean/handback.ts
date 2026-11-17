@@ -88,7 +88,10 @@ function newestWorkStep(steps: Step[]): Step | undefined {
   return undefined;
 }
 
-/** The newest WORK step's budget breach, if it carries a complete one. */
+/**
+ * The newest WORK step's budget breach, and FIRST in {@link neededFromLog} after {@link blockedCause}: the
+ * breach is why the run stopped, and it counts only when nothing that did work is newer.
+ */
 function budgetCause(steps: Step[]): string | undefined {
   const step = newestWorkStep(steps);
   const fired = step === undefined ? undefined : budgetTrio(step.outcome);
@@ -243,7 +246,8 @@ interface Heads {
  *
  * A rewind with no head to move records the head origin ACTUALLY holds under
  * `PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD`. `shippedVerified` includes `alreadyAtVerified` — origin held the
- * certified head already.
+ * certified head already, and this is where the rewind's own pre-move `unshippedHead` is withheld rather than
+ * printed as a head this step displaced.
  */
 function headFacts(
   applies: boolean,
@@ -326,7 +330,8 @@ export async function handbackOutcome(
       ...(render ? { heads: facts } : {}),
     });
     await post(ctx.repoRoot, ctx.issue, body);
-    // `posted: true` is the only place the claim lives: the kind is `done` either way.
+    // `posted: true` is the only place the claim lives: the kind is `done` either way. `record` is spread
+    // LAST and `render` is stripped — the record carries only what `Outcome` declares.
     return {
       kind: "done",
       reason: "handback comment posted",
