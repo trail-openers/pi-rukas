@@ -91,11 +91,28 @@ export function derivedSpecProblem(value: unknown): string | undefined {
 export function assertDerivedSpec(value: unknown): DerivedSpec {
   const problem = derivedSpecProblem(value);
   if (problem !== undefined) throw new Error(problem);
+  const canonical = canonicalDerivedSpec(value);
+  if (canonical === undefined) throw new Error("derivedSpec is unusable");
+  return canonical;
+}
+
+/**
+ * {@link assertDerivedSpec}'s canonicalisation without its judgement: the reader's shape,
+ * or `undefined` when the value is not one.
+ *
+ * A caller that has ALREADY asked {@link derivedSpecProblem} and refuses a bad record has no
+ * use for a throw — it needs the value or a decision to drop it. The run-level clause in
+ * `state.ts` throws (a corrupt record must not be driven at all); the step-level clause in
+ * `buildOutcome` drops, which is what every other rebuild there does with a value it will not
+ * carry.
+ */
+export function canonicalDerivedSpec(value: unknown): DerivedSpec | undefined {
+  if (derivedSpecProblem(value) !== undefined) return undefined;
   const d = value as { spec: PiSpec; model: string; at: number };
   // Re-read through the contract's parser so the result is the reader's canonical
   // shape rather than the file's; the problem check has proved this parse succeeds.
   const canonical = parsePiSpec(renderPiSpec(d.spec));
-  if (!canonical.ok) throw new Error(derivedSpecProblem(value) ?? "derivedSpec is unusable");
+  if (!canonical.ok) return undefined;
   return { spec: canonical.spec, model: d.model, at: d.at };
 }
 

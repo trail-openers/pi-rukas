@@ -22,7 +22,13 @@
  *       resume has, so a field that exists only on the in-memory return value is a
  *       field that never landed;
  *   (b) the ready STEP holds the same document, so run and log agree about the contract
- *       the run executes (the two copies are written by one save);
+ *       the run executes (the two copies are written by one save). Both halves are read
+ *       off `loadRun`, never off the bytes: the field is written by the engine and read
+ *       back by the loader, and the only symptom of a loader that rebuilds it wrong is
+ *       that the loaded step has no key for it — which a raw-bytes comparison, reading
+ *       the same file the writer just wrote, cannot see. `baseSha` is asserted beside
+ *       `derivedSpec` because one writer puts both on the step and the loader had no
+ *       clause for either;
  *   (c) the next step's handler received a `run` holding it — exactly the object the
  *       later steps' own `specFor(body, ctx.run)` consults.
  *
@@ -36,6 +42,7 @@
  */
 
 import { specFor } from "../src/lean/spec-for.ts";
+import { isFullCommitSha } from "../src/commit-sha.ts";
 import {
   DERIVED_SPEC,
   ISSUE,
@@ -65,13 +72,12 @@ function json(value: unknown): string {
   try {
     const stored = recordOf(driven.dir);
     const recorded = stored?.derivedSpec;
-    // The engine wrote the derived contract into the ready STEP too (the raw bytes prove
-    // it), but the record's own rebuilder — `buildOutcome`, the whitelist `loadRun` runs
-    // every outcome through — has no clause for the two fields only `ready` owns, so they
-    // read back absent. Asserting equality with the step would be asserting that gap, so
-    // the step's copy is compared against the bytes the engine wrote.
-    const savedStep = JSON.parse(rawRecordOf(driven.dir) || "{}").steps?.[0]?.outcome;
+    // BOTH halves of the step's copy come off `loadRun`, not off the bytes. The raw file is
+    // written by the engine's own save path with no validation, so reading it back proves the
+    // engine wrote a field and nothing about whether the loader keeps it — which is precisely
+    // the defect this case exists to catch.
     const readyStep = stored?.steps.find((s) => s.state === "ready");
+    const savedStep = readyStep?.outcome;
 
     assert(
       driven.run?.run.steps.find((s) => s.state === "ready")?.outcome?.kind === "ok",
@@ -112,7 +118,27 @@ function json(value: unknown): string {
     );
     assert(
       savedStep?.derivedSpec !== undefined,
-      "…and the ready step's own record holds it too, so the run and its log agree",
+      `…and the ready step's own record holds it too, so the run and its log agree (loaded step keys ${json(
+        savedStep === undefined ? undefined : Object.keys(savedStep),
+      )} while the saved bytes name derivedSpec)`,
+    );
+    assert(
+      json(savedStep?.derivedSpec) === json(recorded),
+      `…and the step's copy is the run's own, provenance included (run=${json(
+        recorded,
+      )} step=${json(savedStep?.derivedSpec)})`,
+    );
+    assert(
+      typeof savedStep?.baseSha === "string" && isFullCommitSha(savedStep.baseSha),
+      `…and the step records the commit it read the config at, as a full oid (got ${json(
+        savedStep?.baseSha,
+      )})`,
+    );
+    assert(
+      savedStep?.baseSha === driven.base,
+      `…and it is the run's own base, not some other commit (step=${json(
+        savedStep?.baseSha,
+      )} run base=${json(driven.base)})`,
     );
 
     // (c) The read the later steps actually perform: the same accessor, on the object

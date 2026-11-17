@@ -149,6 +149,16 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // worktree root (itself containment-checked, and infrastructure if THAT fails).
   // The reader is `leanPreflightProbeContainEnabled` in the same module.
   flag("LEAN_PREFLIGHT_PROBE_CONTAIN", true),
+  // #2334 — whether `loadRun` rebuilds the ready step's own `derivedSpec` and `baseSha`.
+  // `buildOutcome` is the whitelist that rebuilds every step outcome field by field and
+  // had no clause for either, so the ready step's copy of the contract the run executed
+  // read back absent while the raw record carried it (the run-level copy survived, which
+  // is why derive mode worked). `0` puts the shipped release back byte for byte — the
+  // two fields drop on load exactly as v0.14.87 drops them — for an operator comparing
+  // a record against one written before the fix. The step's copy is an audit record: no
+  // production reader reads it off a step today. The reader is
+  // `leanReadyFactsOnLoadEnabled` in lean/ready-facts-switch.ts.
+  flag("LEAN_READY_FACTS_ON_LOAD", true),
   // The routed deadline report's own wall: the report is the step the deadline's stop
   // test exempts, so without this it is the one step nothing bounds. `0` puts the
   // unbounded await back byte for byte. The reader is `leanReportBoundEnabled` in
