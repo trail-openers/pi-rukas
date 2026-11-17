@@ -7,34 +7,30 @@
  * directory dies before the runner names the file. Hence the call sits on the reset path,
  * inside `resetWorktreeToBase`, rather than at every place a reset happens.
  *
- * The question git is asked is "populate this gitlink", and git's default answer is a CLONE
- * FROM THE RECORDED URL. On a machine with no network that is an exit-10 handback about a
- * transport, for bytes the host already holds: in the submodule's checkout, or in the module
- * store under `.git/modules/<name>`. The local rule asks for the same thing with one word
- * changed — the source is the superproject's own copy, COMPUTED HERE from paths of this
- * superproject and never read out of repo content (`.gitmodules` is content of the base, and the
- * submodule's own `.gitmodules` is content of ANOTHER repository, so neither says where to
- * fetch). Nothing in the repository is rewritten: the source reaches git ONLY as `-c` on the one
- * invocation that needs it, so the seed leaves no durable write — not in `.gitmodules` (which
- * keeps the base's URL) and not in the SUPERPROJECT's shared `.git/config`, which a `git
- * submodule set-url` would otherwise move and never move back. A step that fixed the next run by
- * mutating the repository it was handed would be hiding that it could.
+ * The question git is asked is "populate this gitlink", and git's default answer is a CLONE FROM
+ * THE RECORDED URL. On a machine with no network that is an exit-10 handback about a transport,
+ * for bytes the host already holds: in the submodule's checkout, or in the module store under
+ * `.git/modules/<name>`. The local rule asks for the same thing with one word changed — the
+ * source is the superproject's own copy, COMPUTED HERE from paths of this superproject and never
+ * read out of repo content (`.gitmodules` is content of the base, and the submodule's own
+ * `.gitmodules` is content of ANOTHER repository, so neither says where to fetch). Nothing in the
+ * repository is rewritten: the source reaches git ONLY as `-c` on the one invocation that needs
+ * it. A step that fixed the next run by mutating the repository it was handed would be hiding
+ * that it could.
  *
  * DEPTH keeps the transport licence narrow: only the first level is seeded, and only the one
- * `git submodule update` carrying a URL computed here gets `protocol.file.allow` —
- * command-line `-c`, never a config file, so the widening cannot outlive the call. A nested
- * level is used only when this superproject already holds it; a deeper submodule with no local
- * copy is disclosed by path rather than fetched.
+ * `git submodule update` carrying a URL computed here gets `protocol.file.allow` — command-line
+ * `-c`, never a config file, so the widening cannot outlive the call. A nested level is used only
+ * when this superproject already holds it; a deeper submodule with no local copy is disclosed by
+ * path rather than fetched.
  *
- * A submodule the superproject has NEVER had is not fetched either — a trial host has no
- * network to reach it. That is a DISCLOSURE, not a failure: the run proceeds and the path is
- * named, since "the base's verify ran without it" is the honest answer.
+ * A submodule the superproject has NEVER had is not fetched either — a trial host has no network
+ * to reach it. That is a DISCLOSURE, not a failure: the run proceeds and the path is named.
  *
  * Two gates decide the call, and they are not peers. `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0`
- * (`lean/runner-preflight-switch.ts`) is the OUTER one and wins: no submodule code runs at
- * all. Only when it is open does `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL`
- * (`lean/submodules-local-switch.ts`) decide — on, the local rule above; `0`, the release's own
- * single call, byte for byte.
+ * (`lean/runner-preflight-switch.ts`) is the OUTER one and wins: no submodule code runs at all.
+ * Only when it is open does `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL`
+ * (`lean/submodules-local-switch.ts`) decide.
  */
 
 import { existsSync } from "node:fs";
@@ -75,35 +71,32 @@ export interface SubmoduleNote {
   kind: "seeded" | "absent" | "failure";
   /**
    * For a seeded one, the source git was pointed at. An absent or failed path is disclosed by
-   * PATH — the only form an operator can act on — so those carry nothing here.
+   * PATH — the only form an operator can act on.
    */
   detail: string;
   /**
    * The file that must exist inside a seeded submodule for its checkout to be usable. Only ever
    * set by the seeding arm, from the submodule's own recorded commit: a clone out of a source
    * whose branch was emptied satisfies every other part of the disclosure while handing the child
-   * an empty directory. One path the base's commit names is git's answer, not a guess at what a
-   * vendored repository ought to hold; a submodule with no committed files sets nothing.
+   * an empty directory. One path the base's commit names is git's answer, not a guess.
    */
   expect?: string;
   /**
    * Set by the reset when a seeded submodule's checkout does not hold `expect`: the pass cloned
    * something and has nothing to object to, while the tree holds an empty directory. The read is
-   * of the tree, not of the source the step chose, so a source that quietly lost its content
-   * cannot pass as one that supplied it.
+   * of the tree, not of the source the step chose.
    */
   emptyCheckout?: boolean;
   /**
-   * Submodule paths git itself reported as having no git dir behind them, for a pass that
-   * finished without saying anything about them. Only ever set by the reset, from `git submodule
-   * status` asked of the tree afterwards — the one read that survives a step whose own bookkeeping
-   * was silent. Without it a disclosure says "no submodules" about a tree that has one.
+   * Submodule paths git itself reported as having no git dir behind them, for a pass that finished
+   * without saying anything about them. Only ever set by the reset, from `git submodule status`
+   * asked of the tree afterwards. Without it a disclosure says "no submodules" about a tree that
+   * has one.
    */
   unproven?: readonly string[];
   /**
    * Set when a read this step depends on could not be answered. An absent answer is information;
-   * a thrown read is an outage, and the two must not reach the caller as the same value. Without
-   * this the death of the backstop reads as "git checked, nothing unproven", which is a pass.
+   * a thrown read is an outage, and the two must not reach the caller as the same value.
    */
   unreadable?: boolean;
 }
@@ -134,8 +127,7 @@ export function submoduleNoteClause(notes: readonly SubmoduleNote[]): string | u
   );
   // "some" only when a path the step knows about is NOT among the unpopulated ones. Counted over
   // PATHS on both sides and never against the note count: a note is an act of bookkeeping, not a
-  // submodule, so notes naming two distinct paths could announce "some" about a base whose every
-  // submodule was missing.
+  // submodule.
   const named = new Set<string>();
   for (const n of notes) {
     if (n.kind === "seeded" && n.emptyCheckout !== true) named.add(n.path);
@@ -173,9 +165,9 @@ export interface WorktreeSubmoduleState {
   readonly registered: readonly string[];
   readonly unpopulated: readonly string[];
   /**
-   * Set when git was asked and could not answer. `undefined` from `submoduleState` means "this
-   * tree has no submodules to ask about"; this means "the question could not be answered", and the
-   * two read oppositely at the reset: one is an absence to report, the other a backstop that died.
+   * Set when git was asked and could not answer. `undefined` from `submoduleState` means "this tree
+   * has no submodules to ask about"; this means "the question could not be answered", and the two
+   * read oppositely at the reset.
    */
   readonly unreadable?: boolean;
 }
@@ -207,18 +199,16 @@ export async function submoduleState(exec: ExecFn, wt: string): Promise<Worktree
   if (status === undefined) return unreadableSubmoduleState();
   const registered: string[] = [];
   const unpopulated: string[] = [];
-  // git's own format: `<sigil><sha> <path> [(<describe>)]`. The sigil is GLUED to the sha and the
-  // sha is always printed, so the parser demands both: with the sha optional, a gitlink nothing
-  // checked out read as sigil `-` and path `<sha>` and the backstop was dead code.
+  // git's own format: `<sigil><sha> <path> [(<describe>)]`. The sigil is GLUED to the sha and the sha
+  // is always printed, so the parser demands both.
   //
   // Three sigils are read and the third keeps `registered` meaningful: ` ` is a populated submodule,
   // so a parser matching only the defect glyphs reports nothing for a healthy tree. `-` is a gitlink
   // with nothing checked out; `U` is an unmerged path. A line matching none is ignored rather than
-  // guessed at: a git that changes the format loses the backstop rather than inventing an
-  // unpopulated submodule.
+  // guessed at.
   for (const line of ((status as { stdout?: string }).stdout ?? "").split("\n")) {
-    // The path is group 3: group 2 is only checked to BE a sha, so a parser that read it as the
-    // path took the SHA for the submodule's name and every path-based judgement went quiet.
+    // The path is group 3: group 2 is only checked to BE a sha, so a parser that read it as the path
+    // took the SHA for the submodule's name.
     const hit = /^([-U ])([0-9a-f]{40})\s+(\S+)/u.exec(line);
     if (hit?.[1] === undefined || hit[3] === undefined) continue;
     registered.push(hit[3]);
