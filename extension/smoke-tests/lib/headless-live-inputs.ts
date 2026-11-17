@@ -38,6 +38,7 @@ import {
   leanPreflightProbeContainEnabled,
 } from "../../src/lean/preflight-probe-switch.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
+import { leanReadyFactsOnLoadEnabled } from "../../src/lean/ready-facts-switch.ts";
 import { leanSubmodulesLocalEnabled } from "../../src/lean/submodules-local-switch.ts";
 import {
   leanHandbackNoHeadRecordEnabled,
@@ -208,6 +209,11 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // the off arm's argv are pinned by test-lean-submodules-local-switch.ts and
   // test-lean-submodule-local-source.ts (e).
   ["PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL", leanSubmodulesLocalEnabled],
+  // #2334 — whether `loadRun` rebuilds the ready step's own `derivedSpec`/`baseSha`. The
+  // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on";
+  // the truth table, the docs row and the two-arm rebuild are pinned by
+  // test-lean-ready-facts-on-load-switch.ts.
+  ["PI_ENSEMBLE_LEAN_READY_FACTS_ON_LOAD", leanReadyFactsOnLoadEnabled],
   ["PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK", leanVerifiedHandbackEnabled],
   // The verified-handback rule. The reader is `v !== "0"`, so the gate's LIVE
   // loop (env deleted) pins "unset means on".

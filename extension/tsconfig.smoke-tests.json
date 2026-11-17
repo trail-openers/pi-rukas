@@ -456,6 +456,8 @@
     "smoke-tests/lib/lean-spec-intake-fixtures.ts",
     "smoke-tests/lib/lean-spec-intake-post-fixture.ts",
     "smoke-tests/test-lean-spec-intake-post.ts",
+    "smoke-tests/lib/lean-spec-intake-inert-fixture.ts",
+    "smoke-tests/test-lean-spec-intake-inert.ts",
     "smoke-tests/test-pi-spec-map.ts",
     "smoke-tests/test-lean-spec-intake-switch.ts",
     "smoke-tests/test-lean-spec-derive.ts",

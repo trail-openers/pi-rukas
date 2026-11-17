@@ -190,6 +190,19 @@ changed under it mid-flight. `saveRun` re-validates the field on the way out, an
 loader validates it on the way in (`lean/state-derived-spec.ts`) — a state file
 carrying a contract the engine could never have produced is refused at load.
 
+`ready` also records the contract, and the commit it read the config at, on **its own
+step** — the same two fields, written by the same save. The step's copy has no
+production reader: every later step reads the run's. What it makes true is that the
+step log and the run record agree about which contract the run executed, which is what
+someone reading the log afterwards is entitled to. Rebuilding it is the loader's job,
+and `buildOutcome` — the whitelist every loaded outcome passes through — had clauses for
+every other field but these two, so the loader judged the contract, refused a record
+whose copy was malformed, and then dropped it. It rebuilds both now, behind
+`PI_ENSEMBLE_LEAN_READY_FACTS_ON_LOAD` (default on; only the literal `0` puts the drop
+back byte for byte, so a loaded ready outcome carries neither field as v0.14.87 loaded
+it — the knob changes only what the run's own step log retains, and `specFor` reads the
+run's copy on either arm; [configuration.md](configuration.md)).
+
 **What is published.** When `ready` mints a derivation it posts it to the issue as a
 fenced `pi-spec v1` block, naming the model that drafted it and the criteria count —
 the author has to see the table before the run spends a build cycle on it, not after

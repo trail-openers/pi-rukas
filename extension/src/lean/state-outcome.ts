@@ -14,8 +14,11 @@
 import { isFullCommitSha } from "../commit-sha.ts";
 import type { DispatchUsage } from "../types.ts";
 import { HANDOFF_CHANNELS, type HandoffChannel } from "../work-driver-handoff-channel.ts";
+import { leanReadyFactsOnLoadEnabled } from "./ready-facts-switch.ts";
 import { CRITERION_ID } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
+import { canonicalDerivedSpec } from "./state-derived-spec.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 import { derivedSpecProblem } from "./state-derived-spec.ts";
 import { reviewBoundProblem, validatedReviewBound } from "./state-dispatches.ts";
 import {
@@ -389,6 +392,10 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
  */
 export function buildOutcome(oc: Record<string, unknown>): Outcome {
   const tests = oc.tests as Record<string, string[]> | undefined;
+  // Computed ONCE so the two clauses below cannot disagree about which arm they are on.
+  const derived: DerivedSpec | undefined = leanReadyFactsOnLoadEnabled()
+    ? canonicalDerivedSpec(oc.derivedSpec)
+    : undefined;
   return {
     kind: oc.kind as string,
     ...(typeof oc.reason === "string" ? { reason: oc.reason } : {}),
@@ -430,5 +437,24 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),
     ...(isCount(oc.value) ? { value: oc.value as number } : {}),
     ...(isCount(oc.used) ? { used: oc.used as number } : {}),
+    // `ready`'s two run-level facts, at the END of the spread: the key order above is what the
+    // handback key-list case pins, and a field inserted mid-list rewrites those bytes. Only
+    // `ready` may carry either field, and `outcomeProblem` has refused it anywhere else BEFORE
+    // this runs — so each clause here rebuilds only what that judgement already passed. The
+    // contract goes through the reader that canonicalises it rather than carrying the file's
+    // shape. `PI_ENSEMBLE_LEAN_READY_FACTS_ON_LOAD=0` leaves the pair out, which is how every
+    // release through v0.14.87 loaded a ready step.
+    ...(derived === undefined ? {} : { derivedSpec: derived }),
+    ...(derived === undefined
+      ? {}
+      : {
+          // `baseSha` is `ready`'s too and the two are written by one save, so the knob gates
+          // the pair together — the off arm is the release's outcome, which carried neither.
+          // The sha is taken only as a full oid, the same shape `state.ts` holds the run's own
+          // to; a truncated one is dropped rather than reaching a reader.
+          ...(typeof oc.baseSha === "string" && isFullCommitSha(oc.baseSha)
+            ? { baseSha: oc.baseSha }
+            : {}),
+        }),
   };
 }
