@@ -79,7 +79,7 @@ import { acceptanceSection, assertHeadIsVerified } from "./review-acceptance.ts"
 import { type StepStop, reviewBoundRecord, stepBound, unjudgedLenses } from "./review-bound.ts";
 import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
-import { fixRound, noteFixDisclosure, reviewedHead } from "./review-git.ts";
+import { derivedArg, fixRound, noteFixDisclosure, reviewedHead } from "./review-git.ts";
 import {
   fixRunId,
   fixRunIdFromLog,
@@ -114,24 +114,12 @@ export { ReviewInfraError } from "./review-errors.ts";
 export type { AdversarialArgs, FixRunId, LensArgs, LensRound, ReviewDeps } from "./review-args.ts";
 import type { LensRound, ReviewDeps, ReviewWave } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
-import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { LeanRun, Outcome, ReviewBoundRecord } from "./state.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 import { armBudget, budgetFor } from "./step-budget.ts";
 
 /** The fixer's wall clock, the shape the other steps pass as `childBoundMs`. */
 export const FIX_BOUND_MS = 20 * 60_000;
-
-/**
- * The contract's provenance as the two gates' args want it: the KEY is present only
- * when the record carries a contract. A `derivedSpec: undefined` is not the same object
- * as one without the key, and every brief decides whether to print a contract section
- * by whether the field is there — so the guard lives here, once, rather than at each
- * call site where a later edit could drop it.
- */
-function derivedArg(run: Pick<LeanRun, "derivedSpec">): { derivedSpec?: DerivedSpec } {
-  return run.derivedSpec === undefined ? {} : { derivedSpec: run.derivedSpec };
-}
 
 /**
  * The `review` step. Returns one of the step's two pass kinds — `done` or

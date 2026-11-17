@@ -51,7 +51,7 @@ import { type FixRunId, ReviewInfraError } from "./review.ts";
 import { gitQuiet, resetWorktreeToBase } from "./specify-reset.ts";
 import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
-import type { DerivedSpec } from "./state-derived-spec.ts";
+import type { ContractSource, DerivedSpec } from "./state-derived-spec.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 
 /**
@@ -155,6 +155,15 @@ export function noteFixDisclosure<R extends { reason?: string }>(
   return clause === undefined || pass.reason === undefined
     ? pass
     : { ...pass, reason: `${pass.reason}; ${clause}` };
+}
+
+/** The contract's provenance as the review gates' args want it: the KEY is present only
+ *  when the record carries a contract. A `derivedSpec: undefined` is not the same object
+ *  as one without the key, and every brief decides whether to print a contract section by
+ *  whether the field is there — so the guard lives here, once, where no call site can drop
+ *  it. */
+export function derivedArg(run: ContractSource): ContractSource {
+  return run.derivedSpec === undefined ? {} : { derivedSpec: run.derivedSpec };
 }
 
 /**

@@ -31,9 +31,7 @@ import { oneLine } from "./text-fence.ts";
 export const NO_BLOCK_RULE = "no pi-spec v1 block";
 
 /** What the decision came to: a contract, or the rule that stopped the run. */
-export type Contract =
-  | { spec: PiSpec; derived?: DerivedSpec }
-  | { rule: string; infra?: boolean };
+export type Contract = { spec: PiSpec; derived?: DerivedSpec } | { rule: string; infra?: boolean };
 
 /** Decide the run's contract from its issue body. `derive` is optional because the
  * derivation needs the run's wiring (forge read, child dispatch): a caller with no deps
@@ -65,7 +63,8 @@ export async function contractOf(
   if (body.trim() === "") return { rule: NO_BLOCK_RULE };
   try {
     const spec = await deriveSpecForRun(derive, repoRoot, issue, base.baseSha, body);
-    return { spec, derived: { spec, model: deriveModel(), at: Date.now() } };  } catch (err) {
+    return { spec, derived: { spec, model: deriveModel(), at: Date.now() } };
+  } catch (err) {
     if (!(err instanceof SpecDeriveError)) throw err;
     traceDerive(issue, "refused", err.message);
     // Clipped: the derivation's cause is a model's text put into a rule an
