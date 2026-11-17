@@ -332,7 +332,6 @@ for (const [bullets, needle, label] of [
       seenPrompt = dispatched.prompt;
       return Promise.resolve(reply(deriveReply(BULLETS)));
     },
-    { role: "explore" },
   );
   assert(spec !== undefined, "the happy path still yields a spec");
   assert(

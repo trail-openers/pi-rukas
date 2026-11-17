@@ -70,25 +70,17 @@ export class SpecDeriveError extends Error {
   }
 }
 
-/** What the child is shown: the two fields it derives from, and nothing else. */
-export interface DeriveInput {
-  title: string;
-  body: string;
-}
-
 /** The dispatch seam: one child, one result, with the budget arms it must carry. */
 export type DeriveDispatch = (
   spec: DispatchSpec,
   arms: Pick<BudgetArms, "opts">,
 ) => Promise<DispatchResult>;
 
-/**
- * The brief. The issue text arrives fenced and disarmed and is labelled DATA: a
- * ticket whose own text says "ignore your instructions" is the shape this boundary
- * must survive, and the cheapest way to survive it is never to let that text sit at
- * the prompt's own level.
- */
-export function derivePrompt(input: DeriveInput): string {
+/** The brief. The issue text arrives fenced, disarmed and labelled DATA: a ticket whose
+ * own text says "ignore your instructions" is the shape this boundary must survive, and
+ * the cheapest way to survive it is never to let that text sit at the prompt's own
+ * level. */
+export function derivePrompt(input: { title: string; body: string }): string {
   return [
     "You are reading one issue for a build engine that cannot start without a machine-readable contract. State that contract from the issue text, and nothing else.",
     "",
@@ -166,14 +158,16 @@ export function deriveBudget(config?: WorkConfig): Budget {
  * listed in this file's header). The child's cost rows ride on every throw: a child
  * that died still cost tokens. */
 export async function deriveSpec(
-  input: DeriveInput,
+  input: { title: string; body: string },
   dispatch: DeriveDispatch,
-  opts: { role?: string; budget?: Budget; arms?: (b: Budget | undefined) => BudgetArms } = {},
+  opts: { budget?: Budget; arms?: (b: Budget | undefined) => BudgetArms } = {},
 ): Promise<PiSpec> {
-  const role = opts.role ?? DERIVE_ROLE;
-  const budget = opts.budget ?? DERIVE_DEFAULT_BUDGET;
-  const arms = (opts.arms ?? armBudget)(budget);
-  const spec: DispatchSpec = { role, prompt: derivePrompt(input), label: "spec-derive" };
+  const arms = (opts.arms ?? armBudget)(opts.budget ?? deriveBudget());
+  const spec: DispatchSpec = {
+    role: DERIVE_ROLE,
+    prompt: derivePrompt(input),
+    label: "spec-derive",
+  };
   let result: DispatchResult;
   try {
     result = await dispatch(spec, { opts: arms.opts });
@@ -220,7 +214,6 @@ export async function deriveSpecForRun(
     .catch((err: unknown) => oneLine(String((err as Error)?.message ?? err), 200) && "");
   const config = await deps.loadConfig(repoRoot, baseSha);
   return deriveSpec({ title, body }, deps.dispatch, {
-    role: DERIVE_ROLE,
     budget: deriveBudget(config),
     ...(deps.arm === undefined ? {} : { arms: deps.arm }),
   });
