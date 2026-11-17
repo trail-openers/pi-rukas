@@ -77,7 +77,7 @@ const quoted = (command: string): string => oneLine(command, COMMAND_QUOTE_MAX);
 
 /**
  * The longest reason either tier may produce for one criterion. Past `state-outcome-maps.ts`'s
- * `RECORD_REASON_MAX_CHARS` the whole verify outcome is unloadable, not merely clipped, so every
+ * `RECORD_REASON_MAX_CHARS` the whole verify outcome is unloadable rather than clipped, so every
  * interpolation is clipped here first.
  */
 const REASON_MAX = 280;
@@ -86,8 +86,8 @@ const REASON_MAX = 280;
 const reason = (text: string): string => oneLine(text, REASON_MAX);
 
 /**
- * The path a tree reason may name: `parseTreeLine` builds its refusals by interpolating the
- * `rel` it was handed, so this makes both halves of every reason go through {@link quoted}.
+ * The path a tree reason may name: `parseTreeLine` interpolates the `rel` it was handed, so this puts both
+ * halves of every reason through {@link quoted}.
  */
 const reasonPath = (text: string): string => reason(quoted(text));
 
@@ -97,16 +97,16 @@ export interface CommandCriteriaOutcome {
   /** Every criterion the gate actually ran and that held, keyed by id. */
   executed: Record<string, CommandCriterionRecord>;
   /**
-   * Why the gate did NOT run a given criterion, keyed by id — per criterion, because a spec can
-   * carry three command criteria with three problems and the operator has to fix each.
+   * Why the gate did NOT run a criterion, keyed by id — per criterion, because a spec can carry three
+   * command criteria with three problems and the operator must fix each.
    */
   notRunnable: Record<string, string>;
 }
 
 /**
- * Why this `command` criterion's file is not an unchanged regular test of the base, or `undefined` when
- * it is. A `VerifyInfraError` instead whenever a read could not answer — "could not tell" must never
- * read as "the test is not there". Three reads: base commit, HEAD, and the working file.
+ * Why this `command` criterion's file is not an unchanged regular test of the base, or `undefined` when it
+ * is. A `VerifyInfraError` instead whenever a read could not answer — "could not tell" must never read as
+ * "the test is not there". Three reads: base commit, HEAD, working file.
  */
 async function unchangedFileProblem(
   exec: VerifyExec,
@@ -130,26 +130,25 @@ async function unchangedFileProblem(
     if (entryUnreadable(atHead)) throw unreadableEntry(rel, wt);
     return reason(entryRefusal(atHead));
   }
-  // Same mode, same oid: the bytes the base held are the bytes HEAD holds.
+  // Same mode and oid: the bytes the base held are the bytes HEAD holds.
   if (atBase.oid !== atHead.oid) return reasonPath(`${rel} changed since base`);
-  // git vouched for the COMMITTED entry; nothing above the commit is.
+  // git vouched for the COMMITTED entry; nothing above the commit has.
   if ((await workingOid(exec, wt, rel)) !== atBase.oid)
     return reasonPath(`${rel} differs on disk from the base commit`);
-  // Remember which blob that was, so the re-check compares against this observation.
+  // Remember which blob, so the re-check compares against this observation.
   accepted.oid = atBase.oid;
   return undefined;
 }
 
 /**
- * Why a `command` criterion's `command` is not a path this gate may execute, or `undefined` when
- * it is one.
+ * Why a `command` criterion's `command` is not a path this gate may execute, or `undefined` when it is.
  *
- * The raw string is validated BEFORE trimming: a shell metacharacter, space or newline is refused
- * here, where `pathProblem` alone would pass a shell-shaped string.
+ * The raw string is validated BEFORE trimming: a shell metacharacter, space or newline is refused here,
+ * where `pathProblem` alone would pass a shell-shaped string.
  */
 export function commandCriterionProblem(command: string | undefined): string | undefined {
   if (command === undefined || command === "") return "a command criterion carries no command";
-  // The raw form, untrimmed; this is the one trim performed, as a refusal.
+  // The raw form, untrimmed — the only trim performed, and only as a refusal.
   if (command.trim() === "") return "a command criterion carries no command";
   if (
     command.startsWith("/") ||
@@ -163,8 +162,8 @@ export function commandCriterionProblem(command: string | undefined): string | u
     return `command is not a plain repo-relative file path: ${quoted(command)}`;
   const rel = normaliseRelPath(command);
   if (rel !== command) return `command is not in normalised git-relative form: ${quoted(command)}`;
-  // `pathProblem` interpolates the path it refused — untrusted text of any length — so the refusal
-  // is re-worded around the clipped command rather than trusting the callee.
+  // `pathProblem` interpolates the path it refused — untrusted text of any length — so the refusal is
+  // re-worded around the clipped command rather than trusting the callee.
   const shape = pathProblem(rel);
   if (shape !== undefined) return `command is not a path this gate may execute: ${quoted(command)}`;
   return undefined;
@@ -173,11 +172,11 @@ export function commandCriterionProblem(command: string | undefined): string | u
 /**
  * Execute every `command` criterion through the project's per-file runner.
  *
- * Every runnable criterion runs, in spec order — a gate that stopped at the first failure would
- * report a different reason tomorrow for a different criterion. Each must exit **0**.
+ * Every runnable criterion runs, in spec order — a gate that stopped at the first failure would report a
+ * different reason tomorrow for a different criterion. Each must exit **0**.
  *
- * Bounded twice over: `COMMAND_CRITERION_MAX` criteria, and the whole tier shares
- * `COMMAND_TIER_BUDGET_MS`. The runner gets the driver's SCRUBBED env, as the project tiers do.
+ * Bounded twice over: `COMMAND_CRITERION_MAX` criteria, and the tier shares `COMMAND_TIER_BUDGET_MS`. The
+ * runner gets the driver's SCRUBBED env, as the project tiers do.
  */
 export async function commandCriteriaOutcome(
   criteria: Criterion[],
@@ -206,8 +205,8 @@ export async function commandCriteriaOutcome(
     const left = COMMAND_TIER_BUDGET_MS - (Date.now() - started);
     if (left <= 0) throw new VerifyInfraError("command criteria exceeded 600s");
     const problem = commandCriterionProblem(c.command);
-    // A string that is not a path at all is the spec's own defect: never executed, never a verdict,
-    // and carried to the PR body so the omission is legible without a trace log.
+    // A string that is not a path at all is the spec's own defect: never executed, never a verdict, and
+    // carried to the PR body so the omission is legible without a trace log.
     if (problem !== undefined) {
       notRunnable[c.id] = reason(problem);
       trace(`lean/verify: command criterion ${c.id} not run — ${problem}`);
@@ -221,8 +220,8 @@ export async function commandCriteriaOutcome(
       trace(`lean/verify: command criterion ${c.id} not run — ${treeProblem}`);
       continue;
     }
-    // The frozen tier's own on-disk check: a link or a path whose realpath leaves the worktree is
-    // refused before a byte reaches the runner.
+    // The frozen tier's on-disk check: a link or a path whose realpath leaves the worktree is refused
+    // before a byte reaches the runner.
     const diskProblem = fileProblem(wt, rel);
     if (diskProblem !== undefined) {
       notRunnable[c.id] = reasonPath(diskProblem);
@@ -234,9 +233,9 @@ export async function commandCriteriaOutcome(
       template,
       file: rel,
       limits: {
-        // Always a share of what the tier's budget still has, never the runner's default: a
-        // caller that gave no timeout is not licence for the last run to sit out the full
-        // default past the budget. With no time left the run gets 1ms and dies as infra.
+        // Always a share of what the tier's budget still has, never the runner's default: no timeout from
+        // the caller is not licence for the last run to sit out the full default past the budget. With no
+        // time left the run gets 1ms and dies as infra.
         timeoutMs: Math.max(1, Math.min(timeoutMs ?? TEST_TIMEOUT_MS, left)),
         ...(env === undefined ? {} : { env }),
       },
@@ -249,8 +248,8 @@ export async function commandCriteriaOutcome(
       executed[c.id] = { kind: "passed", oid: accepted.oid, rel };
       continue;
     }
-    // `red` and `unclear` both mean the file did not exit 0. Unlike a frozen test, this was never
-    // proven red at freeze time, so a non-zero exit is the regression itself.
+    // `red` and `unclear` both mean the file did not exit 0. Unlike a frozen test this was never proven
+    // red at freeze time, so a non-zero exit is the regression itself.
     failed ??= reason(`criterion ${c.id} (command ${quoted(rel)}) failed: ${proof.detail}`);
   }
   return {
@@ -263,8 +262,8 @@ export async function commandCriteriaOutcome(
 /**
  * Re-read the checks that licensed a run, after the runner has had the tree.
  *
- * A test file is code, and code may write: a criterion whose own script rewrote the file it was named
- * for would be recorded as preservation of bytes the gate never observed. Any difference is a RED.
+ * A test file is code, and code may write: a criterion whose own script rewrote the file it was named for
+ * would be recorded as preservation of bytes the gate never observed. Any difference is a RED.
  */
 export async function commandCriteriaTouched(
   executed: Record<string, CommandCriterionRecord>,
@@ -285,8 +284,8 @@ export async function commandCriteriaTouched(
       if (entryUnreadable(entry)) throw unreadableEntry(rel, wt);
       return reason(`command criteria changed the tree: ${entryRefusal(entry)}`);
     }
-    // Against the oid the PRE-run check accepted: a tier that rewrote the base tree must not have its
-    // own change serve as the expectation.
+    // Against the oid the PRE-run check accepted: a tier that rewrote the base tree cannot have its own
+    // change serve as the expectation.
     if (entry.oid !== record.oid)
       return reasonPath(`command criteria changed the tree: ${rel} changed since base`);
     if ((await workingOid(exec, wt, rel)) !== record.oid)
