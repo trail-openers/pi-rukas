@@ -3,17 +3,16 @@
  * that let one into a durable record.
  *
  * Split from `state-outcome.ts`, which passed the size cap when `build` gained its blocked report.
- * `state-outcome.ts` keeps `DISPATCH_STATES`, the ownership table, and `outcomeProblem`; this file
- * keeps what a map of paths or criterion ids must look like.
+ * `state-outcome.ts` keeps `DISPATCH_STATES`, the ownership table and `outcomeProblem`; this file keeps
+ * what a map of paths or criterion ids must look like.
  *
- * Each map is BOTH judged (a `*Problem` for the loader) and rebuilt (a `validated*` for
- * `buildOutcome`) from the same bounds, so the reader that validates and the builder that rebuilds
- * cannot drift apart.
+ * Each map is BOTH judged (a `*Problem` for the loader) and rebuilt (a `validated*` for `buildOutcome`)
+ * from the same bounds, so reader and builder cannot drift apart.
  *
- * `commandCriteria` and `commandNotRunnable` are `verify`'s account of the spec's `command` criteria
- * — what licenses `passed (command)` in the PR body, and why the gate skipped the rest. `blockedBy`
- * is `build`'s account of the frozen tests it proved cannot all pass together; its KEYS are frozen
- * test paths rather than criterion ids, so it takes `frozenKeyProblem` instead of `CRITERION_ID`.
+ * `commandCriteria` and `commandNotRunnable` are `verify`'s account of the spec's `command` criteria — what
+ * licenses `passed (command)` in the PR body and why the gate skipped the rest. `blockedBy` is `build`'s
+ * account of the frozen tests it proved cannot all pass together; its KEYS are frozen test paths, so it
+ * takes `frozenKeyProblem` instead of `CRITERION_ID`.
  */
 
 import { CRITERION_ID } from "./spec.ts";
@@ -23,9 +22,9 @@ import { frozenKeyProblem } from "./state-outcome.ts";
 const COMMAND_CRITERION_KIND = "passed";
 
 /**
- * One why-a-command-was-not-run — or one stated frozen-test conflict — is prose; the record must not
- * grow without bound. Exported because the build step's blocked report holds these values BEFORE
- * they reach the record and must refuse an entry it could not persist.
+ * One why-a-command-was-not-run, or one stated frozen-test conflict, is prose — the record must not grow
+ * without bound. Exported because the build step's blocked report holds these values BEFORE the record and
+ * must refuse an entry it could not persist.
  */
 export const RECORD_REASON_MAX_CHARS = 300;
 
@@ -41,9 +40,9 @@ function notAMap(value: unknown): boolean {
 /**
  * Why a `commandCriteria` map is not evidence this run may print, or undefined.
  *
- * The map is what licenses `passed (command)` in the PR body, so a value that is not the word
- * `passed` — or an id that is not a criterion id — is refused rather than carried. The entry bound
- * is the tier's own: a record with more entries than the gate can execute was not written by it.
+ * The map licenses `passed (command)` in the PR body, so a value that is not the word `passed`, or an id
+ * that is not a criterion id, is refused rather than carried. The entry bound is the tier's own: a record
+ * with more entries than the gate can execute was not written by it.
  */
 export function commandCriteriaProblem(value: unknown): string | undefined {
   if (notAMap(value)) return "outcome commandCriteria must be an object";
@@ -62,9 +61,8 @@ export function commandCriteriaProblem(value: unknown): string | undefined {
 /**
  * Why a `commandNotRunnable` map is not a record this run may print, or undefined.
  *
- * Each not-runnable reason reaches its own row of the PR body, so every key is a criterion id and
- * every value a bounded string. Per-criterion rather than a single slot because a spec's command
- * criteria each fail for their own reason.
+ * Each not-runnable reason reaches its own row of the PR body, so every key is a criterion id and every
+ * value a bounded string. Per-criterion, because a spec's command criteria each fail for their own reason.
  */
 export function commandNotRunnableProblem(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null)
@@ -85,9 +83,8 @@ export function commandNotRunnableProblem(value: unknown): string | undefined {
 
 /**
  * How long one stated conflict may PRINT. Distinct from {@link RECORD_REASON_MAX_CHARS}, the DURABLE
- * record's bound: a stored reason may be 300 characters, but neither rendering may print more than
- * this. Both outputs are public, so `build.ts` and `handback.ts` share these caps rather than each
- * carrying its own copy.
+ * bound: a stored reason may be 300 characters but neither rendering prints more than this. Both outputs
+ * are public, so `build.ts` and `handback.ts` share these caps rather than each carrying a copy.
  */
 export const BLOCKED_REASON_CAP = 160;
 
@@ -97,9 +94,8 @@ export const BLOCKED_PATH_CAP = 200;
 /**
  * Why a `blockedBy` map is not the build step's named cause, or undefined.
  *
- * It is printed into the handback comment as the reason the run stopped, so a half-record (a
- * `blocked` step whose map holds nothing) is refused rather than rendered as a fragment by the
- * reader downstream.
+ * It is printed into the handback comment as the reason the run stopped, so a half-record — a `blocked`
+ * step whose map holds nothing — is refused rather than rendered as a fragment downstream.
  */
 export function blockedByProblem(value: unknown): string | undefined {
   if (notAMap(value)) return "outcome blockedBy must be an object";
@@ -121,10 +117,9 @@ export function blockedByProblem(value: unknown): string | undefined {
 /**
  * The `commandCriteria` map, rebuilt from entries this module actually checked.
  *
- * Rebuilt rather than spread-and-cast: `buildOutcome`'s claim is that every field
- * it returns was looked at, and a cast hands back the raw object with whatever it
- * still held. Each entry is re-derived from its own validation here, so the type
- * the caller receives is produced by the check rather than asserted past it.
+ * Rebuilt rather than spread-and-cast: `buildOutcome`'s claim is that every field it returns was looked
+ * at, and a cast hands back the raw object with whatever it still held. Each entry is re-derived from its
+ * own validation, so the type the caller receives is produced by the check, not asserted past it.
  */
 export function validatedCommandCriteria(value: unknown): Record<string, string> {
   const out: Record<string, string> = {};
@@ -147,9 +142,8 @@ export function validatedCommandNotRunnable(value: unknown): Record<string, stri
 }
 
 /**
- * The `blockedBy` map, rebuilt the same way: entries this module actually
- * checked, keys under the frozen-path rule, values bounded. Rebuilt rather than
- * cast, for the reason `validatedCommandCriteria` gives.
+ * The `blockedBy` map, rebuilt the same way: entries this module checked, keys under the frozen-path rule,
+ * bounded values. Rebuilt rather than cast, for the reason `validatedCommandCriteria` gives.
  */
 export function validatedBlockedBy(value: unknown): Record<string, string> {
   const out: Record<string, string> = {};
@@ -163,11 +157,10 @@ export function validatedBlockedBy(value: unknown): Record<string, string> {
 }
 
 /**
- * How many failing test names one tier's disclosure may RECORD. The subset test
- * itself runs on the complete parsed sets (`verify-baseline-excuse`); this bounds
- * only what is persisted and printed, so a suite with 200 pre-existing failures
- * records twenty names and the true total. Chosen in stream order — the runner's
- * own order is the one an operator who re-runs the command sees.
+ * How many failing test names one tier's disclosure may RECORD. The subset test runs on the complete
+ * parsed sets (`verify-baseline-excuse`); this bounds only what is persisted and printed, so a suite with
+ * 200 pre-existing failures records twenty names and the true total. Chosen in stream order — the runner's
+ * own order is what an operator re-running the command sees.
  */
 export const PREEXISTING_NAMES_CAP = 20;
 
@@ -198,11 +191,10 @@ function recordedNameProblem(name: unknown): string | undefined {
 /**
  * Why a `preexistingFailures` map is not a disclosure this run may print, or undefined.
  *
- * The record licenses a GREEN over a tier that exited non-zero, so every field it
- * asserts is checked: a name that could not have been printed is refused, and a tier
- * with no names is refused rather than rendered under a heading claiming failures
- * exist. A record this refuses forfeits the excuse — the caller keeps the `baseline
- * red:` hand-back — it never throws.
+ * The record licenses a GREEN over a tier that exited non-zero, so every field it asserts is checked: a
+ * name that could not have been printed is refused, and a tier with no names is refused rather than
+ * rendered under a heading claiming failures exist. A refused record forfeits the excuse — the caller
+ * keeps the `baseline red:` hand-back — it never throws.
  */
 export function preexistingFailuresProblem(value: unknown): string | undefined {
   if (notAMap(value)) return "outcome preexistingFailures must be an object";
@@ -231,18 +223,18 @@ export function preexistingFailuresProblem(value: unknown): string | undefined {
       if (problem !== undefined)
         return `outcome preexistingFailures[${JSON.stringify(tier)}] names entry ${problem}`;
     }
-    // A legacy `baseNames` set is ignored rather than refused, so a resumed run loads;
+    // A legacy `baseNames` set is ignored rather than refused so a resumed run loads;
     // {@link validatedPreexistingFailures} drops it.
   }
   return undefined;
 }
 
 /**
- * The `preexistingFailures` map, rebuilt from entries this module actually checked.
+ * The `preexistingFailures` map, rebuilt from entries this module checked.
  *
- * Rebuilt rather than cast, for the reason {@link validatedCommandCriteria} gives:
- * an entry that fails any rule is DROPPED, so the tier it described loses its
- * disclosure and the reader cannot mistake it for one the gate proved.
+ * Rebuilt rather than cast, for the reason {@link validatedCommandCriteria} gives: an entry failing any
+ * rule is DROPPED, so that tier loses its disclosure and the reader cannot mistake it for one the gate
+ * proved.
  */
 export function validatedPreexistingFailures(
   value: unknown,
