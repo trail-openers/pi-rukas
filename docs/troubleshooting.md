@@ -4079,7 +4079,7 @@ a create is the flag that would open the editor.
 
 The create runs with the **run's own credentials**: it is a driver exec, not a
 helper subagent, so `GITLAB_TOKEN` (or the operator's `glab` login under
-`GLAB_CONFIG_DIR`) reaches `glab` unchanged and `GLAB_HOST` picks the instance.
+`GLAB_CONFIG_DIR`) reaches `glab` unchanged and `GITLAB_HOST` picks the instance.
 The credential strip belongs to spawned helper children only; applied to a create
 it leaves neither token nor config root, and a **private** project answers 404 —
 and `glab auth login` cannot repair that, because the redirected config dir is
