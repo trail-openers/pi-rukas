@@ -32,18 +32,15 @@ import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 export const TEST_TIMEOUT_MS = 120_000;
 
 /**
- * The ceiling for one run, overridable so a test can inject a short one.
- * Production never sets it; a sleeper would otherwise cost the real two
- * minutes and the case asserting "a timeout is infra, never red" would be
- * untestable.
+ * The ceiling for one run, overridable so a test can inject a short one —
+ * production never sets them.
  */
 export interface TestRunLimits {
   timeoutMs?: number;
   /**
    * The run's output ceiling, for a case that wants to watch the executor's own
-   * overflow kill. Production never sets it: `runTestFile` passes
-   * {@link TEST_MAX_BUFFER}, and a test that could not shrink the bound could not
-   * reach the maxBuffer path without printing eight megabytes.
+   * overflow kill: a test that could not shrink the bound could not reach the
+   * maxBuffer path without printing eight megabytes.
    */
   maxBuffer?: number;
   /**
@@ -67,13 +64,11 @@ const TEST_MAX_BUFFER = 8 * 1024 * 1024;
  * already proven red at freeze time, that is a verdict — `frozenTestFailure` in
  * `verify-steps.ts`), while an output flood, a runner that could not be started and
  * a template that named nothing observed nothing at all. An overflow is a kill
- * (`killed: true`) but NOT a hang: the executor stamps `timedOutKill: false` and
- * names the stream in `overflow`.
+ * (`killed: true`) but NOT a hang.
  *
- * `runTestFile` classifies the shape once, from the rejection's own stamps, and the
- * shape is carried out REQUIRED: a caller that re-derived it from the returned
- * `Proof` would find no `killed`/`timedOutKill`/`code` on it — a `Proof` is a value,
- * not the rejection — and would read every kill as a template problem.
+ * The shape is carried out REQUIRED: a caller that re-derived it from the returned
+ * `Proof` would find no `killed`/`timedOutKill`/`code` on it and would read every
+ * kill as a template problem.
  */
 type ProofInfraShape = "killed" | "overflowed" | "never-started" | "nothing-to-run";
 
@@ -115,9 +110,8 @@ export function wasKilled(err: unknown): boolean {
  * Did this rejection come from the executor's OUTPUT bound rather than its clock?
  *
  * `execp` stamps `overflow` with the stream that broke its bound on that path and
- * deliberately leaves `timedOutKill` false, so an overflow is a kill that is not a
- * hang — the same reading `tierObserved` in `verify-baseline.ts` makes. Asked before
- * `wasKilled`, whose answer is true for both.
+ * leaves `timedOutKill` false, so an overflow is a kill that is not a hang. Asked
+ * before `wasKilled`, whose answer is true for both.
  */
 function outputOverflowed(err: unknown): boolean {
   return (err as { overflow?: unknown })?.overflow !== undefined;

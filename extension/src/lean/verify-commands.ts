@@ -60,8 +60,7 @@ import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 
 /**
  * The outcome of one executed `command` criterion, kept for the record.
- */
-interface CommandCriterionRecord {
+ */interface CommandCriterionRecord {
   /** `passed` — the criterion ran through the gate's own runner and exited 0. */
   kind: "passed";
   /**
@@ -166,7 +165,7 @@ async function unchangedFileProblem(
  * it is one.
  *
  * The raw string is validated BEFORE trimming. A shell metacharacter, a space or a newline is
- * refused HERE: `pathProblem` alone would pass `sh -c 'exit 1'` before existence dropped it.
+ * refused HERE: `pathProblem` alone would pass a shell-shaped string before existence dropped it.
  */
 export function commandCriterionProblem(command: string | undefined): string | undefined {
   if (command === undefined || command === "") return "a command criterion carries no command";
@@ -235,8 +234,7 @@ export async function commandCriteriaOutcome(
       trace(`lean/verify: command criterion ${c.id} not run — ${problem}`);
       continue;
     }
-    // The text rule passed, so `command` is a normalised repo-relative path.
-    const rel = normaliseRelPath(c.command as string);
+  const rel = normaliseRelPath(c.command as string);
     const accepted = { oid: "" };
     const treeProblem = await unchangedFileProblem(exec, wt, baseSha, rel, accepted);
     if (treeProblem !== undefined) {
