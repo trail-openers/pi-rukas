@@ -49,7 +49,7 @@ export const DERIVED_SPEC: PiSpec = {
 };
 
 /** The child's reply: that contract, fenced as the brief tells it to answer. */
-export const DERIVE_REPLY = [
+const DERIVE_REPLY = [
   "Here is the contract.",
   "```pi-spec v1",
   JSON.stringify(DERIVED_SPEC, null, 2),
@@ -69,13 +69,13 @@ const CHILD_ROW: DispatchResult = {
 const EMPTY_CONFIG: WorkConfig = { version: 1, autoMerge: false, verify: {}, budgets: {} };
 
 /** The state `ready + ok` routes to, and the one handler this rig lets run on. */
-export const AFTER_READY: LeanState = "specify";
+const AFTER_READY: LeanState = "specify";
 
 /** The issue every case drives. */
 export const ISSUE = 742;
 
 /** A temp git repo whose base commit carries a readable `.pi/work.json`. */
-export function tempRepo(tag: string): { dir: string; base: string; cleanup: () => void } {
+function tempRepo(tag: string): { dir: string; base: string; cleanup: () => void } {
   const dir = mkdtempSync(path.join(tmpdir(), `lean-intake-record-${tag}-`));
   const git = (args: string[]): void => {
     const r = spawnSync("git", ["-C", dir, ...args], {
