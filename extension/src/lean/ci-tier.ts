@@ -46,8 +46,7 @@ export async function ciConfig(deps: CiDeps, ctx: HandlerCtx): Promise<WorkConfi
  * run hands back rather than taking a build round. Anything else exiting non-zero is a
  * real red, returned with the reason a red step records, the combined stream the
  * baseline excuse parses test names from, and the executor's own result object
- * `ciTierObserved` decides admissibility from — the stream alone cannot tell a full run
- * from one truncated at its buffer.
+ * `ciTierObserved` decides admissibility from.
  */
 export async function tierFailure(
   deps: CiDeps,
@@ -72,8 +71,7 @@ export async function tierFailure(
     );
   // The tail and the bound are `verify`'s own, not a second copy of them: the step
   // log is one JSON document and `build`'s re-entry pastes a red reason into a
-  // prompt, so a tail bound alone still lets one very long line — a minified bundle
-  // echoed by a failing diff — carry the whole log into the record.
+  // prompt, so one very long line must not carry a whole log into the record.
   const tail = tailLines(out, TIER_TAIL_LINES);
   return {
     reason: clipReason(`the full verify tier exited ${String(e.code)}: ${cmd}\n${tail}`),
@@ -83,11 +81,11 @@ export async function tierFailure(
 }
 
 /**
- * `gh pr checks` exits **8** while checks are still pending (gh 2.103.3:
- * `8: Checks pending`). The shared executor rejects on any non-zero exit, so
- * without this the pending reply — the whole point of the poll — would read as an
- * infra throw. stdout still carries the JSON rows, so the exit is tolerated precisely
- * because it is a signal about WHERE the checks are, not whether the read worked.
+ * `gh pr checks` exits **8** while checks are still pending. The shared executor
+ * rejects on any non-zero exit, so without this the pending reply — the whole point of
+ * the poll — would read as an infra throw. stdout still carries the JSON rows, so the
+ * exit is tolerated precisely because it is a signal about WHERE the checks are, not
+ * whether the read worked. A `gh` contract, so it stays on the gh path alone.
  */
 const GH_CHECKS_PENDING_EXIT = 8;
 
@@ -101,9 +99,8 @@ const NOT_PASSING_ROWS = ["skipped", "skipping", "neutral"];
 /**
  * A row's grade, read the way the driver's merge gate reads one: gh's bucket
  * first, the raw check state only as the fallback. GitLab rows carry no bucket
- * and their states are NOT in these lists — they are graded by `glRowGrade`,
- * the shared table in `forge-gl-grade.ts`, so neither side can drift on whether
- * `skipped` counts as green.
+ * and are graded by `glRowGrade`, the shared table in `forge-gl-grade.ts`, so
+ * neither side can drift on whether `skipped` counts as green.
  */
 type RowGrade = "pending" | "red" | "not-passing" | "unknown";
 
@@ -128,16 +125,14 @@ function gradeRow(
 ): RowGrade | undefined {
   // GitLab's job rows have no bucket and their `status` words are not gh's, so
   // the shared table decides them — with the row's own `blocking` flag, the one
-  // field that tells a gate that ran from a gate that could not have failed;
-  // a word it has never seen waits, never passes.
+  // field that tells a gate that ran from a gate that could not have failed.
   if (gitlab) return glRowGrade({ state: row.state, blocking: row.blocking });
   const v = String(row.bucket ?? row.state ?? "")
     .toLowerCase()
     .trim();
-  // An empty or absent bucket AND state says nothing, and "nothing said" is not
-  // a pass: graded passing it would be waited on by nobody and the step would
-  // merge on it. Graded `unknown` it waits, and an expired wait hands the run
-  // back — the same answer as a row in a state this file has never seen.
+  // "Nothing said" is not a pass: graded passing it would be waited on by nobody
+  // and the step would merge on it. Graded `unknown` it waits, and an expired wait
+  // hands the run back.
   if (v === "pass" || v === "success" || v === "none") return undefined;
   if (PENDING_ROWS.includes(v)) return "pending";
   if (RED_ROWS.includes(v)) return "red";
@@ -210,17 +205,13 @@ function json(text: string, why: string): unknown {
 /**
  * One read of the forge, from ONE moment: the verdict and the head it is about.
  *
- * GitHub: the verdict and the check rows, the head out of the same `gh pr view` as the
- * verdict — two reads of a moving PR are two moments, and a green about another head is
- * no evidence about this one.
+ * GitHub: the verdict, the check rows and the head out of the same `gh pr view` — two
+ * reads of a moving PR are two moments, and a green about another head is no evidence
+ * about this one.
  *
  * GitLab: `mergeStateStatus` is composed from `detailed_merge_status` and its three
  * cross-checks, and the head is `diff_refs.head_sha` from the same reply
- * (`ci-forge-gl.ts`). An MR needs no `state` field here: the composition already
- * refuses an MR that is not `opened`.
- *
- * The gh exit-8 pending tolerance is a `gh` contract and stays on the gh path alone —
- * `glab api` has no such code, so a failed glab read is the infra throw it is.
+ * (`ci-forge-gl.ts`).
  */
 async function readForge(
   deps: CiDeps,
@@ -230,9 +221,8 @@ async function readForge(
   forge: GlForge,
 ): Promise<ForgeRead> {
   if (gitlab) {
-    // Both reads are the adapter's own argv, so the command strings the step
-    // issued stay the adapter's pinned glab form and the test's witness is
-    // `Ran.cmds`, not a claim in a comment.
+    // Both reads are the adapter's own argv, so the command strings the step issued
+    // stay the adapter's pinned glab form.
     const read = await glRead(forge, prNumber);
     return {
       state: undefined,
@@ -266,20 +256,14 @@ async function readForge(
  *
  * A still-running CI makes `mergeStateStatus` UNSTABLE, and a step that reads once right
  * after publish grades that as red and spends a build round on code that is not broken.
- * So a pending (or unrecognised) row is WAITED, and red is reserved for a row that
- * actually failed. Every iteration re-issues BOTH reads — including the head — so a PR
- * that moves off the verified head mid-wait is caught on the iteration that sees it. An
- * empty rows list stays an immediate red: "no checks reported" is the absence of
- * evidence, not evidence of green.
+ * So a pending (or unrecognised) row is WAITED, and red is reserved for a row that actually
+ * failed. Every iteration re-issues BOTH reads — including the head — so a PR that moves off
+ * the verified head mid-wait is caught on the iteration that sees it. An empty rows list is an
+ * immediate red: "no checks reported" is the absence of evidence, not evidence of green.
  *
- * The two bounds are SEQUENTIAL and separate: the wait gets the `ci` budget's minutes,
- * and the full tier keeps its own bound of the same size afterwards, clamped to the
- * deadline ({@link ciTierBudgetMs}). Still pending when the wait expires is a handback
- * (`VerifyInfraError`), never a red.
- *
- * On GitLab the same arms serve the composed readiness: `UNKNOWN` (`checking`, the one
- * retryable status) arrives as a word that is not `CLEAN` and waits on the same bound;
- * `DIRTY` is red with the composition's own detail.
+ * The two bounds are SEQUENTIAL and separate: the wait gets the `ci` budget's minutes, and the
+ * full tier keeps its own bound of the same size afterwards, clamped to the deadline
+ * ({@link ciTierBudgetMs}). Still pending when the wait expires is a handback, never a red.
  */
 export async function checksRedReason(
   deps: CiDeps,
@@ -315,16 +299,14 @@ export async function checksRedReason(
       ...namesOf(read.rows, "pending", gitlab),
       ...namesOf(read.rows, "unknown", gitlab),
     ];
-    // GitLab's retryable readiness waits with the rows, on the same bound: both
-    // mean "the forge has not finished deciding", and neither is a verdict.
+    // GitLab's retryable readiness waits with the rows, on the same bound: both mean
+    // "the forge has not finished deciding", and neither is a verdict.
     if (waiting.length > 0 || (gitlab && read.mergeStateStatus !== "CLEAN")) {
-      // The caller's whole-cycle arm is consulted on every WAIT, not only
-      // between steps: a poll that ignores it can outlive the host's deadline
-      // and the run dies with no document. The answer is `work`'s and lean's
-      // own boundary predicate — `deadlineStopsSteps` — read on the handler
-      // context's injected clock, so the poll and the engine cannot disagree
-      // about where step work ends. Inside the handoff allowance the answer is
-      // a handback naming the cycle deadline.
+      // The caller's whole-cycle arm is consulted on every WAIT, not only between
+      // steps: a poll that ignores it can outlive the host's deadline and the run dies
+      // with no document. The answer is `deadlineStopsSteps`, read on the handler
+      // context's injected clock, so the poll and the engine cannot disagree about
+      // where step work ends.
       const cycle = ctx.run.deadlineMs;
       if (deadlineStopsSteps(cycle, ctx.now(), "ci"))
         throw new VerifyInfraError(
@@ -337,9 +319,8 @@ export async function checksRedReason(
       await deps.sleep(CI_POLL_MS);
       continue;
     }
-    // Every row terminal and none failed: the forge's own word is the last
-    // authority, because it encodes the repo's branch protection. A row gh
-    // reports as passing does not override a BLOCKED/DIRTY verdict.
+    // Every row terminal and none failed: the forge's own word is the last authority,
+    // because it encodes the repo's branch protection.
     if (read.mergeStateStatus !== "CLEAN")
       return `mergeStateStatus is ${read.mergeStateStatus === "" ? "unreadable" : read.mergeStateStatus}`;
     return undefined;

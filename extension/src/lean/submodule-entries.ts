@@ -2,16 +2,14 @@
  * lean/submodule-entries — reading a base's `.gitmodules`, and asking git where its submodule
  * bytes live, without either answer being trusted as a fetch source.
  *
- * Two questions the seeding asks before it touches anything, both answered by git rather than by
- * parsing a file:
+ * Two questions the seeding asks before it touches anything, both answered by git:
  *
  *   - WHICH submodules the commit registers. The NAME matters as much as the path:
  *     `submodule.<name>` is the section git reads when an entry is registered or retargeted, so
  *     keying on the path would target nothing while every command exited 0. Exit 1 means the file
- *     lists nothing ("none", ends the pass); above 1 means git could not read it, which refuses
- *     the run — silently skipping an initialisation the base asked for is how a run gets tested
- *     against an empty directory. git's C quoting is undone before anything reaches an argv, since
- *     the name rides on a `-c` and the path on a submodule command.
+ *     lists nothing (ends the pass); above 1 means git could not read it, which refuses the run —
+ *     silently skipping an initialisation the base asked for is how a run gets tested against an
+ *     empty directory. git's C quoting is undone before anything reaches an argv.
  *   - WHERE this host holds them: `--git-common-dir` for the shared store, `--absolute-git-dir`
  *     for the tree's own, and the MAIN working tree from the former — never `--show-toplevel`,
  *     which inside a linked worktree answers with that worktree, so the step would seed a
@@ -39,10 +37,10 @@ export interface SubmoduleEntry {
 }
 
 /**
- * The registered submodules, in `.gitmodules` order — or `undefined` when the file lists nothing,
- * which is the same as having none and ends the initialisation. `git config --file .gitmodules
- * --get-regexp path` exits 1 on a file that lists nothing and above 1 on a file it could not read,
- * so "could not tell" refuses the run rather than skipping an initialisation it was asked for.
+ * The registered submodules, in `.gitmodules` order — or `undefined` when the file lists nothing.
+ * `git config --file .gitmodules --get-regexp path` exits 1 on a file that lists nothing and above
+ * 1 on a file it could not read, so "could not tell" refuses the run rather than skipping an
+ * initialisation it was asked for.
  */
 export async function listSubmodules(
   exec: ExecFn,
@@ -57,8 +55,7 @@ export async function listSubmodules(
   const err = (listed as { __err?: unknown })?.__err;
   if (err !== undefined) {
     const code = (err as { code?: unknown }).code;
-    // 0 listed nothing and 1 is `--get-regexp`'s no-match; above 1 is git failing to read the file,
-    // and "could not tell" refuses rather than silently skipping an initialisation the base asked for.
+    // 0 listed nothing and 1 is `--get-regexp`'s no-match; above 1 is git failing to read the file.
     if (typeof code === "number" && code <= 1) return undefined;
     throw new SpecifyInfraError(
       `could not tell whether ${wt} has submodules: git config --file .gitmodules --get-regexp path exited ${String(code)}`,
@@ -67,24 +64,22 @@ export async function listSubmodules(
   const entries: SubmoduleEntry[] = [];
   for (const raw of (listed as { stdout?: string }).stdout?.split("\n") ?? []) {
     // `--get-regexp` ends its last record with a newline; the empty string after it is not a key
-    // the step failed to read, and refusing it hands back every run whose base carries submodules.
+    // the step failed to read.
     const line = raw.trim();
     if (line === "") continue;
     // git's own quoting is undone before any of this reaches an argv: `--get-regexp` prints key
-    // and value alike in c-style quotes when they hold unusual bytes, and the name goes into a `-c`
-    // argument while the path goes into a submodule argument — so the value git MEANT is what has
-    // to come back, and a token this cannot unquote is the step not understanding its base.
+    // and value in c-style quotes when they hold unusual bytes, and the value git MEANT is what has
+    // to come back — a token this cannot unquote is the step not understanding its base.
     //
     // git prints the WHOLE KEY, so the name is the key minus its `submodule.` prefix and `.path`
-    // suffix, re-used as `-c submodule.<name>.url=…`. A name still holding the prefix would build
-    // `submodule.submodule.<name>.url`, a key git never consults: the entry would seed from the
-    // recorded URL and the offline rule would go quiet with every case green — so the regex REQUIRES
-    // the prefix rather than half-parsing the line.
+    // suffix, re-used as `-c submodule.<name>.url=…`. A name still holding the prefix would build a
+    // key git never consults: the entry would seed from the recorded URL and the offline rule would
+    // go quiet with every case green — so the regex REQUIRES the prefix.
     const hit =
       /^submodule\.(?:"((?:[^"\\]|\\.)*)"|(.+?))\.path\s+(.*)$/u.exec(line.trim()) ??
       /^submodule\."(?<name>.*)"\.path\s+(?<value>.*)$/u.exec(line.trim());
-    // The two forms capture at DIFFERENT group numbers — one fixed pair turned every ordinary
-    // submodule into a refusal — so the answer is read by name as well as by position.
+    // The two forms capture at DIFFERENT group numbers, so the answer is read by name as well as
+    // by position.
     const rawName = hit?.[1] ?? hit?.[2] ?? hit?.groups?.name;
     const rawValue = hit?.[3] ?? hit?.groups?.value;
     // Two alternatives: `--get-regexp` prints a name containing `=` or a space UNQUOTED and a
@@ -118,9 +113,8 @@ export async function listSubmodules(
 
 /**
  * Undo the one-level C quoting `git config --get-regexp` applies to a token, or `undefined` when the
- * token is not well-formed quoted text. Deliberately not `JSON.parse` — git's quoting is C quoting
- * (octal, hex and unicode escapes, a bare token accepted) and the two differ — and what this cannot
- * prove it read is reported rather than guessed.
+ * token is not well-formed quoted text. Deliberately not `JSON.parse` — git's quoting is C quoting and
+ * the two differ — and what this cannot prove it read is reported rather than guessed.
  */
 function unquoteGitConfig(token: string): string | undefined {
   if (!token.startsWith('"')) return token;
@@ -187,8 +181,7 @@ function inside(root: string, p: string): boolean {
  * Where this host holds `sub`, as a source git can clone from, or `undefined` when nothing the
  * OPERATOR'S superproject holds has it (module store first, then checkout — the store is complete,
  * the checkout may be half-cleaned). Every returned path is held to the superproject AFTER
- * resolution: `path.join` preserves `..`, so a base entry named `../elsewhere` would otherwise
- * walk out of it, and the run's own tree must never be the source.
+ * resolution: `path.join` preserves `..`, and the run's own tree must never be the source.
  */
 export function localSource(
   superproject: string,
@@ -202,24 +195,22 @@ export function localSource(
   if (parts.length === 0) return undefined;
   const superprojectResolved = path.resolve(superproject);
   const runTree = path.resolve(run.wt);
-  // The run's tree is never the source (the `--show-toplevel` field bug, and the same self-seed
-  // via a superproject nested inside it). Only super-inside-run is refused — the normal layout
-  // has the run UNDER the superproject, so inverting it makes every submodule absent.
+  // The run's tree is never the source, nor a superproject nested inside it. Only
+  // super-inside-run is refused — the normal layout has the run UNDER the superproject.
   if (runTree === superprojectResolved || inside(runTree, superprojectResolved)) return undefined;
   for (const dir of gitDirs) {
     // Skip a store filed under the RUN's gitdir — it holds only this run's commits.
     const resolved = path.resolve(dir);
     if (resolved !== superprojectResolved && inside(runTree, resolved)) continue;
-    // `objects` marks a real git dir; containment stops a `..` the filter missed or an outside
-    // git dir from leaving here.
+    // `objects` marks a real git dir; containment stops a `..` the filter missed.
     const store = path.join(resolved, "modules", ...parts);
     if (existsSync(path.join(store, "objects")) && inside(superprojectResolved, store))
       return store;
   }
   const checkout = path.join(superprojectResolved, ...parts);
   // No containment test: the `..`/absolute filter makes `parts` non-escaping, so this join is
-  // inside by construction — a test here would be an unexercised guard. The store branch keeps its
-  // own because a git dir the CALLER names can still sit outside.
+  // inside by construction. The store branch keeps its own because a git dir the CALLER names can
+  // still sit outside.
   if (existsSync(path.join(checkout, ".git")) || existsSync(path.join(checkout, "HEAD")))
     return checkout;
   return undefined;

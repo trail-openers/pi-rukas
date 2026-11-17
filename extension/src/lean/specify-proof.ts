@@ -98,10 +98,9 @@ export type Proof = ProofVerdict | ProofInfra;
 /** Was this rejection a timeout or a signal rather than a non-zero exit? */
 export function wasKilled(err: unknown): boolean {
   const e = err as { killed?: boolean; signal?: string | null; timedOutKill?: boolean };
-  // `killed` AND `timedOutKill` are only decisive on their own: Node's
-  // execFile rejection for an ordinary non-zero exit carries `signal: null`
-  // as an OWN property, so `?? null` never falls through and a plain `exit 1`
-  // would otherwise be read as a kill and throw the whole step away.
+  // `killed` AND `timedOutKill` are only decisive on their own: Node's execFile rejection
+  // for an ordinary non-zero exit carries `signal: null` as an OWN property, so a plain
+  // `exit 1` would otherwise be read as a kill and throw the whole step away.
   if (e?.killed === true || e?.timedOutKill === true) return true;
   return e?.signal !== undefined && e.signal !== null;
 }
@@ -154,12 +153,11 @@ export function renderTestCommand(template: string, file: string): string {
  * back as `kind: "infra"`, and the caller decides whether throwing is the right
  * response to a toolchain it cannot trust.
  *
- * `killGroup` is what makes a timeout classify at all: the runner is spawned in its
- * own process group so the timeout SIGKILLs the whole group and stamps the rejection
- * `killed` + `timedOutKill`. Without it, Node's plain exec timeout kills only the
- * direct child — and when that child is `sh` running a script that itself spawned
- * something holding stdout, the callback never fires. Either way a hang must be
- * infra, never read as a red or a green.
+ * `killGroup` is what makes a timeout classify at all: the runner is spawned in its own
+ * process group so the timeout SIGKILLs the whole group and stamps the rejection `killed` +
+ * `timedOutKill`. Without it, Node kills only the direct child — and when that child is `sh`
+ * running a script that spawned something holding stdout, the callback never fires. Either way
+ * a hang must be infra, never read as a red or a green.
  */
 export async function runTestFile(
   exec: VerifyExecFn,
@@ -167,14 +165,12 @@ export async function runTestFile(
 ): Promise<Proof> {
   const cmd = renderTestCommand(opts.template, opts.file);
   const timeout = opts.limits?.timeoutMs ?? TEST_TIMEOUT_MS;
-  // argv form: the template is read as the executable plus its arguments, so
-  // the project's runner never reaches a shell that would re-parse the
-  // worktree's path. config.ts refuses the shell-shaped templates that would
-  // want otherwise.
+  // argv form: the template is read as the executable plus its arguments, so the project's
+  // runner never reaches a shell that would re-parse the worktree's path.
   const [bin, ...args] = cmd.split(/\s+/).filter((w) => w !== "");
   if (bin === undefined || args.length === 0) {
-    // A template with no arguments cannot name a file to run: the placeholder
-    // check in config.ts rejects the shape, and this refuses it at the run.
+    // A template with no arguments cannot name a file to run; config.ts rejects the shape at
+    // load and this refuses it at the run.
     return {
       kind: "infra",
       cmd,
@@ -218,9 +214,9 @@ export async function runTestFile(
       infraShape: "never-started",
     };
   const code = exitCodeOf(err);
-  // The submitted PATH is what a runner echoes when it could not run the file at
-  // all, the BASENAME what it echoes when the file ran and its assertions failed.
-  // Either counts as "the output named this file".
+  // The submitted PATH is what a runner echoes when it could not run the file at all, the
+  // BASENAME what it echoes when the file ran and its assertions failed. Either counts as
+  // "the output named this file".
   if (!out.includes(base) && !out.includes(opts.file))
     return { kind: "unclear", cmd, code, detail: `exited ${String(code)} without naming ${base}` };
   return { kind: "red", cmd, code, detail: `exited ${String(code)}` };

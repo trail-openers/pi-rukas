@@ -5,8 +5,7 @@
  *
  * The rule set over a submitted path is cheap, but the newness rule is a git read, and both the number of
  * names in a row and the number of rows in a call come from an untrusted child.
- * `specify-tree.ts` keeps the worktree primitives and re-exports `validateSubmitRows` from here. The three
- * size rules (`MAX_TEST_LINES`, `MAX_TEST_BYTES`, `MAX_TEST_FILES_PER_CRITERION`) judge the CHILDREN'S work
+ * `specify-tree.ts` re-exports `validateSubmitRows` from here. The size rules judge the CHILDREN'S work
  * rather than the call's cost, and are applied here, where a submitted path is finally a file.
  */
 
@@ -19,25 +18,21 @@ import type { SubmitTestsRow } from "./submit-tests-extract.ts";
 import { sizeJudgement, statSizeOf } from "./submit-tests-size.ts";
 import { MAX_TEST_FILES_PER_CRITERION, testFileQuotaProblem } from "./test-size.ts";
 /**
- * How many test files one submitted row may name. The boundary runs its whole rule set — including a git
- * read per path — over every name a row carries, and a row comes from an untrusted child: an unbounded list
- * is an unbounded number of git calls from one tool call.
+ * How many test files one submitted row may name: the boundary runs a git read per path over every name a
+ * row carries, and an unbounded list is an unbounded number of git calls from one tool call.
  */
 export const MAX_TEST_FILES_PER_ROW = 8;
 
 /**
  * How many DISTINCT test paths one `submit_tests` call may get probed for. The row cap bounds one row, not
- * the call, and the newness rule costs one git read per distinct path. Past this many the surplus is refused
- * without a probe, making the breach free.
+ * the call; past this many the surplus is refused without a probe, making the breach free.
  */
 const MAX_TEST_FILES_PER_CALL = 32;
 
 /**
- * A memoised `existsAtBase` for ONE boundary call, plus the count of distinct paths it has actually asked
- * git about. One git read per distinct path per call, not per mention. It must not outlive the call, because
- * between two calls the step may have committed, and a stale "new" is the fraud the rule exists to refuse.
- *
- * `probed` is what the call cap counts against.
+ * A memoised `existsAtBase` for ONE boundary call, plus the count of distinct paths it asked git about. It
+ * must not outlive the call: between two calls the step may have committed, and a stale "new" is the fraud
+ * the rule exists to refuse. `probed` is what the call cap counts against.
  */
 function baseProbe(existsAtBase: ((rel: string) => Promise<boolean>) | undefined): {
   ask: ((rel: string) => Promise<boolean>) | undefined;
@@ -99,8 +94,8 @@ export const NEWNESS_REASON =
  * `wt` is REQUIRED: a boundary whose rules switch themselves off on a missing argument is one a caller can
  * silently opt out of. `sizeRules: false` is the one deliberate exception and is test-only.
  *
- * The boundary and the capture judge a kept file through the SAME code — `readOneDescriptor` — but the read
- * happens twice, and the capture's `fstat` checks catch a file swapped in the window.
+ * The boundary and the capture judge a kept file through the SAME code (`readOneDescriptor`), and the
+ * capture's `fstat` checks catch a file swapped in the window between the two reads.
  */
 export async function validateSubmitRows(
   rows: SubmitTestsRow[],
@@ -204,8 +199,7 @@ export async function validateSubmitRows(
         dropped.push({ criterionId: row.criterionId, path: raw, reason: problem });
         continue;
       }
-      // Checked on the NORMALISED path, so `./tests/AC1-x.test.sh` and `tests/AC1-x.test.sh` cannot both
-      // name one frozen file. FROZEN comes first, before both the existence and the location rule.
+      // Checked on the NORMALISED path, so two spellings cannot both name one frozen file.
       if (opts.frozenPaths?.has(rel) === true) {
         dropped.push({
           criterionId: row.criterionId,
@@ -228,8 +222,8 @@ export async function validateSubmitRows(
         });
         continue;
       }
-      // AFTER the existence check and before `fileProblem`: the rule that tells "the child authored this"
-      // apart from "this was already here". The first name over the cap is refused without probing.
+      // The rule that tells "the child authored this" apart from "this was already here". The first name
+      // over the call cap is refused without probing.
       if (
         existsAtBaseCached !== undefined &&
         !base.has(rel) &&
@@ -257,8 +251,8 @@ export async function validateSubmitRows(
       }
       // Already named AND kept earlier in this row? Free: no second read, no second quota spend.
       if (keptRels.get(row.criterionId)?.has(rel) === true) continue;
-      // The last two checks. The size rules are the only ones that cost a read, so a row the cheap rules
-      // already refused never opens a descriptor.
+      // The size rules are the only ones that cost a read, so a row the cheap rules refused never opens
+      // a descriptor.
       if (opts.sizeRules !== false) {
         const judgement = sizeJudgement(path.join(opts.wt, rel), rel, opts.statSize ?? statSizeOf);
         if (judgement.kind === "infra") {
@@ -272,7 +266,7 @@ export async function validateSubmitRows(
           continue;
         }
       }
-      // OUTSIDE the size-rule branch on purpose: a caller that switched the size rules off is still bounded.
+      // OUTSIDE the size-rule branch on purpose: a caller that switched those rules off is still bounded.
       if ((quota.get(row.criterionId) ?? 0) >= MAX_TEST_FILES_PER_CRITERION) {
         dropped.push({
           criterionId: row.criterionId,

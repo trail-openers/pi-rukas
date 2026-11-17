@@ -10,15 +10,14 @@
  * TWO inventories of the same recorded commit, in two repositories, and the pair is the
  * point. The superproject's MODULE STORE answers whether the commit has content at all — of
  * the checkout alone it cannot, since the checkout is filled FROM that store, so a source
- * emptied by whoever cleaned the host answers “nothing”, the expectation comes back empty,
- * and the disclosure whose job is to catch a clone that filled nothing goes silent for the
- * case it exists for. The SOURCE this step named answers it again from the bytes the checkout
- * was built out of; requiring both keeps either from vouching for the other.
+ * emptied by whoever cleaned the host answers “nothing” and the disclosure whose job is to
+ * catch a clone that filled nothing goes silent. The SOURCE this step named answers it again
+ * from the bytes the checkout was built out of; requiring both keeps either from vouching for
+ * the other.
  *
  * A repo that cannot answer, or a commit holding no files, yields `undefined` and the reset
- * checks nothing: an absent expectation is never a defect, so this read cannot become a way to
- * fail a submodule for its content. Both reads are `--no-optional-locks` — a probe taking an
- * index lock could fail a concurrent git in a tree this step does not own.
+ * checks nothing: an absent expectation is never a defect. Both reads are `--no-optional-locks`
+ * — a probe taking an index lock could fail a concurrent git in a tree this step does not own.
  */
 
 import path from "node:path";
@@ -31,8 +30,7 @@ import { ask } from "./submodule-reads.ts";
  * One file the submodule's recorded commit holds, for the reset to look for afterwards.
  *
  * `git ls-tree -r <sha>` is git's own inventory of the commit, asked twice over — and read for its
- * TYPES, not just its names, because a name alone cannot tell a file from a directory. See
- * {@link firstBlob}.
+ * TYPES, not just its names; a name alone cannot tell a file from a directory. See {@link firstBlob}.
  */
 export async function firstTrackedFile(
   exec: ExecFn,
@@ -46,9 +44,9 @@ export async function firstTrackedFile(
     ask(exec, dir, [...NO_HOOKS, "--no-optional-locks", "ls-tree", "-r", "-t", sha]);
   const first = firstBlob(await listing(source));
   if (first === undefined) return undefined;
-  // The checkout the pass just filled, asked about the commit the superproject RECORDS (not
-  // its own HEAD, which is the pass's own claim about where it landed). This is the read the
-  // disclosure is built on, so it is asked of the tree rather than of the source.
+  // The checkout the pass just filled, asked about the commit the superproject RECORDS (not its
+  // own HEAD, which is the pass's own claim). The disclosure is built on this read, so it is asked
+  // of the tree rather than of the source.
   return firstBlob(await listing(path.join(wt, entry.path))) === undefined ? undefined : first;
 }
 
@@ -57,15 +55,13 @@ export async function firstTrackedFile(
  *
  * Blobs only, which is the whole reason this reader reads `<mode> <type> <sha>\t<path>` rather
  * than `--name-only`: `-t` lists a directory's own entry before the entries under it, so the first
- * name under `dir/` is `dir` itself. A checkout never holds `dir` as a file, so an expectation
- * taken from a tree line makes the reset flag a perfectly good seeded submodule as an empty
- * checkout — the disclosure accusing a submodule that did arrive. `--name-only` cannot answer the
- * question at all; the type field is what separates a file from a directory, and a nested gitlink
- * (`commit`) is likewise not something this step's depth rule ever populates.
+ * name under `dir/` is `dir` itself — and an expectation taken from a tree line makes the reset
+ * flag a good seeded submodule as an empty checkout. The type field is what separates a file from
+ * a directory; a nested gitlink (`commit`) is likewise nothing this step's depth rule populates.
  *
  * A name that is absolute, parent-escaping or `.` refuses the whole listing rather than being
  * skipped: a path this step cannot join onto a tree means its reading of the commit is not
- * trustworthy, and checking nothing is the honest answer, not a warning.
+ * trustworthy, and checking nothing is the honest answer.
  */
 function firstBlob(listed: { stdout?: string } | undefined): string | undefined {
   if (listed === undefined) return undefined;

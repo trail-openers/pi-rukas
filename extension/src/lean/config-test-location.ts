@@ -100,9 +100,9 @@ export function validateTestDir(dir: string): string | undefined {
 /**
  * Why this `verify.testGlob` is not usable, or undefined when it is.
  *
- * A BASENAME pattern with exactly one `*`: the boundary matches it against the
- * final path segment, so a slash would mean the author spelled the directory
- * twice (once in `testDir`, once here) and would silently match nothing.
+ * A BASENAME pattern with exactly one `*`: the boundary matches it against the final path
+ * segment, so a slash would mean the author spelled the directory twice and would silently
+ * match nothing.
  */
 export function validateTestGlob(glob: string): string | undefined {
   if (glob.trim() === "") return ".pi/work.json verify.testGlob must not be empty";
@@ -117,17 +117,14 @@ export function validateTestGlob(glob: string): string | undefined {
     return `.pi/work.json verify.testGlob supports exactly one "*"; "?" is not part of the pattern (${glob})`;
   if (TEST_LOCATION_FORBIDDEN.test(glob))
     return `.pi/work.json verify.testGlob must be a plain file-name pattern: ; & | \` $ < > " ' \\ and newline are not allowed, and neither is an invisible/control character (${glob})`;
-  // The four below all say the same thing in git's own words: the pattern names
-  // no RUNNABLE TEST FILE. A project whose CI glob cannot name one has a config
-  // that every frozen test quietly escapes, so each is refused at the loader.
+  // The four below all say the same thing: the pattern names no RUNNABLE TEST FILE, so every
+  // frozen test quietly escapes it. Each is refused at the loader.
   if (glob === "*")
     return `.pi/work.json verify.testGlob must not be "*": that matches every file in the directory, so the run could freeze anything as an acceptance test (${glob})`;
   if (glob.startsWith("."))
     return `.pi/work.json verify.testGlob must not start with ".": a leading dot is a hidden file, which is not a test file the project's CI runs (${glob})`;
-  // `*` opens the wildcard and the extension is what follows it — so a pattern
-  // whose `*` is the last character names no file type at all (`test-` matches
-  // no runnable file). Checked after the `*`-count rule, which already rejects
-  // the zero-star and multi-star shapes this would otherwise be read against.
+  // `*` opens the wildcard and the extension is what follows it — a pattern whose `*` is the
+  // last character names no file type at all. Checked after the `*`-count rule.
   if (!glob.slice(glob.indexOf("*") + 1).includes("."))
     return `.pi/work.json verify.testGlob must name a file extension after the "*" — a pattern like \`test-*\` matches files with no extension, which no test runner executes (${glob})`;
   return undefined;
@@ -164,22 +161,19 @@ export function globNamesPythonFiles(glob: string): boolean {
   // Folded once, here, so the comparison below has one spelling to mean.
   const tail = glob.slice(star + 1).toLowerCase();
   if (!(tail.length >= ".py".length && tail.endsWith(".py"))) return false;
-  // The tail is what the `*` may be followed by, so the extension has to be the
-  // part of it after the LAST dot — `*_test.py` and `test_*.py` name `.py` files,
-  // and so does `test_*py.py`, whose final extension really is `.py`: the runner
-  // collects those files, so the probe errs toward the importable name, where the
-  // opposite reading would cost a real Python repo the dotfile refusal again.
+  // The tail is what the `*` may be followed by, so the extension has to be the part of it
+  // after the LAST dot: the runner collects those files, so the probe errs toward the
+  // importable name.
   const lastDot = tail.lastIndexOf(".");
   return lastDot >= 0 && tail.slice(lastDot) === ".py";
 }
 
 /**
- * The configured test location, or undefined when the project has not chosen
- * one. Absent-by-default is today's behaviour.
+ * The configured test location, or undefined when the project has not chosen one.
  *
- * `loadWorkConfig` validates before it builds, so a half-configured pair cannot
- * reach this through the loader; a hand-built config (a test, or a future
- * caller) still gets no location rather than a guess about which half was meant.
+ * `loadWorkConfig` validates before it builds, so a half-configured pair cannot reach this
+ * through the loader; a hand-built config still gets no location rather than a guess about
+ * which half was meant.
  */
 export function testLocationOf(verify: {
   testDir?: string;

@@ -4,9 +4,8 @@
  * The developer child is a model: it may commit, edit a frozen acceptance test, write
  * into `.pi/` or `.github/`, or hand the tree a symlink and a hard link. `specify`
  * already owns an algorithm that survives exactly that — read the bytes you intend to
- * keep, reset the tree to a known commit, write those bytes back — and `build` uses
- * the same shape, so there is ONE design for "the tree is not trustworthy" in this
- * step family rather than two.
+ * keep, reset the tree to a known commit, write those bytes back — so there is ONE
+ * design for "the tree is not trustworthy" in this step family rather than two.
  *
  *   1. HEAD must still descend from `headBefore`. A child that reset HEAD is refused
  *      outright — the `merge-base --is-ancestor` check, read before anything mutates.
@@ -76,8 +75,8 @@ interface Classified {
 
 /**
  * Sort the child's changed paths into kept, restored, reverted, removed, deleted.
- * Frozen and protected paths are only RECORDED here — the reset undoes them — so
- * this runs first: after the reset, "what the child did" is unrecoverable.
+ * Frozen and protected paths are only RECORDED here — the reset undoes them — so this
+ * runs first: after the reset "what the child did" is unrecoverable.
  */
 function classify(
   wt: string,
@@ -113,8 +112,8 @@ function classify(
       report.removed.push({ path: rel, why: entry.why });
       continue;
     }
-    // Once the aggregate ceiling is spent the path is removed unread, so the
-    // step never holds more than the budget in memory.
+    // Once the aggregate ceiling is spent the path is removed unread, so the step
+    // never holds more than the budget in memory.
     if (budget.stopped) {
       report.removed.push({ path: rel, why: `not captured: ${budget.why}` });
       continue;
@@ -166,12 +165,11 @@ export async function normaliseBuild(opts: {
   );
 
   // 4. RESET — child commits, staging, untracked files, ignore tricks and the
-  //    dependency links all go; frozen and protected files come back exactly as
-  //    at `headBefore`; provisioning rebuilds what the clean removed. `branch`
-  //    empty resets DETACHED, for a tree that owns no branch of its own. What the
-  //    reset's submodule pass could not supply is kept on the report: `build` owns the
-  //    reason the operator reads, and a fold that restored a tree with no submodule in
-  //    it is a fold whose commit cannot be reproduced.
+  //    dependency links all go; frozen and protected files come back exactly as at
+  //    `headBefore`; provisioning rebuilds what the clean removed. `branch` empty
+  //    resets DETACHED, for a tree that owns no branch of its own. What the reset's
+  //    submodule pass could not supply is kept on the report: a fold that restored a
+  //    tree with no submodule in it is a fold whose commit cannot be reproduced.
   let submoduleNotes: readonly SubmoduleNote[] = [];
   try {
     submoduleNotes = await resetWorktreeToBase(exec, wt, headBefore, branch);
@@ -189,11 +187,10 @@ export async function normaliseBuild(opts: {
     );
   }
 
-  // 5. REWRITE the kept bytes, then delete what the child deleted. Both happen
-  //    after the reset, and each path is looked at again first: the reset gave
-  //    back the base tree, so a name the child turned into a directory (or put a
-  //    file under) is a kind change to refuse with its reason, not a write that
-  //    throws. Nothing is written or removed through a link.
+  // 5. REWRITE the kept bytes, then delete what the child deleted. Both happen after
+  //    the reset, and each path is looked at again first: a name the child turned into
+  //    a directory is a kind change to refuse with its reason, not a write that throws.
+  //    Nothing is written or removed through a link.
   const payload = new Map<string, Buffer>();
   for (const [rel, one] of captured) {
     const now = entryAt(wt, rel);
@@ -230,10 +227,9 @@ export async function normaliseBuild(opts: {
   }
   report.deleted = applied;
 
-  // The deletions the commit must carry are the ones git knows: a tracked file
-  // the child removed. A link the child left is a deletion of nothing in HEAD,
-  // and naming it to `git add` would fail the whole commit. The index is at
-  // `headBefore` now, so `ls-files` answers for the reset tree.
+  // The deletions the commit must carry are the ones git knows: a tracked file the
+  // child removed. A link the child left is a deletion of nothing in HEAD, and naming
+  // it to `git add` would fail the whole commit. The index is at `headBefore` now.
   const deletions =
     report.deleted.length === 0
       ? []
@@ -289,10 +285,9 @@ async function verifyCommit(
   frozen: Record<string, string>,
   report: NormaliseReport,
 ): Promise<void> {
-  // Whole SHAs compared as full strings: a short `rev-parse` and a full
-  // `headBefore` would never be equal, and a prefix match would pass a fork.
-  // `HEAD^` is the commit before the one just made, so this also proves HEAD
-  // moved — a fold that made no commit has an unreadable parent here.
+  // Whole SHAs compared as full strings: a prefix match would pass a fork. Reading
+  // `HEAD^` also proves HEAD moved — a fold that made no commit has an unreadable
+  // parent here.
   const newHead = await headSha(exec, wt);
   const parent = await must(exec, wt, ["rev-parse", "HEAD^"], "read the build commit's parent");
   if (parent !== headBefore)
@@ -325,8 +320,8 @@ export async function assertFrozenIntact(
   headBefore: string,
   frozen: Record<string, string>,
 ): Promise<void> {
-  // An empty map is not a mismatch: no record exists to match, so the step
-  // says there is nothing to build against rather than a hash that failed.
+  // An empty map is not a mismatch: the step says there is nothing to build against
+  // rather than reporting a hash that failed.
   if (Object.keys(frozen).length === 0)
     throw new BuildInfraError("the run froze no tests — build has nothing to build against");
   const bad = await frozenMatches(exec, wt, headBefore, frozen);
