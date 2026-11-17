@@ -167,7 +167,14 @@ the run's own worktree. The usual four:
   checkout. With the rule on there is nothing left to fix when the superproject simply never
   held that submodule: the run proceeds and the path is disclosed — named in the step's reason,
   the hand-back's message and the run record — because the base commit's verify ran without it
-  too. Check which arm you are on before debugging a remote.
+  too. Check which arm you are on before debugging a remote. What that disclosure does NOT say is
+  worth as much as what it does: it reports the SUPERPROJECT's state (neither a module store nor a
+  populated checkout for these paths), not that the bytes exist nowhere on the host or that the base
+  commit was never populated — the step measures one tree and says only what it saw there. It also
+  distinguishes "nothing there" from "could not tell": a submodule-state read that died is disclosed
+  as its own failure rather than as the clean answer an empty one would be, so a reason naming a
+  path is a measured absence and a reason saying the state could not be read is an outage. Neither
+  is a remote problem, and neither is a run that was tested against a submodule it should have had.
 - **A missing environment variable the suite needs.** The probe runs in the run's own
   ambient environment — the same environment the red proof runs the frozen tests in —
   so a variable the suite requires is missing here exactly as it will be at prove time.
