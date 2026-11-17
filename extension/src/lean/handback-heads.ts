@@ -3,12 +3,11 @@
  * standing over unverified bytes, and which head it should ship.
  *
  * The rule keys on the LOG, not the stop cause. A `review` step whose fix wave pushed is the only edge in the
- * table that puts unverified bytes on origin's branch while the run is still walking: `machine.ts` routes
- * `fixed` back through `verify`, so a run reaching `handback` with a `fixed` review as its newest WORK step and
- * no decided `verify` behind it never ran that re-verification. How it got there changes nothing about what
- * origin holds.
+ * table that puts unverified bytes on origin's branch while the run walks: `machine.ts` routes `fixed` back
+ * through `verify`, so a run reaching `handback` with a `fixed` review as its newest WORK step and no decided
+ * `verify` behind it never ran that re-verification. How it got there changes nothing about what origin holds.
  *
- * "We know a head we can ship" is a different claim from "the run once saw a gate", so the newest DECIDED
+ * "We know a head we can ship" is a different claim from "the run once saw a gate": the newest DECIDED
  * `verify` must be `green` and must name a head.
  */
 
@@ -18,12 +17,12 @@ import { type LeanState, REPORT_STATES, type Step } from "./state.ts";
 /** What the handback ships: the green's head, or nothing. */
 export interface HandbackHeads {
   /**
-   * True when the newest WORK step is a `fixed` review the gate has not spoken for since — a gate visit
-   * the run ENTERED and never answered counts as not speaking.
+   * True when the newest WORK step is a `fixed` review the gate has not spoken for since — a gate visit the
+   * run ENTERED and never answered counts as not speaking.
    */
   applies: boolean;
   /**
-   * The newest decided green `verify`'s head at or before the review, or `undefined` when the log has none.
+   * The newest decided green `verify`'s head at or before the review; `undefined` when the log has none.
    */
   verifiedHead?: string;
   /** Why nothing is shipped, in the record's own words, when there is no head to ship. */
@@ -31,8 +30,8 @@ export interface HandbackHeads {
 }
 
 /**
- * The newest step that was WORK and carried a verdict, and where it sits. An undecided write-ahead is not
- * a verdict — it is the re-verification that never happened.
+ * The newest step that was WORK and carried a verdict, and where it sits. An undecided write-ahead is not a
+ * verdict — it is the re-verification that never happened.
  */
 function newestDecidedWorkStep(steps: Step[]): { step: Step; at: number } | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
@@ -45,8 +44,8 @@ function newestDecidedWorkStep(steps: Step[]): { step: Step; at: number } | unde
 }
 
 /**
- * The newest step of `state` after `after`, verdict or not — a visit with no verdict is the one the rule
- * must refuse to ship over.
+ * The newest step of `state` after `after`, verdict or not — a verdictless visit is the one the rule must
+ * refuse to ship over.
  */
 function newestStateStepAfter(
   steps: Step[],
@@ -62,8 +61,8 @@ function newestStateStepAfter(
 }
 
 /**
- * The newest DECIDED `verify` at or before `throughAt` — a head may only be taken from a gate the run
- * recorded and finished.
+ * The newest DECIDED `verify` at or before `throughAt` — a head is taken only from a gate the run recorded
+ * and finished.
  */
 function newestDecidedThrough(
   steps: Step[],
@@ -87,8 +86,8 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
   if (newestWork === undefined) return { applies: false };
   const newest = newestWork.step;
   if (newest?.state !== "review" || newest.outcome?.kind !== "fixed") return { applies: false };
-  // Anything the gate stepped into AFTER the review must be looked at, verdict or not, before an older
-  // green may speak for the head.
+  // Anything the gate stepped into AFTER the review is looked at, verdict or not, before an older green may
+  // speak for the head.
   const trailing = newestStateStepAfter(steps, "verify", newestWork.at);
   if (trailing !== undefined && trailing.step.outcome === undefined)
     return {
@@ -101,8 +100,8 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
       applies: true,
       reason: "no verify step of this run decided anything, so no head is verified",
     };
-  // This is the arm that SHIPS the green the walk stopped at; an inverted comparison shows up only as a
-  // record that shipped nothing when it should have shipped the head.
+  // The arm that SHIPS the green the walk stopped at; an inverted comparison shows up only as a record that
+  // shipped nothing when it should have shipped the head.
   if (green.step.outcome?.kind !== "green")
     return {
       applies: true,
