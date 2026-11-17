@@ -4,7 +4,8 @@
  *
  * This is the one forge write whose command shape differs per forge, and the
  * reason the difference is not obvious: `glab mr create` has no positional
- * source branch, no description-from-file flag and no JSON mode, so the GitLab
+ * source branch and no JSON mode on any version (`--description-file` exists
+ * only from 1.115.0), so the GitLab
  * call is issued as argv of the flags that subcommand actually lists and its
  * reply read as plain text — while `gh pr create` stays a shell string taking a
  * body FILE and printing JSON. Pattern-matching one against the other is what
@@ -53,6 +54,11 @@ const GL_MR_URL_LINE = /^https?:\/\/\S+\/-\/merge_requests\/\d+$/;
  * `run` and `withBodyFile` come from the adapter so the timeout, cwd and buffer
  * policy stay in one place; this module owns only the per-forge command shape and
  * its reply mapping.
+ *
+ * `createEnv` hands back the env AND a `dispose` for what building it allocated
+ * (the forge-config temp dir), so the create tears that down in a `finally` —
+ * on a rejection as much as on a success. The GitHub / off arms never call it,
+ * so `dispose` is optional and they leave it unset.
  */
 export async function createPullRequest(
   forge: ForgeType,
@@ -66,7 +72,7 @@ export async function createPullRequest(
   // states it rather than inheriting whatever the suite process carries. The
   // production value is `glabCreateEnv()` — see its comment for why an explicit
   // env is what closes this call's stdin.
-  createEnv: () => Record<string, string>,
+  createEnv: () => { env: Record<string, string>; dispose?: () => void },
 ): Promise<NormalizedPullRequest> {
   // An empty body is not a merge request with no description — it is the
   // driver having lost the body, and a create with an empty `-d` (or, worse,
@@ -79,8 +85,8 @@ export async function createPullRequest(
   }
   // The body's transport differs three ways, and the file/argv split is one of
   // them: GitHub always takes a body FILE, GitLab ON takes the body as ONE argv
-  // element (no file transport at the versions glab lacks a description-from-file
-  // flag), and GitLab OFF takes a body FILE exactly as `main` did — the switch's
+  // element (the inline `-d`, which every glab version lists — `--description-file`
+  // exists only from 1.115.0), and GitLab OFF takes a body FILE exactly as `main` did — the switch's
   // contract is that `"0"` IS the pre-fix command byte for byte, so handing the
   // off arm the body STRING would have emitted a `--description-file` whose value
   // is the whole body: a DIFFERENT breakage from the known-broken baseline the
@@ -114,27 +120,34 @@ export async function createPullRequest(
   // `GL_MR_URL_LINE`). A create that printed no such line created nothing, and
   // saying so beats a number 0 that reads as MR #0.
   const built = cmds.prCreateCmd(forge, title, headBranch, body, opts ?? {});
-  return run(
-    built,
-    (stdout) => {
-      const line = stdout
-        .split("\n")
-        .map((l) => l.trim())
-        .filter((l) => GL_MR_URL_LINE.test(l))
-        .pop();
-      const parsed = line ? parsePrNumberFromResponse(line) : undefined;
-      if (!parsed) {
-        throw new Error(
-          `forge pr create: glab printed no merge request URL: ${stdout.trim().slice(0, 120)}`,
-        );
-      }
-      return makeMinimalPr(parsed);
-    },
-    // The explicit env strips the forge login and answers "nobody is here"; the
-    // argv carries `-y` so the submission prompt is skipped anyway. Closing this
-    // call's stdin is `execp`'s argv form, which ends the child's stdin so a
-    // prompting CLI reads EOF rather than waiting on a terminal the driver does
-    // not have (test-exec-argv-stdin.ts is the pin).
-    { env: createEnv() },
-  );
+  const { env, dispose } = createEnv();
+  try {
+    return await run(
+      built,
+      (stdout) => {
+        const line = stdout
+          .split("\n")
+          .map((l) => l.trim())
+          .filter((l) => GL_MR_URL_LINE.test(l))
+          .pop();
+        const parsed = line ? parsePrNumberFromResponse(line) : undefined;
+        if (!parsed) {
+          throw new Error(
+            `forge pr create: glab printed no merge request URL: ${stdout.trim().slice(0, 120)}`,
+          );
+        }
+        return makeMinimalPr(parsed);
+      },
+      // The explicit env strips the forge login and answers "nobody is here"; the
+      // argv carries `-y` so the submission prompt is skipped anyway. Closing this
+      // call's stdin is `execp`'s argv form, which ends the child's stdin so a
+      // prompting CLI reads EOF rather than waiting on a terminal the driver does
+      // not have (test-exec-argv-stdin.ts is the pin).
+      { env },
+    );
+  } finally {
+    // The config dir this call allocated is removed on the rejection path as
+    // well as the success path — a create that failed still allocated it.
+    dispose?.();
+  }
 }

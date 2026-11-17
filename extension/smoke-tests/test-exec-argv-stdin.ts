@@ -113,7 +113,7 @@ async function main() {
   // A child that exits immediately, ignoring stdin, must not raise an unhandled
   // `error` on its stdin handle. Witnessed OUT OF PROCESS, because that is what
   // the defect is: an uncaughtException terminates the process, so an in-process
-  // listener would only hide it. See `EPIFE_CHILD` for why the write is large.
+  // listener would only hide it. See `EPIPE_CHILD` for why the write is large.
   const survives = await epipeHostSurvives();
   assert(
     survives.ok,

@@ -4,11 +4,14 @@
  * must reach the CLI as one argv element rather than as text inside a shell
  * string.
  *
- * `glab mr create` has no `--output`, no positional source branch, and (at the
- * version GitLab users run) no `--description-file`. The builder emitted all
- * three, so every GitLab PR-create step died on `Unknown flag:` before a network
- * call, and the plain URL that a real create prints on success was never read —
- * the mapper applied a JSON parse to stdout that only ever carries a URL.
+ * `glab mr create` has no `--output` and no positional source branch on any
+ * version; `--description-file` exists from 1.115.0 and is refused on older
+ * builds. The builder emitted all three, so every GitLab PR-create step died on
+ * `Unknown flag:` before a network call on every version (on 1.89.0 at the
+ * invented flags, on 1.115.0+ at `--output`), and the plain URL that a real
+ * create prints on success was never read — the mapper applied a JSON parse to
+ * stdout that only ever carries a URL. The fixed command uses the inline `-d`,
+ * which every version lists.
  *
  * Pinned here: the argv itself, the body's route to it, the URL-shaped reply,
  * the refusals that must happen BEFORE any exec, and the switch that puts the

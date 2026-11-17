@@ -38,7 +38,7 @@
  * it too — it spawns no forge strip, so this module never touches it.
  */
 
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { trace } from "./trace.ts";
@@ -80,6 +80,25 @@ export function glabCreateEnv(): Record<string, string> {
   env.CI = "1";
   env.GIT_TERMINAL_PROMPT = "0";
   return env;
+}
+
+/**
+ * Remove the forge-config directory a `glabCreateEnv()` allocated, when it
+ * allocated one. The create is a short-lived driver exec, so unlike a spawned
+ * child — whose config dir a teardown removes when the child exits — nothing
+ * else ever takes this directory back, and one leaks per MR create.
+ *
+ * Only a directory this module created is ever removed: a name the caller owns
+ * (a broker's own temp tree passed as `configDir`, a path carried in from
+ * outside) is not this module's to delete, so it is left alone.
+ */
+export function removeGlabCreateEnvDirs(env: Record<string, string | undefined>): void {
+  for (const name of FORGE_CONFIG_DIR_VARS) {
+    const dir = env[name];
+    if (dir?.includes("/pi-rukas-forge-")) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
 }
 
 /** True when this role's child keeps the operator's forge login. */

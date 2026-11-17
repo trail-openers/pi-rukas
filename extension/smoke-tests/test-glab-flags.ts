@@ -2,10 +2,13 @@
 /**
  * Flag-existence gate for every `glab` subcommand the forge layer builds.
  *
- * The defect this closes: `glab mr create` was issued with `--description-file`
- * and `--output json` — flags that subcommand does not have — and every GitLab
- * PR-create step died on `ERROR Unknown flag:` before a network call. gh and
- * glab spell the same operations differently, and a flag one of them lacks is a
+ * The defect this closes: `glab mr create` was issued with a positional source
+ * branch, `--description-file` and `--output json` — and no version has the
+ * positional source or `--output` (verified on 1.130.0, which answers
+ * `--output` with `unknown flag` and a bare branch with `unknown command`),
+ * while `--description-file` exists only from 1.115.0. Every GitLab PR-create
+ * step died on `ERROR Unknown flag:` before a network call. gh and glab spell
+ * the same operations differently, and a flag one of them lacks is a
  * silent-for-years bug until someone runs the forge that needs it.
  *
  * Two arms, because the property lives in two places:
@@ -309,9 +312,13 @@ for (const call of GLAB_CALLS) {
   );
 
   assert(GLAB_FLAGS["mr create"]?.has("-d") === true, "mr create pins -d (the description)");
+  // The builder uses `-d`, which every glab version lists, and never the file
+  // form — `--description-file` exists only from 1.115.0, so a builder that
+  // reached for it would break on older builds. It is NOT asserted absent from
+  // the real help, where it is a listed flag.
   assert(
     !GLAB_FLAGS["mr create"].has("--description-file"),
-    "mr create does not pin --description-file: it is not a flag that subcommand has",
+    "mr create does not pin --description-file: the builder emits -d, which every version has",
   );
   assert(!GLAB_FLAGS["mr create"].has("--output"), "mr create does not pin --output");
   assert(GLAB_FLAGS["mr view"]?.has("-F") === true, "mr view pins the -F short form of --output");

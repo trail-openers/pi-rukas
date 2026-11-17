@@ -86,20 +86,24 @@ export interface ForgeArgvCmd {
  * `makeMinimalPr` fallback fills in `url` from the parsed value.
  *
  * GitLab is the one builder on the argv path, because its body cannot travel
- * as shell text: `glab mr create` has no file form for the description at the
- * versions GitLab users run (`--description-file` is newer), so the body goes
- * as ONE argv element of `-d`, and `execFile` never re-parses it. The flags are
- * the ones `glab mr create --help` lists: `-s/--source-branch` (the source is
- * never positional), `-t/--title`, `-d/--description`, `-b/--target-branch`,
- * `--draft`, and `-y`, which is what stops the submission prompt from waiting
- * on a stdin nobody will type into. There is no `--output json` — on success
- * the subcommand prints the MR's URL as plain text, which is the shape the
- * mapper reads. `smoke-tests/test-glab-flags.ts` judges every flag against the
- * subcommand's own `--help`.
+ * as shell text: the body goes as ONE argv element of `-d`, and `execFile`
+ * never re-parses it. `-d` is used rather than `--description-file` because
+ * every version in range lists it, while `--description-file` arrived in
+ * 1.115.0 and is refused on older builds (`glab mr create --help` on 1.130.0
+ * lists both). The flags are the ones `glab mr create --help` lists:
+ * `-s/--source-branch` (the source is never positional — verified on 1.130.0,
+ * which rejects a bare branch with `unknown command`), `-t/--title`,
+ * `-d/--description`, `-b/--target-branch`, `--draft`, and `-y`, which is what
+ * stops the submission prompt from waiting on a stdin nobody will type into.
+ * There is no `--output json` on any version — on success the subcommand prints
+ * the MR's URL as plain text, which is the shape the mapper reads.
+ * `smoke-tests/test-glab-flags.ts` judges every flag against the subcommand's
+ * own `--help`.
  *
  * The `"0"` arm of `PI_ENSEMBLE_GLAB_MR_CREATE` returns the pre-fix shell string
- * verbatim — a known-broken baseline, kept only so a cycle can be compared
- * against it.
+ * verbatim — a known-broken baseline on every version (its positional source and
+ * `--output` are refused even where `--description-file` is accepted), kept only
+ * so a cycle can be compared against it.
  */
 export function prCreateCmd(
   forge: ForgeType,

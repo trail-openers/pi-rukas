@@ -4024,7 +4024,7 @@ The first line is the persisted note (`UnfenceRecord.note`, which the state file
 
 **Deferred, and what it still parks on:** `verifyConsolidation`'s `declaredPathInDiff` compares declared paths to `git diff --name-only` literally, the same defect class, at a HALT step — a cycle whose deliverables are declared as globs or `new `-annotated paths can still park as `commit-pr-incomplete-consolidation`. That is a follow-up; the converge-side matcher is fixed here.
 
-## A GitLab cycle parks at commit-pr: `Unknown flag: --description-file` / `--output`
+## A GitLab cycle parks at commit-pr: `Unknown flag:` on the pre-fix `mr create`
 
 ### The symptom
 
@@ -4042,12 +4042,23 @@ re-running the cycle repeats the failure — it is not transient.
 ### What was wrong
 
 The adapter built the GitLab create by pattern-matching the GitHub one and added flags
-`glab mr create` does not have: a **positional** source branch, `--description-file`, and
-`--output json`. `mr create` takes the source branch as `-s`, the target as `-b`, and the
-body inline as `-d`, and it has no JSON mode at all — so the whole invocation was refused
-before glab reached the API. (The read subcommands — `mr view`, `mr list` — *do* take
-`--output json`, and `mr update` *does* take `--description-file`; that asymmetry is what
-made the invented flags look plausible.)
+`glab mr create` never had all at once: a **positional** source branch, `--description-file`,
+and `--output json`. Which of the three glab refuses depends on its version —
+`glab mr create --help` on 1.130.0 lists `-d/--description` and `--description-file` and no
+`--output`:
+
+| glab | positional source branch | `--description-file` | `--output` |
+|---|---|---|---|
+| 1.89.0 | refused | refused | refused |
+| 1.115.0 and newer | refused | accepted | refused |
+
+So on 1.89.0 the pre-fix command died on the first invented flag, and on 1.115.0+ it still
+dies on `--output`: the whole invocation was refused before glab reached the API on every
+version. `mr create` takes the source branch as `-s` and the target as `-b`, and it has no
+JSON mode at all. (The read subcommands — `mr view`, `mr list` — *do* take `--output json`,
+and `mr update` takes `--description-file` too; that asymmetry is what made the invented
+flags look plausible.) The adapter uses `-d` rather than `--description-file` because `-d`
+is listed by every version in range, so one command shape works on all of them.
 
 ### The fix
 
@@ -4064,8 +4075,9 @@ Nothing, if your `glab` is current — a build that lists the flags above works.
 still fails here, run `glab mr create --help` and check the FLAGS section for `-s`, `-t`,
 `-d` and `-y`; a build that lacks them is too old to open an MR non-interactively, and
 upgrading is the fix. `PI_ENSEMBLE_GLAB_MR_CREATE=0` restores the pre-fix command for
-comparison only — it reproduces this failure, it does not resolve it. The flags themselves
-are checked against the subcommand's own `--help` by
+comparison only — it reproduces this failure on every glab version (its `--output` is
+refused even where `--description-file` is accepted), it does not resolve it. The flags
+themselves are checked against the subcommand's own `--help` by
 `extension/smoke-tests/test-glab-flags.ts`, so an invented flag fails the offline suite
 rather than a live cycle.
 

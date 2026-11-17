@@ -59,7 +59,7 @@ async function main() {
     );
     assert(
       !argv.includes("--description-file") && !argv.includes("--output") && !argv.includes("json"),
-      `no flag mr create lacks: ${argv.join(" ")}`,
+      `no --output (no version has it) and no file form the older builds lack: ${argv.join(" ")}`,
     );
   });
   await check("issueEditCmd uses glab api -X PUT with description=@file", () => {

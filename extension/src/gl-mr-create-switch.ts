@@ -4,10 +4,14 @@
  *
  * The builder that shipped emitted `glab mr create <branch> … --description-file
  * <file> … --output json`: a positional source branch, a description-file flag
- * and an output-format flag that subcommand does not have. Every GitLab
- * PR-create step died on `ERROR Unknown flag:` before any network call, and the
- * plain URL a real create prints on success was never read, because the mapper
- * parsed stdout as JSON.
+ * and an output-format flag. Neither the positional source nor `--output` is a
+ * flag that subcommand has on any version (verified on 1.130.0, which answers a
+ * bare branch with `unknown command` and `--output` with `unknown flag`), so the
+ * create was refused either way; `--description-file` itself exists from 1.115.0
+ * and is refused on older builds, which is why the fixed command uses the inline
+ * `-d` that every version lists. Every GitLab PR-create step died on
+ * `ERROR Unknown flag:` before any network call, and the plain URL a real create
+ * prints on success was never read, because the mapper parsed stdout as JSON.
  *
  * On (the default) the create is built as argv of flags the subcommand actually
  * lists, with the body as one argv element. `"0"` puts the pre-fix shell string
