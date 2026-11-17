@@ -25,17 +25,16 @@
  *      never seen waits rather than passing. GitLab rows carry no `bucket`, so gh's
  *      bucket-first grading cannot reach them.
  *   4. **The jobs are the head's jobs, and all the jobs there are.** The adapter's
- *      `prChecks` reaches a pipeline through the MR's pipelines LIST, so on a project
- *      that runs tag- or schedule-pipelines its rows can belong to another commit.
- *      The step reads the jobs of the pipeline **the MR reply itself named** and keeps
- *      them only when that pipeline reports the head as its own commit. A list known
- *      to continue is refused, not graded. The adapter's own `prChecks` lookup is off this
- *      path: its rows carry no commit, so they cannot answer the head question at all.
+ *      `prChecks` reaches a pipeline through the MR's pipelines LIST, so on a project that
+ *      runs tag- or schedule-pipelines its rows can belong to another commit. The step
+ *      reads the jobs of the pipeline **the MR reply itself named** and keeps them only
+ *      when that pipeline reports the head as its own commit. A list known to continue is
+ *      refused, not graded.
  *
- * Both reads are the ADAPTER's (`mergeReadiness`, `glPipelineJobs`), so their argv and
- * the composition stay the adapter's; the MR reply the head and pipeline id come from
- * is handed back by `lastMrRow` — the only way the raw fields the normalized shape
- * drops reach a caller without a second read of a moving MR.
+ * Both reads are the ADAPTER's (`mergeReadiness`, `glPipelineJobs`), so their argv and the
+ * composition stay the adapter's; the MR reply the head and pipeline id come from is
+ * handed back by `lastMrRow` — the only way the raw fields the normalized shape drop reach
+ * a caller without a second read of a moving MR.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
@@ -58,9 +57,8 @@ export interface GlRead {
  * What `ci` asks the forge for, per GitLab verdict — a structural subset of `Forge`,
  * declared here so the lean step keeps its import graph off the adapter's executor and
  * public-text-check graph. `lastMrRow` hands back the raw MR reply the most recent
- * readiness read consumed, the head's and pipeline's only source; it is REQUIRED
- * because a forge that cannot hand back the reply its verdict was composed from cannot
- * say what commit it graded.
+ * readiness read consumed; it is REQUIRED because a forge that cannot hand back the reply
+ * its verdict was composed from cannot say what commit it graded.
  */
 export type GlForge = {
   mergeReadiness(number: number): Promise<{
@@ -73,13 +71,10 @@ export type GlForge = {
   lastMrRow(number: number): unknown;
   /**
    * The GitLab job rows of one pipeline, in the adapter's normalized shape, plus the
-   * commit the pipeline row itself reported. Optional: only the GitLab adapter
-   * implements it, and `readForge` asks for it only on that arm.
-   *
-   * This is the head pin's evidence AND the poll's single jobs read: the step grades
-   * these rows and nothing else. `pipelineSha` is `undefined` when the pipeline named
-   * no commit; `rows` is `undefined` when the list ran past the page asked for — a
-   * refusal rather than a short list.
+   * commit the pipeline row itself reported. Optional: only the GitLab adapter implements
+   * it, and `readForge` asks for it only on that arm. This is the head pin's evidence AND
+   * the poll's single jobs read. `pipelineSha` is `undefined` when the pipeline named no
+   * commit; `rows` is `undefined` when the list ran past the page asked for.
    */
   glPipelineJobs?(pipelineId: number): Promise<{
     rows: NormalizedCICheck[];
@@ -91,10 +86,9 @@ export type GlForge = {
 };
 
 /**
- * The MR's head, from `diff_refs.head_sha`. A missing value is an absent field
- * and a malformed one is a different fault, so each names itself rather than
- * both reading as blank; either way the step throws — a green about an unnamed
- * commit is no evidence about this one.
+ * The MR's head, from `diff_refs.head_sha`. A missing value is an absent field and a
+ * malformed one is a different fault, so each names itself; either way the step throws —
+ * a green about an unnamed commit is no evidence about this one.
  */
 function headFromMr(mr: unknown): string | undefined {
   const refs = (mr as { diff_refs?: unknown } | null | undefined)?.diff_refs;
@@ -127,14 +121,13 @@ function mrPipelineRow(
 }
 
 /**
- * The job rows of the pipeline the MR reply named, and the commit that pipeline
- * reported for itself — the head pin's two pieces of evidence, both from the
- * adapter's own argv, and the ONE jobs read this poll makes.
+ * The job rows of the pipeline the MR reply named, and the commit that pipeline reported
+ * for itself — the head pin's two pieces of evidence, both from the adapter's own argv,
+ * and the ONE jobs read this poll makes.
  *
- * The `/pipelines/:id` row carries `sha`, the commit the jobs actually built (the
- * jobs list itself carries none). Absent or malformed, the pipeline says nothing
- * about which rows are the head's, and absence is never a pass: the caller gets
- * `undefined` and refuses to grade.
+ * The `/pipelines/:id` row carries `sha`, the commit the jobs actually built (the jobs
+ * list itself carries none). Absent or malformed, the pipeline says nothing about which
+ * rows are the head's, and absence is never a pass.
  */
 async function pipelineJobs(
   forge: GlForge,
@@ -189,25 +182,21 @@ export async function glRead(forge: GlForge, number: number): Promise<GlRead> {
   const mr = forge.lastMrRow(number) as Record<string, unknown> | undefined;
   const head = headFromMr(mr);
   const pipeline = mrPipelineRow(mr);
-  // A head the forge never named, or a pipeline it never named, means there is
-  // nothing to pin the rows to: the step reads NO jobs at all and `ci.ts` refuses
-  // the absence as green. Asking the forge for rows nobody could attribute to a
-  // commit would be a read that buys no evidence.
+  // A head the forge never named, or a pipeline it never named, means there is nothing to
+  // pin the rows to: the step reads NO jobs at all and `ci.ts` refuses the absence as green.
   if (pipeline === undefined || typeof pipeline.id !== "number" || head === undefined)
     return { mergeStateStatus: readiness.readiness, prHead: head, rows: [] };
   const jobs = await pipelineJobs(forge, pipeline.id);
-  // The commit the pipeline says it built is asked for FIRST: rows nobody can
-  // attribute to this head are not graded, whether or not the list was complete,
-  // and a foreign pipeline must be refused on the same read either way.
+  // The commit the pipeline says it built is asked for FIRST: rows nobody can attribute to
+  // this head are not graded, and a foreign pipeline is refused on the same read.
   if (jobs.pipelineSha === undefined)
     return { mergeStateStatus: readiness.readiness, prHead: head, rows: [] };
   if (jobs.pipelineSha !== head)
     throw new VerifyInfraError(
       `the MR pipeline ${String(pipeline.id)} built ${jobs.pipelineSha.slice(0, 12)}, not the head ${head.slice(0, 12)} the readiness was read at: refusing to grade a pipeline about another commit`,
     );
-  // And every job the head ran must have been read: a list that continued past
-  // the page holds rows nobody graded, and a failing job among them is a false
-  // green.
+  // And every job the head ran must have been read: a list that continued past the page
+  // holds rows nobody graded, and a failing job among them is a false green.
   if (jobs.truncated)
     throw new VerifyInfraError(
       `the MR pipeline ${String(pipeline.id)} has more jobs than one page of ${String(GL_JOBS_PAGE)}: its job list is truncated at the page boundary, so ci cannot read every job it ran and refuses to grade what it did not see`,
@@ -221,12 +210,11 @@ export type GlRowGrade = "pending" | "red" | "not-passing" | "unknown";
 /**
  * One pipeline row's grade, from the shared GitLab table.
  *
- * The step's GitHub grading reads `bucket ?? state` and a GitLab job row has no bucket —
- * its only words are the uppercased `status` and the `blocking` flag the adapter carried
- * off `allow_failure`. The shared table decides here, in the step's own `RowGrade`
- * words, so a GitLab row travels the same wait/red/not-green arms as a gh row without a
- * second verdict list to keep in step. A row with no `blocking` is read as blocking:
- * absence is never the optimistic answer.
+ * A GitLab job row has no `bucket` — its only words are the uppercased `status` and the
+ * `blocking` flag the adapter carried off `allow_failure`. The shared table decides here,
+ * in the step's own `RowGrade` words, so a GitLab row travels the same wait/red/not-green
+ * arms as a gh row without a second verdict list to keep in step. A row with no `blocking`
+ * is read as blocking: absence is never the optimistic answer.
  */
 export function glRowGrade(row: { state?: unknown; blocking?: unknown }): GlRowGrade | undefined {
   const blocking = typeof row.blocking === "boolean" ? row.blocking : true;
