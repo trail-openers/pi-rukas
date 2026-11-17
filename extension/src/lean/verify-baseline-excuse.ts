@@ -34,17 +34,18 @@ export type BaselineExcuse =
   | { kind: "refused" };
 
 /**
- * Does this stream hold a line past the classifier's scan window? Such a line is judged on its first 8 KiB,
- * so two that differ only past the window fold onto one key. A line no judge fully saw is not evidence, so
- * it refuses on EITHER side, asked of the RAW stream.
+ * Does this stream hold a line past the classifier's scan window? Such a line is judged on its
+ * first 8 KiB, so two that differ only past the window fold onto one key. A line no judge fully
+ * saw is not evidence, so it refuses on EITHER side, asked of the RAW stream.
  */
 function hasOverWindowLine(stream: string): boolean {
   return splitLines(stream).some((line) => line.trim().length > FAILURE_LINE_SCAN_MAX);
 }
 
 /**
- * The lines the classifier READS as failures: stream order, trimmed, deduplicated, non-empty — the names the
- * `## Pre-existing` disclosure records, not the set the excuse compares (that is {@link allLinesOf}).
+ * The lines the classifier READS as failures: stream order, trimmed, deduplicated, non-empty — the
+ * names the `## Pre-existing` disclosure records, not the set the excuse compares (that is
+ * {@link allLinesOf}).
  */
 export function failureLinesOf(stream: string): string[] {
   const seen = new Set<string>();
@@ -61,10 +62,11 @@ export function failureLinesOf(stream: string): string[] {
 /**
  * The harness's OWN residue, discounted from the comparison.
  *
- * The executor prefixes its own `Command failed: <cmd>` echo to what the gate printed, so requiring the
- * executor's writing to appear at the base is no requirement about the project's failures. It is the ONLY
- * line discounted, and by WHO WROTE it, not what it says: admitted only when it quotes the command both runs
- * were given.
+ * The executor prefixes its own `Command failed: <cmd>` echo to what the gate printed, so
+ * requiring the executor's writing to appear at the base is no requirement about the project's
+ * failures. It is the ONLY line discounted, and by WHO WROTE it, not what it says: admitted only
+ * when it quotes the command both runs were given — a failure spelled INSIDE the quoted command
+ * cannot ride in on the prefix.
  */
 function harnessResidue(line: string, cmd: string, headRoot: string, probeRoot: string): boolean {
   if (!/^Command failed:\s/.test(line)) return false;
@@ -77,9 +79,9 @@ function harnessResidue(line: string, cmd: string, headRoot: string, probeRoot: 
 }
 
 /**
- * Every line a stream printed that holds text, in stream order, trimmed and deduplicated: the comparison set
- * for both sides. Deliberately NOT `failureLines` — an unread head-only line dropped from the comparison
- * would grade a defect the base never printed as one it did.
+ * Every line a stream printed that holds text, in stream order, trimmed and deduplicated: the
+ * comparison set for both sides. Deliberately NOT `failureLines` — an unread head-only line dropped
+ * from the comparison would grade a defect the base never printed as one it did.
  */
 function allLinesOf(stream: string): string[] {
   const seen = new Set<string>();
@@ -96,12 +98,14 @@ function allLinesOf(stream: string): string[] {
 /**
  * One run's tree prefix, out of a line.
  *
- * The tree's name sits at the front of the part of the line that holds a path, so the prefix is measured at
- * the first character that could begin a path — a `/`, a `.` or a drive letter — not at column 0 where the
- * runner's marker sits. Both spellings, with and without a trailing separator, are tried.
+ * The tree's name sits at the front of the part of the line that holds a path, so the prefix is
+ * measured at the first character that could begin a path — a `/`, a `.` or a drive letter — not at
+ * column 0 where the runner's marker sits. Both spellings, with and without a trailing separator,
+ * are tried.
  *
- * The search stops at that first path-shaped character: a root appearing later is content the tier printed
- * that the other tree's line carries too, so a global removal would erase a difference and excuse it.
+ * The search stops at that first path-shaped character: a root appearing later is content the tier
+ * printed that the other tree's line carries too, so a global removal would erase a difference and
+ * excuse it.
  */
 export function stripRoot(line: string, root: string): string {
   const trimmed = line.trim();

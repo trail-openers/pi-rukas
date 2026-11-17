@@ -40,12 +40,12 @@ export const TIER_TAIL_LINES = 40;
  * run back. Keeping the two apart in the type is what stops a "could not tell" from being read as an
  * `undefined` and then as a green.
  *
- * What counts as "nothing was observed" is narrower than it looks, and `frozenTestFailure` is where
- * the line sits: a frozen test that exits non-zero without echoing its own path is a `fail` (it was
- * proven red at freeze time), and so is one the head's code made HANG. The shapes that stay `infra`
- * are the ones where nothing was ever run. The shell's 126 and 127 are NOT a third shape: a real test
- * can exit 127 after printing its own failure, so routing those on the number alone hides genuine
- * reds.
+ * What counts as "nothing was observed" is narrower than it looks, and `frozenTestFailure` is
+ * where the line sits: a frozen test that exits non-zero without echoing its own path is a `fail`
+ * (it was proven red at freeze time), and so is one the head's code made HANG. The `infra` shapes
+ * are the ones where NOTHING RAN — a runner that could not start, or a template with nothing to
+ * run. The shell's 126 and 127 are NOT a third shape: a real test can exit 127 after printing its
+ * own failure, so routing those on the number alone hides genuine reds.
  */
 export type Executed =
   | { kind: "pass" }
@@ -109,24 +109,25 @@ export async function canaryFailure(
 }
 
 /**
- * The head's code may hang, named first in the reason and never only in its tail. The red reason is clipped
- * and pasted into the next build child's prompt; a reason whose only mention of the hang sat at the end could
- * be clipped away.
+ * The head's code may hang, named first in the reason and never only in its tail. The red reason
+ * is clipped and pasted into the next build child's prompt; a reason whose only mention of the
+ * hang sat at the end could be clipped away.
  */
 export const FROZEN_TIMEOUT_HEAD = "frozen tests timed out (the head's code may hang):";
 
 /**
  * Run the frozen acceptance tests with the project's per-file runner template.
  *
- * EVERY plain verdict is collected: a step that stopped at the first failure would report a different reason
- * tomorrow for a different file, and the fix round would learn about the second failure only after paying for
- * the first. A HANG is the exception, and the exception is a cost bound: after the first wall-clock kill
- * nothing further runs, so a hang costs at most ONE bound per verify.
+ * EVERY plain verdict is collected: a step that stopped at the first failure would report a
+ * different reason tomorrow for a different file, and the fix round would learn about the second
+ * failure only after paying for the first. A HANG is the exception, and the exception is a cost
+ * bound: after the first wall-clock kill nothing further runs, so a hang costs at most ONE bound
+ * per verify.
  *
- * A wall-clock kill is a RED here, reported with the plain failures already observed. Every file in the
- * contract was proved red against the base before `runTestPipeline` committed it, so a head that now hangs it
- * is the code under build failing. The other `infra` shapes stay throws: a runner that never started, a
- * template with nothing to run, and a run whose output flooded past the executor's bound all observed nothing.
+ * A wall-clock kill is a RED here: every file in the contract was proved red against the base
+ * before `runTestPipeline` committed it, so a head that now hangs it is the code under build
+ * failing. The other `infra` shapes stay throws — a runner that never started, a template with
+ * nothing to run, and a run whose output flooded past the executor's bound all observed nothing.
  * A flood is not a hang.
  */
 export async function frozenTestFailure(
@@ -163,8 +164,7 @@ export async function frozenTestFailure(
         case "overflowed":
         case "never-started":
         case "nothing-to-run":
-          // Each observed nothing, so each throws; `continue` lives in the `default` below, the
-          // only way out of the switch that keeps running the loop.
+          // Each observed nothing, so each throws; `continue` lives in the `default` below.
           throw new VerifyInfraError(
             `the frozen test ${file} could not be judged: ${proof.detail}`,
           );
@@ -192,8 +192,8 @@ export async function frozenTestFailure(
  *
  * `env` is the scrubbed child env: the driver's own knobs are stripped so a headless runner's
  * configuration cannot flip behaviour inside the project's tests. `killGroup` is what makes the
- * timeout real — a build that spawns a grandchild holding stdout keeps the pipe open past Node's own
- * kill.
+ * timeout real — a build that spawns a grandchild holding stdout keeps the pipe open past Node's
+ * own kill.
  */
 export async function runTier(
   name: string,
@@ -224,8 +224,8 @@ export async function runTier(
     throw new VerifyInfraError(
       `the verify.${name} tier was killed or timed out at ${timeoutMs}ms: ${cmd}`,
     );
-  // `execp` stamps `overflow` on the maxBuffer path and does NOT stamp `timedOutKill`, so a chatty
-  // tier is not mistaken for a hung one. Nor is it a verdict: the output was truncated.
+  // `execp` stamps `overflow` on the maxBuffer path and does NOT stamp `timedOutKill`, so a
+  // chatty tier is not mistaken for a hung one. Nor is it a verdict: the output was truncated.
   if (e.overflow !== undefined)
     throw new VerifyInfraError(
       `the verify.${name} tier exceeded its output bound on ${e.overflow}: ${cmd}`,
@@ -242,8 +242,8 @@ export async function runTier(
 }
 
 /**
- * The tiers this run executes, in order: the configured `fast` then `full`, or the repo's committed
- * `.pi/verify-cmd` when neither is configured.
+ * The tiers this run executes, in order: the configured `fast` then `full`, or the repo's
+ * committed `.pi/verify-cmd` when neither is configured.
  *
  * `verify.full` alone is not a fallback target here — `loadWorkConfig` already fills it from
  * `.pi/verify-cmd` when there is no `.pi/work.json` at all.

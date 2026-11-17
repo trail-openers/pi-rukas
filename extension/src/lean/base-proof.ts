@@ -2,12 +2,13 @@
  * lean/base-proof — proving a run's base is the commit it claims to be.
  *
  * `baseSha` is the ref every later read of a lean run is anchored to: the config loader resolves
- * `.pi/work.json` AT it, and `build`/`verify` diff and test against it. The config loader cannot tell "no such
- * commit" from "no config file", so the base is proven here: two rules and one second opinion, shared by the
- * seeder and by `ready` itself.
+ * `.pi/work.json` AT it, and `build`/`verify` diff and test against it. The config loader cannot
+ * tell "no such commit" from "no config file", so the base is proven here: two rules and one second
+ * opinion, shared by the seeder and by `ready` itself.
  *
- * The two rules are reported SEPARATELY because they are different mistakes: a value that is not an object
- * name, and one the clone does not hold. The rule text is the only place an operator reads which half failed.
+ * The two rules are reported SEPARATELY because they are different mistakes: a value that is not an
+ * object name, and one the clone does not hold. The rule text is the only place an operator reads
+ * which half failed.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
@@ -23,15 +24,18 @@ const NOT_AN_OID = " is not a full commit sha";
 const NOT_A_COMMIT = " is not a commit in this clone";
 
 /**
- * The rule for an empty base, with a tail that is never empty: the seed's or probe's cause when it has one,
- * else `NO_MAINLINE_WHY`. Clipped — the cause is git's text.
+ * The rule for an empty base, with a tail that is never empty: the seed's or probe's cause when it
+ * has one, else `NO_MAINLINE_WHY`. Clipped — the cause is git's text.
  */
 export function unresolvedMainlineRule(why: string | undefined): string {
   const reason = why === undefined || why.trim() === "" ? NO_MAINLINE_WHY : oneLine(why, 160);
   return `could not resolve the mainline sha: ${reason}`;
 }
 
-/** The suffix for a value that DOES resolve — to something else. */
+/**
+ * The suffix for a value that DOES resolve — to something else. The resolved value is printed so
+ * an operator can check it with `git cat-file -t <that>`.
+ */
 function resolvesTo(resolved: string): string {
   return `${NOT_A_COMMIT} (it resolves to ${oneLine(resolved, 80)})`;
 }
@@ -49,13 +53,14 @@ function notACommitRule(baseSha: string, suffix = NOT_A_COMMIT): string {
 /**
  * Is `baseSha` a full commit sha AND the commit this clone holds?
  *
- * Both halves are needed and neither implies the other. The shape check is what makes the value an immutable
- * object name rather than a ref (`main`, `HEAD`, `@{0}` and a short prefix all fail it), so the git argument
- * can never be a moving ref or a revision chain. The peel proves the clone contains it, and that the answer
- * comes BACK EQUAL to the base.
+ * Both halves are needed and neither implies the other. The shape check is what makes the value an
+ * immutable object name rather than a ref (`main`, `HEAD`, `@{0}` and a short prefix all fail it),
+ * so the git argument can never be a moving ref or a revision chain. The peel proves the clone
+ * contains it, and that the answer comes BACK EQUAL to the base.
  *
- * Resolution goes through the repo's canonical resolver (`review-head-sha.ts`); the OUTCOME form is the only
- * one that can say whether a miss was git reporting "no such commit" or git failing to answer at all.
+ * Resolution goes through the repo's canonical resolver (`review-head-sha.ts`); the OUTCOME form
+ * is the only one that can say whether a miss was git reporting "no such commit" or git failing to
+ * answer at all.
  *
  * Throws on a git INFRASTRUCTURE fault and only there — see `probeCommitObject`.
  */
@@ -83,13 +88,13 @@ export async function proveBaseSha(
 }
 
 /**
- * Is `baseSha` a commit this clone holds, yes-or-no — and what did git say when it could not be asked? The
- * second opinion behind a `resolveHeadSha` miss.
+ * Is `baseSha` a commit this clone holds, yes-or-no — and what did git say when it could not be
+ * asked? The second opinion behind a `resolveHeadSha` miss.
  *
- * The classification is INVERTED from the obvious shape: "not a commit" is the narrow, positively-recognised
- * answer and everything else is a fault. An object store git cannot read (a `000`-mode fanout directory)
- * reports exit 128/1 with the same "Not a valid object name" wording, so a non-empty stderr is read as the
- * fault it is. Everything else returns a one-line CAUSE string.
+ * The classification is INVERTED from the obvious shape: "not a commit" is the narrow,
+ * positively-recognised answer and everything else is a fault. An object store git cannot read (a
+ * `000`-mode fanout directory) reports exit 128/1 with the same "Not a valid object name" wording,
+ * so a non-empty stderr is read as the fault it is. Everything else returns a one-line CAUSE string.
  */
 async function probeCommitObject(
   repoRoot: string,
