@@ -2,32 +2,40 @@
  * lean/build — the step that dispatches ONE developer to make the frozen acceptance
  * tests pass.
  *
- * Where `specify` is an adversary writing tests nobody implemented, `build` is a builder writing the
- * implementation against tests that already exist and are committed. The step writes no code and runs no
- * tests: `verify` re-runs the frozen files itself, so a build claiming "green" would be a builder grading its
- * own homework. What build owns is the boundary around the child — the tree it hands over, the prompt it
- * gets, and the single commit that comes out the other side.
+ * Where `specify` is an adversary writing tests nobody has implemented, `build` is a
+ * builder writing the implementation against tests that already exist and are already
+ * committed. The step writes no code and runs no tests: `verify` is a separate step
+ * that re-runs the frozen files itself, so a build claiming "green" would be a
+ * builder grading its own homework. What build owns is the boundary around the child —
+ * the tree it hands the child, the prompt it gets, and the single commit that comes
+ * out the other side.
  *
- * The handler is: read the record, prove the tree, dispatch, normalise, commit. In order, because each stage
- * exists so the next one cannot be fooled:
+ * The whole handler is: read the record, prove the tree, dispatch, normalise, commit.
+ * In order, because each stage exists so the next one cannot be fooled:
  *
- *   1. **The frozen map comes from the step log**, not a closure: the ordered union of the `frozen` maps of
- *      every decided `specify:ok` and `challenge:new-tests` step. A resumed run sees what a crashed one froze.
- *   2. **The worktree must be the run's own** — registered, on the run's branch, sitting at the head the
- *      frozen records were hashed at, not the base: the commit `specify` put on top IS the contract now.
- *   3. **Preconditions run before the dispatch**, so a model is never paid to work in a tree the step cannot
- *      account for: the frozen map is non-empty and every frozen blob at that head still hashes to its record.
- *   4. **One child**, role `developer`, fenced to the worktree. A child that died mid-work is infrastructure
- *      and throws; a killed or quota-stopped one is never re-dispatched, and only a child that died before its
- *      first turn gets the one free re-dispatch (`build-dispatch.ts`).
- *   5. **Normalise and commit** (`build-normalise.ts`): CAPTURE the child's files, RESET the tree to
- *      `headBefore` — undoing commits, staging, every frozen and protected-path edit — then REWRITE the
- *      captured bytes and make one provable commit.
- *   6. A child that produced nothing is `exhausted`, which the table routes — not a throw, not a green. A
- *      child its OWN ceiling stopped is `budget`: work folded and committed, retried in place while the round
- *      budget allows.
+ *   1. **The frozen map comes from the step log**, not a closure: the union, in order,
+ *      of the `frozen` maps of every decided `specify:ok` and `challenge:new-tests`
+ *      step. A resumed run sees what a crashed run froze.
+ *   2. **The worktree must be the run's own** — registered, on the run's branch, and
+ *      sitting at the head the frozen records were hashed at, not the base: the commit
+ *      `specify` put on top of it IS the contract now.
+ *   3. **The preconditions run before the dispatch**, so a model is never paid to work
+ *      in a tree the step cannot account for: the frozen map is non-empty and every
+ *      frozen blob at that head still hashes to its record.
+ *   4. **One child**, role `developer`, fenced to the worktree. A child that died
+ *      mid-work is infrastructure and throws; a killed or quota-stopped one is never
+ *      re-dispatched, and only a child that died before its first turn gets the one
+ *      free re-dispatch (`build-dispatch.ts`).
+ *   5. **Normalise and commit** (`build-normalise.ts`): CAPTURE the child's files,
+ *      RESET the tree to `headBefore` — undoing its commits, staging, every frozen and
+ *      protected-path edit — then REWRITE the captured bytes and make one provable
+ *      commit.
+ *   6. A child that produced nothing is `exhausted`, which the table routes — not a
+ *      throw, not a green. A child its OWN ceiling stopped is `budget`: its work is
+ *      folded and committed, and the step retries it in place while the round budget
+ *      allows.
  *
- * The re-entry context also comes from the log, clipped to 4 KB.
+ * The re-entry context comes from the log too, clipped to 4 KB.
  */
 
 import { existsSync } from "node:fs";
@@ -79,8 +87,8 @@ export interface BuildDeps {
   loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
   /** The aggregate capture ceiling in bytes; absent, the production ceiling applies. */
   captureCeiling?: number;
-  /** The bound on the driver's re-runs of a frozen test — the blocked report's loop and the stopped build's
-   * sweep alike. A test shortens it to watch a hang. */
+  /** The bound on the driver's re-runs of a frozen test — the blocked report's loop
+   * and the stopped build's sweep alike. A test shortens it to watch a hang. */
   blockedTimeoutMs?: number;
 }
 
@@ -101,9 +109,10 @@ export function frozenFromLog(steps: Step[]): Record<string, string> {
 }
 
 /**
- * The criterion -> tests map, unioned over every step that recorded one. The run-level file quota seeds from
- * here: `MAX_TEST_FILES_PER_CRITERION` bounds what a criterion ENDS UP WITH across the run, and only this map
- * knows what an earlier round already froze for it.
+ * The criterion -> tests map, unioned over every step that recorded one. The
+ * run-level file quota seeds from here: `MAX_TEST_FILES_PER_CRITERION` bounds what
+ * a criterion ENDS UP WITH across the run, and only this map knows what an earlier
+ * round already froze for it.
  */
 export function testsFromLog(steps: Step[]): Record<string, string[]> {
   const tests: Record<string, string[]> = {};
@@ -134,25 +143,28 @@ function reasonFromLog(
 }
 
 /**
- * Why this round exists, in the gate's own words: the newest decided `verify:red`, else the newest `ci:red`,
- * clipped. A round that came back from added tests is told by {@link addedByChallengeFromLog} instead.
+ * Why this round exists, in the gate's own words: the newest decided `verify:red`,
+ * else the newest `ci:red`, clipped. A round that came back from added tests is
+ * told by {@link addedByChallengeFromLog} instead.
  */
 export function reentryFromLog(steps: Step[]): string | undefined {
   return reasonFromLog(steps, "verify", "red") ?? reasonFromLog(steps, "ci", "red");
 }
 
 /**
- * What stopped the PREVIOUS attempt and what still fails: the newest decided `build:budget` reason, composed
- * by that step from its ceiling and the files it re-ran red. No gate judged a killed builder, so
- * `reentryFromLog` is silent — and a child told only "the last round stopped" re-derives the feature.
+ * What stopped the PREVIOUS attempt and what still fails: the newest decided
+ * `build:budget` reason, which that step composed from its ceiling and the files
+ * it re-ran red. No gate judged a killed builder, so `reentryFromLog` is silent
+ * and a child told only "the last round stopped" re-derives the feature.
  */
 function budgetStopFromLog(steps: Step[]): string | undefined {
   return reasonFromLog(steps, "build", "budget");
 }
 
 /**
- * What the adversary added, in the builder's brief: the frozen paths of the newest decided `challenge:new-tests`
- * step. No gate judged them — the adversary only made the contract bigger — so they are named, not quoted.
+ * What the adversary added, in the builder's own brief: the frozen paths of the
+ * newest decided `challenge:new-tests` step. No gate judged them — the adversary
+ * only made the contract bigger — so they are named rather than quoted.
  */
 function addedByChallengeFromLog(steps: Step[]): string | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
@@ -172,8 +184,8 @@ function addedByChallengeFromLog(steps: Step[]): string | undefined {
 interface SpecRead {
   spec: PiSpec;
   /**
-   * The body it was parsed from, kept for the builder's brief — the SAME fetch, never a second one
-   * (`lean/issue-prose.ts`).
+   * The body it was parsed from, kept for the builder's brief — the SAME
+   * fetch, never a second one (`lean/issue-prose.ts`).
    */
   body: string;
 }
@@ -223,24 +235,30 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     throw new BuildInfraError((err as Error).message);
   }
 
-  // 3. Preconditions BEFORE the child is paid. A config the step cannot read is infrastructure: building
-  //    without the runner the project named is not a verdict on the work.
+  // 3. The preconditions, BEFORE the child is paid. A config the step cannot read
+  //    is infrastructure: building without the runner the project named is not a
+  //    verdict on the work.
   await assertFrozenIntact(deps.exec, wt, headBefore, frozen);
   const config = await deps.loadConfig(repoRoot, base).catch((err: unknown) => {
     throw new BuildInfraError(`could not load the project config: ${(err as Error).message}`);
   });
   const { spec, body: issueBody } = await specOf(deps, repoRoot, issue);
-  // Rounds this run has DISPATCHED and paid for. `buildAttempts` is the authority now that the table bills a
-  // round on ENTERING `build` and never on leaving: it counts dispatches, not table visits, so one child a
-  // ceiling stopped costs one round and the retry loop stops only when the budget is spent. The round this
-  // visit is running is not counted yet — the entering edge bills it on verdict apply — hence the +1 below.
+  // Rounds this run has DISPATCHED and paid for. `buildAttempts` is the authority
+  // now the table bills a round on entering `build` and never on leaving it: it
+  // counts dispatches, not table visits, so one child a ceiling stopped costs one
+  // round and the retry loop below stops only when the budget is spent. The round
+  // this visit is running is not in the count yet — the edge that enters `build`
+  // bills it when the engine applies the verdict — hence the +1 below.
   const dispatchedBefore = ctx.run.counters.buildAttempts;
-  // What the prompt and commit subject call the round: the decided `build` rows below this one — a LOG fact,
-  // so a resumed visit prints the log's number and never repeats one. Counter and log may disagree for a
-  // resumed record, and that is honest: the label counts rows, the cap counts dispatches.
+  // What the child's prompt and its commit subject call the round: the decided
+  // `build` rows below this one — a LOG fact, so a resumed visit prints the number
+  // the log says and never repeats one. The counter and the log can disagree for a
+  // resumed record, and that is honest: the label counts rows, the cap below
+  // counts dispatches.
   const label = ctx.steps.filter((s) => s.state === "build" && s.outcome !== undefined).length + 1;
-  // 4. The builder, under the state's budget. A child that died THROWS, so the rows ride on the error to the
-  //    outcome the engine writes. A child its OWN ceiling stopped is retried HERE — the table has no `build`
+  // 4. The builder, under the state's budget. A child that died THROWS, so
+  //    the rows ride on the error to the outcome the engine writes. A
+  //    child its OWN ceiling stopped is retried HERE — the table has no `build`
   //    self-edge — and its work rides forward on the commit its fold made.
   // The tree, head and contract every fold of this attempt is judged against.
   const fold = (n: number) => ({
@@ -263,19 +281,25 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   const waitNote = () => (waitedMs > 0 ? providerWaitNote(waitedMs) : "");
   const rows: DispatchUsageRow[] = [];
   let toolUses: unknown[] = [];
-  // Children this visit has put on the wire. `buildAttempts` counts rounds the table DISPATCHED, and the edge
-  // that entered `build` already billed the round this visit runs — so `dispatchedBefore` is what was spent
-  // before the first child here and `MAX_BUILD_ATTEMPTS - dispatchedBefore` is what is left to buy. That
-  // difference is the whole rule: the loop buys ANOTHER child only while rounds dispatched SO FAR sit under the
-  // cap, running the one child its own round paid for and stopping the moment `dispatchedBefore + tries + 1`
-  // reaches it. The `+1` matters — `dispatchedBefore >= cap` alone counts only what came before, so a visit
-  // entered AT the cap keeps buying children the run cannot pay for. A ci:red fix round is exactly that shape:
-  // the table hands it `buildAttempts` one past `MAX_BUILD_ATTEMPTS` (three dispatched rounds plus the fix round
-  // no dispatch bought), and its ceiling-stopped child must run once, fold, and leave — never retry in-step.
-  // Below the cap a budget stop DOES buy another child, which lets a run spend its third build on work.
+  // Children this visit has put on the wire. `buildAttempts` counts rounds the
+  // table DISPATCHED, and the edge that entered `build` already billed the round
+  // this visit is running — so `dispatchedBefore` is what was spent BEFORE the
+  // first child here, and `MAX_BUILD_ATTEMPTS - dispatchedBefore` is what is left
+  // to buy. That difference is the whole rule: the loop may buy ANOTHER child only
+  // while the rounds dispatched SO FAR sit under the cap, so it runs the one child
+  // its own round paid for and stops the moment `dispatchedBefore + tries + 1`
+  // reaches the cap. The `+1` matters — a test on `dispatchedBefore >= cap` alone
+  // counts only what came before this visit, so a visit the table entered AT the
+  // cap keeps buying children the run has no rounds left to pay for. A ci:red fix
+  // round is exactly that shape: the table legitimately hands it `buildAttempts`
+  // one past `MAX_BUILD_ATTEMPTS` (three dispatched rounds plus the fix round
+  // itself, which no dispatch bought), and its ceiling-stopped child must run once,
+  // fold, and leave — never retry in-step. Below the cap a budget stop DOES buy
+  // another child, which is what lets a run spend its third build on work rather
+  // than on a ceiling.
   const retriesAllowed = Math.max(0, MAX_BUILD_ATTEMPTS - dispatchedBefore - 1);
-  // A child that did no work gets this visit's one free re-dispatch: it bought nothing, so it bills no round
-  // and advances no `tries`.
+  // A child that did no work gets its one free re-dispatch of this visit: it
+  // bought nothing, so it bills no round and advances no `tries`.
   let noWorkRetryUsed = false;
   // Why the first no-work child died, kept for the throw the second one may make.
   let firstNoWorkWhy: string | undefined;
@@ -303,16 +327,18 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
           `build dispatch failed: first: ${String(firstNoWorkWhy)}; then: ${dispatchedChild.why}`,
           rows,
         );
-      // A child that did no work bought nothing: its row stays billed and the SAME prompt goes out again on a
-      // freshly armed budget without spending a round. The second one throws, as any dead child did. The trace
-      // names the re-dispatch and the cause the first child gave.
+      // A child that did no work bought nothing: its row stays billed and the SAME
+      // prompt goes out again on a freshly armed budget, without spending a round.
+      // The second one of these throws, as any dead child did. The trace names this
+      // re-dispatch and the cause the first child gave.
       traceWarn(
         `lean build #${String(issue)}: re-dispatching a child that did no work: ${dispatchedChild.why}`,
       );
       firstNoWorkWhy = dispatchedChild.why;
       noWorkRetryUsed = true;
-      // The wait sits INSIDE the free re-dispatch the child already earned — no counter, no round billed. A
-      // non-provider or hatch-off case takes zero and re-dispatches exactly as before.
+      // The wait sits INSIDE the one free re-dispatch the child already earned —
+      // it adds no counter and bills no round. A non-provider or hatch-off case
+      // takes zero and re-dispatches exactly as before.
       waitedMs += await waitOutProviderFault({
         cls: dispatchedChild.cls,
         attempt: 1,
@@ -323,19 +349,21 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       tries--;
       continue;
     }
-    // Past that branch, only a real result or a ceiling stop remains on the pair.
+    // Past that branch only a real result or a ceiling stop is left on the pair.
     const read = readDispatched(dispatchedChild);
     if (!("stop" in read)) {
       toolUses = read.result.toolUses ?? [];
       break;
     }
-    // Its own ceiling stopped it: fold the work into this attempt's commit and re-run the frozen files under
-    // ONE wall clock, so verify finds a clean tree and the retry's prompt names what still fails. The kind
-    // stays `budget`. A run the cap ENDS here names the dispatches too, which `handback` prints — a ceiling
-    // alone cannot say the retries were spent. The bound is read the SAME way the loop reads it, so the
-    // handback sentence cannot disagree with the children this visit was allowed to buy; and the count includes
-    // `dispatchedBefore`, because on a visit entered at or over the cap the loop ran no retry and `tries` alone
-    // would claim a child it never bought.
+    // Its own ceiling stopped it: fold the work into this attempt's commit and
+    // re-run the frozen files under ONE wall clock, so verify finds a clean tree and
+    // the retry's prompt names what is still failing. The kind stays `budget`.
+    // R5: a run the cap ENDS here names the dispatches too, which `handback` prints —
+    // a ceiling alone cannot say the retries were spent. The bound is read the SAME
+    // way the loop reads it, so the sentence the handback prints cannot disagree with
+    // the children this visit was allowed to buy; and the count named includes
+    // `dispatchedBefore`, because on a visit entered at or over the cap this loop ran
+    // no retry at all and `tries` alone would claim a child it never bought.
     const atCap = tries >= retriesAllowed;
     const { kept, failing } = await foldStoppedBuild({
       ...fold(label),
@@ -343,7 +371,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       ceiling: deps.captureCeiling,
       ...(deps.blockedTimeoutMs === undefined ? {} : { timeoutMs: deps.blockedTimeoutMs }),
     });
-    // The line the step log, handback and the retry's prompt all read.
+    // The line the step log, handback and the retry's prompt all read (R3/R5).
     const verdict: Outcome = {
       ...budgetVerdictWithRows("build", read.stop, rows),
       reason: joinNotes([
@@ -351,9 +379,11 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
         ...(atCap ? [`after ${String(dispatchedBefore + tries + 1)} build attempts`] : []),
         failing.length === 0 ? "" : `still failing: ${clipList(failing, LIST_CLIP)}`,
         kept.files.length === 0 ? "" : `kept ${String(kept.files.length)} file(s)`,
-        // The submodule disclosure is folded into EACH of the build step's outcomes and a ceiling-stopped fold
-        // is one of them — its reason is composed here, not by the `ok` arm's list, so folding it into only
-        // that list would leave this verdict silent about a commit built on a tree with nothing at that path.
+        // #2319 Resolution 4: the disclosure is folded into EACH of the build step's outcomes, and
+        // a ceiling-stopped fold is one of them — its reason is composed here rather than by the
+        // `ok` arm's list, so folding it into only that list would leave this verdict silent
+        // about a commit built on a tree with nothing at that path. The handback and the retry's
+        // prompt both read this line.
         kept.submodules ?? "",
         waitNote(),
       ]),
@@ -362,9 +392,9 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     if (atCap) return verdict;
   }
 
-  // 4b. The child's own "these cannot all pass together", if it made one: a CLAIM, honoured only once the
-  //     driver ran the named frozen tests on its tree and saw one come back red. An ignored report traces a
-  //     line and records nothing.
+  // 4b. The child's own "these cannot all pass together", if it made one: a CLAIM,
+  //     honoured only once the driver ran the named frozen tests on its tree and saw
+  //     one come back red. An ignored report traces a line and records nothing.
   const blocked = await judgeBlockedReport({
     exec: deps.exec,
     wt,
@@ -405,9 +435,11 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
         ? `removed: ${report.removed.map((r) => `${r.path} (${r.why})`).join(", ")}`
         : "",
       report.deleted.length > 0 ? `deleted: ${report.deleted.join(", ")}` : "",
-      // In the fold's own reason, not only the trace: this commit was built against a tree with no submodule
-      // at that path, so a reader judging it needs to know the tree was incomplete. The clause names every kind
-      // but `seeded`, including `failure` — git refusing the pass is as much a caveat as a submodule missing.
+      // Said in the fold's own reason, not only in the trace: the commit this step made
+      // was built against a tree with no submodule at that path, so a reader judging the
+      // commit needs to know the tree it came from was incomplete. The clause names every
+      // kind but `seeded`, including `failure` — git itself refused the pass, which is as
+      // much a caveat on this commit as a submodule this step could not find locally.
       report.submodules ?? "",
       waitNote(),
     ]),
@@ -426,13 +458,14 @@ export function buildDeps(headless: boolean): BuildDeps {
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
-        // Forwarded so the ceiling binds the child; `budgetTurns` is the ceiling the steer counts down from.
+        // Forwarded so the ceiling binds the child; `budgetTurns` is the same
+        // ceiling the budget-progress steer counts down from.
         childBoundMs: o.childBoundMs,
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,
-        // The budget's kill goes through `killProcessTree`, which reaches the child's tool tree only when the
-        // child leads its own group.
+        // The budget's kill goes through `killProcessTree`, which only reaches the
+        // child's tool tree when the child leads its own group.
         processGroup: true,
         ...leanChildOpts(headless),
       }),

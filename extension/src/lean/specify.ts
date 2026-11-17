@@ -93,35 +93,42 @@ export interface SpecifyDeps {
   /** Preflight for the reporter companion; `statReporterPath` in production. */
   statReporter?: (p: string) => Promise<unknown>;
   /**
-   * Reads the kept test files into memory; `captureTestBytes` in production. A seam because every other
-   * filesystem fact here is one: the smoke test proves the step commits the bytes it captured rather than what
-   * the child leaves on disk, and that needs a read placeable against the child's last write. `owners` tells
-   * the capture which criterion claimed each path, so an unreadable file drops as that criterion's row.
+   * Reads the kept test files into memory; `captureTestBytes` in production. A seam
+   * because every other filesystem fact here is one: the smoke test proves the step
+   * commits the bytes it captured rather than whatever the child leaves on disk, and
+   * that needs a read the test can place against the child's last write. The `owners`
+   * map tells the capture which criterion claimed each path, so a file it cannot read
+   * drops as that criterion's row, not an unattributed line in the reason.
    */
   capture?: (wt: string, paths: string[], owners: Map<string, string>) => CaptureResult;
   /** Per-run runner limits; a test injects a short timeout to prove a hang is infra. */
   testLimits?: TestRunLimits;
   /**
-   * The runner preflight's own limits, so a case can shrink the bound and watch a hanging probe end as an
-   * infrastructure handback. Its own field, not a second use of {@link testLimits}: the probe bounds ONE runner
-   * call made before the child exists, and shortening the red proof's bound must not shorten the probe's.
+   * The runner preflight's own limits, so a case can shrink the bound and watch a
+   * hanging probe end as an infrastructure handback. Its own field rather than a
+   * second use of {@link testLimits}: the probe bounds ONE runner call made before
+   * the child exists, and shortening the red proof's bound must not shorten the
+   * probe's.
    */
   preflightLimits?: TestRunLimits;
   /**
-   * Called with a worktree just reset to the base, immediately before the reset asks git to populate its
-   * submodules. Supplied only by smoke tests, which break a submodule between the clean and the
-   * `submodule update --init` that must recover it — the only way to observe git failing that command.
-   * Threaded to {@link resetWorktreeToBase}, which owns the initialisation.
+   * Called with a worktree the step has just reset to the base, immediately before
+   * the reset asks git to populate that tree's submodules. Supplied only by smoke
+   * tests, which use it to break a submodule between the clean and the
+   * `submodule update --init` that has to recover it — the only way to observe git
+   * actually failing that command. Threaded to {@link resetWorktreeToBase}, which
+   * owns the initialisation.
    */
   beforeSubmoduleInit?: (wt: string) => void | Promise<void>;
   /**
-   * Called with what one attempt's no-candidate verdict turned on: the boundary's attributed drop labels and
-   * the silence decision. Supplied only by smoke tests.
+   * Called with what one attempt's no-candidate verdict turned on: the boundary's
+   * attributed drop labels, and the silence decision. Supplied only by smoke tests.
    *
-   * It exists because neither value reaches the run's outcome, which is all a case can otherwise read. The
-   * drop labels make the decline's WORDING non-silent independently of the silence predicate, so an
-   * outcome-level assertion survives deleting the predicate's `refused.length === 0` conjunct: this is the one
-   * seam through which a case tells the predicate from its mutant.
+   * It exists because neither value reaches the run's outcome, and the outcome is
+   * all a case can otherwise read. The drop labels make the decline's WORDING
+   * non-silent independently of the silence predicate, so an outcome-level assertion
+   * passes with the predicate's `refused.length === 0` conjunct deleted: this is the
+   * one seam through which a case can tell the predicate from its mutant.
    */
   observeVerdict?: (v: { refused: string[]; silent: boolean }) => void;
 }
@@ -129,9 +136,10 @@ export interface SpecifyDeps {
 /**
  * A base, a tree or a child we cannot trust. The engine turns this into 10.
  *
- * Re-exported from `specify-run.ts`, where the shared pipeline raises it, so that module owns the throw without
- * importing this step back: the class is `instanceof`-tested by the specify and challenge suites, and two copies
- * would make the check quietly false.
+ * Re-exported from `specify-run.ts`, where the shared pipeline raises it, so that
+ * module owns the throw without importing this step back: the class is
+ * `instanceof`-tested by the specify and challenge smoke suites, and two copies
+ * would make `err instanceof SpecifyInfraError` quietly false.
  */
 export { SpecifyInfraError } from "./specify-run.ts";
 
@@ -143,16 +151,18 @@ function specRules(body: string): { spec?: PiSpec; rules: string[] } {
 }
 
 /**
- * Base health: the compiler canary (when the tier uses it), then the project's fast verify tier. Both run
- * BEFORE the adversary is dispatched.
+ * Base health: the compiler canary (when the tier uses it), then the project's fast
+ * verify tier. Both run BEFORE the adversary is dispatched.
  *
- * A red test is evidence only when the base builds, and a red is a VERDICT — so "does the toolchain work at
- * all" must be answered somewhere not confounded with what a test prints. That place is here, and the only
- * one: a failure throws rather than dropping rows.
+ * A red test is only evidence when the base builds, and a red is a VERDICT — so the
+ * question "does the toolchain work at all" must be answered somewhere that cannot
+ * be confounded with what a test prints. That place is here, and it is the only
+ * place: a failure throws rather than dropping rows.
  *
- * The canary runs in the directory the tier runs the pinned compiler in (`packageDirFor`), and the tier runs
- * with the driver's knobs scrubbed as every verify child does. When provisioning could not give the tree its
- * dependencies, the message says so.
+ * The canary runs in the directory the tier runs the pinned compiler in
+ * (`packageDirFor`), and the tier runs with the driver's knobs scrubbed, as every
+ * other verify child does. When provisioning could not give the tree its
+ * dependencies, that is said in the message.
  */
 async function assertBaseHealthy(
   exec: ExecFn,
@@ -172,8 +182,9 @@ async function assertBaseHealthy(
   });
   if (guard?.failure !== undefined)
     throw new SpecifyInfraError(`base unhealthy: ${guard.failure}${note}`);
-  // The shell form: a verify tier is a shell command line (`cd pkg && node …/tsc --noEmit && bun run test`),
-  // not one executable plus argv, and it is the project's own command that says whether the base builds.
+  // The shell form: a verify tier is a shell command line (`cd pkg && node
+  // …/tsc --noEmit && bun run test`), not one executable plus argv, and it is
+  // the project's own command that says whether this base builds at all.
   const ran = await exec(fast, {
     cwd: wt,
     timeout: 30 * 60_000,
@@ -191,8 +202,9 @@ async function assertBaseHealthy(
 }
 
 /**
- * The worktree at the base — created or reset to it — and provisioned. First attempt and retry both come
- * through here, so the tree the second dispatch sees is cleaned exactly as the first one's was.
+ * The worktree at the base — created, or reset to it — and provisioned. The
+ * first attempt and the retry both come through here, so the tree the second
+ * dispatch sees is cleaned exactly as the first one's was.
  */
 async function prepareTree(
   deps: SpecifyDeps,
@@ -221,9 +233,11 @@ async function prepareTree(
 }
 
 /**
- * Attempts at the adversary, first included. The bound is one retry, and the second attempt is last however it
- * ends. Two refusals earn it: a submission the boundary dropped (the child is told what it dropped), or an
- * attempt that ended without calling `submit_tests` once while the spec wanted tests (it is told to submit).
+ * Attempts at the adversary, first one included. The bound is one retry, and
+ * the second attempt is the last however it ends. Two refusals earn that retry:
+ * a submission the boundary dropped (the child is told what it dropped), or an
+ * attempt that ended without calling `submit_tests` once while the spec wanted
+ * tests (the child is told to submit).
  */
 const SPECIFY_MAX_ATTEMPTS = 2;
 
@@ -246,8 +260,8 @@ function afterRetry(outcome: Outcome): Outcome {
 /** The `specify` step. Returns `ok` | `no-red-test` | `budget`; THROWS on infrastructure. */
 export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
-  // 1. The spec, re-read — `ready` may have run in another process minutes or a crash ago, and the issue is
-  //    the contract.
+  // 1. The spec, re-read — `ready` may have run in another process, minutes
+  //    or a crash ago, and the issue is the contract.
   let body: string;
   try {
     body = await deps.fetchIssueBody(repoRoot, issue);
@@ -257,8 +271,9 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   const read = specRules(body);
   if (read.rules.length > 0) return { kind: "no-red-test", failedRules: read.rules };
   const spec = read.spec as PiSpec;
-  // The same bytes the spec was parsed from, kept for the adversary's brief — fetching twice would let the
-  // child be shown an issue the contract was not parsed from.
+  // The same bytes the spec was parsed from, kept for the adversary's brief.
+  // Fetching twice would let the child be shown an issue the contract was not
+  // parsed from.
   const issueBody = body;
 
   const base = ctx.run.baseSha;
@@ -267,7 +282,8 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   const testLocation = testLocationOf(config.verify);
   const branch = specifyBranch(ctx.run.branch, issue);
   const wt = specifyWorktreePath(repoRoot, issue);
-  // Both reach git command lines here; `assertSafeRef` stands between a ref and shell expansion.
+  // A base sha and a branch name both reach git command lines in this step.
+  // `assertSafeRef` is what stands between a ref and shell expansion.
   try {
     assertSafeRef(base);
     assertSafeRef(branch);
@@ -276,16 +292,18 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   }
 
   const wanted = testCriteria(spec);
-  // Narrowed HERE, at the refusal that proves it: one branch returns the verdict when there are test criteria
-  // and no template, so past it a spec with test criteria has one. The call site reads this binding rather than
-  // re-casting the config field.
+  // Narrowed HERE, at the refusal that proves it: one branch returns the
+  // verdict when there are test criteria and no template, so past that point a
+  // spec with test criteria has one. The call site below reads this narrowed
+  // binding rather than re-casting the config field.
   const runnerTemplate =
     wanted.length > 0 && config.verify.test === undefined
       ? undefined
       : (config.verify.test as string);
 
-  // 2. All preconditions BEFORE the dispatch: each is a fact the step establishes for itself, and an adversary
-  //    spends tokens proving none of them.
+  // 2. The preconditions, all of them BEFORE the dispatch: each is a fact the
+  //    step can establish for itself, and an adversary spends tokens proving
+  //    none of them.
   if (wanted.length > 0 && runnerTemplate === undefined) {
     return {
       kind: "no-red-test",
@@ -307,34 +325,37 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     }
   }
 
-  // 3. The worktree: created at the base or reset to it. Both paths clean without exemptions and re-provision,
-  //    so this is the links the tree has.
+  // 3. The worktree: created at the base, or reset to it. Both paths clean
+  //    without exemptions and re-provision, so this is the links the tree has.
   const provisioning = await prepareTree(deps, { repoRoot, issue, wt, base, branch });
 
   // 4. Base health BEFORE any red is trusted.
   await assertBaseHealthy(deps.exec, wt, config, provisioning);
 
-  // `runnerTemplate` is narrowed to a string by the refusal above; checked once here so every attempt below is
-  // typed against the narrowed binding.
+  // `runnerTemplate` is narrowed to a string by the refusal above. Checked
+  // here, once, so every attempt below is typed against the narrowed binding.
   if (runnerTemplate === undefined)
     throw new SpecifyInfraError("no test runner configured for a spec with test criteria");
-  // 4b. The runner's own health, once, before the adversary is paid. `fast` cannot answer it (a fast tier is a
-  //     typecheck and a lint, and the runner may not be in it), and the red proof answers too late in the wrong
-  //     vocabulary: a runner dying before collection prints nothing naming the file, and the step would decline
-  //     on work it never judged. A runner that cannot run an EMPTY test file throws here — no dispatch, no
-  //     model call, no rows.
+  // 4b. The runner's own health, once, before the adversary is paid. `fast`
+  //     cannot answer it (a project's fast tier is a typecheck and a lint, and
+  //     the runner may not even be part of it), and the red proof answers it too
+  //     late and in the wrong vocabulary: a runner that dies before collection
+  //     prints nothing naming the file, and the step would decline on the work
+  //     it never judged. A configured runner that cannot run an EMPTY test file
+  //     throws here — no dispatch, no model call, no rows.
   const probeNote = await assertRunnerCanRunTests(deps.exec, {
     wt,
     template: runnerTemplate,
     ...(testLocation === undefined ? {} : { testLocation }),
     ...(deps.preflightLimits === undefined ? {} : { limits: deps.preflightLimits }),
   });
-  // The run's frozen test record, read ONCE: the quota seed does not change while the boundary runs (nothing
-  // commits between), so reading it per `validate` would re-fold the log for the same answer.
+  // The run's frozen test record, read ONCE. The quota seed does not change
+  // while the boundary runs (nothing commits in between), so reading it per
+  // `validate` invocation would just re-fold the step log for the same answer.
   const frozenByCriterion = testsFromLog(ctx.steps);
 
-  // 5-13. The attempts, each the adversary plus the shared pipeline (`specify-attempt.ts`), which `challenge`
-  //       shares.
+  // 5-13. The attempts, each one the adversary plus the shared pipeline (see
+  //       `specify-attempt.ts`), which `challenge` shares.
   const attemptArgs = {
     deps,
     config,
@@ -350,18 +371,23 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     wanted,
     frozenByCriterion,
   };
-  // The first attempt is final unless it dropped a submitted row or never submitted: both fixable by telling
-  // the child, so it is dispatched again with the reasons (or the submit nudge) in its prompt. The last
-  // attempt's outcome is the step's result whatever it is.
+  // The first attempt is final unless it dropped a submitted row or ended
+  // without submitting at all: both are things the child can fix by being told,
+  // so the adversary is dispatched again with the reasons (or the submit nudge)
+  // in its prompt. The last attempt's outcome is the step's result whatever it
+  // is.
   let attempt = await runSpecifyAttempt(attemptArgs);
-  // What each attempt cost, collected as they happen: the step's outcome is ONE record, so rows are kept
-  // outside it rather than read back from whichever outcome survived.
+  // What each attempt's dispatch cost, collected as they happen: the step's
+  // outcome is ONE record, so the rows are kept outside it rather than read back
+  // from whichever outcome survived.
   const allRows: DispatchUsageRow[][] = [attempt.dispatched];
   let attempts = 1;
-  // The provider wait sat out before the re-prompt, folded into the reason of the outcome finally recorded.
+  // The provider wait this step sat out before its re-prompt, folded into the
+  // reason of the outcome it finally records.
   let waitedMs = 0;
-  // The third re-prompt reason is the provider fault, its OWN field — never `silent`, which would let a
-  // provider death borrow a refusal the prompt has nothing to say about. No extra attempt: same bound.
+  // The third re-prompt reason is the provider fault, and it is its OWN field —
+  // never `silent`, which would let a provider death borrow a refusal the prompt
+  // has nothing to say about. It costs no extra attempt: same bound.
   while (
     attempts < SPECIFY_MAX_ATTEMPTS &&
     attempt.outcome.kind === "no-red-test" &&
@@ -369,8 +395,8 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
       attempt.refused.length > 0 ||
       (attempt.silent && wanted.length > 0))
   ) {
-    // The wait goes BEFORE the prompt goes out again — re-dispatching at once spent the run's only retry inside
-    // the same burst.
+    // The wait goes BEFORE the prompt goes out again — re-dispatching at once is
+    // what spent the run's only retry inside the same burst.
     if (attempt.providerFault !== undefined) {
       waitedMs += await waitOutProviderFault({
         cls: attempt.providerFault,
@@ -379,9 +405,10 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
         ...(ctx.run.deadlineMs === undefined ? {} : { deadlineMs: ctx.run.deadlineMs }),
       });
     }
-    // The previous attempt may have left red files in the tree and the retry must start from the base as the
-    // first did. Needed: `runTestPipeline` resets only once it has a kept file, so an attempt keeping nothing
-    // leaves its writes behind.
+    // The previous attempt's pipeline may have left red files in the tree, and
+    // the retry must start from the base exactly as the first did. It is needed:
+    // `runTestPipeline` resets only once it has a kept file, so an attempt that
+    // kept nothing leaves its writes behind.
     const prepared = await prepareTree(deps, { repoRoot, issue, wt, base, branch });
     if (prepared?.problem !== undefined)
       traceWarn(
@@ -397,12 +424,14 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     attempts += 1;
   }
   let final = attempts > 1 ? afterRetry(attempt.outcome) : attempt.outcome;
-  // The tree's own caveat, on whatever verdict is recorded. The preparation knows a submodule could not be
-  // supplied and the outcome otherwise would not: a `no-red-test` whose dropped-file line says `exited 4 without
-  // naming …` is a child reading an empty vendored directory, and the only way to tell that from a genuine red
-  // is the clause saying the submodule was never populated. It rides on `ok` too — a frozen test written
-  // against a tree with no vendored code is a claim the next step must discount. A `budget` stop keeps its
-  // canonical sentence (`afterRetry`), so the caveat folds in wherever the reason is free.
+  // The tree's own caveat, on whatever verdict the step records. The preparation knows
+  // a submodule could not be supplied and the outcome otherwise would not: a `no-red-test`
+  // whose dropped-file line says `exited 4 without naming …` is the child reading an empty
+  // vendored directory, and the only way an operator can tell that apart from a genuine
+  // red is the clause that says the submodule was never populated. It rides on `ok` too,
+  // because a frozen test written against a tree with no vendored code behind it is a
+  // claim the next step has to be able to discount. A `budget` stop keeps its canonical
+  // sentence (see `afterRetry`), so the caveat is folded in wherever the reason is free.
   if (provisioning?.problem !== undefined && final.kind !== "budget")
     final = {
       ...final,
@@ -411,8 +440,9 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
         provisioning.problem,
       ]),
     };
-  // The same fold `build` makes and the same refusal `afterRetry` makes: a budget stop keeps its canonical
-  // sentence, so a waited round appends no wait clause to the reason the operator is taught to read.
+  // The same fold `build` makes, and the same refusal `afterRetry` makes: a budget
+  // stop keeps its canonical sentence, so a waited round does not append a wait
+  // clause to the one reason the operator is taught to read.
   const withWait =
     waitedMs === 0 || final.kind === "budget"
       ? final
@@ -423,16 +453,20 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
             providerWaitNote(waitedMs),
           ]),
         };
-  // ONE rule: the outcome carries the FLAT rows of EVERY attempt in order, whichever verdict survived. A retry
-  // is a second child and the step is one record, so keeping only the last attempt's rows would report one child
-  // where the run paid for two — and the dropped one is the expensive case, since a rejected child still spent
-  // its tokens. A budget verdict is no exception. `undefined` when nothing dispatched, so a step that paid for
-  // nothing records no key.
-  //
-  // The probe's disclosure comes last: the runner ran and refused the PROBE file, a fact about this step's
-  // filename and not a verdict on the issue, so it rides the reason without being mistaken for one. After every
-  // other clause so a decline or wait reads first — and clipped to the bound its writer enforces on itself, so
-  // the clause this step adds cannot widen someone else's reason.
+  // ONE rule: the step's outcome carries the FLAT rows of EVERY attempt, in
+  // order, whichever verdict survived. A retry is a second child and the step
+  // is one record, so a fold that kept only the last attempt's rows would
+  // report one child where the run paid for two — and the dropped one is the
+  // expensive case, since a child whose tests were rejected still spent its
+  // tokens. A budget verdict is no exception: its own attempt is the last
+  // dispatch, so the merge is its rows plus any earlier attempt's. `undefined`
+  // when no attempt dispatched, so a step that paid for nothing records no key.
+  // The probe's disclosure, last: the runner ran and refused the PROBE file, which
+  // is a fact about this step's filename and not a verdict about the issue, so it
+  // rides on the reason the step records and cannot be mistaken for one. Placed
+  // after every other clause so a decline or a wait still reads first — and clipped
+  // to the bound its writer enforces on itself, so the clause this step adds to
+  // someone else's reason can never be the thing that widens it.
   const disclosed =
     probeNote === undefined
       ? withWait
@@ -448,9 +482,10 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
 }
 
 /**
- * The rows of every dispatch the step paid for across both attempts, clipped to the validator's bound for ONE
- * outcome ({@link DISPATCHES_MAX_ROWS}) by keeping the TAIL: rows append in dispatch order, so the clip keeps
- * the child that decided the verdict and drops the earliest.
+ * The rows of every dispatch the step paid for, across both attempts, clipped
+ * to the validator's bound for ONE outcome ({@link DISPATCHES_MAX_ROWS}) by
+ * keeping the TAIL: rows are appended in dispatch order, so the clip keeps the
+ * child that actually decided the verdict and drops the earliest ones.
  */
 function mergedRows(all: DispatchUsageRow[][]): DispatchUsageRow[] | undefined {
   const rows = all.flat().slice(-DISPATCHES_MAX_ROWS);
