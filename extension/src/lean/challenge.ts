@@ -95,11 +95,9 @@ export interface ChallengeDeps {
 }
 
 /**
- * What `headSha` must return before any of it may be used: a git commit id.
- * Everything downstream — `rev-parse HEAD^`, `diff <sha> <sha>`, `show <sha>:<p>`
- * — reinterprets a value that is not one as a REF, so `"main"` or a ref name
- * coming back from `rev-parse` would silently retarget the whole round at a
- * different commit instead of failing.
+ * What `headSha` must return before any of it may be used: a git commit id. Everything downstream —
+ * `rev-parse HEAD^`, `diff <sha> <sha>`, `show <sha>:<p>` — reinterprets a non-id as a REF, so `"main"` coming
+ * back from `rev-parse` would silently retarget the whole round at another commit instead of failing.
  */
 const COMMIT_ID = /^[0-9a-f]{40}$/;
 
@@ -112,8 +110,8 @@ const CONTROL_CHARS = new RegExp(
 interface SpecRead {
   spec: PiSpec;
   /**
-   * The body it was parsed from, kept for the adversary's brief — the SAME
-   * fetch, never a second one (`lean/issue-prose.ts`).
+   * The body it was parsed from, kept for the adversary's brief — the SAME fetch, never a second one
+   * (`lean/issue-prose.ts`).
    */
   body: string;
 }
@@ -128,25 +126,21 @@ async function specOf(deps: ChallengeDeps, repoRoot: string, issue: number): Pro
   }
   const parsed = parsePiSpec(body);
   if (!parsed.ok) throw new ChallengeInfraError(`the issue's spec is unusable: ${parsed.reason}`);
-  // The SAME readiness judgement `specify` gates the run on, applied on re-read. The
-  // issue is editable while the run is going, so a spec that was ready at `ready` need
-  // not be ready now — and the round's whole claim is stated against these criteria. A
-  // spec that stops being well-formed cannot be adjudicated, so that is infrastructure,
-  // not a verdict.
+  // The SAME readiness judgement `specify` gates the run on, applied on re-read. The issue is editable while
+  // the run goes, so a spec ready at `ready` need not be ready now — and the round's claim is stated against
+  // these criteria. A spec that stops being well-formed cannot be adjudicated: infrastructure, not a verdict.
   const rules = readiness(parsed.spec);
   if (rules.length > 0)
     throw new ChallengeInfraError(`the issue's spec is not ready: ${rules.join("; ")}`);
   return { spec: parsed.spec, body };
 }
 
-// A round can end holding bytes nobody judged, and `verify` refuses a dirty tree:
-// reset to `ref` and provision again (`clean -fdx` takes the links, so the two are
-// one move), naming what went. The reset runs whether or not the tree was dirty: an
-// `empty` round committed nothing, so a HEAD above `ref` is the child's own unjudged
-// commit and it goes with it. Names come from `changedPaths` (git's `-z` status, the
-// only form surviving a space, quote or newline); one failing the boundary's path
-// rules or `handback.ts`'s control-character filter is dropped, not clipped, as the
-// reason reaches the issue as a public comment.
+// A round can end holding bytes nobody judged, and `verify` refuses a dirty tree: reset to `ref` and provision
+// again (`clean -fdx` takes the links, so the two are one move), naming what went. The reset runs whether or not
+// the tree was dirty: an `empty` round committed nothing, so a HEAD above `ref` is the child's own unjudged
+// commit and goes with it. Names come from `changedPaths` (git's `-z` status, the only form surviving a space,
+// quote or newline); one failing the boundary's path rules or `handback.ts`'s control-character filter is
+// dropped, not clipped, since the reason reaches the issue as a public comment.
 async function resetAndProvision(
   deps: ChallengeDeps,
   repoRoot: string,
@@ -155,15 +149,15 @@ async function resetAndProvision(
   branch: string,
 ): Promise<string> {
   const dirty = await changedPaths(deps.exec, wt);
-  // Read before the reset, and compared to `ref` rather than a fresh HEAD.
+  // Read before the reset and compared to `ref`, not a fresh HEAD.
   const head = await headSha(deps.exec, wt);
   const shown = [...new Set(dirty.map((e) => e.path))].filter(
     (p) => pathProblem(p) === undefined && !CONTROL_CHARS.test(p),
   );
   const clause = noteClause("discarded", shown);
-  // One outcome for the pair: a failed reset leaves a provision of a tree nobody
-  // cleaned, and `verify` refuses that dirty. (The budget stop below runs the two
-  // moves as two `try`s, each with its own message, and names nothing.)
+  // One outcome for the pair: a failed reset leaves a provision of a tree nobody cleaned and `verify` refuses
+  // that dirty. (The budget stop below runs the two moves as two `try`s, each with its own message, naming
+  // nothing.)
   let notes: readonly SubmoduleNote[] = [];
   try {
     notes = await resetWorktreeToBase(deps.exec, wt, ref, branch);
@@ -171,10 +165,9 @@ async function resetAndProvision(
   } catch (err) {
     throw new ChallengeInfraError(`could not reset the challenge tree: ${(err as Error).message}`);
   }
-  // A submodule the reset could not populate is said HERE, in the round's own reason,
-  // and not only in the trace: this is the step that pays an adversary to attack tests
-  // it may not be able to collect, so "the tree had no submodule at `vendor/x`" belongs
-  // beside the verdict rather than in another step's log.
+  // A submodule the reset could not populate is said HERE, in the round's own reason and not only the trace:
+  // this step pays an adversary to attack tests it may not be able to collect, so "the tree had no submodule at
+  // `vendor/x`" belongs beside the verdict, not in another step's log.
   const submodule = submoduleNoteClause(notes);
   return [
     dirty.length === 0 && head === ref ? "" : clause === "" ? "" : ` ${clause}`,
@@ -183,15 +176,15 @@ async function resetAndProvision(
 }
 
 /**
- * The tree, the head, and the two claims that must hold before a child is paid: this
- * worktree is ours at THIS commit, and the frozen contract still matches it.
+ * The tree, the head, and the two claims that must hold before a child is paid: this worktree is ours at THIS
+ * commit, and the frozen contract still matches it.
  *
- * Both are the checks `build` makes, from the same functions: an adversary is expensive
- * and proves neither, and paying one to attack an implementation whose tests were
- * quietly edited would report `none` — a certification from a tree nobody verified.
+ * Both are `build`'s checks from the same functions: an adversary is expensive and proves neither, and paying
+ * one to attack an implementation whose tests were quietly edited would report `none` — a certification from a
+ * tree nobody verified.
  *
- * `frozen` is passed IN rather than read here: the map is the step log's, and a
- * precondition that re-derived it would be a second reader of the record.
+ * `frozen` is passed IN rather than read here: the map is the step log's, and a precondition re-deriving it
+ * would be a second reader of the record.
  */
 async function assertTreeAndContract(
   deps: ChallengeDeps,
@@ -212,16 +205,15 @@ async function assertTreeAndContract(
     throw new ChallengeInfraError((err as Error).message);
   }
   const headBefore = await headSha(deps.exec, wt);
-  // Validate BEFORE the value reaches anything: it is the ref this step resets
-  // to, proves red against, and makes its commit on top of.
+  // Validate BEFORE the value reaches anything: it is the ref this step resets to, proves red against, and
+  // commits on top of.
   if (!COMMIT_ID.test(headBefore))
     throw new ChallengeInfraError(
       `HEAD is not a commit id: ${JSON.stringify(headBefore)} in ${wt}`,
     );
   try {
-    // `headMustBe = headBefore`: registered, on the run's branch, sitting at the
-    // head the frozen records were hashed at. Build passes the same pair for the
-    // same reason — a tree at any other commit is not this run's to write into.
+    // `headMustBe = headBefore`: registered, on the run's branch, at the head the frozen records were hashed
+    // at. Build passes the same pair — a tree at any other commit is not this run's to write into.
     await assertSpecifyWorktreeOwned(deps.exec, {
       repoRoot,
       wt,
@@ -229,8 +221,7 @@ async function assertTreeAndContract(
       branch,
       headMustBe: headBefore,
     });
-    // Non-empty and still hashing to its records at the head: the identical
-    // claim build refuses to build on, from the identical function.
+    // Non-empty and still hashing to its records at the head: the identical claim build refuses to build on.
     await assertFrozenIntact(deps.exec, wt, headBefore, frozen);
   } catch (err) {
     throw new ChallengeInfraError((err as Error).message);
@@ -246,19 +237,16 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   //    union of every `specify:ok` and `challenge:new-tests` the log carries, so
   //    a resumed run attacks the same tests a live one was shown.
   const frozen = frozenFromLog(ctx.steps);
-  // The same record, read per criterion: the file quota is a RUN-level bound, so
-  // what an earlier round already froze for a criterion counts against it and a
-  // second challenge round cannot double the cap by being a second call. A
-  // resumed run seeds from what a crashed one froze, exactly as `frozen` above
-  // does. Union of `specify:ok` and `challenge:new-tests`, same log reader.
+  // The same record read per criterion: the file quota is a RUN-level bound, so what an earlier round froze
+  // for a criterion counts against it and a second challenge round cannot double the cap by being a second
+  // call. A resumed run seeds from what a crashed one froze, as `frozen` above does. Same log reader.
   const frozenByCriterion = testsFromLog(ctx.steps);
   const branch = specifyBranch(ctx.run.branch, issue);
   const wt = specifyWorktreePath(repoRoot, issue);
   const base = ctx.run.baseSha;
-  // Everything below — ownership, the frozen check, the reset and the red proof — is
-  // stated against the CURRENT head, not the base: the base does not have the
-  // implementation, and a test that is red there proves nothing about code that does
-  // not exist there.
+  // Everything below — ownership, the frozen check, the reset, the red proof — is stated against the CURRENT
+  // head, not the base: the base lacks the implementation, and a test red there proves nothing about code that
+  // does not exist there.
   const headBefore = await assertTreeAndContract(deps, {
     repoRoot,
     wt,
@@ -267,19 +255,16 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
     frozen,
   });
 
-  // 2. The config and the runner, BEFORE the child is paid: without a template
-  //    every submitted file proves nothing, so the round could only ever report
-  //    `none` — which is not a verdict about the code, it is a missing setting.
+  // 2. Config and runner BEFORE the child is paid: without a template every submitted file proves nothing, so
+  //    the round could only report `none` — not a verdict about the code, a missing setting.
   const config = await deps.loadConfig(repoRoot, base).catch((err: unknown) => {
     throw new ChallengeInfraError(`could not load the project config: ${(err as Error).message}`);
   });
   const { spec, body: issueBody } = await specOf(deps, repoRoot, issue);
   const wanted = testCriteria(spec);
-  // ONE binding, ONE refusal: `runnerTemplate` is the string the runner needs and
-  // `testRunner` is the same string shown to the adversary, so there is exactly
-  // one place that decides it is missing. A round whose files nobody executed
-  // could only ever report `none`, which is not a verdict about the code — it is
-  // a missing setting wearing one, so the refusal names the setting.
+  // ONE binding, ONE refusal: `runnerTemplate` is the string the runner needs and `testRunner` the same string
+  // shown to the adversary, so exactly one place decides it is missing. A round whose files nobody executed can
+  // only report `none` — a missing setting wearing a verdict, so the refusal names the setting.
   const runnerTemplate: string | undefined = config.verify.test;
   const testLocation: TestLocation | undefined = testLocationOf(config.verify);
   if (runnerTemplate === undefined)
@@ -291,8 +276,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   const budget = armBudget(budgetFor(config, "challenge"));
   if (budget.warning !== undefined)
     traceWarn(`lean challenge #${String(issue)}: ${budget.warning}`);
-  // The adversary's cost row rides on the throw and `settle` records it (see
-  // `build.ts`).
+  // The adversary's cost row rides on the throw and `settle` records it (see `build.ts`).
   const [adversary, row] = await dispatchAdversary(deps.dispatch, {
     issue,
     spec,
@@ -308,10 +292,9 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   const rows = [row];
   const read = readDispatched(adversary);
   if ("stop" in read) {
-    // The stop returned before the pipeline, so nothing has reset what the child
-    // wrote. Both moves are UNCONDITIONAL (`clean -fdx` takes the dependency
-    // links, so even a clean-looking tree needs them rebuilt) and each keeps its
-    // own message: a failed reset and a failed provision are different repairs.
+    // The stop returned before the pipeline, so nothing has reset what the child wrote. Both moves are
+    // UNCONDITIONAL (`clean -fdx` takes the dependency links, so even a clean-looking tree needs them rebuilt)
+    // and each keeps its own message: a failed reset and a failed provision are different repairs.
     try {
       await resetWorktreeToBase(deps.exec, wt, headBefore, branch);
     } catch (err) {
@@ -342,9 +325,8 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
       branch,
       headBefore,
       runnerTemplate,
-      // The round's claim is ONE red edge case, not a red for every criterion:
-      // a finding for AC1 is worth freezing even when AC2 has none. `specify`
-      // passes `"all-criteria"` and keeps its refusal; this step must not.
+      // The round's claim is ONE red edge case, not a red per criterion: a finding for AC1 is worth freezing
+      // even when AC2 has none. `specify` passes `"all-criteria"` and keeps its refusal; this step must not.
       coverage: "any-red",
       wanted: wanted.map((c) => c.id),
       extract: extractSubmitTests,
@@ -353,28 +335,23 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
           spec,
           exists: (rel) => existsSync(path.join(wt, rel)),
           fileProblem: (rel) => fileProblem(wt, rel),
-          // The refusal that keeps the adversary out of the contract: a path the
-          // run already froze is not its to replace, whatever the prompt said.
-          // Checked on the NORMALISED path, so `./tests//AC1-retry.test.sh`
-          // cannot slip past as a name the set does not contain.
+          // The refusal keeping the adversary out of the contract: a path the run froze is not its to replace,
+          // whatever the prompt said. On the NORMALISED path, so `./tests//AC1-retry.test.sh` cannot slip past
+          // as a name the set does not contain.
           frozenPaths: new Set(Object.keys(frozen)),
-          // The same newness rule as `specify`, judged against the same BASE:
-          // an edge case the adversary did not write is not an edge case, and
-          // the base is where a file that predates the run can be seen for
-          // what it is. At the head every test of the run is present, so the
-          // head cannot answer this question.
+          // The same newness rule as `specify` against the same BASE: an edge case the adversary did not write
+          // is not one, and the base is where a pre-existing file shows for what it is. At the head every test
+          // of the run is present, so the head cannot answer this.
           existsAtBase: (rel) => existsInCommit(deps.exec, repoRoot, base, rel),
-          // Same size/quota rules as `specify`: an edge case of 1,000 lines is
-          // not an edge case, and one criterion does not get four files ACROSS
-          // THE RUN — hence the seed, so files the run already froze fill the
-          // quota rather than a fresh call of two more per round.
+          // Same size/quota rules as `specify`: a 1,000-line edge case is not one, and a criterion does not
+          // get four files ACROSS THE RUN — hence the seed, so files the run froze fill the quota rather than
+          // a fresh allowance per round.
           wt,
           frozenByCriterion,
           ...(testLocation === undefined ? {} : { testLocation }),
         }),
-      // Provisioning is `challenge`'s own call, and the `prepare` the pipeline
-      // re-runs after its reset is the same one: one code path builds the
-      // dependency links a clean just removed, whether the tree was made here or
+      // Provisioning is `challenge`'s own call and the `prepare` the pipeline re-runs after its reset is the
+      // same one: one code path builds the dependency links a clean removed, whether the tree was made here or
       // survived a crash.
       prepare: () =>
         ensureSpecifyWorktreeWithProvision(deps.exec, {
@@ -384,8 +361,8 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
           branch,
         }),
       commitMessage: `test: challenge tests for #${issue}`,
-      // The same gate `specify` applies: an adversary's new file is frozen on the
-      // same terms, and a file `build` may not edit is unwinnable whoever wrote it.
+      // The same gate `specify` applies: an adversary's file is frozen on the same terms, and a file `build`
+      // may not edit is unwinnable whoever wrote it.
       ...(config.verify.freezeCheck === undefined
         ? {}
         : { freezeCheck: config.verify.freezeCheck }),
@@ -394,11 +371,10 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
     { toolUses },
   );
 
-  // The one exit that never reached the pipeline's own reset. The sweep goes back
-  // to `headBefore`, not to a re-read HEAD: an `empty` round committed NOTHING, so
-  // a commit above it is the child's own unjudged work and it is discarded too.
-  // A committed round needs no sweep — step 3 of `runTestPipeline` resets the tree
-  // and writes back only the bytes it proved red — and `uncovered` is the throw.
+  // The one exit that never reached the pipeline's own reset. The sweep goes back to `headBefore`, not a
+  // re-read HEAD: an `empty` round committed NOTHING, so a commit above it is the child's unjudged work and is
+  // discarded too. A committed round needs no sweep — `runTestPipeline` resets and writes back only what it
+  // proved red — and `uncovered` is the throw.
   const swept =
     pipeline.kind === "empty"
       ? await resetAndProvision(deps, repoRoot, wt, headBefore, branch)
@@ -412,21 +388,18 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
       reason: pipeline.reason,
       dispatches: rows,
     };
-  // Every pipeline kind is named here, deliberately: `uncovered` is unreachable
-  // under `"any-red"` (that rule never returns it), and a `switch` that fell
-  // through to `none` would let a future verdict kind the pipeline can return
-  // be reported as "the adversary found nothing". Each kind gets its own line
-  // so adding one is a type error here rather than a silent certification.
+  // Every pipeline kind is named here deliberately: `uncovered` is unreachable under `"any-red"` (that rule
+  // never returns it), and a `switch` falling through to `none` would let a future verdict kind be reported as
+  // "the adversary found nothing". Each kind gets its own line so adding one is a type error, not a silent
+  // certification.
   if (pipeline.kind === "uncovered")
     throw new ChallengeInfraError(
       `the challenge pipeline reported an uncovered criterion, which its coverage rule cannot produce: ${pipeline.reason}`,
     );
-  // Nothing was proved red against the head — either no file survived the
-  // boundary, or every one of them the builder already handles. Both say the
-  // same thing to the machine: the round found no gap, so the run goes to verify
-  // with the contract it already had and nothing committed. NOT an error, and
-  // the reason has to say so plainly enough for an operator to tell it apart
-  // from a round that was never run.
+  // Nothing was proved red against the head — no file survived the boundary, or the builder handles every
+  // one. Both say the same to the machine: the round found no gap, so the run goes to verify with the contract
+  // it had and nothing committed. NOT an error, and the reason must say so plainly enough to tell apart from a
+  // round that never ran.
   return { kind: "none", reason: pipeline.reason + swept, dispatches: rows };
 }
 
@@ -446,16 +419,15 @@ export function challengeDeps(headless: boolean): ChallengeDeps {
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
-        // Forwarded so the ceiling binds the child, `budgetTurns` included: it is the
-        // turns ceiling read as the denominator of the budget-progress steer, and a seam
-        // that forwards the arms key by key must forward that one too or the adversary
-        // is killed at its ceiling never told where it stood.
+        // Forwarded so the ceiling binds the child, `budgetTurns` included: the turns ceiling is the
+        // denominator of the budget-progress steer, and a seam forwarding arms key by key must forward it too
+        // or the adversary is killed at its ceiling never told where it stood.
         childBoundMs: o.childBoundMs,
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,
-        // The budget's kill goes through `killProcessTree`, which only reaches
-        // the child's tool tree when the child leads its own group.
+        // The budget's kill goes through `killProcessTree`, reaching the child's tool tree only when the child
+        // leads its own group.
         processGroup: true,
         ...leanChildOpts(headless),
       }),
