@@ -66,7 +66,9 @@ const PYTEST_NO_COLLECTOR = 4;
 /**
  * What this probe accepts, and nothing else. Both say the runner started, parsed the file and reported on it
  * — 0 is "ran, nothing to say", 5 is pytest's "collected 0 items". The status decides, NOT the proof's
- * classification: `runTestFile` calls a non-zero exit that named the file `red`. Nothing speaks of flavour.
+ * classification: `runTestFile` calls a non-zero exit that named the file `red`, and a pytest collection error
+ * prints the file it could not collect, so the very failure this probe exists to catch would arrive classified
+ * red. Nothing here speaks of the runner's flavour — only which exit statuses mean "nothing was judged".
  */
 function probeHealthy(proof: Proof): boolean {
   return proof.kind === "green" || (proof.kind !== "infra" && proof.code === PYTEST_NO_TESTS);
@@ -230,7 +232,9 @@ export type RunProbeFile = (file: string) => Promise<Proof>;
  *
  * The `try` opens as soon as the bytes exist. A `finally` that starts after the runner call
  * leaves a throw from the run itself with the probe sitting in the worktree, and "removed on
- * every path" is the claim this step makes about a tree it does not own.
+ * every path" is the claim this step makes about a tree it does not own. `seams.runFile` exists
+ * so that claim is observable: {@link runTestFile} never throws by contract and folds every exec
+ * rejection into a classified `Proof`, so no rejection an exec can produce reaches this `finally`.
  */
 async function runProbeAt(
   exec: ExecFn,

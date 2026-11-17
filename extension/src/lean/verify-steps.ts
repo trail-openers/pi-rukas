@@ -115,7 +115,8 @@ export const FROZEN_TIMEOUT_HEAD = "frozen tests timed out (the head's code may 
  *
  * A wall-clock kill is a RED here: every file was proved red against the base before `runTestPipeline`
  * committed it, so a head that now hangs it is the code under build failing. The other `infra` shapes stay
- * throws — an un-started runner, an empty template and an output flood all observed nothing.
+ * throws — an un-started runner, an empty template and an output flood all observed nothing. A flood is not
+ * a hang.
  */
 export async function frozenTestFailure(
   frozen: Record<string, string>,
@@ -178,7 +179,9 @@ export async function frozenTestFailure(
  * Run one project verify tier as a shell command in the worktree.
  *
  * `env` is the scrubbed child env: the driver's own knobs are stripped so a headless runner's
- * configuration cannot flip behaviour inside the project's tests. `killGroup` makes the timeout real.
+ * configuration cannot flip behaviour inside the project's tests. `killGroup` makes the timeout real: a build
+ * that spawns a grandchild holding stdout keeps the pipe open past Node's own kill, which is why the whole
+ * process group is killed.
  */
 export async function runTier(
   name: string,

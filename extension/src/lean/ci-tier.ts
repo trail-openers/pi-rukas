@@ -73,8 +73,11 @@ export async function tierFailure(
 }
 
 /**
- * `gh pr checks` exits **8** while checks are pending, and the shared executor rejects on any non-zero exit
- * — without this the pending reply, the whole point of the poll, would read as an infra throw.
+ * `gh pr checks` exits **8** while checks are pending (gh 2.103.3: `8: Checks pending`), and the shared
+ * executor rejects on any non-zero exit — without this the pending reply, the whole point of the poll, would
+ * read as an infra throw. stdout still carries the rows, so the exit is tolerated as a signal about WHERE the
+ * checks are, not about whether the read worked. The tolerance is a `gh` contract and stays gh-only: `glab`
+ * has no such code, so a failed glab read is the infra throw it is.
  */
 const GH_CHECKS_PENDING_EXIT = 8;
 
@@ -239,6 +242,9 @@ async function readForge(
  * The two bounds are SEQUENTIAL and separate: the wait gets the `ci` budget's minutes and the full tier
  * keeps its own afterwards ({@link ciTierBudgetMs}). Still pending when the wait expires is a handback,
  * never a red.
+ *
+ * On GitLab the same arms serve the composed readiness: `UNKNOWN` (`checking`) is the one retryable
+ * readiness and waits on this bound; `DIRTY` is red with the composition's own detail.
  */
 export async function checksRedReason(
   deps: CiDeps,

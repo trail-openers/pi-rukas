@@ -77,8 +77,8 @@ export async function listSubmodules(
     // The two forms capture at DIFFERENT group numbers, so the answer is read by name as well as position.
     const rawName = hit?.[1] ?? hit?.[2] ?? hit?.groups?.name;
     const rawValue = hit?.[3] ?? hit?.groups?.value;
-    // Two alternatives: `--get-regexp` prints a name containing `=` or a space UNQUOTED and a
-    // tab-containing one C-quoted, so neither branch alone reads every key. The unquoted branch cannot be
+    // Two alternatives: `--get-regexp` prints a name containing `=` or a space UNQUOTED (measured, git 2.53)
+    // and a tab-containing one C-quoted, so neither branch alone reads every key. The unquoted branch cannot be
     // `(.*)` either: `git config` answers a `.`-bearing name as its own section, so a section named
     // `x.path` would read as the name `x.path <path>`.
     // One refusal for both ways a key fails to be a name and a path — with the base's own line verbatim,
@@ -91,7 +91,7 @@ export async function listSubmodules(
       );
     // The name is not a label: it is the KEY of the `-c submodule.<name>.url=…` the seeding names its
     // source with, and git splits a command-line assignment at its FIRST `=`. A name carrying one sets a key
-    // git never consults, so `submodule update` falls back to the base's URL while
+    // git never consults (measured, git 2.53), so `submodule update` falls back to the base's URL while
     // `protocol.file.allow=always` on the same call licenses the transport — the offline rule failing OPEN
     // to a network fetch with every case green.
     if (/[="\s]/u.test(name))

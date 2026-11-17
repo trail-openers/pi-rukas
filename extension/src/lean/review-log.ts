@@ -18,7 +18,7 @@ import { FIXER_ROLE } from "./step-budget.ts";
 
 /**
  * The epoch floor a fix tree's id must clear: below 1e12 a value is a duration somebody measured, not a
- * stamp naming a tree.
+ * stamp naming a tree. Shared with the validator's `FIX_RUN_ID` shape rule in `state-dispatches.ts`.
  */
 const FIX_EPOCH_FLOOR_MS = 1e12;
 

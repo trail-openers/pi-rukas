@@ -115,8 +115,10 @@ export function validateTestGlob(glob: string): string | undefined {
  * it cannot import, so the probe's NAME (not its content) decides whether the runner reaches the point
  * where it can report. See `specify-preflight.ts`.
  *
- * The comparison folds CASE because the question is which LANGUAGE the tests are written in. `.pyi` is a
- * stub declaration, not an executable test module.
+ * The comparison folds CASE because the question is which LANGUAGE the tests are written in: a case-sensitive
+ * read pushes a `test_*.PY` repo onto the hidden extensionless probe its own runner cannot import, and the run
+ * hands back for a reason that is this step's filename rather than the project's toolchain. `.pyi` is a stub
+ * declaration, not an executable test module.
  */
 export function globNamesPythonFiles(glob: string): boolean {
   const star = glob.indexOf("*");

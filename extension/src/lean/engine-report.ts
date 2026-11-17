@@ -36,11 +36,12 @@ export type HandbackHandler = (ctx: {
  * per-call git and forge ceilings on the reporting path sum past it, so a bound equal to the allowance
  * cuts a report in which nothing hung and loses the rewind. Hence allowance × (1 +
  * {@link REPORT_BOUND_HEADROOM_RATIO}), which still fires strictly before the grace. The headroom is a
- * RATIO of the allowance because the allowance is the knob an operator moves.
+ * RATIO of the allowance because the allowance is the knob an operator moves
+ * (`PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`).
  *
- * The limit on it is the child-bound grace, past which the run is killed and the kill — not the
- * handback — is what gets recorded. `test-lean-report-bound-ceiling.ts` holds the bound strictly
- * inside that grace.
+ * The limit on it is the child-bound grace (`PI_ENSEMBLE_CHILD_BOUND_GRACE_MS`), past which the run is
+ * killed and the kill — not the handback — is what gets recorded. `test-lean-report-bound-ceiling.ts` holds
+ * the bound strictly inside that grace.
  */
 export function handoffReportBoundMs(): number {
   return Math.round(handoffAllowanceMs() * (1 + REPORT_BOUND_HEADROOM_RATIO));

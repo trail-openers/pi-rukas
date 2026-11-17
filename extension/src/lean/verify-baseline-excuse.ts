@@ -13,6 +13,7 @@
  * already red at base, renumbered TAP output, a moved timing line — is a hand-back, never a green. Both
  * sides must be non-empty, every head line must equal a base line verbatim, the trees must be two trees,
  * and a base red shaped like a missing dependency tree is the probe's provisioning, not the commit's.
+ * "Could not tell" is never an excuse: every refusal leaves the caller keeping the hand-back.
  */
 
 import { realpathSync } from "node:fs";

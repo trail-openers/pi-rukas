@@ -16,8 +16,9 @@
  *   3. **A gate that cannot fail is not green.** Graded by `gradeGlJobState`: only a blocking job's
  *      `success` passes; `skipped`, `manual` and `allow_failure: true` are refused, and an unseen state
  *      waits rather than passing.
- *   4. **The jobs are the head's jobs, and all of them.** The adapter's `prChecks` reaches a pipeline
- *      through the MR's pipelines LIST, so its rows can belong to another commit. The step reads the jobs of
+ *   4. **The jobs are the head's jobs, and all of them.** The adapter's own `prChecks` is off this path
+ *      because it reaches a pipeline through the MR's pipelines LIST and so its rows carry no commit — they
+ *      can belong to another one. The step reads the jobs of
  *      the pipeline **the MR reply itself named** and keeps them only when that pipeline reports the head as
  *      its own commit. A list known to continue is refused, not graded.
  *

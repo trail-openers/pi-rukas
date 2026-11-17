@@ -122,8 +122,9 @@ function releaser(file: string, own: string): () => void {
     } catch {
       return;
     }
-    // "Still us", not "still this pid" — a recycled pid is what the identity's start time tells apart.
-    // Compared against the very bytes we linked.
+    // "Still us", not "still this pid" — a recycled pid is what the identity's start time tells apart, and
+    // deleting a lock that now names somebody else would release a run that is not ours. Compared against the
+    // very bytes we linked.
     if (current.trim() !== own.trim()) return;
     try {
       unlinkSync(file);

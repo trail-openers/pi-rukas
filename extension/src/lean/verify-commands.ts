@@ -16,8 +16,10 @@
  *      `verify.test` through `runTestFile` in **argv form** — no shell ever parses it.
  *   2. **A `command` names an EXISTING test, unchanged since the base — in the commit AND on disk.**
  *      `git ls-tree` answers for both trees and `git hash-object` for the working file, since
- *      `--assume-unchanged` keeps `git status` quiet about a changed blob. Checking HEAD alone would let a
- *      developer author a destructive script, exit 0, and record it as preservation.
+ *      `--assume-unchanged` keeps `git status` quiet about a changed blob. Checking the working tree with
+ *      `existsSync` FOLLOWS symlinks, which is why the on-disk check exists alongside the tree reads; and
+ *      checking HEAD alone would let a developer author a destructive script, exit 0, and record it as
+ *      preservation.
  *   3. **Not-runnable is not a verdict.** A refused criterion is absent from the record — no throw, no red
  *      — with its reason in `notRunnable[id]`, treated like `manual`. As red it punishes the developer for
  *      the spec's defect; as passed it is the lie.
@@ -220,8 +222,8 @@ export async function commandCriteriaOutcome(
       trace(`lean/verify: command criterion ${c.id} not run — ${treeProblem}`);
       continue;
     }
-    // The frozen tier's on-disk check: a link or a path whose realpath leaves the worktree is refused
-    // before a byte reaches the runner.
+    // The frozen tier's on-disk check: a symlink, a hard link or a path whose realpath leaves the worktree
+    // is refused before a byte reaches the runner.
     const diskProblem = fileProblem(wt, rel);
     if (diskProblem !== undefined) {
       notRunnable[c.id] = reasonPath(diskProblem);

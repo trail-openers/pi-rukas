@@ -4,7 +4,9 @@
  *
  * Every field these print comes from OUTSIDE the run: criterion text is what the issue author typed, a verify
  * reason is the tail of a build log, a gate label is a reviewer's wording. Printed raw, a `### heading` inside
- * any of them is a heading of the comment — or, in a fixer's brief, a prompt section the step never wrote.
+ * any of them is a heading of the comment — or, in a fixer's brief, a prompt section the step never wrote, and
+ * a ``` inside a reason closes the fence the poster opened. Public-text discipline is about not leaking; this
+ * is about not being spoofed.
  *
  * Three shapes because the fields need different guarantees: a reason is multi-line prose that stays readable
  * (fenced); a cell or title stays ONE line (every control character goes); a value inside backticks stays one

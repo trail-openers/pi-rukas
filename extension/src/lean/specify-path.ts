@@ -62,7 +62,8 @@ export function normaliseRelPath(p: string): string {
  *   - a REGULAR file, so a fifo, socket, device or directory is refused;
  *   - `nlink === 1`, so a HARD LINK cannot impersonate a file of the worktree. A hard link is
  *     not a symlink — `lstat` sees an ordinary file and `realpath` stays inside the tree — so
- *     this is the only check that catches it;
+ *     this is the only check that catches it, and the bytes it shares with an outside file would
+ *     otherwise be frozen and committed;
  *   - `realpath` of the file inside `realpath` of the worktree, so no component escapes through
  *     a linked parent.
  */
