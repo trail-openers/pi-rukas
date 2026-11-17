@@ -1,18 +1,16 @@
 /**
  * lean/transitions — the counter arithmetic behind every edge in the table.
  *
- * Split from `machine.ts` at the 500-line cap `test-file-size-limit.ts` enforces, so the table
- * stays one function in one file; how a transition computes the next counters is a separate
- * concern. The two rules worth reading carefully:
+ * Split from `machine.ts` at the 500-line cap `test-file-size-limit.ts` enforces, so the table stays one
+ * function in one file. The two rules worth reading carefully:
  *
- *   - `viaBuild` spends exactly one build attempt, and an attempt is a round DISPATCHED: only
- *     an edge whose destination is `build` may call it. An edge LEAVING build (to `challenge`,
- *     to `verify`) bills nothing, since the round was paid for on the way in. The one edge that
- *     leaves build and bills is `build + exhausted`, which takes the run straight to `publish`:
- *     a run that cannot build any more still gets published.
- *   - the `draft` marker is a THREE-way parameter, not a boolean. `undefined` passes the run's
- *     current value through — what lets a CI fix round re-enter build without clearing the red
- *     a verify step recorded. A boolean would collapse "do not opine" into "clear it".
+ *   - `viaBuild` spends exactly one build attempt, and an attempt is a round DISPATCHED: only an edge whose
+ *     destination is `build` may call it. An edge LEAVING build bills nothing. The one edge that leaves
+ *     build and bills is `build + exhausted`, which takes the run straight to `publish`: a run that cannot
+ *     build any more still gets published.
+ *   - the `draft` marker is a THREE-way parameter, not a boolean. `undefined` passes the run's current
+ *     value through — what lets a CI fix round re-enter build without clearing the red a verify step
+ *     recorded. A boolean would collapse "do not opine" into "clear it".
  */
 
 import type { LeanRun, LeanState, RunCounters } from "./state.ts";
@@ -37,9 +35,8 @@ export function viaBuild(
     counters: {
       ...run.counters,
       buildAttempts: run.counters.buildAttempts + 1,
-      // `undefined` is a pass-through: the transition does not opine on the marker.
-      // `patch` is applied last so a transition that sets both a marker and a flag stays
-      // consistent rather than having one silently overwrite the other.
+      // `undefined` is a pass-through: the transition does not opine on the marker. `patch` is applied
+      // last so a transition that sets both a marker and a flag stays consistent.
       ...(draft === undefined ? {} : { draft }),
       ...patch,
     },

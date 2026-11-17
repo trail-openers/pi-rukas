@@ -1,28 +1,25 @@
 /**
  * lean/verify-baseline — telling a tier the run broke from one that was already red.
  *
- * `verify` routes every tier `red` into a build round, which is only right when the tier was green
- * before the change existed. Two questions, both asked only AFTER a tier has gone red (a green tier
- * pays nothing, and a probe on the happy path would double every verify):
+ * `verify` routes every tier `red` into a build round, which is only right when the tier was green before the
+ * change existed. Two questions, both asked only AFTER a tier has gone red (a green tier pays nothing):
  *
- *   - **a re-run at HEAD** — {@link confirmTierRed}: green on the second run means the first observed
- *     nothing stable, so the tier counts green and the flake rides in the PR body's reason;
- *   - **a probe at the run's base commit** — {@link probeTierAtBase}: the run's frozen tests' BYTES
- *     compared against what the run froze, then the tier's command once, both in a throwaway detached
- *     worktree at `baseSha`. A base that holds other bytes at the frozen paths AND fails the tier has
- *     a red gate the change did not author, so the caller hands the run back BEFORE any build round.
+ *   - **a re-run at HEAD** — {@link confirmTierRed}: green on the second run means the first observed nothing
+ *     stable, so the tier counts green and the flake rides in the PR body's reason;
+ *   - **a probe at the run's base commit** — {@link probeTierAtBase}: the run's frozen tests' BYTES compared
+ *     against what the run froze, then the tier's command once, both in a throwaway detached worktree at
+ *     `baseSha`. A base that holds other bytes at the frozen paths AND fails the tier has a red gate the change
+ *     did not author, so the caller hands the run back BEFORE any build round.
  *
- * The probe runs at `baseSha` and never at HEAD: probing at HEAD would let the builder's own commit
- * decide what counts as pre-existing.
+ * The probe runs at `baseSha` and never at HEAD: probing at HEAD would let the builder's own commit decide what
+ * counts as pre-existing.
  *
- * Both are settled by the child's exit code, read through {@link tierExitCode} — the verdict must be a
- * value, never an absence. A kill, an overflow or an un-startable command observed nothing: that is
- * `unknown`, never a colour, and it never excuses a tier. Only a base that cannot be checked out at
- * all is `unusable`, which the caller turns into a throw.
+ * Both are settled by the child's exit code, read through {@link tierExitCode} — the verdict must be a value,
+ * never an absence. A kill, an overflow or an un-startable command observed nothing: that is `unknown`, never a
+ * colour. Only a base that cannot be checked out at all is `unusable`, which the caller turns into a throw.
  *
- * The frozen tests inside the probe are the exemption's boundary: a base that passes them has no
- * pre-existing red anywhere, and excusing the tier over that would delete the run's only contract
- * check.
+ * The frozen tests inside the probe are the exemption's boundary: a base that passes them has no pre-existing
+ * red anywhere, and excusing the tier over that would delete the run's only contract check.
  */
 
 import { trace, traceWarn } from "../trace.ts";
@@ -60,10 +57,8 @@ export type BaseProbe =
   | { status: "unusable"; reason: string };
 
 /**
- * The exit code a tier run ended with, or `undefined` when it exited 0 — the one place this step
- * decides pass-from-fail, on the child's status rather than on which side of a promise a value
- * landed. A killed, timed-out, overflowed or un-startable run has no exit code and no verdict:
- * the caller asks {@link tierObserved} first.
+ * The exit code a tier run ended with, or `undefined` when it exited 0 — the one place this step decides
+ * pass-from-fail, on the child's status rather than on which side of a promise a value landed.
  */
 export function tierExitCode(ran: unknown): number | undefined {
   const code = (ran as { code?: unknown } | undefined)?.code;
@@ -99,12 +94,10 @@ async function tierCode(
 /**
  * Did the tier's second run at HEAD agree with its first?
  *
- * `false` — the re-run exited 0 — is the flake: the caller counts the tier green and records it.
- * `true` is a second red, and also a re-run that observed nothing (a kill, an overflow, a command
- * that never started): an excuse needs two runs that saw the work. "Exited 0" is the ONLY answer
- * that excuses, and it is asked for positively — the executor's kill, timeout, overflow and
- * `ENOENT` rejections all carry a non-numeric `code`, so an absence test would report a green on a
- * tier nobody saw pass. {@link classifyBaseRun} asks the same question the same way.
+ * `false` — the re-run exited 0 — is the flake: the caller counts the tier green and records it. `true` is a
+ * second red, and also a re-run that observed nothing. "Exited 0" is the ONLY answer that excuses, and it is
+ * asked for positively — the executor's kill, timeout, overflow and `ENOENT` rejections all carry a non-numeric
+ * `code`. {@link classifyBaseRun} asks the same question the same way.
  */
 export async function confirmTierRed(opts: {
   name: string;
@@ -122,15 +115,12 @@ export type BaseProbeOutcome = BaseProbe & { stream?: string };
 /**
  * What one tier's command does at the run's base commit, in a throwaway checkout.
  *
- * The tree is a SIBLING of the repo, never under it: `verify` scans the whole repo with
- * `git status --porcelain --untracked-files=all` before and after every run, so a throwaway
- * inside `repoRoot` is itself untracked dirt and the probe would hand the run back for its
- * own tree. It is removed in a `finally` and before the add: a registration a killed run left
- * behind makes the next `git worktree add` at this path refuse.
+ * The tree is a SIBLING of the repo, never under it: `verify` scans the whole repo with `git status --porcelain
+ * --untracked-files=all` before and after every run, so a throwaway inside `repoRoot` is itself untracked dirt.
+ * It is removed in a `finally` and before the add.
  *
- * The answer carries the base run's COMBINED stream (`stream`) beside its colour: the caller
- * decides from those bytes whether the base NAMED the head run's failures, and the tree is
- * gone by the time it reads them.
+ * The answer carries the base run's COMBINED stream (`stream`) beside its colour: the caller decides from those
+ * bytes whether the base NAMED the head run's failures, and the tree is gone by the time it reads them.
  */
 export async function probeTierAtBase(opts: {
   repoRoot: string;
@@ -172,19 +162,17 @@ export async function probeTierAtBase(opts: {
     };
   }
   try {
-    // A bare worktree holds tracked files only, so a tier needing a dependency tree would fail
-    // every command in it — which says nothing about the base. Symlinks only (`linkShareableDeps`,
-    // never `provisionWorktree`): the project's `.pi/worktree-setup` is arbitrary code and must
-    // never run in a throwaway directory.
+    // A bare worktree holds tracked files only, so a tier needing a dependency tree would fail every command
+    // in it — which says nothing about the base. Symlinks only (`linkShareableDeps`, never
+    // `provisionWorktree`): the project's `.pi/worktree-setup` is arbitrary code.
     await linkShareableDeps(exec, repoRoot, abs).catch(() => undefined);
-    // The contract first: a tier is only excused over a run whose frozen tests the base ALSO fails.
-    // Their verdicts are READ here, never re-run: `baseSha` predates the run's acceptance tests, so
-    // running them there would report the runner's "no such file" as a frozen test still failing.
+    // The contract first: a tier is only excused over a run whose frozen tests the base ALSO fails. Their
+    // verdicts are READ here, never re-run: `baseSha` predates the run's acceptance tests.
     let contractEstablished = false;
     if (Object.keys(opts.frozen).length > 0) {
       const contract = await baseCarriedFrozen(exec, repoRoot, baseSha, opts.frozen, hostEnv);
-      // Whether the probe could READ the run's frozen bytes: it decides nothing about the contract's
-      // colour, but it decides what the tier's own output may be read as below.
+      // Whether the probe could READ the run's frozen bytes: it decides nothing about the contract's colour,
+      // but it decides what the tier's own output may be read as below.
       contractEstablished = contract.kind !== "carries-nothing";
       if (contract.kind === "carries-nothing")
         return {
@@ -217,20 +205,16 @@ export async function probeTierAtBase(opts: {
 }
 
 /**
- * What the base commit holds at the run's frozen paths — the base's own recorded state.
+ * What the base commit holds at the run's frozen paths — the base's own recorded state. Read as the base's
+ * BYTES (`git show <base>:<path>`) and compared against what the run froze. Three answers:
  *
- * Read as the base's BYTES (`git show <base>:<path>`) and compared against what the run
- * froze. Three answers, because they mean three different things:
- *
- *   - `carries-nothing` — the base has none of these files (the ordinary answer: the run
- *     authors its contract during the run). NOT a colour: a mainline that never carried the
- *     test did not author a red gate.
- *   - `red` — the base holds a path the run froze with bytes that are NOT the frozen ones.
+ *   - `carries-nothing` — the base has none of these files (the ordinary answer). NOT a colour: a mainline that
+ *     never carried the test did not author a red gate;
+ *   - `red` — the base holds a path the run froze with bytes that are NOT the frozen ones;
  *   - `green` — the base already holds the frozen bytes, so this run's red is its own.
  *
- * A read that fails outright is `carries-nothing` too — both leave the probe with nothing to
- * judge. They stay distinguishable where it matters: only git's own exit-128 "does not exist"
- * wording reads as absent, so an executor timeout or overflow never becomes git's answer.
+ * A read that fails outright is `carries-nothing` too. Only git's own exit-128 "does not exist" wording reads
+ * as absent, so an executor timeout or overflow never becomes git's answer.
  */
 async function baseCarriedFrozen(
   exec: VerifyExec,
@@ -246,8 +230,8 @@ async function baseCarriedFrozen(
   const paths = Object.keys(frozen);
   const differed: string[] = [];
   const absent: string[] = [];
-  // A path whose bytes could not be read establishes no red, so it lands in the same
-  // no-excuse answer as an absent path.
+  // A path whose bytes could not be read establishes no red, so it lands in the same no-excuse answer as an
+  // absent path.
   const unread: string[] = [];
   for (const rel of paths) {
     const ran = await exec("git", {

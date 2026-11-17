@@ -1,37 +1,24 @@
 /**
- * lean/freeze-check — a candidate acceptance test run against the project's own
- * cheap content checks, BEFORE it becomes frozen.
+ * lean/freeze-check — a candidate acceptance test run against the project's own cheap content checks, BEFORE
+ * it becomes frozen.
  *
- * The freeze pipeline proves one thing about a candidate: it is RED against the
- * base, executed by `verify.test`. That is the whole admission test — and it is
- * not the only check a repository has. A project also runs commands that read
- * test-file CONTENT (`verify.fast` here carries a scanner that refuses
- * assigning undefined to an env var in any `.ts`). Nothing in specify or challenge ran
- * those, and `build` may not edit a frozen file. So a candidate that trips a
- * content gate freezes, and the run cannot win: no build round can edit the
- * file, and the gate stays red however the code changes. In the field that cost
- * all three build rounds.
+ * The freeze pipeline proves one thing about a candidate: it is RED against the base, executed by
+ * `verify.test`. That is not the only check a repository has: a project also runs commands that read
+ * test-file CONTENT. Nothing in specify or challenge ran those, and `build` may not edit a frozen file — so a
+ * candidate that trips a content gate freezes and the run cannot win.
  *
- * `verify.freezeCheck` is the key that closes it: one shell command the project
- * sets, run over the whole tree at the two moments a frozen file is either
- * admitted or trusted.
+ * `verify.freezeCheck` is the key that closes it: one shell command the project sets, run over the whole tree
+ * at the two moments a frozen file is admitted or trusted.
  *
- *   - **before the freeze** (specify / challenge, in `runTestPipeline`): red at
- *     base and green with the candidates means the candidates broke the gate, so
- *     the ones the gate NAMED never join the contract — dropped through the same
- *     channel as every other boundary refusal. A gate red at base is the
- *     mainline's problem and never blocks or attributes anything here (`verify`'s
- *     baseline probe owns that). An unrunnable gate blocks nothing either, but
- *     says so in the step reason: a check that could not run is not evidence.
- *   - **at verify** (§D3): a project tier red at HEAD plus a freeze check that
- *     fails ON A FROZEN FILE means the contract itself is defective. No build
- *     round can fix it — the file is untouchable by contract — so the step hands
- *     the run back instead of billing one.
+ *   - **before the freeze** (specify / challenge, in `runTestPipeline`): red at base and green with the
+ *     candidates means the candidates broke the gate, so the ones the gate NAMED never join the contract. A
+ *     gate red at base is the mainline's problem and never blocks or attributes anything here. An unrunnable
+ *     gate blocks nothing either, but says so in the step reason.
+ *   - **at verify**: a project tier red at HEAD plus a freeze check that fails ON A FROZEN FILE means the
+ *     contract itself is defective, so the step hands the run back instead of billing a build round.
  *
- * Attribution runs the same command at the base with no candidates in place, in
- * the same worktree, before the candidates were ever written. That is the only
- * "the gate was fine and your files were not" the step will assert, and it is
- * the same shape `verify-baseline.ts`'s probe takes.
+ * Attribution runs the same command at the base with no candidates in place: the only "the gate was fine and
+ * your files were not" the step will assert.
  */
 
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
@@ -53,14 +40,10 @@ const FREEZE_CHECK_MAX_BUFFER = 8 * 1024 * 1024;
 /**
  * Was this rejection a command the shell could not start at all?
  *
- * Asked of BOTH halves of the rejection, because the shape depends on the form:
- * an argv-form call rejects with the spawn error itself (`code: "ENOENT"`), while
- * a shell-string call rejects with `Command failed: …` carrying the shell's
- * NUMERIC status — 127 on sh, 126 for a non-executable file — and the `not
- * found` / `not executable` line only in `stderr`. A `sh -c 'exit 1'` that
- * printed its own failure answers false on both counts and is a red, which is the
- * reading `verify-steps.ts` insists on for the project tiers: an exit status
- * alone says nothing about whether the work was ever judged.
+ * Asked of BOTH halves of the rejection, because the shape depends on the form: an argv-form call rejects with
+ * the spawn error itself (`code: "ENOENT"`), while a shell-string call carries the shell's NUMERIC status —
+ * 127 on sh, 126 for a non-executable file — with the wording only in `stderr`. A `sh -c 'exit 1'` that
+ * printed its own failure answers false and is a red.
  */
 function couldNotBeStarted(err: unknown): boolean {
   if (neverStarted(err)) return true;
@@ -73,11 +56,9 @@ function couldNotBeStarted(err: unknown): boolean {
 /**
  * Run the project's freeze check once in `wt`.
  *
- * Same discipline as `verify`'s `runTier`: the driver's knobs scrubbed out of the
- * child env, its own process group so a timeout reaches a grandchild holding
- * stdout, and a bound. A kill, an output flood or a command the shell could not
- * start is `unknown` rather than a throw — a gate that could not answer must not
- * block a freeze, and must not be reported as a red either.
+ * Same discipline as `verify`'s `runTier`: scrubbed child env, its own process group, and a bound. A kill, an
+ * output flood or a command the shell could not start is `unknown` rather than a throw — a gate that could not
+ * answer must not block a freeze, nor be reported as a red.
  */
 export async function runFreezeCheck(
   cmd: string,
@@ -124,11 +105,8 @@ function bareToken(token: string): string {
 /**
  * Which candidate paths this check's output names.
  *
- * Substring first: the named file is the file a content gate prints, and a
- * substring hit is the answer no formatting can hide. The word scan is the
- * backstop for an output that wraps the path in `"` or `(`, which `includes`
- * still matches — it exists for the tokens a path split leaves. A path match is
- * per candidate, so a check that named one file cannot drop the others.
+ * Substring first — a substring hit is the answer no formatting can hide. The word scan is the backstop for an
+ * output that wraps the path in quotes or brackets.
  */
 export function namedCandidates(output: string, candidates: string[]): string[] {
   const named: string[] = [];
@@ -152,9 +130,8 @@ function freezeCheckDropReason(cmd: string, confirmedAtBase: boolean): string {
 /**
  * Every candidate dropped for one check that was green at base and red here.
  *
- * Nothing is attributed when the base run never happened or did not go red:
- * without the comparison the check says only "the tree is red", which is not
- * evidence about which file broke it, and a freeze must not be lost on that.
+ * Nothing is attributed when the base run never happened or did not go red: without the comparison the check
+ * says only "the tree is red", which is not evidence about which file broke it.
  */
 export function freezeCheckDrops(
   base: FreezeCheck,
@@ -170,9 +147,8 @@ export function freezeCheckDrops(
 }
 
 /**
- * The clause naming a freeze check this step could not run, or "" when nothing
- * to say. Carried in the step reason: a check that blocked nothing still has to
- * be disclosed, or its silence reads as a pass.
+ * The clause naming a freeze check this step could not run, or "" when nothing to say. Carried in the step
+ * reason: a check that blocked nothing still has to be disclosed, or its silence reads as a pass.
  */
 export function freezeCheckNote(cmd: string, ran: boolean, check: FreezeCheck | undefined): string {
   if (check === undefined || check.kind !== "unknown") return "";

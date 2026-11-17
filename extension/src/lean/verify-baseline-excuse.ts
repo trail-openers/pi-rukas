@@ -2,23 +2,19 @@
  * lean/verify-baseline-excuse — a tier red at HEAD whose every failure line the base run
  * ALSO printed is not this run's failure.
  *
- * The unit of comparison is the WHOLE failure line, which is what keeps this runner-agnostic:
- * a parser that reads a test name out of each line folds two checks onto one token, and a
- * folded name excuses a failure only this run authored. Two checks are two lines, so whole
- * lines cannot fold.
+ * The unit of comparison is the WHOLE failure line, which is what keeps this runner-agnostic: a parser
+ * that reads a test name out of each line folds two checks onto one token, and a folded name excuses a
+ * failure only this run authored. Two checks are two lines, so whole lines cannot fold.
  *
- * The compared set is wider than the classifier — every non-empty line either run printed,
- * read or not, so a head-only line nobody recognised still has to appear at the base. The
- * rule is DEFAULT-REFUSE in both directions of ignorance: a line past
- * {@link FAILURE_LINE_SCAN_MAX} refuses either side, and a head-only line refuses with no
- * allow-list of shapes that may be head-only. The accepted cost of that: a PR that ADDS PASSING
- * TESTS to a suite already red at base hands back on its own tally line (`1 failed, 5 passed`
- * is head-only), as does renumbered TAP output or a timing line whose text moved — each is a
- * hand-back, never a green. Both sides must be non-empty, every head line
- * must equal a base line verbatim (trimmed, its own tree's prefix out), the two trees must
- * be two trees, and a base red shaped like a missing dependency tree is the probe's
- * provisioning, not the commit's. "Could not tell" is never an excuse; the caller keeps the
- * `verify-baseline.ts` hand-back. What is left fails only toward the hand-back.
+ * The compared set is wider than the classifier — every non-empty line either run printed — so a head-only
+ * line nobody recognised still has to appear at the base. The rule is DEFAULT-REFUSE in both directions of
+ * ignorance: a line past {@link FAILURE_LINE_SCAN_MAX} refuses either side, and a head-only line refuses with
+ * no allow-list of shapes that may be head-only. The accepted cost: a PR that ADDS PASSING TESTS to a suite
+ * already red at base hands back on its own tally line, as does renumbered TAP output or a moved timing line
+ * — each is a hand-back, never a green. Both sides must be non-empty, every head line must equal a base line
+ * verbatim (trimmed, its own tree's prefix out), the two trees must be two trees, and a base red shaped like
+ * a missing dependency tree is the probe's provisioning, not the commit's. "Could not tell" is never an
+ * excuse; the caller keeps the `verify-baseline.ts` hand-back.
  */
 
 import { realpathSync } from "node:fs";
@@ -38,21 +34,17 @@ export type BaselineExcuse =
   | { kind: "refused" };
 
 /**
- * Does this stream hold a line past the classifier's scan window?
- *
- * Such a line is judged on its first 8 KiB, so two that differ only past the window fold
- * onto one key. A line no judge fully saw is not evidence, so it refuses on EITHER side,
- * and it is asked of the RAW stream: the defective line may be one the classifier never
- * reads.
+ * Does this stream hold a line past the classifier's scan window? Such a line is judged on its first 8 KiB,
+ * so two that differ only past the window fold onto one key. A line no judge fully saw is not evidence, so
+ * it refuses on EITHER side, asked of the RAW stream.
  */
 function hasOverWindowLine(stream: string): boolean {
   return splitLines(stream).some((line) => line.trim().length > FAILURE_LINE_SCAN_MAX);
 }
 
 /**
- * The lines the classifier READS as failures: stream order, trimmed, deduplicated,
- * non-empty — the names the `## Pre-existing` disclosure records, not the set the excuse
- * compares (that is {@link allLinesOf}).
+ * The lines the classifier READS as failures: stream order, trimmed, deduplicated, non-empty — the names the
+ * `## Pre-existing` disclosure records, not the set the excuse compares (that is {@link allLinesOf}).
  */
 export function failureLinesOf(stream: string): string[] {
   const seen = new Set<string>();
@@ -69,12 +61,10 @@ export function failureLinesOf(stream: string): string[] {
 /**
  * The harness's OWN residue, discounted from the comparison.
  *
- * The executor prefixes its own `Command failed: <cmd>` echo (exec.ts) to what the gate
- * printed, so requiring the executor's writing to appear at the base is no requirement
- * about the project's failures. It is the ONLY line discounted, and by WHO WROTE it, not
- * what it says: admitted only when it quotes the command both runs were given (either
- * tree's prefix out), so a failure spelled inside the quoted command cannot ride in on the
- * prefix. A bare `killed`, an `Exit code: 1`, a jest `●` block or a TAP comment all refuse.
+ * The executor prefixes its own `Command failed: <cmd>` echo to what the gate printed, so requiring the
+ * executor's writing to appear at the base is no requirement about the project's failures. It is the ONLY
+ * line discounted, and by WHO WROTE it, not what it says: admitted only when it quotes the command both runs
+ * were given.
  */
 function harnessResidue(line: string, cmd: string, headRoot: string, probeRoot: string): boolean {
   if (!/^Command failed:\s/.test(line)) return false;
@@ -87,10 +77,9 @@ function harnessResidue(line: string, cmd: string, headRoot: string, probeRoot: 
 }
 
 /**
- * Every line a stream printed that holds text, in stream order, trimmed and deduplicated:
- * the comparison set for both sides. Deliberately NOT `failureLines` — the classifier's
- * table is only what its authors read, so an unread head-only line dropped from the
- * comparison would grade a defect the base never printed as one it did.
+ * Every line a stream printed that holds text, in stream order, trimmed and deduplicated: the comparison set
+ * for both sides. Deliberately NOT `failureLines` — an unread head-only line dropped from the comparison
+ * would grade a defect the base never printed as one it did.
  */
 function allLinesOf(stream: string): string[] {
   const seen = new Set<string>();
@@ -107,14 +96,12 @@ function allLinesOf(stream: string): string[] {
 /**
  * One run's tree prefix, out of a line.
  *
- * The tree's name sits at the front of the part of the line that holds a path (`not ok 1 -
- * <root>/t/x.t`, `FAIL <root>/pkg`), so the prefix is measured at the first character that
- * could begin a path — a `/`, a `.` or a drive letter — not at column 0 where the runner's
- * marker sits. Both spellings, with and without a trailing separator, are tried.
+ * The tree's name sits at the front of the part of the line that holds a path, so the prefix is measured at
+ * the first character that could begin a path — a `/`, a `.` or a drive letter — not at column 0 where the
+ * runner's marker sits. Both spellings, with and without a trailing separator, are tried.
  *
- * The search stops at that first path-shaped character: a root appearing later is content
- * the tier printed (a path in an assertion or a diff) that the other tree's line carries
- * too, so a global removal would erase a difference and excuse it.
+ * The search stops at that first path-shaped character: a root appearing later is content the tier printed
+ * that the other tree's line carries too, so a global removal would erase a difference and excuse it.
  */
 export function stripRoot(line: string, root: string): string {
   const trimmed = line.trim();
@@ -131,12 +118,9 @@ export function stripRoot(line: string, root: string): string {
 /**
  * A tree resolved to the spelling its own run would have printed it under.
  *
- * A tree reached through a symlink prints its names under the symlinked spelling while the
- * caller holds the resolved one, and the two never share a prefix — macOS makes every temp dir a
- * symlink, so without this a whole run's lines never match. Only the longest existing prefix
- * resolves: the probe's tree is deleted before this comparison runs, so resolving its parent still
- * puts it in the same spelling as every other path here. Called once per {@link baselineExcuse}
- * per side, never per candidate.
+ * A tree reached through a symlink prints its names under the symlinked spelling while the caller holds the
+ * resolved one, and the two never share a prefix — macOS makes every temp dir a symlink. Only the longest
+ * existing prefix resolves: the probe's tree is deleted before this comparison runs.
  */
 function treeRoot(dir: string): string {
   const parts = dir
@@ -162,9 +146,9 @@ function treeRoot(dir: string): string {
 /**
  * Is this base run's red the shape of a tree that was never provisioned?
  *
- * `worktree-provision`'s predicate reads its dependency phrases anywhere in the stream, and a
- * tier's own `sh` trace can print them. A stream excuses nothing only when a FAILURE LINE is
- * individually dependency-shaped: the interpreter's own sentence, not a runner's summary.
+ * `worktree-provision`'s predicate reads its dependency phrases anywhere in the stream, and a tier's own
+ * `sh` trace can print them. A stream excuses nothing only when a FAILURE LINE is individually
+ * dependency-shaped.
  */
 function baseRedIsMissingDeps(stream: string): boolean {
   return failureLines(stream).some((line) => MISSING_DEP_LINE.test(line));
@@ -177,10 +161,9 @@ const MISSING_DEP_LINE =
 /**
  * May this tier's red be excused over the base run's red?
  *
- * The caller has settled the colour questions and the frozen acceptance verdict; this decides
- * whether the head run printed anything the base did not, over every line of both streams. Every
- * refusal means the caller keeps the `verify-baseline.ts` hand-back. `cmd` is matched against one
- * thing: the command quoted in the executor's `Command failed:` echo.
+ * The caller has settled the colour questions and the frozen acceptance verdict; this decides whether the
+ * head run printed anything the base did not, over every line of both streams. Every refusal means the
+ * caller keeps the `verify-baseline.ts` hand-back.
  */
 export function baselineExcuse(opts: {
   tierName: string;
@@ -205,21 +188,19 @@ export function baselineExcuse(opts: {
   const base = allLinesOf(baseStream);
   // A line past the classifier's window is judged on a clipped view.
   if (hasOverWindowLine(headStream) || hasOverWindowLine(baseStream)) return { kind: "refused" };
-  // Both trees resolved once; a probe tree that is the run's own tree — or another spelling
-  // of it — compares against nothing, since every line is its own echo.
+  // Both trees resolved once; a probe tree that is the run's own tree compares against nothing, since
+  // every line is its own echo.
   const headRoot = treeRoot(opts.headRoot);
   const probeRoot = treeRoot(opts.probeRoot);
   if (headRoot === probeRoot) return { kind: "refused" };
-  // A bare checkout whose dependencies were never linked fails every command: that red belongs
-  // to the probe's provisioning, not to the commit. Per FAILURE LINE, not anywhere in the
-  // stream, because a tier's own `sh` trace can print the dependency phrases about a file.
+  // A bare checkout whose dependencies were never linked fails every command: that red belongs to the
+  // probe's provisioning, not to the commit. Per FAILURE LINE, not anywhere in the stream.
   if (baseRedIsMissingDeps(baseStream)) return { kind: "refused" };
-  // The RAW stream's lines, both sides: the residue discount runs after this, so a head left
-  // with nothing but discounted residue is refused here as an empty key set.
+  // The RAW stream's lines, both sides: the residue discount runs after this, so a head left with nothing
+  // but discounted residue is refused here as an empty key set.
   if (head.length === 0 || base.length === 0) return { kind: "refused" };
-  // One key per side: each line with ITS OWN tree's prefix out, so head and base agree on what
-  // the check WAS. Each keeps every digit — a moved pass count or a renumbered TAP check is a
-  // head-only line, and hands the run back rather than granting a green.
+  // One key per side: each line with ITS OWN tree's prefix out. Each keeps every digit — a moved pass count
+  // or a renumbered TAP check hands the run back rather than granting a green.
   const residue = (line: string): boolean => harnessResidue(line, opts.cmd, headRoot, probeRoot);
   const headKey = head
     .map((line) => stripRoot(line, headRoot))
@@ -228,9 +209,8 @@ export function baselineExcuse(opts: {
     base.map((line) => stripRoot(line, probeRoot)).filter((line) => !residue(line)),
   );
   if (!headKey.every((line) => baseKey.has(line))) return { kind: "refused" };
-  // The disclosure names only the failures the classifier could read; the empty-set refusal above
-  // is what keeps it naming real checks rather than no check at all. The caps below bound only
-  // what is persisted and rendered.
+  // The disclosure names only the failures the classifier could read; the empty-set refusal above is what
+  // keeps it naming real checks rather than no check at all.
   const matched = failureLinesOf(headStream)
     .map((line) => stripRoot(line, headRoot))
     .filter((line) => line.length > 0);
@@ -240,17 +220,15 @@ export function baselineExcuse(opts: {
     total: matched.length,
     baseSha: opts.baseSha,
   };
-  // The step log's reader (`preexistingFailuresProblem`, applied by `loadRun`) refuses an
-  // over-long or control-character name and would then refuse the whole run file. Ask it here,
-  // while the refusal is still cheap.
+  // The step log's reader refuses an over-long or control-character name and would then refuse the whole
+  // run file. Ask it here, while the refusal is still cheap.
   if (preexistingFailuresProblem({ [opts.tierName]: record }) !== undefined)
     return { kind: "refused" };
   return { kind: "excused", record };
 }
 
 /**
- * A head line cut to what the step log's reader accepts, for DISPLAY. `total` carries the true
- * count; the clip happens here, where the excuse is still the caller's to forfeit.
+ * A head line cut to what the step log's reader accepts, for DISPLAY. `total` carries the true count.
  */
 function boundedLine(line: string): string {
   return line.length > PREEXISTING_NAME_MAX_CHARS
@@ -259,8 +237,7 @@ function boundedLine(line: string): string {
 }
 
 /**
- * The tail a green carries when a tier was excused over the base commit: the prose warns the
- * reader, the recorded field is the evidence the body renders from.
+ * The tail a green carries when a tier was excused over the base commit.
  */
 export function preexistingReason(names: readonly string[]): string {
   return `pre-existing failures on the base commit: ${names.join(", ")} — every failing line also fails at the run's base commit, so no build round can fix them and this run did not author them`;

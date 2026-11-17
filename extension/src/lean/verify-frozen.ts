@@ -15,8 +15,7 @@
  *     `porcelain` scan plus an existence probe.
  *
  * The shape half of the on-disk check reuses `fileProblem` from `specify-path.ts`, which already
- * refuses a symlink, a non-regular file, an `nlink > 1` hard link and a realpath escape. All
- * findings are reported together when several apply.
+ * refuses a symlink, a non-regular file, an `nlink > 1` hard link and a realpath escape.
  */
 
 import { existsSync, lstatSync, readFileSync } from "node:fs";
@@ -30,9 +29,8 @@ import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 /**
  * Why this frozen path is not a file this worktree owns, or `undefined`.
  *
- * Read through `lstat` and an exclusive-link check BEFORE hashing: a symlink or a hard link shares
- * its bytes with something outside the tree, and hashing the target would vouch for bytes nobody
- * froze.
+ * Read through `lstat` and an exclusive-link check BEFORE hashing: a symlink or a hard link shares its bytes
+ * with something outside the tree, and hashing the target would vouch for bytes nobody froze.
  */
 function diskShapeProblem(wt: string, rel: string): string | undefined {
   const abs = path.join(wt, rel);
@@ -82,13 +80,13 @@ export async function frozenTamperReason(
   frozen: Record<string, string>,
 ): Promise<string | undefined> {
   const names = Object.keys(frozen);
-  // Nothing was ever frozen is not a tampered contract — it is no contract, and the caller decides
-  // what a run with no acceptance tests may claim.
+  // Nothing was ever frozen is not a tampered contract — it is no contract, and the caller decides what a run
+  // with no acceptance tests may claim.
   if (names.length === 0) return undefined;
   const parts: string[] = [];
 
-  // The committed half: git's answer about HEAD's tree. An unreadable blob is infrastructure, not
-  // evidence that anyone edited a test.
+  // The committed half: git's answer about HEAD's tree. An unreadable blob is infrastructure, not evidence
+  // that anyone edited a test.
   const atHead = await frozenTamperedAtHead(exec, wt, head, frozen);
   if (atHead.unreadable !== undefined)
     throw new VerifyInfraError(
@@ -96,9 +94,8 @@ export async function frozenTamperReason(
     );
   if (atHead.tampered.length > 0) parts.push(`frozen tests altered: ${atHead.tampered.join(", ")}`);
 
-  // The tree half, per file: changed, gone, a link rather than a file, or bytes that are not the
-  // frozen bytes. All four say the same thing to the reader, and the whole-tree scan only says WHICH
-  // files — so each file that scan flagged is not hashed as well.
+  // The tree half, per file: changed, gone, a link rather than a file, or bytes that are not the frozen
+  // bytes. The whole-tree scan only says WHICH files, so a file it flagged is not hashed too.
   const moved = await dirtyFrozen(exec, wt, names);
   const seen = new Set(moved);
   const bad = [...moved];

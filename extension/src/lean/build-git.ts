@@ -2,14 +2,10 @@
  * lean/build-git — the git probes and mutations the build step's normalisation needs,
  * each answering a question only git can answer.
  *
- * `build` holds a worktree a model has just been loose in, and every claim the step
- * makes about that tree is a git claim: does HEAD still descend from the commit I
- * recorded, what changed since, does this frozen blob still hash to its record, is the
- * tree clean. The two failure kinds are kept apart deliberately — a git refusal that
- * MEANS something (exit 1 from `merge-base --is-ancestor` is "no, it does not
- * descend") is a value, while a git that could not run at all is a
- * `BuildInfraError`. Collapsing those two is how a driver builds on a tree it never
- * verified.
+ * `build` holds a worktree a model has just been loose in, and every claim the step makes about that tree is
+ * a git claim. The two failure kinds are kept apart deliberately — a git refusal that MEANS something (exit 1
+ * from `merge-base --is-ancestor` is "no, it does not descend") is a value, while a git that could not run at
+ * all is a `BuildInfraError`. Collapsing those two is how a driver builds on a tree it never verified.
  */
 
 import { BuildInfraError } from "./build-errors.ts";
@@ -18,10 +14,8 @@ import { sha256 } from "./specify-proof.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 
 /**
- * Run one git argv command with the hook and fsmonitor guard in front of it;
- * `undefined` when git refused rather than crashed. Every git call in this
- * module goes through here or through `headDescendsFrom`, which carries the
- * same guard itself.
+ * Run one git argv command with the hook and fsmonitor guard in front of it; `undefined` when git refused
+ * rather than crashed. Every git call in this module goes through here or through `headDescendsFrom`.
  */
 async function run(
   exec: BuildExec,
@@ -70,9 +64,9 @@ export async function headSha(exec: BuildExec, wt: string): Promise<string> {
 /**
  * `git merge-base --is-ancestor sha HEAD`.
  *
- * git's own "not an ancestor" answer is exit 1 with no output; anything else
- * (a bad object name, no git at all) is a fact the step cannot establish and
- * throws, because "could not tell" must never read as "the child is honest".
+ * git's own "not an ancestor" answer is exit 1 with no output; anything else (a bad object name, no git
+ * at all) is a fact the step cannot establish and throws, because "could not tell" must never read as
+ * "the child is honest".
  */
 export async function headDescendsFrom(exec: BuildExec, wt: string, sha: string): Promise<boolean> {
   const r = await exec("git", {
@@ -88,10 +82,9 @@ export async function headDescendsFrom(exec: BuildExec, wt: string, sha: string)
 }
 
 /**
- * The committed blob of `rel` at `ref`, byte for byte; `undefined` when git
- * refuses it. `latin1` is read back with `Buffer.from(…, "latin1")`, the one text
- * encoding that keeps every byte: a frozen test holding invalid UTF-8 must hash to
- * the record the freeze made, and utf8 would rewrite it.
+ * The committed blob of `rel` at `ref`, byte for byte; `undefined` when git refuses it. `latin1` is read
+ * back with `Buffer.from(…, "latin1")`, the one text encoding that keeps every byte: a frozen test holding
+ * invalid UTF-8 must hash to the record the freeze made, and utf8 would rewrite it.
  */
 export async function blobAt(
   exec: BuildExec,
@@ -113,13 +106,12 @@ export async function blobAt(
 /**
  * Do `frozen`'s committed blobs at `ref` still hash to their records?
  *
- * A zero-byte blob is never a frozen test, whatever its record says: a record of
- * the empty hash would otherwise vouch for a test that tests nothing.
+ * A zero-byte blob is never a frozen test, whatever its record says: a record of the empty hash would
+ * otherwise vouch for a test that tests nothing.
  *
- * `build` reads a git refusal as "altered": its normalisation is about to rewrite
- * the tree, and a blob it cannot read is one it cannot vouch for. The lean
- * `verify` step reads the same refusal the other way — a git that could not run is
- * infrastructure, never a verdict — so it calls {@link frozenTamperedAtHead}.
+ * `build` reads a git refusal as "altered": its normalisation is about to rewrite the tree, and a blob it
+ * cannot read is one it cannot vouch for. The lean `verify` step reads the same refusal the other way,
+ * so it calls {@link frozenTamperedAtHead}.
  */
 export async function frozenMatches(
   exec: BuildExec,
@@ -136,14 +128,12 @@ export async function frozenMatches(
 }
 
 /**
- * Which of `frozen`'s committed blobs at `ref` hash differently from their records —
- * and nothing else. A git read that FAILS is not an answer here: this returns only
- * what a successful read proved, and {@link blobAt} returning `undefined` is the
- * caller's signal that the probe itself broke.
+ * Which of `frozen`'s committed blobs at `ref` hash differently from their records — and nothing else. A
+ * git read that FAILS is not an answer here: {@link blobAt} returning `undefined` is the caller's signal
+ * that the probe itself broke.
  *
- * The lean `verify` step needs this split because its `green` is the run's own verdict:
- * reporting a tamper because one `git show` timed out would send a developer to "fix"
- * a contract nobody managed to read.
+ * The lean `verify` step needs this split because its `green` is the run's own verdict: reporting a tamper
+ * because one `git show` timed out would send a developer to "fix" a contract nobody managed to read.
  */
 export async function frozenTamperedAtHead(
   exec: BuildExec,
@@ -161,12 +151,9 @@ export async function frozenTamperedAtHead(
 }
 
 /**
- * Every path the child left its mark on: tracked edits and deletions against
- * `headBefore` (which covers the child's own commits) plus untracked files.
- *
- * The two lists are needed together. `diff` alone misses a brand-new file the
- * child never staged; `ls-files --others` alone misses its edits and every
- * deletion it made.
+ * Every path the child left its mark on: tracked edits and deletions against `headBefore` (which covers
+ * the child's own commits) plus untracked files. Both are needed: `diff` alone misses a brand-new file the
+ * child never staged; `ls-files --others` alone misses its edits and deletions.
  */
 export async function changedSet(
   exec: BuildExec,
@@ -202,9 +189,8 @@ export async function commitDiff(
 }
 
 /**
- * `git status --porcelain` output; "" when the tree is clean. `--untracked-files=all`
- * lists every file, not each directory: a clean-looking tree with a stray file
- * under an untracked directory is not clean.
+ * `git status --porcelain` output; "" when the tree is clean. `--untracked-files=all` lists every file,
+ * not each directory: a clean-looking tree with a stray file under an untracked directory is not clean.
  */
 export async function porcelain(exec: BuildExec, wt: string): Promise<string> {
   return must(
