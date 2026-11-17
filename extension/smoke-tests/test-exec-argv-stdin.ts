@@ -17,8 +17,12 @@
  * hand-rolled `spawn`.
  */
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { execp } from "../src/exec.ts";
 import { execTree } from "../src/exec-tree.ts";
+import { gitCatFileSaysAbsent } from "../src/git-range.ts";
 
 let exit = 0;
 function assert(cond: unknown, msg: string) {
@@ -96,7 +100,37 @@ async function main() {
   );
   assert(failedOut?.code === 3, `a non-zero exit reports the exit code (got ${String(failedOut?.code)})`);
 
+  // The rejection carries the captured streams, not just the message. This is
+  // not decoration: `gitCatFileSaysAbsent` classifies a git probe out of
+  // `err.stderr` ALONE, so a rejection that lost its stderr turns a real
+  // "that path is not in that commit" into a `git-failed` refusal — a gate file
+  // the repository does have would read as unreadable. Read it through the real
+  // consumer, not just the field.
+  // A git repo of our own, so the probe below answers locally and its wording is
+  // git's real absence text rather than whatever a network remote says.
+  const repo = mkdtempSync(path.join(tmpdir(), "pi-ens-2342-"));
+  await execp("git", { argv: ["init", "-q", repo] });
+
+  const absent = await errOf(
+    execp("git", {
+      argv: ["-C", repo, "cat-file", "-t", "1111111111111111111111111111111111111111:.pi/merge-authors"],
+    }),
+  );
+  assert(
+    typeof absent?.stderr === "string" && absent.stderr.length > 0,
+    `a git probe rejection carries stderr on the Error (got ${JSON.stringify(String(absent?.stderr)).slice(0, 60)})`,
+  );
+  assert(
+    gitCatFileSaysAbsent(absent) === true,
+    `gitCatFileSaysAbsent still calls git's absence what it is (got ${String(gitCatFileSaysAbsent(absent))})`,
+  );
+  assert(
+    gitCatFileSaysAbsent({ ...absent, stderr: undefined }) === false,
+    "and the classifier's answer DOES depend on that stderr — an error without it is not absence (so the field is load-bearing)",
+  );
+
   const missing = await errOf(execp("no-such-binary-2342", { argv: [] }));
+  rmSync(repo, { recursive: true, force: true });
   assert(
     missing !== undefined && String(missing.code) === "ENOENT",
     `a spawn failure (ENOENT) rejects with execFile's code (got ${String(missing?.code)})`,

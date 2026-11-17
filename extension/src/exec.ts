@@ -156,10 +156,11 @@ function execGroup(cmd: string, argv: string[] | undefined, opts: ExecOpts): Pro
  * own stdio and a caller's `stdio` option is dropped, so it cannot be handed
  * `"ignore"`. Everything else is kept the same on purpose — same
  * `cwd`/`env`/`timeout`/`maxBuffer`, the same `Command failed:`/overflow/timeout
- * rejection shape that `execFile` stamps (characterised against the real
- * `execFile`, so the swap is invisible to the callers that read `code`,
- * `killed`, `signal` and `message`), and the `encoding` honoured on both
- * streams so a `latin1` blob read still returns exact bytes.
+ * rejection shape that `execFile` stamps, INCLUDING the captured `stdout` and
+ * `stderr` on the Error: `gitCatFileSaysAbsent` classifies a git probe out of
+ * `err.stderr` alone, so a rejection without it turns a real "that path is not
+ * in that commit" into a `git-failed` refusal. The `encoding` is honoured on
+ * both streams so a `latin1` blob read still returns exact bytes.
  */
 function execArgv(cmd: string, argv: string[], opts: ExecOpts): Promise<ExecResult> {
   const maxBuffer = opts.maxBuffer ?? 1024 * 1024;
@@ -194,6 +195,8 @@ function execArgv(cmd: string, argv: string[], opts: ExecOpts): Promise<ExecResu
               code: null,
               killed: true,
               signal: "SIGTERM",
+              stdout,
+              stderr,
             }),
           ),
         );
@@ -209,15 +212,21 @@ function execArgv(cmd: string, argv: string[], opts: ExecOpts): Promise<ExecResu
           reject(
             Object.assign(new RangeError("stdout maxBuffer length exceeded"), {
               code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+              stdout,
+              stderr,
             }),
           ),
         );
       }
     });
     child.stderr?.on("data", (d: string) => {
+      // Bounded so a chatty command cannot grow memory without bound, but the
+      // bound is the full `maxBuffer`, never a smaller cap: the tail of a git
+      // rejection is what `gitCatFileSaysAbsent` reads its verdict out of, and a
+      // hint block that pushed the fatal line past the cap would erase it.
       if (stderr.length < maxBuffer) stderr += d;
     });
-    child.on("error", (err) => finish(() => reject(err)));
+    child.on("error", (err) => finish(() => reject(Object.assign(err, { stdout, stderr }))));
     child.on("close", (code, signal) =>
       finish(() =>
         code === 0
@@ -227,6 +236,8 @@ function execArgv(cmd: string, argv: string[], opts: ExecOpts): Promise<ExecResu
                 code,
                 signal: signal ?? null,
                 killed: false,
+                stdout,
+                stderr,
               }),
             ),
       ),
