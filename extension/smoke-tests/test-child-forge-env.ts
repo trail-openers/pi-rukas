@@ -5,15 +5,22 @@
  * the executor contract live in `test-forge-read-broker.ts`.
  */
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   FORGE_CONFIG_DIR_VARS,
   FORGE_TOKEN_VARS,
   buildChildForgeEnv,
   forgeReadChildEnv,
+  glabCreateEnv,
   keepsForgeLogin,
+  removeGlabCreateEnvDirs,
   stripForgeCredentials,
 } from "../src/child-forge-env.ts";
+import { createForge } from "../src/forge.ts";
+import type { ForgeExecFn } from "../src/forge-types.ts";
+import { glDetection } from "./forge-fixtures.ts";
 import {
   FORGE_READ_SECRET_ENV,
   FORGE_READ_SOCKET_ENV,

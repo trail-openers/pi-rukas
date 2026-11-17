@@ -183,10 +183,24 @@ export type MergeReadinessResult =
 /**
  * The exec seam — the same shape as the driver's `VerifyExecFn`. Declared here
  * so the interface below is self-contained; forge.ts re-exports it.
+ *
+ * `argv` matches `ExecOpts.argv`: when present, `cmd` is the EXECUTABLE and
+ * `argv` its arguments, run through execFile with no shell re-parse — so a
+ * value that carries shell metacharacters reaches the CLI as the one word it
+ * was. Without it, `cmd` is a shell string. An executor that silently drops
+ * `argv` turns such a call into a bare `glab`, which prints usage and exits 1
+ * (#1279), so the seam declares it rather than leaving it to the implementation.
  */
 export type ForgeExecFn = (
   cmd: string,
-  opts?: { cwd?: string; timeout?: number; maxBuffer?: number; shell?: string },
+  opts?: {
+    cwd?: string;
+    timeout?: number;
+    maxBuffer?: number;
+    shell?: string;
+    argv?: string[];
+    env?: NodeJS.ProcessEnv;
+  },
 ) => Promise<{ stdout: string; stderr?: string }>;
 
 export interface CiWatchOpts {

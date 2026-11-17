@@ -29,10 +29,16 @@ export function mkExec(
   const calls: string[] = [];
   const opts: Array<Record<string, unknown> | undefined> = [];
   const fn: VerifyExecFn = async (cmd, o2) => {
-    calls.push(cmd);
+    // An argv call is recorded as `cmd` + its argv, so a fixture can key on the
+    // whole command (`mkExec` matches on `cmd` alone, and an argv exec's `cmd` is
+    // the bare executable — keying on that would let it collide with every other
+    // call to the same binary). The string form is recorded unchanged, so the
+    // existing consumers' keys are unaffected.
+    const key = o2?.argv ? [cmd, ...(o2.argv as string[])].join(" ") : cmd;
+    calls.push(key);
     opts.push(o2 as Record<string, unknown> | undefined);
     for (const [k, v] of Object.entries(o)) {
-      if (cmd.includes(k)) {
+      if (key.includes(k)) {
         if (v.error) {
           const e = new Error(v.stderr ?? "err") as Error & { stderr?: string };
           e.stderr = v.stderr;

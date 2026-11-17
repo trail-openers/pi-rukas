@@ -2,9 +2,11 @@
  * exec — the one shell-or-argv executor the driver and forge code run through.
  *
  * `execp(cmd, { argv })` runs `cmd` as the executable with `argv` as its
- * arguments, through execFile: no shell re-parse. Without `argv`, `cmd` is a
- * shell string. Either way it resolves `{ stdout, stderr }` and rejects with
- * `promisify(exec)`'s error shape (`stdout` / `stderr` / `code` on the Error).
+ * arguments through `execFile`: no shell re-parse, and the child's stdin is
+ * ended at once, so a CLI that would prompt reads EOF instead of blocking.
+ * Without `argv`, `cmd` is a shell string. Either way it resolves
+ * `{ stdout, stderr }` and rejects with `promisify(exec)`'s error shape
+ * (`stdout` / `stderr` / `code` on the Error).
  *
  * Why one executor: a bare `promisify(exec)` type-checks as a driver `ExecFn`
  * that declares `argv`, and silently drops it — an argv-form call then runs a
@@ -25,6 +27,7 @@
 
 import { exec, execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { attachStdinErrorGuard } from "./stdin-guard.ts";
 
 const execShell = promisify(exec);
 const execFileP = promisify(execFile);
@@ -155,7 +158,27 @@ export function execp(cmd: string, opts: ExecOpts = {}): Promise<ExecResult> {
   const { cwd, timeout, maxBuffer, env, shell } = opts;
   const encoding = opts.stdoutEncoding ?? "utf8";
   if (opts.argv) {
-    return execFileP(cmd, opts.argv, { cwd, timeout, maxBuffer, env, encoding });
+    // #2342 — end the child's stdin. `execFile` builds its own stdio (a caller's
+    // `stdio` option is dropped, verified on node and bun alike), so the child
+    // starts on a fresh PIPE for fd 0 and a CLI that decides to prompt — `glab
+    // mr create` without its `-y`, anything that consults `GIT_TERMINAL_PROMPT`
+    // — sits reading that pipe, with no timeout to end it unless the caller
+    // passes one. Closing the writable half gives the child EOF at once, so a
+    // prompt fails instead of hanging the driver. `promisify(execFile)` exposes
+    // the ChildProcess as `.child`, which is what makes this one line; the
+    // rejection keeps execFile's own captured `stdout`/`stderr` on the Error,
+    // which `gitCatFileSaysAbsent` classifies a git probe out of.
+    //
+    // The `end()` is preceded by the SAME #932 backstop `spawn.ts` attaches to
+    // its children (stdin-guard.ts): EPIPE arrives on a later tick, so a child
+    // that exits before stdin closed leaves an `error` event on the handle with
+    // no listener, and an unhandled `error` on a stream terminates the host
+    // process — which would take down every argv caller of `execp`, not just
+    // this call (test-exec-argv-stdin.ts witnesses it as a non-zero child exit).
+    const run = execFileP(cmd, opts.argv, { cwd, timeout, maxBuffer, env, encoding });
+    if (run.child.stdin) attachStdinErrorGuard(run.child.stdin, `execp:${cmd}`);
+    run.child.stdin?.end();
+    return run;
   }
   return execShell(cmd, { cwd, timeout, maxBuffer, env, shell, encoding });
 }

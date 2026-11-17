@@ -11,6 +11,7 @@
 
 import { forgeListPageFlag, shq } from "./forge-commands.ts";
 import type { ForgeType } from "./forge-detect.ts";
+import { glabMrCreateArgvEnabled } from "./gl-mr-create-switch.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 
 export function prViewCmd(forge: ForgeType, number: number): string {
@@ -24,13 +25,26 @@ export function prListCmd(
   forge: ForgeType,
   opts: { state?: string; sourceBranch?: string } = {},
 ): string {
-  const stateFlag = opts.state ? ` --state ${shq(opts.state)}` : "";
   if (forge === "github") {
+    const stateFlag = opts.state ? ` --state ${shq(opts.state)}` : "";
     const head = opts.sourceBranch ? ` --head ${shq(opts.sourceBranch)}` : "";
     return `gh pr list${stateFlag}${head} ${forgeListPageFlag(forge)} --json number,title,state,url,headRefName,baseRefName,labels`;
   }
+  // `glab mr list` has NO `--state`: its help offers `-c/--closed` and
+  // `-M/--merged` instead, and `-M` implies closed. So "open" — the only state any
+  // caller here asks for — is glab's own default and needs no flag; asking for
+  // `--state open` was an invented flag that made every MR lookup die on
+  // `ERROR Unknown flag:`. Any other state has no spelling this builder can emit,
+  // so it is refused by name rather than silently answered as the default — a
+  // caller that asked for merged MRs and got the open ones would be reading a
+  // wrong answer from a command that exited 0.
+  if (opts.state && opts.state !== "open") {
+    throw new Error(
+      `forge pr list: glab mr list has no --state; it selects with -c/--closed and -M/--merged (asked for state "${opts.state}")`,
+    );
+  }
   const source = opts.sourceBranch ? ` --source-branch ${shq(opts.sourceBranch)}` : "";
-  return `glab mr list${stateFlag}${source} ${forgeListPageFlag(forge)} --output json`;
+  return `glab mr list${source} ${forgeListPageFlag(forge)} --output json`;
 }
 
 /**
@@ -44,10 +58,82 @@ export function prListCmd(
  * decide "no PR matches" — a wrong answer from a command that exited 0. The
  * caller refuses with this string instead of issuing it. `state` is the caller
  * to supply (`--state` is how gh selects open PRs; an absent state is not
- * "open").
+ * "open"). GitLab's `glab mr list` is doubly unable to answer it: no `--state`
+ * and no body field, which is why the GitLab caller refuses before building.
  */
 export function openPrBodyListCmd(state: string): string {
   return `gh pr list --state ${shq(state)} --limit 100 --json number,headRefName,body`;
+}
+
+/**
+ * A forge command, in one of the two shapes the executor takes: a shell string
+ * (every builder but one) or argv (`glab mr create`, below). The union is what
+ * keeps the exception visible at every call site instead of a `string` that
+ * silently drops the argv half.
+ */
+export interface ForgeArgvCmd {
+  /** The executable when `argv` is given, the whole shell string otherwise. */
+  cmd: string;
+  argv?: string[];
+}
+
+/**
+ * The most UTF-8 BYTES this module will put in the `-d` argv element.
+ *
+ * WHY: Linux caps a SINGLE argv string at `MAX_ARG_STRLEN` = 131072 BYTES, so a
+ * body at or over that ceiling makes `execFile` fail with E2BIG and the create
+ * dies before `glab` starts. The budget is counted in bytes because the ceiling
+ * is: a CJK body costs three bytes per character, so 60,000 bytes is roughly
+ * 20,000 such characters, where a cap on the CHARACTER count would have waved a
+ * 179,997-byte body straight through to E2BIG. The kept text always carries the
+ * note for its own dropped count, which keeps the element on the side of the
+ * ceiling a body of its own size affords — and 60,000 sits under GitHub's own
+ * 65,536-character PR-body limit, the largest body any driver legitimately needs.
+ */
+export const GLAB_MR_CREATE_BODY_MAX_BYTES = 60_000;
+
+/** The truncation note, naming how many characters the clip dropped. */
+function glabMrCreateTruncationNote(dropped: number): string {
+  return `[pi-rukas: body truncated, ${dropped} characters dropped]`;
+}
+
+/**
+ * Clip `body` for the GitLab argv transport, naming what was dropped.
+ *
+ * The budget is UTF-8 BYTES, matching `MAX_ARG_STRLEN`; `Buffer.byteLength` is
+ * what measures it, since a character count is the wrong unit for a byte ceiling.
+ * The kept text is the longest prefix that fits the budget together with the note
+ * describing its own dropped count, cut on a whole code point: `Array.from` iterates
+ * code points, so slicing its output can never leave half a surrogate pair in the
+ * published description.
+ *
+ * The note is appended on its own line so a reader of the MR sees that the
+ * description is short, not that the author wrote little. The returned text is
+ * always a prefix of what it was given plus that note, which is what keeps it
+ * inside the public-text check the caller ran on the whole body: a checked string
+ * covers every one of its prefixes.
+ */
+function clipGlabMrCreateBody(body: string): string {
+  if (Buffer.byteLength(body, "utf8") <= GLAB_MR_CREATE_BODY_MAX_BYTES) return body;
+  // One code point per element, so the search below can never cut a surrogate pair
+  // and the byte measure of a prefix is what the ceiling actually counts.
+  const keptChars = Array.from(body).slice(0, GLAB_MR_CREATE_BODY_MAX_BYTES);
+  const fit = (count: number): string => keptChars.slice(0, count).join("");
+  const fits = (count: number): boolean =>
+    Buffer.byteLength(`${fit(count)}\n${glabMrCreateTruncationNote(count)}`, "utf8") <=
+    GLAB_MR_CREATE_BODY_MAX_BYTES;
+  // The budget is monotone in the kept count and one code point is the finest cut
+  // that can matter, so a binary search is exact: the loop ends with `low` at the
+  // longest kept prefix whose element (note included) still fits.
+  let low = 0;
+  let high = keptChars.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (fits(mid)) low = mid;
+    else high = mid - 1;
+  }
+  const kept = fit(low);
+  return `${kept}\n${glabMrCreateTruncationNote(keptChars.length - low)}`;
 }
 
 /**
@@ -57,25 +143,63 @@ export function openPrBodyListCmd(state: string): string {
  * The mapper in `forge.ts` (`prCreate`) already handles the plain-text URL
  * shape via `parsePrNumberFromResponse` + `makeMinimalPr`; the trailing
  * `makeMinimalPr` fallback fills in `url` from the parsed value.
+ *
+ * GitLab is the one builder on the argv path, because its body cannot travel
+ * as shell text: the body goes as ONE argv element of `-d`, and `execFile`
+ * never re-parses it. `-d` is used rather than `--description-file` because
+ * every version in range lists it, while `--description-file` arrived in
+ * 1.115.0 and is refused on older builds (`glab mr create --help` on 1.130.0
+ * lists both). The flags are the ones `glab mr create --help` lists:
+ * `-s/--source-branch` (the source is never positional — verified on 1.130.0,
+ * which rejects a bare branch with `unknown command`), `-t/--title`,
+ * `-d/--description`, `-b/--target-branch`, `--draft`, and `-y`, which is what
+ * stops the submission prompt from waiting on a stdin nobody will type into.
+ * There is no `--output json` on any version — on success the subcommand prints
+ * the MR's URL as plain text, which is the shape the mapper reads.
+ * `smoke-tests/test-glab-flags.ts` judges every flag against the subcommand's
+ * own `--help`.
+ *
+ * The `"0"` arm of `PI_ENSEMBLE_GLAB_MR_CREATE` returns the pre-fix shell string
+ * verbatim — a known-broken baseline on every version (its positional source and
+ * `--output` are refused even where `--description-file` is accepted), kept only
+ * so a cycle can be compared against it.
+ *
+ * The clip in `clipGlabMrCreateBody` applies to the argv arm alone, and it is
+ * measured in UTF-8 bytes because `MAX_ARG_STRLEN` is. The GitHub arm and the off
+ * arm carry the body in a FILE, which has no per-argument ceiling, so they receive
+ * the body untouched.
  */
 export function prCreateCmd(
   forge: ForgeType,
   title: string,
   headBranch: string,
-  bodyFile: string,
+  /** The body string on the argv path; the path of a temp FILE elsewhere. */
+  body: string,
   opts: { baseBranch?: string; draft?: boolean } = {},
-): string {
+): ForgeArgvCmd {
   // #1292 — both CLIs spell it `--draft`; a draft is still state OPEN/opened.
   const draftFlag = opts.draft ? " --draft" : "";
   const baseBranch = opts.baseBranch;
   if (forge === "github") {
     const head = baseBranch ? `${shq(baseBranch)}...${shq(headBranch)}` : shq(headBranch);
-    return `gh pr create --title ${shq(title)} --head ${head} --body-file ${shq(bodyFile)}${draftFlag}`;
+    return {
+      cmd: `gh pr create --title ${shq(title)} --head ${head} --body-file ${shq(body)}${draftFlag}`,
+    };
   }
-  // GitLab: NO --head flag — the source branch is positional, and the
-  // target is `--target-branch`.
-  const target = baseBranch ? ` --target-branch ${shq(baseBranch)}` : "";
-  return `glab mr create ${shq(headBranch)} -t ${shq(title)} --description-file ${shq(bodyFile)}${target}${draftFlag} --output json`;
+  if (!glabMrCreateArgvEnabled()) {
+    return {
+      cmd: `glab mr create ${shq(headBranch)} -t ${shq(title)} --description-file ${shq(body)}${baseBranch ? ` --target-branch ${shq(baseBranch)}` : ""}${draftFlag} --output json`,
+    };
+  }
+  // The clip is on the argv arm only, and here rather than in the caller so the
+  // ceiling cannot be bypassed by a call site that builds this command directly.
+  const argv = ["mr", "create", "-s", headBranch, "-t", title, "-d", clipGlabMrCreateBody(body)];
+  if (baseBranch) argv.push("-b", baseBranch);
+  if (opts.draft) argv.push("--draft");
+  // Pinned last and unconditionally: without it glab asks for confirmation and
+  // the driver has no terminal to answer.
+  argv.push("-y");
+  return { cmd: "glab", argv };
 }
 
 /**
@@ -169,7 +293,17 @@ export function prMergeCmd(
   const pin = prMergeHeadPinFlag(forge, headOid);
   if (forge === "github")
     return `gh pr merge ${number} --${method} --delete-branch${subjectFlag}${pin}`;
-  return `glab mr merge ${number} --${method} --auto-merge=false${subjectFlag}${pin}`;
+  // `glab mr merge` has NO `--subject`: its help spells the commit message
+  // `-m/--message` for a merge and `--squash-message` for a squash. Asking for a
+  // squash subject on GitLab therefore has no spelling this builder can emit, and
+  // is refused by name rather than dropped — a driver that composed a subject and
+  // watched it vanish would report a merge commit message the forge never wrote.
+  if (subjectFlag) {
+    throw new Error(
+      "forge pr merge: glab mr merge has no --subject (it takes -m/--message or --squash-message); refusing to drop the composed subject",
+    );
+  }
+  return `glab mr merge ${number} --${method} --auto-merge=false${pin}`;
 }
 
 export function prDiffCmd(forge: ForgeType, number: number): string {

@@ -11,12 +11,14 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { glabCreateEnv, removeGlabCreateEnvDirs } from "./child-forge-env.ts";
 import { execp } from "./exec.ts";
 import { forgeChecks } from "./forge-checks.ts";
 import { ciRunLog as ciRunLogImpl } from "./forge-ci-log.ts";
 import { GH_TERMINAL_CI, GL_TERMINAL_CI, terminalCiFor } from "./forge-ci-terminal.ts";
 import { ciRun as ciRunImpl, ciWatch as ciWatchImpl } from "./forge-ci.ts";
 import * as cmds from "./forge-commands.ts";
+import type { ForgeArgvCmd } from "./forge-commands.ts";
 import { listIssueComments, listPrComments, postPrComment } from "./forge-comments.ts";
 import type { PublicTextCheck } from "./forge-comments.ts";
 import type { ForgeDetection, ForgeType } from "./forge-detect.ts";
@@ -43,6 +45,7 @@ import {
   parsePrNumberFromResponse,
 } from "./forge-mapping.ts";
 import { checkGithubReadiness, checkGitlabReadiness, composeGlReadiness } from "./forge-merge.ts";
+import { createPullRequest } from "./forge-pr-create.ts";
 import { forgePublishTarget } from "./forge-publish-target.ts";
 import { type NormalizedReview, mapReviews } from "./forge-reviews.ts";
 import type { VisibilityFn } from "./public-hygiene-visibility.ts";
@@ -163,12 +166,18 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
   const NO_PUBLIC_TEXT_CHECK = (): Promise<PublicTextCheck> =>
     Promise.resolve({ text: "", rewritten: false });
 
-  const run = async <T>(cmd: string, map: (stdout: string) => T): Promise<T> => {
-    const { stdout } = await execFn(cmd, {
+  const run = async <T>(
+    cmd: string | ForgeArgvCmd,
+    map: (stdout: string) => T,
+    extra?: { env?: NodeJS.ProcessEnv },
+  ): Promise<T> => {
+    const { stdout } = await execFn(typeof cmd === "string" ? cmd : cmd.cmd, {
       cwd,
       maxBuffer: 512 * 1024,
       timeout: DEFAULT_EXEC_TIMEOUT_MS,
+      ...extra,
       ...extraOpts,
+      ...(typeof cmd === "string" ? {} : { argv: cmd.argv }),
     });
     return map(stdout);
   };
@@ -336,33 +345,31 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
 
     prListRaw: (opts) => run(cmds.prListCmd(forge, opts), (stdout) => stdout),
 
-    prCreate: async (title, headBranch, body, opts) => {
-      const checkedTitle = (await checkPublicText("pull request title", title)).text;
-      const checkedBody = (await checkPublicText("pull request body", body)).text;
-      return withBodyFile(`pr-${headBranch.slice(0, 16)}`, checkedBody, (file) =>
-        run(cmds.prCreateCmd(forge, checkedTitle, headBranch, file, opts ?? {}), (stdout) => {
-          // Tolerate both JSON (from --json flag) and plain-text URL responses.
-          const parsed = parsePrNumberFromResponse(stdout);
-          if (!parsed) {
-            throw new Error(
-              `forge pr create: could not parse PR number from response: ${stdout.trim().slice(0, 120)}`,
-            );
-          }
-          if (forge === "github") {
-            try {
-              return mapGhPrWithNumber(asRecord(stdout), parsed.number);
-            } catch {
-              return makeMinimalPr(parsed);
-            }
-          }
-          try {
-            return mapGlMr(asRecord(stdout));
-          } catch {
-            return makeMinimalPr(parsed);
-          }
-        }),
-      );
-    },
+    prCreate: (title, headBranch, body, opts) =>
+      // The public-text checks stay HERE (they are the adapter's publish seam); the
+      // per-forge command shape and its reply mapping live in `forge-pr-create.ts`,
+      // where the gh-shape/GitLab-shape difference is written side by side.
+      checkPublicText("pull request title", title).then((checkedTitle) =>
+        checkPublicText("pull request body", body).then((checkedBody) =>
+          createPullRequest(
+            forge,
+            checkedTitle.text,
+            headBranch,
+            checkedBody.text,
+            opts,
+            run,
+            withBodyFile,
+            // The create owns the teardown of what this builder allocates: the
+            // forge-config dir it mkdtemps is removed whether the create opens
+            // an MR or throws (see `createPullRequest`). A bare getter would
+            // hand the dir out and forget it.
+            () => {
+              const { env, owned } = glabCreateEnv();
+              return { env, dispose: () => removeGlabCreateEnvDirs(owned) };
+            },
+          ),
+        ),
+      ),
 
     prMerge: async (
       number,
