@@ -164,7 +164,7 @@ function unshq(token: string | undefined): string | undefined {
   );
   assert(
     call?.opts?.env !== undefined,
-    "the create is given an explicit env, which strips the forge login and says non-interactive (its stdin is ended by execp's argv form — see test-exec-argv-stdin.ts)",
+    "the create is given an explicit env, which carries the run's own credentials and says non-interactive (its stdin is ended by execp's argv form — see test-exec-argv-stdin.ts)",
   );
   assert(
     (call?.opts?.env as Record<string, string> | undefined)?.CI === "1",
