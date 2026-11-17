@@ -1370,6 +1370,14 @@ Should list the pinned revision SHA. If it lists nothing, the seed is missing fr
 
 PR: [#205](https://github.com/trail-openers/pi-rukas/pull/205)
 
+### Every `vipune` call prints `pthread_setaffinity_np failed … error code: 22`
+
+**Symptom:** `vipune add` and `vipune search` succeed, but first print one `[E:onnxruntime:default, env.cc:374 ThreadMain] pthread_setaffinity_np failed …` line per thread to stderr.
+
+**Cause:** vipune sets no thread count, so onnxruntime sizes its pool to the host's physical cores and pins each thread to one. In a container limited by a cgroup cpuset most of those CPUs are not the container's, and each pin fails. A CPU quota alone (`docker run --cpus`) does not trigger it.
+
+**Fix:** The image sets `ORT_INTRA_OP_NUM_THREADS=1`, which onnxruntime reads itself; an explicit count sets no affinity. Its build smoke step fails on any vipune stderr. Outside the image, export the same variable. If you see it inside `pi-rukas`, your image predates this: `./install.sh` to refresh.
+
 ### "fd not found. Downloading..." / "ripgrep not found. Downloading..." at startup
 
 **Symptom:** First few lines after `pi-rukas` boot show Pi auto-downloading `fd` and `rg` into `~/.pi/agent/bin/`. Adds ~10s of boot time + requires network.
