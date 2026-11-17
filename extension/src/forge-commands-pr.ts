@@ -78,29 +78,62 @@ export interface ForgeArgvCmd {
 }
 
 /**
- * The most characters this module will put in the `-d` argv element.
+ * The most UTF-8 BYTES this module will put in the `-d` argv element.
  *
- * WHY: Linux caps a SINGLE argv string at `MAX_ARG_STRLEN` = 131072 bytes, so a
+ * WHY: Linux caps a SINGLE argv string at `MAX_ARG_STRLEN` = 131072 BYTES, so a
  * body at or over that ceiling makes `execFile` fail with E2BIG and the create
- * dies before `glab` starts. 60,000 sits under GitHub's own 65,536-character
- * PR-body limit, which is the largest body any driver legitimately needs, so
- * this clip can only ever fire on a body that could not have been exec'd.
+ * dies before `glab` starts. The budget is counted in bytes because the ceiling
+ * is: a CJK body costs three bytes per character, so 60,000 bytes is roughly
+ * 20,000 such characters, where a cap on the CHARACTER count would have waved a
+ * 179,997-byte body straight through to E2BIG. The kept text always carries the
+ * note for its own dropped count, which keeps the element on the side of the
+ * ceiling a body of its own size affords — and 60,000 sits under GitHub's own
+ * 65,536-character PR-body limit, the largest body any driver legitimately needs.
  */
-export const GLAB_MR_CREATE_BODY_MAX_CHARS = 60_000;
+export const GLAB_MR_CREATE_BODY_MAX_BYTES = 60_000;
+
+/** The truncation note, naming how many characters the clip dropped. */
+function glabMrCreateTruncationNote(dropped: number): string {
+  return `[pi-rukas: body truncated, ${dropped} characters dropped]`;
+}
 
 /**
  * Clip `body` for the GitLab argv transport, naming what was dropped.
  *
- * The truncation note is appended on its own line so a reader of the MR sees
- * that the description is short, not that the author wrote little. The returned
- * text is always a prefix of what it was given plus that note, which is what
- * keeps it inside the public-text check the caller ran on the whole body: a
- * checked string covers every one of its prefixes.
+ * The budget is UTF-8 BYTES, matching `MAX_ARG_STRLEN`; `Buffer.byteLength` is
+ * what measures it, since a character count is the wrong unit for a byte ceiling.
+ * The kept text is the longest prefix that fits the budget together with the note
+ * describing its own dropped count, cut on a whole code point: `Array.from` iterates
+ * code points, so slicing its output can never leave half a surrogate pair in the
+ * published description.
+ *
+ * The note is appended on its own line so a reader of the MR sees that the
+ * description is short, not that the author wrote little. The returned text is
+ * always a prefix of what it was given plus that note, which is what keeps it
+ * inside the public-text check the caller ran on the whole body: a checked string
+ * covers every one of its prefixes.
  */
 function clipGlabMrCreateBody(body: string): string {
-  if (body.length <= GLAB_MR_CREATE_BODY_MAX_CHARS) return body;
-  const dropped = body.length - GLAB_MR_CREATE_BODY_MAX_CHARS;
-  return `${body.slice(0, GLAB_MR_CREATE_BODY_MAX_CHARS)}\n[pi-rukas: body truncated, ${dropped} characters dropped]`;
+  if (Buffer.byteLength(body, "utf8") <= GLAB_MR_CREATE_BODY_MAX_BYTES) return body;
+  // One code point per element, so the search below can never cut a surrogate pair
+  // and the byte measure of a prefix is what the ceiling actually counts.
+  const keptChars = Array.from(body).slice(0, GLAB_MR_CREATE_BODY_MAX_BYTES);
+  const fit = (count: number): string => keptChars.slice(0, count).join("");
+  const fits = (count: number): boolean =>
+    Buffer.byteLength(`${fit(count)}\n${glabMrCreateTruncationNote(count)}`, "utf8") <=
+    GLAB_MR_CREATE_BODY_MAX_BYTES;
+  // The budget is monotone in the kept count and one code point is the finest cut
+  // that can matter, so a binary search is exact: the loop ends with `low` at the
+  // longest kept prefix whose element (note included) still fits.
+  let low = 0;
+  let high = keptChars.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (fits(mid)) low = mid;
+    else high = mid - 1;
+  }
+  const kept = fit(low);
+  return `${kept}\n${glabMrCreateTruncationNote(keptChars.length - low)}`;
 }
 
 /**
@@ -131,9 +164,10 @@ function clipGlabMrCreateBody(body: string): string {
  * `--output` are refused even where `--description-file` is accepted), kept only
  * so a cycle can be compared against it.
  *
- * The clip in `clipGlabMrCreateBody` applies to the argv arm alone. The GitHub
- * arm and the off arm carry the body in a FILE, which has no per-argument
- * ceiling, so they receive the body untouched.
+ * The clip in `clipGlabMrCreateBody` applies to the argv arm alone, and it is
+ * measured in UTF-8 bytes because `MAX_ARG_STRLEN` is. The GitHub arm and the off
+ * arm carry the body in a FILE, which has no per-argument ceiling, so they receive
+ * the body untouched.
  */
 export function prCreateCmd(
   forge: ForgeType,

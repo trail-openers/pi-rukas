@@ -3,12 +3,18 @@
  * The GitLab MR create's body must stay under Linux's per-argument ceiling.
  *
  * `glab mr create` takes the body as ONE argv element of `-d`, and Linux caps a
- * single argv string at `MAX_ARG_STRLEN` = 131072 bytes. A body at or over that
+ * single argv string at `MAX_ARG_STRLEN` = 131072 BYTES. A body at or over that
  * ceiling therefore makes the exec itself fail with E2BIG and the create dies
  * before `glab` starts — where the file transport the argv path replaced survived
  * any size. `prCreateCmd` clips the body on the argv arm alone, below GitHub's own
  * 65,536-character PR-body limit, so no driver body any forge legitimately accepts
  * is affected.
+ *
+ * The ceiling is measured in BYTES, so the clip counts bytes: a body of CJK text
+ * is three UTF-8 bytes per character, and a cap on the character count would let a
+ * body 1.4× over the exec ceiling through. The kept text is therefore the longest
+ * prefix whose UTF-8 encoding fits the budget, cut on a whole code point — never a
+ * surrogate pair, which would put a lone surrogate into the published description.
  *
  * Split from `test-glab-mr-create-argv.ts` at that seam: this file is the clip and
  * the two file transports it must NOT touch; that one is the argv shape, the reply
@@ -16,7 +22,7 @@
  */
 
 import { createForge } from "../src/forge.ts";
-import { GLAB_MR_CREATE_BODY_MAX_CHARS } from "../src/forge-commands-pr.ts";
+import { GLAB_MR_CREATE_BODY_MAX_BYTES } from "../src/forge-commands-pr.ts";
 import { readFileSync } from "node:fs";
 import type { ForgeExecFn } from "../src/forge-types.ts";
 import type { ForgeDetection } from "../src/forge-detect.ts";
@@ -49,22 +55,39 @@ const BODY = "## Summary\n\n- a body with 'quotes', \"doubles\" and $(not-a-subs
 const MR_URL = "https://gitlab.com/acme/widget/-/merge_requests/17\n";
 const HUGE = "x".repeat(200_000);
 
+/** The truncation note, as the builder words it. It travels in the same argv element. */
+const note = (dropped: number): string => `[pi-rukas: body truncated, ${dropped} characters dropped]`;
+// The note is not free, so the budget is what leaves room for the longest note a
+// body can produce (a 1_000_000-char body is longer than any body here can be).
+const NOTE_ROOM = note(1_000_000).length;
+
+/** Count unpaired surrogate halves — the marker of a clip that split a code point. */
+function loneSurrogates(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = s.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) i++;
+      else n++;
+    } else if (c >= 0xdc00 && c <= 0xdfff) {
+      n++;
+    }
+  }
+  return n;
+}
+
 // ── 1. the argv arm clips, and says it did ─────────────────────────────────
 
 {
-  const note = (dropped: number): string =>
-    `[pi-rukas: body truncated, ${dropped} characters dropped]`;
-  // The note is not free: it travels in the same argv element, so the cap is what
-  // leaves room for the longest note a body can produce.
-  const NOTE_ROOM = note(1_000_000).length;
-
-  // The cap is one named constant, and its value is part of the contract: under
+  // The cap is one named constant, and its unit is part of the contract: the exec
+  // ceiling is in bytes, so a cap on the character count would not be a cap. Under
   // both ceilings, so a bump that would let a body reach E2BIG fails here.
   assert(
-    Number.isInteger(GLAB_MR_CREATE_BODY_MAX_CHARS) &&
-      GLAB_MR_CREATE_BODY_MAX_CHARS > 0 &&
-      GLAB_MR_CREATE_BODY_MAX_CHARS <= 60_000,
-    `the cap is a positive integer at most 60,000 chars (got ${GLAB_MR_CREATE_BODY_MAX_CHARS})`,
+    Number.isInteger(GLAB_MR_CREATE_BODY_MAX_BYTES) &&
+      GLAB_MR_CREATE_BODY_MAX_BYTES > 0 &&
+      GLAB_MR_CREATE_BODY_MAX_BYTES <= 60_000,
+    `the cap is a positive integer at most 60,000 BYTES (got ${GLAB_MR_CREATE_BODY_MAX_BYTES})`,
   );
 
   const seen: { cmd: string; argv?: string[] }[] = [];
@@ -80,27 +103,49 @@ const HUGE = "x".repeat(200_000);
   assert(call?.cmd === "glab", "the huge body still went down the argv arm");
   assert(mr.number === 17, `and the create still reported the MR (${mr.number})`);
   const sent = at("-d") ?? "";
+  const sentBytes = Buffer.byteLength(sent);
   assert(
-    sent.length <= GLAB_MR_CREATE_BODY_MAX_CHARS + NOTE_ROOM,
-    `-d is at most the cap plus the note (got ${sent.length})`,
+    sentBytes <= GLAB_MR_CREATE_BODY_MAX_BYTES + NOTE_ROOM,
+    `-d is at most the byte cap plus the note (got ${sentBytes})`,
   );
   assert(
-    sent.length < HUGE.length,
-    `-d is shorter than the body it was given (${sent.length} < ${HUGE.length})`,
+    sentBytes < 131_072,
+    `-d stays under MAX_ARG_STRLEN — the whole point of the clip (${sentBytes} bytes)`,
   );
   assert(
-    sent.endsWith(note(HUGE.length - GLAB_MR_CREATE_BODY_MAX_CHARS)),
-    `-d ends with the note naming how many chars were dropped (${sent.slice(-72)})`,
+    sentBytes < Buffer.byteLength(HUGE),
+    `-d is shorter than the body it was given (${sentBytes} < ${Buffer.byteLength(HUGE)} bytes)`,
+  );
+  // The kept text is the largest whole-code-point prefix that leaves room for its
+  // own note under the BYTE budget. The note counts CHARACTERS and the budget
+  // counts BYTES, so neither number is derivable from the other by the test — what
+  // is pinned is that the pair is self-consistent and maximal.
+  const kept = sent.slice(0, sent.lastIndexOf("\n["));
+  const dropped = Number(/, (\d+) characters dropped\]$/.exec(sent)?.[1]);
+  assert(
+    Number.isFinite(dropped) && dropped > 0,
+    `the note names a dropped count (${sent.slice(-60)})`,
   );
   assert(
-    sent
-      .slice(GLAB_MR_CREATE_BODY_MAX_CHARS - 1, GLAB_MR_CREATE_BODY_MAX_CHARS + 1)
-      .startsWith("x\n"),
-    "the note sits on its own line, after a newline",
+    Buffer.byteLength(HUGE, "utf8") - Buffer.byteLength(kept, "utf8") >= dropped,
+    `the note's count is covered by what is missing from the kept text (${dropped} claimed)`,
   );
   assert(
-    sent.slice(0, GLAB_MR_CREATE_BODY_MAX_CHARS) ===
-      HUGE.slice(0, GLAB_MR_CREATE_BODY_MAX_CHARS),
+    Buffer.byteLength(kept, "utf8") + Buffer.byteLength(`\n${note(dropped)}`, "utf8") <=
+      GLAB_MR_CREATE_BODY_MAX_BYTES,
+    `the note it printed is one the budget affords (${Buffer.byteLength(kept, "utf8")} kept + note of ${Buffer.byteLength(`\n${note(dropped)}`, "utf8")} bytes)`,
+  );
+  // Maximality is judged against the note the clip actually printed, so it is not
+  // confabulated from a digit count the note never had. The element is at or under
+  // the byte budget with at most slack than the next character's widest encoding,
+  // so no longer prefix of this body could have been exec'd.
+  assert(
+    Buffer.byteLength(sent, "utf8") <= GLAB_MR_CREATE_BODY_MAX_BYTES &&
+      GLAB_MR_CREATE_BODY_MAX_BYTES - Buffer.byteLength(sent, "utf8") < 4,
+    "one code point more would have overflowed the byte budget — the kept text is the longest prefix that fits",
+  );
+  assert(
+    HUGE.startsWith(kept),
     "the kept text is the untouched prefix of the body — still covered by the public-text check",
   );
   assert(
@@ -134,17 +179,147 @@ const HUGE = "x".repeat(200_000);
     return { stdout: MR_URL };
   };
   const edgeForge = createForge(glDetection("acme", "widget"), { execFn: edgeFn });
-  await edgeForge.prCreate(TITLE, BRANCH, "y".repeat(GLAB_MR_CREATE_BODY_MAX_CHARS), {});
+  await edgeForge.prCreate(TITLE, BRANCH, "y".repeat(GLAB_MR_CREATE_BODY_MAX_BYTES), {});
   const edgeArgv = edge[0]?.argv ?? [];
   assert(
-    edgeArgv[edgeArgv.indexOf("-d") + 1] === "y".repeat(GLAB_MR_CREATE_BODY_MAX_CHARS),
-    "a body of exactly the cap is not clipped",
+    edgeArgv[edgeArgv.indexOf("-d") + 1] === "y".repeat(GLAB_MR_CREATE_BODY_MAX_BYTES),
+    "a body of exactly the byte cap is not clipped",
   );
-  await edgeForge.prCreate(TITLE, BRANCH, "y".repeat(GLAB_MR_CREATE_BODY_MAX_CHARS + 1), {});
+  await edgeForge.prCreate(
+    TITLE,
+    BRANCH,
+    "y".repeat(GLAB_MR_CREATE_BODY_MAX_BYTES + 1),
+    {},
+  );
   const overArgv = edge[1]?.argv ?? [];
+  const overSent = overArgv[overArgv.indexOf("-d") + 1] ?? "";
+  const overKept = overSent.slice(0, overSent.lastIndexOf("\n["));
+  const overDropped = Number(/, (\d+) characters dropped\]$/.exec(overSent)?.[1]);
   assert(
-    (overArgv[overArgv.indexOf("-d") + 1] ?? "").endsWith("[pi-rukas: body truncated, 1 characters dropped]"),
-    `one char over the cap is clipped and says one was dropped (${String(overArgv[overArgv.indexOf("-d") + 1]).slice(-48)})`,
+    overSent === `${overKept}\n${note(overDropped)}` &&
+      Buffer.byteLength(overKept, "utf8") >= GLAB_MR_CREATE_BODY_MAX_BYTES - 54 &&
+      Buffer.byteLength(overKept, "utf8") < GLAB_MR_CREATE_BODY_MAX_BYTES,
+    `one byte over the cap keeps as much as the budget affords and says what it dropped (${Buffer.byteLength(overKept, "utf8")} kept, ${overDropped} dropped)`,
+  );
+  assert(
+    Buffer.byteLength(overKept, "utf8") + 1 + Buffer.byteLength(note(1), "utf8") <=
+      GLAB_MR_CREATE_BODY_MAX_BYTES,
+    `the kept prefix is as long as the budget allows (${Buffer.byteLength(overKept, "utf8")} bytes kept)`,
+  );
+}
+
+// ── 2b. the cap is in BYTES, and the cut lands on a code point ─────────────
+
+{
+  // The defect this section exists for: a cap that counts UTF-16 units lets a
+  // 59,999-character CJK body through at 179,997 UTF-8 bytes, which is over
+  // MAX_ARG_STRLEN and dies with E2BIG — exactly the failure the clip replaced.
+  const cjkSeen: { argv?: string[] }[] = [];
+  const cjkFn: ForgeExecFn = async (_cmd, opts) => {
+    cjkSeen.push({ argv: opts?.argv });
+    return { stdout: MR_URL };
+  };
+  const cjkForge = createForge(glDetection("acme", "widget"), { execFn: cjkFn });
+  const CJK = "中".repeat(59_999); // 3 UTF-8 bytes per char, UNDER the old char cap
+  assert(
+    Buffer.byteLength(CJK) > 131_072,
+    `the fixture is a body that could never have been exec'd (${Buffer.byteLength(CJK)} bytes)`,
+  );
+  await cjkForge.prCreate(TITLE, BRANCH, CJK, { baseBranch: "main" });
+  const cjkArgv = cjkSeen[0]?.argv ?? [];
+  const cjkSent = cjkArgv[cjkArgv.indexOf("-d") + 1] ?? "";
+  const cjkBytes = Buffer.byteLength(cjkSent);
+  assert(
+    cjkBytes <= GLAB_MR_CREATE_BODY_MAX_BYTES + note(1_000_000).length,
+    `a 59,999-char CJK body is clipped: its -d is ≤ the byte cap plus the note (got ${cjkBytes})`,
+  );
+  assert(cjkBytes < 131_072, `the clipped CJK -d could actually be exec'd (${cjkBytes} bytes)`);
+  assert(
+    CJK.startsWith(cjkSent.slice(0, cjkSent.lastIndexOf("\n["))),
+    "the kept CJK text is still a prefix of the body it was given",
+  );
+  assert(
+    /\d+ characters dropped\]/.test(cjkSent),
+    `the note names the dropped count for the multibyte body (${cjkSent.slice(-56)})`,
+  );
+
+  // Four-byte emoji: the budget boundary falls inside a surrogate pair, so the
+  // cut must back off to the previous whole code point rather than emit half a
+  // character into the published description.
+  const emojiSeen: { argv?: string[] }[] = [];
+  const emojiFn: ForgeExecFn = async (_cmd, opts) => {
+    emojiSeen.push({ argv: opts?.argv });
+    return { stdout: MR_URL };
+  };
+  const emojiForge = createForge(glDetection("acme", "widget"), { execFn: emojiFn });
+  const EMOJI = "😀".repeat(30_000) + "TAIL";
+  await emojiForge.prCreate(TITLE, BRANCH, EMOJI, {});
+  const emojiArgv = emojiSeen[0]?.argv ?? [];
+  const emojiSent = emojiArgv[emojiArgv.indexOf("-d") + 1] ?? "";
+  const emojiKept = emojiSent.slice(0, emojiSent.lastIndexOf("\n["));
+  assert(
+    Buffer.byteLength(emojiSent) <= GLAB_MR_CREATE_BODY_MAX_BYTES + note(1_000_000).length,
+    `the emoji body's -d is ≤ the byte cap plus the note (got ${Buffer.byteLength(emojiSent)})`,
+  );
+  assert(
+    loneSurrogates(emojiKept) === 0,
+    `no lone surrogate in the kept text (${loneSurrogates(emojiKept)}) — the cut is on a code point`,
+  );
+  assert(
+    EMOJI.startsWith(emojiKept),
+    `the kept emoji text is a prefix cut on a whole code point (${JSON.stringify(emojiKept.slice(-4))})`,
+  );
+
+  // Just under the budget on a multibyte body: nothing is touched, byte for byte.
+  const fitSeen: { argv?: string[] }[] = [];
+  const fitFn: ForgeExecFn = async (_cmd, opts) => {
+    fitSeen.push({ argv: opts?.argv });
+    return { stdout: MR_URL };
+  };
+  const FIT = "中".repeat(GLAB_MR_CREATE_BODY_MAX_BYTES / 3);
+  await createForge(glDetection("acme", "widget"), { execFn: fitFn }).prCreate(
+    TITLE,
+    BRANCH,
+    FIT,
+    {},
+  );
+  const fitArgv = fitSeen[0]?.argv ?? [];
+  assert(
+    Buffer.byteLength(FIT) <= GLAB_MR_CREATE_BODY_MAX_BYTES,
+    `the fitting fixture is under the byte budget (${Buffer.byteLength(FIT)} bytes)`,
+  );
+  assert(
+    fitArgv[fitArgv.indexOf("-d") + 1] === FIT,
+    `a multibyte body just under the byte budget is byte-identical (${String(fitArgv[fitArgv.indexOf("-d") + 1]).length} chars back)`,
+  );
+}
+
+// ── 2c. the clipped multibyte argv survives a real exec ────────────────────
+
+{
+  // The rows above measure the clip against the constant; this one runs the
+  // clipped argv through the same exec the adapter uses, so a clip that counted
+  // the wrong unit would fail here with a real E2BIG rather than an assertion.
+  const { execp } = await import("../src/exec.ts");
+  const CLIPPED = "中".repeat(200_000);
+  const seen: { argv?: string[] }[] = [];
+  const fn: ForgeExecFn = async (_cmd, opts) => {
+    seen.push({ argv: opts?.argv });
+    return { stdout: MR_URL };
+  };
+  await createForge(glDetection("acme", "widget"), { execFn: fn }).prCreate(
+    TITLE,
+    BRANCH,
+    CLIPPED,
+    {},
+  );
+  const argv = seen[0]?.argv ?? [];
+  const bodyElement = argv[argv.indexOf("-d") + 1] ?? "";
+  const real = await execp("true", { argv });
+  assert(
+    real.stdout === "" &&
+      Buffer.byteLength(bodyElement) <= GLAB_MR_CREATE_BODY_MAX_BYTES + note(1_000_000).length,
+    `execp ran the clipped multibyte argv with no E2BIG (${Buffer.byteLength(bodyElement)} bytes in -d)`,
   );
 }
 
