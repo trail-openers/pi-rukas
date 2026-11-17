@@ -1,14 +1,11 @@
 /**
  * lean/review-pass — how a cleared round is reported to the engine.
  *
- * Split from `review.ts`, which passed the size cap once the wave's verification
- * lived beside its decision. These two are the step's *clean* surface: everything
- * about a pass that continues the run, with no gate, no git and no dispatch in it.
- * The step decides; this says what a decision looks like once made. It lives apart
- * for the same reason the round guards do — a rule that can only be reasoned about
- * inside the step gets reasoned about wrongly — and because the clipping rule below
- * is a contract with the state loader that a reader should meet once, in a file whose
- * whole subject is that contract.
+ * Split from `review.ts`, which passed the size cap once the wave's verification lived beside its
+ * decision. These are the step's *clean* surface: everything about a pass that continues the run, with
+ * no gate, no git and no dispatch in it. The step decides; this says what a decision looks like once
+ * made — and the clipping rule below is a contract with the state loader that a reader should meet once,
+ * in a file whose whole subject is that contract.
  */
 
 import { neutraliseEvidence } from "../comment-evidence.ts";
@@ -23,20 +20,15 @@ export { disclosureNote, cleanPass, postFailureNote };
 /**
  * The bounded summary a fixed pass owes the operator for what it DISCLOSED.
  *
- * A non-blocking adversarial pass and the re-review's below-the-bar rows have no
- * other consumer in this step: the frozen driver hands them to the PR body and the
- * lens round's residual post, and lean has no PR body. So the count and the gate's
- * own words ride on the outcome reason — bounded and neutralised, because the
- * reason is a surface the engine stores and the operator reads, not a transcript,
- * and the gate's words are a model's reply. `""` means nothing was disclosed, and
- * then this contributes nothing to the reason at all.
+ * A non-blocking adversarial pass and the re-review's below-the-bar rows have no other consumer here:
+ * the frozen driver hands them to the PR body and the lens round's residual post, and lean has no PR
+ * body. So the count and the gate's words ride on the outcome reason — bounded and neutralised, because
+ * the reason is a stored surface, not a transcript, and the gate's words are a model's reply.
  */
 function disclosureNote(disclosedRows: number, gateText: string): string {
-  // Neutralised first, then clipped: the text is the adversarial pass's own reply,
-  // so it gets the same treatment every other model-authored field gets before it
-  // reaches a stored surface (no fence delimiters, no parsable marker token), and
-  // `neutraliseEvidence`'s own clip is what bounds it — a second `slice` here would
-  // be a second length rule for the same string.
+  // Neutralised first, then clipped: the text is the adversarial pass's own reply, so it gets the
+  // treatment every model-authored field gets before a stored surface, and `neutraliseEvidence`'s own
+  // clip is what bounds it — a second `slice` would be a second length rule for the same string.
   const gate = neutraliseEvidence(gateText.trim());
   if (gate === "" && disclosedRows === 0) return "";
   const parts: string[] = [];
@@ -47,14 +39,10 @@ function disclosureNote(disclosedRows: number, gateText: string): string {
 }
 
 /**
- * What the STEP'S OWN disclosures say when the forge refused one of them.
- * `cleanPass` already carries the lens layer's account of a failed residual post;
- * this is the sibling for the two comments the review step posts itself (the executed
- * acceptance table and the unreviewed-lanes disclosure, both in `review.ts`'s
- * `finally`). A comment the forge refused never changes the verdict — but a reader
- * who cannot see it is missing a disclosure with nothing saying so, so the names of
- * what went missing ride the reason, bounded and neutralised like every other
- * model-authored field on a stored surface. `""` means every post landed.
+ * What the STEP'S OWN disclosures say when the forge refused one of them. `cleanPass` carries the lens
+ * layer's account of a failed residual post; this is the sibling for the comments the review step posts
+ * itself. A refused comment never changes the verdict — but a reader who cannot see it is missing a
+ * disclosure with nothing saying so, so what went missing rides the reason.
  */
 function postFailureNote(owed: string): string {
   const what = neutraliseEvidence(owed);
@@ -63,27 +51,20 @@ function postFailureNote(owed: string): string {
 }
 
 /**
- * The step's pass outcome: the kind, the reason, and the rows — bounded like
- * every other surface that reports rows.
+ * The step's pass outcome: the kind, the reason, and the rows — bounded like every other surface that
+ * reports rows.
  *
- * `DISPATCHES_MAX_ROWS` is the validator's own cap — `specify` clips its merged
- * rows with it, `errorOutcome.ts` clips the throw path, and an unbounded pass was
- * the one arm that could hand the engine a record the loader then rejects, which
- * does not report an over-long run: it drops the step's cost rows entirely,
- * silently under-billing the child that costs the most.
+ * `DISPATCHES_MAX_ROWS` is the validator's own cap. An unbounded pass was the one arm that could hand
+ * the engine a record the loader rejects — which does not report an over-long run, it drops the step's
+ * cost rows entirely and silently under-bills the most expensive child.
  *
- * **`fixed` or `done`.** The one fact the two kinds differ in is whether the fix
- * wave pushed commits; `passKind` reads that pair and says why the answer cannot
- * come from a variable alone (see `fixedFromLog`).
+ * **`fixed` or `done`.** The two kinds differ only in whether the fix wave pushed commits; `passKind`
+ * reads that pair (see `fixedFromLog`).
  *
- * The note a cleared round still owes: `finishLensReview` sets it ONLY on an
- * ISSUES_FOUND round whose disclosure post failed or could not be attempted, so
- * it cannot arrive on a clean verdict — but "cannot happen" is not a reason to
- * drop it, and a note carried into the step and read by nothing is the silent
- * version of the failure it reports. The merge guard's round-cap path refuses a
- * merge until the marker carrying these findings is on the PR
- * (`merge-guard-round-cap.ts`), so a note this step swallowed would cost the run
- * its ability to continue with nobody able to say why.
+ * The note a cleared round still owes: `finishLensReview` sets it only on an ISSUES_FOUND round whose
+ * disclosure post failed, so it cannot arrive on a clean verdict — but a note read by nothing is the
+ * silent version of the failure it reports, and the merge guard's round-cap path refuses a merge until
+ * that marker is on the PR.
  */
 function cleanPass(
   round: LensRound & { head: string },
