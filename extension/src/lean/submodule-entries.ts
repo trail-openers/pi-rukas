@@ -2,21 +2,20 @@
  * lean/submodule-entries — reading a base's `.gitmodules`, and asking git where its submodule
  * bytes live, without either answer being trusted as a fetch source.
  *
- * Two questions the seeding asks of git before it touches anything, both answered by git
- * rather than by parsing a file:
+ * Two questions the seeding asks before it touches anything, both answered by git rather than by
+ * parsing a file:
  *
- *   - WHICH submodules the commit registers (`git config --file .gitmodules --get-regexp
- *     path`). The NAME matters as much as the path: `submodule.<name>` is the section git
- *     reads when an entry is registered or retargeted, so keying on the path would target
- *     nothing while every command exited 0. Exit 1 means the file lists nothing ("none",
- *     ends the pass); above 1 means git could not read it ("could not tell", refuses the
- *     run) — silently skipping an initialisation the base asked for is how a run gets
- *     tested against an empty directory. git's C quoting is undone before anything reaches
- *     an argv, since the name rides on a `-c` and the path on a `git submodule` command.
- *   - WHERE this host holds them: `--git-common-dir` for the shared store,
- *     `--absolute-git-dir` for the tree's own, and the MAIN working tree taken from the
- *     former — never `--show-toplevel`, which inside a linked worktree answers with that
- *     worktree, so the step would seed a submodule from the tree it is populating.
+ *   - WHICH submodules the commit registers. The NAME matters as much as the path:
+ *     `submodule.<name>` is the section git reads when an entry is registered or retargeted, so
+ *     keying on the path would target nothing while every command exited 0. Exit 1 means the file
+ *     lists nothing ("none", ends the pass); above 1 means git could not read it, which refuses
+ *     the run — silently skipping an initialisation the base asked for is how a run gets tested
+ *     against an empty directory. git's C quoting is undone before anything reaches an argv, since
+ *     the name rides on a `-c` and the path on a submodule command.
+ *   - WHERE this host holds them: `--git-common-dir` for the shared store, `--absolute-git-dir`
+ *     for the tree's own, and the MAIN working tree from the former — never `--show-toplevel`,
+ *     which inside a linked worktree answers with that worktree, so the step would seed a
+ *     submodule from the tree it is populating.
  */
 
 import { existsSync } from "node:fs";
@@ -58,38 +57,61 @@ export async function listSubmodules(
   const err = (listed as { __err?: unknown })?.__err;
   if (err !== undefined) {
     const code = (err as { code?: unknown }).code;
-    // 0 listed nothing, 1 is how `--get-regexp` reports no match; anything above 1 is
-    // git failing to read the file — and "could not tell" refuses rather than silently
-    // skipping an initialisation the step was asked to perform.
+    // 0 listed nothing and 1 is `--get-regexp`'s no-match; above 1 is git failing to read the file,
+    // and "could not tell" refuses rather than silently skipping an initialisation the base asked for.
     if (typeof code === "number" && code <= 1) return undefined;
     throw new SpecifyInfraError(
       `could not tell whether ${wt} has submodules: git config --file .gitmodules --get-regexp path exited ${String(code)}`,
     );
   }
   const entries: SubmoduleEntry[] = [];
-  for (const line of (listed as { stdout?: string }).stdout?.split("\n") ?? []) {
-    // git's own quoting is undone before any of this reaches an argv: `--get-regexp`
-    // prints key and value alike in c-style quotes when they contain unusual bytes, and
-    // git accepts octal, hex and unicode escapes inside them. The name goes into a `-c`
-    // argument and the path into a `git submodule` argument, so the value git MEANT is
-    // what has to be handed back, and a token this cannot unquote is the step not
-    // understanding its base — the same refusal as a file it could not read.
+  for (const raw of (listed as { stdout?: string }).stdout?.split("\n") ?? []) {
+    // `--get-regexp` ends its last record with a newline; the empty string after it is not a key
+    // the step failed to read, and refusing it hands back every run whose base carries submodules.
+    const line = raw.trim();
+    if (line === "") continue;
+    // git's own quoting is undone before any of this reaches an argv: `--get-regexp` prints key
+    // and value alike in c-style quotes when they hold unusual bytes, and the name goes into a `-c`
+    // argument while the path goes into a submodule argument — so the value git MEANT is what has
+    // to come back, and a token this cannot unquote is the step not understanding its base.
     //
-    // git prints the WHOLE KEY — `submodule.<name>.path <path>` — so the name is the key with its
-    // `submodule.` prefix and `.path` suffix both taken off, then handed back as `-c
-    // submodule.<name>.url=…`. A name still carrying the prefix would build
+    // git prints the WHOLE KEY, so the name is the key minus its `submodule.` prefix and `.path`
+    // suffix, re-used as `-c submodule.<name>.url=…`. A name still holding the prefix would build
     // `submodule.submodule.<name>.url`, a key git never consults: the entry would seed from the
-    // URL `.gitmodules` records and the whole offline rule would go quiet while every case stayed
-    // green — so the regex REQUIRES the prefix rather than half-parsing the line.
-    const hit = /^submodule\.(?:"((?:[^"\\]|\\.)*)"|([^\s]+?))\.path\s+(.*)$/u.exec(line.trim());
-    const rawName = hit?.[1] ?? hit?.[2];
-    const rawValue = hit?.[3];
-    if (rawName === undefined || rawValue === undefined) continue;
-    const name = unquoteGitConfig(rawName);
-    const value = unquoteGitConfig(rawValue.trim());
+    // recorded URL and the offline rule would go quiet with every case green — so the regex REQUIRES
+    // the prefix rather than half-parsing the line.
+    const hit =
+      /^submodule\.(?:"((?:[^"\\]|\\.)*)"|(.+?))\.path\s+(.*)$/u.exec(line.trim()) ??
+      /^submodule\."(?<name>.*)"\.path\s+(?<value>.*)$/u.exec(line.trim());
+    // The two forms capture at DIFFERENT group numbers — one fixed pair turned every ordinary
+    // submodule into a refusal — so the answer is read by name as well as by position.
+    const rawName = hit?.[1] ?? hit?.[2] ?? hit?.groups?.name;
+    const rawValue = hit?.[3] ?? hit?.groups?.value;
+    // Two alternatives: `--get-regexp` prints a name containing `=` or a space UNQUOTED (measured,
+    // git 2.53) and a tab-containing one C-quoted, so neither branch alone reads every key — and a
+    // skip on a line neither reads would drop a submodule the base registers, the same quiet wrong
+    // answer the filter below exists to prevent. The unquoted branch cannot be `(.*)` either:
+    // `git config` answers a `.`-bearing name as its own section, so a section literally named
+    // `x.path` would read as the name `x.path <path>`.
+    // One refusal for both ways a key fails to be a name and a path — a line the regexes cannot
+    // split, and a pair of tokens the unquoter below cannot prove it read. The base's own line,
+    // verbatim, is what an operator needs to go and look at.
+    const name = rawName === undefined ? undefined : unquoteGitConfig(rawName);
+    const value = rawValue === undefined ? undefined : unquoteGitConfig(rawValue.trim());
     if (name === undefined || value === undefined || value === "")
       throw new SpecifyInfraError(
-        `could not read the submodule list of ${wt}: git config --file .gitmodules --get-regexp path printed ${JSON.stringify(line.trim())}`,
+        `could not read the submodule list of ${wt}: git config --file .gitmodules --get-regexp path printed a key this step cannot split into a name and a path, so it cannot tell which submodules the base registers: ${JSON.stringify(line.trim())}`,
+      );
+    // The name is not a label: it is the KEY of the `-c submodule.<name>.url=…` the seeding names
+    // its source with, and git splits a command-line assignment at its FIRST `=`. A name carrying one
+    // sets a key git never consults (measured, git 2.53: `-c submodule.a=b.url=SRC` leaves
+    // `submodule.a` = `b.url=SRC` and `submodule.a=b.url` unset), so `submodule update` falls back
+    // to the URL the base records while `protocol.file.allow=always` on the same call licenses the
+    // transport — the offline rule failing OPEN to a network fetch with every case green. A quote or
+    // whitespace does the same by moving where git thinks the section ends.
+    if (/[="\s]/u.test(name))
+      throw new SpecifyInfraError(
+        `could not use the submodule name ${JSON.stringify(name)} from ${wt}/.gitmodules: it cannot be named on a command-line config assignment without changing the key git reads, so this step would seed that entry from the URL the base records rather than from this superproject`,
       );
     entries.push({ name, path: value });
   }
@@ -97,11 +119,9 @@ export async function listSubmodules(
 }
 
 /**
- * Undo the one-level C quoting `git config --get-regexp` applies to a token, or
- * `undefined` when the token is not well-formed quoted text.
- *
- * Deliberately not JSON.parse: git's quoting is C quoting — octal, hex and unicode
- * escapes, and a bare token accepted — and the two languages differ. What this cannot
+ * Undo the one-level C quoting `git config --get-regexp` applies to a token, or `undefined` when the
+ * token is not well-formed quoted text. Deliberately not `JSON.parse` — git's quoting is C quoting
+ * (octal, hex and unicode escapes, a bare token accepted) and the two differ — and what this cannot
  * prove it read is reported rather than guessed.
  */
 function unquoteGitConfig(token: string): string | undefined {
@@ -110,6 +130,18 @@ function unquoteGitConfig(token: string): string | undefined {
   const body = token.slice(1, -1);
   let out = "";
   const at = (k: number): string => body[k] ?? "";
+  // The escapes `--get-regexp` emits; `'`, `?` and any other are refused below.
+  const SIMPLE: Record<string, string> = {
+    a: "\x07",
+    b: "\b",
+    f: "\f",
+    n: "\n",
+    r: "\r",
+    t: "\t",
+    v: "\v",
+    "\\": "\\",
+    '"': '"',
+  };
   for (let i = 0; i < body.length; i++) {
     const ch = at(i);
     if (ch !== "\\") {
@@ -118,75 +150,35 @@ function unquoteGitConfig(token: string): string | undefined {
     }
     i++;
     const esc = at(i);
-    switch (esc) {
-      case "a":
-        out += "\x07";
-        break;
-      case "b":
-        out += "\b";
-        break;
-      case "f":
-        out += "\f";
-        break;
-      case "n":
-        out += "\n";
-        break;
-      case "r":
-        out += "\r";
-        break;
-      case "t":
-        out += "\t";
-        break;
-      case "v":
-        out += "\v";
-        break;
-      case "\\":
-        out += "\\";
-        break;
-      case '"':
-        out += '"';
-        break;
-      case "'":
-        out += "'";
-        break;
-      case "?":
-        out += "?";
-        break;
-      case "0":
-      case "1":
-      case "2":
-      case "3":
-      case "4":
-      case "5":
-      case "6":
-      case "7": {
-        // Up to three octal digits, as git's `unquote_c_style` takes them.
-        let digits = esc;
-        while (digits.length < 3 && at(i + 1) >= "0" && at(i + 1) <= "7") {
-          i++;
-          digits += at(i);
-        }
-        out += String.fromCodePoint(Number.parseInt(digits, 8));
-        break;
-      }
-      case "x":
-      case "u":
-      case "U": {
-        const width = esc === "x" ? 2 : esc === "u" ? 4 : 8;
-        const hex = body.slice(i + 1, i + 1 + width);
-        if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length !== width) return undefined;
-        i += width;
-        out += String.fromCodePoint(Number.parseInt(hex, 16));
-        break;
-      }
-      default:
-        return undefined;
+    const simple = SIMPLE[esc];
+    if (simple !== undefined) {
+      out += simple;
+      continue;
     }
+    if (esc >= "0" && esc <= "7") {
+      // Up to three octal digits, as git's `unquote_c_style` takes them.
+      let digits = esc;
+      while (digits.length < 3 && at(i + 1) >= "0" && at(i + 1) <= "7") {
+        i++;
+        digits += at(i);
+      }
+      out += String.fromCodePoint(Number.parseInt(digits, 8));
+      continue;
+    }
+    if (esc === "x" || esc === "u" || esc === "U") {
+      const width = esc === "x" ? 2 : esc === "u" ? 4 : 8;
+      const hex = body.slice(i + 1, i + 1 + width);
+      if (!/^[0-9a-fA-F]+$/u.test(hex) || hex.length !== width) return undefined;
+      i += width;
+      out += String.fromCodePoint(Number.parseInt(hex, 16));
+      continue;
+    }
+    return undefined;
   }
   return out;
 }
 
-/** Is `p` inside `root` (or `root` itself) once `..` and `.` are resolved? */
+/** Is `p` inside `root` (or `root` itself) once `..` and `.` resolve? */
 function inside(root: string, p: string): boolean {
   const r = path.resolve(root);
   const c = path.resolve(p);
@@ -195,10 +187,10 @@ function inside(root: string, p: string): boolean {
 
 /**
  * Where this host holds `sub`, as a source git can clone from, or `undefined` when nothing the
- * OPERATOR'S superproject holds has it (module store first, then checkout — the store is the
- * complete object store, the checkout may be half-cleaned). Every returned path is held to the
- * superproject AFTER resolution: `path.join` preserves `..`, so a base entry named `../elsewhere`
- * would otherwise walk out of it, and the run's own tree must never be the source.
+ * OPERATOR'S superproject holds has it (module store first, then checkout — the store is complete,
+ * the checkout may be half-cleaned). Every returned path is held to the superproject AFTER
+ * resolution: `path.join` preserves `..`, so a base entry named `../elsewhere` would otherwise
+ * walk out of it, and the run's own tree must never be the source.
  */
 export function localSource(
   superproject: string,
@@ -228,8 +220,8 @@ export function localSource(
   }
   const checkout = path.join(superprojectResolved, ...parts);
   // No containment test: the `..`/absolute filter makes `parts` non-escaping, so this join is
-  // inside by construction — a test here would be an unexercised guard. The store branch keeps
-  // its own because a git dir the CALLER names can still sit outside (case c2).
+  // inside by construction — a test here would be an unexercised guard. The store branch keeps its
+  // own because a git dir the CALLER names can still sit outside.
   if (existsSync(path.join(checkout, ".git")) || existsSync(path.join(checkout, "HEAD")))
     return checkout;
   return undefined;

@@ -145,12 +145,24 @@ async function resolveCommitArg(
   return isFullCommitSha(sha) ? sha : undefined;
 }
 
+/** Fold the integration's submodule clause into the `fixed` reason — the run record, PR and
+ *  handoff carry it, where a trace line reaches only whoever already opened the log. */
+export function noteFixDisclosure<R extends { reason?: string }>(
+  pass: R,
+  clause: string | undefined,
+): R {
+  return clause === undefined || pass.reason === undefined
+    ? pass
+    : { ...pass, reason: `${pass.reason}; ${clause}` };
+}
+
 /**
- * What a fix round hands back: the head now on origin, or the budget's verdict
- * when the step's own ceiling stopped the fixer. `stop` is optional on both arms
- * so the caller narrows on one field rather than on a union of two shapes.
+ * What a fix round hands back: the head now on origin, or the budget's verdict when the step's
+ * own ceiling stopped the fixer. `stop` is optional on both arms so the caller narrows on one
+ * field rather than a union of two shapes. `submodules` is the integration's own clause, present
+ * only when there was something to say — handed up because the caller owns the step's reason.
  */
-type FixRoundOutcome = { head?: string; stop?: BudgetFired };
+type FixRoundOutcome = { head?: string; stop?: BudgetFired; submodules?: string };
 
 /**
  * One fix wave: the child in its disposable tree, then its commits moved onto the
@@ -309,10 +321,12 @@ async function integrate(
   // a `node_modules` that `clean -fdx` deleted and nothing rebuilt is a verify
   // that fails for the shape of the tree, not for the diff.
   const provision = await provisionWorktree(deps.exec, repoRoot, wt);
-  // Both notes go to the trace here, and the submodule one ALSO reaches the operator:
-  // this step's reason is what a fix round is judged by, and a fix pushed from a tree
-  // whose submodule was never populated is a fix nobody can re-run. Provisioning keeps
-  // its own wording and its own line, as it always had.
+  // The provisioning note stays trace-only, as it always was. The submodule clause goes BOTH
+  // places: a trace line is read by whoever already opened the log, while the reason the caller
+  // composes lands on the run record, the PR and the handoff — the only surfaces an operator who
+  // never opens the log sees. A fix integrated from a tree whose submodule was never populated is
+  // a fix nobody can re-run. `review.ts` folds it into the `fixed` reason; `build` and `challenge`
+  // make the same fold on their own reports.
   const submodules = submoduleNoteClause(notes);
   if (submodules !== undefined)
     traceWarn(`lean review #${String(issue)}: run worktree after the fix reset — ${submodules}`);
@@ -384,5 +398,6 @@ async function integrate(
   ]);
   if (pushed === undefined)
     return await fail(`could not push the fix to origin/${branch}; the PR does not contain it`);
-  return { head: opts.fixHead };
+  // The disclosure travels with the head; only this place knows the tree was incomplete.
+  return { head: opts.fixHead, ...(submodules === undefined ? {} : { submodules }) };
 }

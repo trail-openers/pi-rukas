@@ -47,13 +47,11 @@ export class SpecifyCommitError extends Error {
   override readonly name = "SpecifyCommitError";
 }
 
-/**
- * The git flags every lean step's git calls carry. The hooks a repository has are
- * somebody else's policy, and a repo-supplied fsmonitor is a program git runs on
- * every status: either could write into a commit the step never captured.
- */
-export const NO_HOOKS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"] as const;
-
+// `NO_HOOKS`, the flags every lean git call carries, arrives from `submodule-reads.ts`, a leaf, so
+// the submodule modules carry it without importing the reset back; it is re-exported for the call
+// sites outside `lean/` that have always read it from here.
+import { NO_HOOKS } from "./submodule-reads.ts";
+export { NO_HOOKS } from "./submodule-reads.ts";
 /** The wall clock on a local git write (`checkout`, `reset`, `worktree add`). */
 const LOCAL_GIT_MS = 120_000;
 /** The wall clock on a short local read (`rev-parse`). */
@@ -297,16 +295,15 @@ export async function resetWorktreeToBase(
       );
     }
   }
-  // What the pass did, kept for the caller: `challenge` and the review fix round fold
-  // it into their own reason, and an unseeded submodule is a fact about the tree they
-  // are about to judge. The clean-tree proof below runs AFTER the pass, so the tree it
-  // proves is the one the child gets — including any gitlink this step left empty.
+  // What the pass did, kept for the caller: `challenge` and the review fix round fold it into
+  // their own reason, since an unseeded submodule is a fact about the tree they are about to
+  // judge. The clean-tree proof below runs AFTER the pass, so the tree it proves is the one the
+  // child gets — including any gitlink this step left empty.
   //
-  // The outer gate is honoured HERE rather than only inside the pass. With the runner
-  // untrusted the claim of that switch is that the step asks git to populate NOTHING,
-  // and a probe issued after the pass would contradict it in the argv even though it
-  // fetches nothing: the pre-fix reset issued no submodule command at all in this shape,
-  // and the case pinning that shape reads the argv the step issued.
+  // The outer gate is honoured HERE, not only inside the pass: with the runner untrusted the
+  // switch's claim is that the step asks git to populate NOTHING, and a probe after the pass
+  // would contradict that in the argv even though it fetches nothing. The case pinning this
+  // shape reads the argv the step issued.
   if (!leanRunnerPreflightEnabled()) return [];
   const notes = await initSubmodules(exec, wt, beforeSubmoduleInit);
   // Two reads decide whether the tree is asked about, and they are decided differently.
@@ -324,13 +321,13 @@ export async function resetWorktreeToBase(
   //     pass that seeded nothing and a pass that seeded nothing-into-place must not be
   //     distinguished by the very probe under test, or the probe decides its own case.
   if (!leanSubmodulesLocalEnabled() || !notes.some((n) => n.kind === "seeded")) return notes;
-  // And then git is asked what the tree actually holds. A step's own account of a pass it
-  // ran is not evidence that the tree ended up populated: `git submodule status` prints
-  // `U` for a gitlink with no git dir behind it, and a seeded submodule whose checkout
-  // does not hold the file its recorded commit names is empty whatever the pass reported.
-  // Both reads are of the tree, never of the source the step chose — which is exactly the
-  // case they catch, a local source that quietly lost its content. Anything this step
-  // already named keeps its own account; these reads only fill silence.
+  // And then git is asked what the tree actually holds, because a step's own account of a pass it
+  // ran is not evidence the tree ended up populated. `git submodule status` marks a gitlink
+  // nothing checked out (`-`, or `U` for an unmerged path — see the parser in
+  // `specify-submodules.ts`), and a seeded submodule whose checkout does not hold the file its
+  // recorded commit names is empty whatever the pass reported. Both reads are of the tree, never
+  // of the source the step chose — which is the case they catch, a local source that quietly lost
+  // its content. Anything this step already named keeps its own account; these reads fill silence.
   const withContent = notes.map((n) =>
     n.kind === "seeded" && n.expect !== undefined && !checkoutHolds(wt, n.path, n.expect)
       ? { ...n, emptyCheckout: true }
@@ -339,20 +336,18 @@ export async function resetWorktreeToBase(
   const state = await submoduleState(exec, wt);
   const claimed = new Set(notes.filter((n) => n.kind !== "seeded").map((n) => n.path));
   const unproven = (state?.unpopulated ?? []).filter((p) => !claimed.has(p));
-  // Three shapes of the same carry. With nothing unproven the notes are already the
-  // account; with nothing in the account at all, git's answer IS the account; and when
-  // both have something, git's finding rides on the first note rather than as a note of
-  // its own, because the clause the caller builds reads one list and a reader must not
-  // have to know which of the two reads produced a path.
+  // Three shapes of the same carry. Nothing unproven: the pass's own account stands. Nothing in
+  // the account at all: git's answer IS the account. Both: git's finding rides on the first note
+  // rather than becoming one of its own, because the clause the caller builds reads one list and a
+  // reader must not have to know which read produced a path. (`withContent.length === 0` already
+  // covers `first === undefined`, so the two empty arms collapse to one.)
   const first = withContent[0];
   const carried: SubmoduleNote[] =
     unproven.length === 0
       ? withContent
-      : withContent.length === 0
+      : first === undefined
         ? notesFor(unproven)
-        : first === undefined
-          ? notesFor(unproven)
-          : [{ ...first, unproven }, ...withContent.slice(1)];
+        : [{ ...first, unproven }, ...withContent.slice(1)];
   // The seeding's ONLY durable write is the submodule's own checkout, which is what the step was
   // asked to create, and which the clean-tree proof below is entitled to see. Retargeting an
   // entry by `submodule set-url` is what used to leave residue: it rewrites `.gitmodules` in this
