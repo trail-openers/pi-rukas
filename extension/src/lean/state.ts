@@ -21,6 +21,7 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { assertDeadline } from "./deadline-record.ts";
+import { type DerivedSpec, assertDerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
 // The verdict SHAPE is re-exported so every caller of the record keeps one
 // import site: `state.ts` says what a run IS, `state-outcome-record.ts` says
 // what a step may report into it, `state-store.ts` says where it lives.
@@ -98,6 +99,19 @@ export function newestDecided(steps: Step[], state: LeanState): Step | undefined
   return decided[decided.length - 1];
 }
 
+/**
+ * The newest decided `verify`'s full head, or `undefined` when it named none.
+ *
+ * The one reader of "which commit did this run's own gate certify", shared by every
+ * step that acts on the certified tree (`ci`'s full tier, `land`'s merge) so they
+ * cannot disagree about what was verified. An outcome that named no full sha — or a
+ * verify that never decided — is `undefined`, never a fallback to checked-out HEAD.
+ */
+export function newestVerifiedHead(steps: Step[]): string | undefined {
+  const head = newestDecided(steps, "verify")?.outcome?.verifiedHead;
+  return typeof head === "string" && isFullCommitSha(head) ? head : undefined;
+}
+
 export interface RunCounters {
   buildAttempts: number;
   challengeDone: boolean;
@@ -136,6 +150,14 @@ export interface LeanRun {
    *  as NO arm: the run keeps working and the caller's own kill ends it — a loud, bounded
    *  failure, never a wrong park. */
   deadlineMs?: number;
+  /**
+   * The contract this run DERIVED for itself (`derive` mode, no block on its
+   * issue). Persisted, not recomputed: a resume must build against the criteria its
+   * earlier steps were graded on and must not bill a second drafting child for a
+   * contract the run holds. Absent is the whole of `require` mode, so old state
+   * files keep loading — same schema version.
+   */
+  derivedSpec?: DerivedSpec;
 }
 
 export const INITIAL_COUNTERS: RunCounters = {
@@ -327,6 +349,7 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
     steps,
     ...(r.result !== undefined ? { result: assertResult(r.result, bad) } : {}),
     ...(r.deadlineMs === undefined ? {} : { deadlineMs: assertDeadline(r.deadlineMs) }),
+    ...(r.derivedSpec === undefined ? {} : { derivedSpec: assertDerivedSpec(r.derivedSpec) }),
   };
 }
 

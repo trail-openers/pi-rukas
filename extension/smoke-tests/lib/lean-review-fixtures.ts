@@ -472,7 +472,7 @@ export {
   PASS_ROWS,
   REVIEW_CHILD_BUDGET,
   REVIEW_PASSES,
-} from "../../src/lean/review.ts";
+} from "../../src/lean/review-waves.ts";
 export type { DispatchUsageRow, FixRunId } from "../../src/lean/step-budget.ts";
 import type { FixRunId as _FixRunId } from "../../src/lean/step-budget.ts";
 /** A tree-run identity the step will accept. `FixRunId` is branded — the brand is what

@@ -56,7 +56,8 @@ import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
-import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
+import { specFor } from "./spec-for.ts";
+import { type PiSpec, readiness } from "./spec.ts";
 import { existsInCommit, fileProblem, pathProblem } from "./specify-path.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
@@ -71,7 +72,7 @@ import {
   specifyWorktreePath,
   validateSubmitRows,
 } from "./specify-tree.ts";
-import type { Outcome } from "./state.ts";
+import type { LeanRun, Outcome } from "./state.ts";
 import {
   type BudgetArms,
   type BudgetOpts,
@@ -119,24 +120,30 @@ interface SpecRead {
 }
 
 /** The spec, re-read from the forge — the same contract the builder worked to. */
-async function specOf(deps: ChallengeDeps, repoRoot: string, issue: number): Promise<SpecRead> {
+async function specOf(
+  deps: ChallengeDeps,
+  repoRoot: string,
+  issue: number,
+  run: LeanRun,
+): Promise<SpecRead> {
   let body: string;
   try {
     body = await deps.fetchIssueBody(repoRoot, issue);
   } catch (err) {
     throw new ChallengeInfraError(`could not read the issue: ${(err as Error).message}`);
   }
-  const parsed = parsePiSpec(body);
-  if (!parsed.ok) throw new ChallengeInfraError(`the issue's spec is unusable: ${parsed.reason}`);
+  // The accessor: same reason as `build`'s re-read.
+  const read = specFor(body, run);
+  if (!read.ok) throw new ChallengeInfraError(`the issue's spec is unusable: ${read.reason}`);
   // The SAME readiness judgement `specify` gates the run on, applied on re-read. The
   // issue is editable while the run is going, so a spec that was ready at `ready` need
   // not be ready now — and the round's whole claim is stated against these criteria. A
   // spec that stops being well-formed cannot be adjudicated, so that is infrastructure,
   // not a verdict.
-  const rules = readiness(parsed.spec);
+  const rules = readiness(read.spec);
   if (rules.length > 0)
     throw new ChallengeInfraError(`the issue's spec is not ready: ${rules.join("; ")}`);
-  return { spec: parsed.spec, body };
+  return { spec: read.spec, body };
 }
 
 // A round can end holding bytes nobody judged, and `verify` refuses a dirty tree:
@@ -273,7 +280,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   const config = await deps.loadConfig(repoRoot, base).catch((err: unknown) => {
     throw new ChallengeInfraError(`could not load the project config: ${(err as Error).message}`);
   });
-  const { spec, body: issueBody } = await specOf(deps, repoRoot, issue);
+  const { spec, body: issueBody } = await specOf(deps, repoRoot, issue, ctx.run);
   const wanted = testCriteria(spec);
   // ONE binding, ONE refusal: `runnerTemplate` is the string the runner needs and
   // `testRunner` is the same string shown to the adversary, so there is exactly

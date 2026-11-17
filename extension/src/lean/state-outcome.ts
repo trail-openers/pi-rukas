@@ -16,6 +16,7 @@ import type { DispatchUsage } from "../types.ts";
 import { HANDOFF_CHANNELS, type HandoffChannel } from "../work-driver-handoff-channel.ts";
 import { CRITERION_ID } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
+import { derivedSpecProblem } from "./state-derived-spec.ts";
 import { reviewBoundProblem, validatedReviewBound } from "./state-dispatches.ts";
 import {
   DISPATCHES_MAX_ROWS,
@@ -125,8 +126,13 @@ export const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challen
  * `review` is in this set but NOT in `BUDGET_STATES`: it pays for a reviewer, six lenses
  * and a fixer per round, so it MUST record cost — but a review breach THROWS rather than
  * routing a `budget` kind, so it owns no `limit`/`value`/`used` trio.
+ *
+ * `ready` is in it for the same reason on a smaller scale: in `derive` intake mode it pays
+ * for the drafting child, and a state outside this set has its rows DROPPED rather than
+ * refused — the cost goes missing silently. Like `review` it arms no child ceiling of its
+ * own (`derive` is its own budget row), so it owns no budget trio.
  */
-export const DISPATCH_STATES: readonly LeanState[] = [...BUDGET_STATES, "review"];
+export const DISPATCH_STATES: readonly LeanState[] = [...BUDGET_STATES, "review", "ready"];
 
 /**
  * Which state is allowed to record which evidence-bearing field. One table, one `includes`
@@ -152,6 +158,14 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // …and the only ones that may name the channel they reported on.
   channel: REPORTING_STATES,
   dispatches: DISPATCH_STATES,
+  // Only `ready` may record a derived contract: it is the one step that reads the
+  // issue, and a derived spec licenses every later step to execute a contract no
+  // author wrote. A step that never ran the deriving child has no evidence for it.
+  derivedSpec: "ready",
+  // …and the same for the commit the run was judged at. A step stamping its own
+  // `baseSha` would anchor a diff, a config read and a verify verdict to a commit the
+  // run never seeded.
+  baseSha: "ready",
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",
@@ -257,6 +271,12 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     (!Array.isArray(oc.failedRules) || oc.failedRules.some((x) => typeof x !== "string"))
   )
     return "outcome failedRules must be a string[]";
+  // The derived contract is the document nine steps execute, so it is held to the
+  // contract's own rules on load rather than carried: see `state-derived-spec.ts`.
+  if (oc.derivedSpec !== undefined) {
+    const derived = derivedSpecProblem(oc.derivedSpec);
+    if (derived !== undefined) return `outcome ${derived}`;
+  }
   // `frozen` is the tamper evidence `build` and `verify` read back, so a value that is not
   // a sha256 is refused rather than carried: a mistyped digest would compare unequal
   // forever and the reader could not tell a broken record from an edited test.

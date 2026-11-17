@@ -23,6 +23,7 @@ import { handoffChannel } from "../work-driver-handoff-channel.ts";
 import { acceptanceComment } from "./review-acceptance.ts";
 import type { ReviewDeps } from "./review-args.ts";
 import { type ReviewBoundRecord, reviewBoundComment } from "./review-bound.ts";
+import type { ContractSource } from "./state-derived-spec.ts";
 import type { Step } from "./state.ts";
 
 /** What the step posts, and what the forge refused. */
@@ -51,13 +52,15 @@ export async function postReviewDisclosures(
   issueBody: string | undefined,
   head: string,
   posts: ReviewPosts,
+  // Threaded so the comment tabulates the run's own contract (see `acceptanceComment`).
+  run: ContractSource = {},
 ): Promise<string | undefined> {
   const forge = handoffChannel() !== "host";
   const post = forge && posts.pr !== undefined ? deps.prComment : undefined;
   if (post === undefined || posts.pr === undefined) return undefined;
   const pr = posts.pr;
   const acceptance =
-    posts.acceptanceTable !== undefined ? acceptanceComment(steps, issueBody, head) : "";
+    posts.acceptanceTable !== undefined ? acceptanceComment(steps, issueBody, head, run) : "";
   const owed: string[] = [];
   if (acceptance !== "")
     await post(repoRoot, pr, acceptance)

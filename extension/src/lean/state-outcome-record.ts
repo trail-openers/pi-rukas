@@ -9,6 +9,7 @@
 
 import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
 import type { ReviewBoundRecord } from "./review-bound.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { RedRecord, ReviewRecord } from "./state-outcome-gates.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
@@ -68,6 +69,17 @@ export interface Outcome {
    * cause. Same shape as `commandNotRunnable`.
    */
   blockedBy?: Record<string, string>;
+  /**
+   * The two fields `ready` owns and the engine copies onto the RUN (see
+   * `applyReadyFacts`): the commit the config was read at, and — for a `derive`
+   * run — the contract the engine drafted for it. The derived spec is the one that
+   * has to be durable: an authored contract can be re-read from the issue on a
+   * resume, a derived one exists nowhere else. Checked on load against the
+   * contract's own rules (`state-derived-spec.ts`), so no record can carry a
+   * document `parsePiSpec` could never have produced.
+   */
+  baseSha?: string;
+  derivedSpec?: DerivedSpec;
   /**
    * `verify` and `ci` only: the tiers this step found red at HEAD whose every
    * failing test ALSO failed at the run's base commit, so the step graded green and

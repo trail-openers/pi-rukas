@@ -78,9 +78,11 @@ export function normalizeProse(s: string): string {
 /**
  * Fenced blocks in a CommonMark body: a run of ≥3 backticks or tildes opens, a run of the same char at least as
  * long closes. Blank lines and indented fences do not break the run. Closes with {@link closesFenceLine}, the
- * rule the other readers share.
+ * rule the other readers share. Exported for `lean/spec-derive.ts`, which reads a block
+ * out of a child's PROSE reply: `parsePiSpec` reads a body whose whole content is the
+ * contract, so a reply that says a word before its fence needs the block located first.
  */
-function fencedBlocks(body: string): { info: string; content: string }[] {
+export function fencedBlocks(body: string): { info: string; content: string }[] {
   const lines = body.split(/\r?\n/);
   const blocks: { info: string; content: string }[] = [];
   let open: { char: string; len: number; info: string; content: string[] } | undefined;
@@ -110,10 +112,15 @@ function fencedBlocks(body: string): { info: string; content: string }[] {
 }
 
 /**
- * The line number (1-based) of the last opening fence that never closed, or undefined when every fence closed.
- * Separate from `fencedBlocks` so the parse result stays "no block" and only the message gains the line.
+ * The line number (1-based) of the last opening fence that never closed, or
+ * undefined when every fence closed. Separate from `fencedBlocks` so the parse
+ * result stays "no block" and only the message gains the truncated line.
+ *
+ * Exported for `lean/spec-for.ts`: a body cut off inside a `pi-spec v1` fence reads
+ * as "no block", and the one accessor that stands in for that reason must be able to
+ * tell it from a body that never carried a contract.
  */
-function unterminatedFenceLine(body: string): number | undefined {
+export function unterminatedFenceLine(body: string): number | undefined {
   const lines = body.split(/\r?\n/);
   let open: { char: string; len: number; line: number } | undefined;
   for (let i = 0; i < lines.length; i++) {

@@ -10,13 +10,13 @@ pi-rukas-headless plan --resume <session> (--answer <file> | --retry | --confirm
 pi-rukas-headless research <topic> [--tier quick|standard|deep|adoption] [--context <text>] [--json]
 pi-rukas-headless agents-md <create|update|check> [root] [file] [--deep] [--json]
 pi-rukas-headless lens-review [--base <ref> --head <ref>] [--since <ref>] [--full] [--context <text>] [--pr <n>] [--json]
-pi-rukas-headless work-lean <issue> [--timeout <minutes>] [--json]
+pi-rukas-headless work-lean <issue> [--timeout <minutes>] [--spec-intake <require|derive>] [--json]
 pi-rukas-headless --capabilities
 ```
 
 - **`work`** — runs one or more work cycles, writes NDJSON v1 progress to stderr, and exits with a code derived from the state file.
 - **`plan`, `research`, `agents-md`, `lens-review`** — run the compiled /plan and /research pipelines, the agents-md verbs and the six-pass review once, on the same headless host. See [Subcommands](#subcommands).
-- **`work-lean`** — runs one issue through the lean engine's phase-1 pipeline once and exits with the code that run's own step log stamped. See [Subcommands](#subcommands).
+- **`work-lean`** — runs one issue through the lean engine's phase-1 pipeline once and exits with the code that run's own step log stamped. `--spec-intake require|derive` overrides, for this run only, both `PI_ENSEMBLE_LEAN_SPEC_INTAKE` and the repo's committed `lean.specIntake`: `derive` lets an issue with no `pi-spec v1` block in by deriving one; `require` is the shipped default and behaves as every run before the knob did. An invalid value is a bad-arguments refusal (exit 40), never a fallback. See [lean.md → Spec intake](lean.md#spec-intake). See [Subcommands](#subcommands).
 - **`--capabilities`** — prints one versioned JSON object describing what *this* build supports and exits 0. It starts no cycle, reads no project repository, and makes no network call.
 
 A headless caller calls `--capabilities` once per image build and once before each cycle. An unknown name in the object means "not supported"; the caller fails closed on it.

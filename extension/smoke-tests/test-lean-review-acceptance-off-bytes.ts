@@ -29,7 +29,7 @@ import { ADVERSARIAL_FINDING_RULE } from "../src/adversarial-prompts.ts";
 import { leanReviewAcceptanceEnabled } from "../src/lean/review-acceptance-switch.ts";
 import { renderSpecCriteriaSection } from "../src/lean/review-criteria.ts";
 import { fixPrompt, lensContext } from "../src/lean/review-deps.ts";
-import { renderAcceptanceSection } from "../src/lean/review-acceptance.ts";
+import { renderAcceptanceSection, acceptanceComment } from "../src/lean/review-acceptance.ts";
 import {
   reviewIssueBlock,
   reviewCriteriaSection,
@@ -132,6 +132,49 @@ function table(): string {
 
 function acceptanceSectionForTest(): string {
   return renderAcceptanceSection(log(), SPEC_BODY);
+}
+
+// ── (1b) the PR comment reads the run's contract, not only the body's ───────
+//
+// The regression this pins: every other contract reader was threaded the run record,
+// `acceptanceComment` was not — so a `derive` run (whose issue carries no block) got
+// `""` back, and the caller's `if (acceptance !== "")` silently posted NOTHING. The
+// one disclosure telling a PR reviewer which criteria the gate executed, and at which
+// head, was missing for exactly the runs whose contract nobody authored.
+{
+  const derived = {
+    spec: {
+      problem: "The meter must refuse the draw once the quota is spent.",
+      criteria: CRITERIA.map((c) => ({ ...c })),
+      size: "M" as const,
+    },
+    model: "some/model",
+    at: 1_700_000_000_000,
+  };
+  const comment = acceptanceComment(log(), NO_SPEC_BODY, HEAD, { derivedSpec: derived });
+  assert(
+    comment.startsWith("## The acceptance table") &&
+      comment.includes("AC1") &&
+      comment.includes(`pass at ${HEAD.slice(0, 12)}`),
+    `(1b) a derived run's comment carries the table of the criteria it was built to (${String(comment.length)} chars) — the mutant: the record not threaded, which renders "" and posts nothing`,
+  );
+  assert(
+    comment.includes("Reviewed head:") && comment.includes(HEAD),
+    "(1b) …and names the head the gates read, as the authored run's comment does",
+  );
+  // The `require` arm's bytes: a run holding no derived contract renders exactly
+  // what it rendered before the record was threaded — nothing at all for a blockless
+  // body, and the same table for an authored one.
+  assert(
+    acceptanceComment(log(), NO_SPEC_BODY, HEAD) === "" &&
+      acceptanceComment(log(), NO_SPEC_BODY, HEAD, {}) === "",
+    "(1b) a run with no derived contract still gets the empty string it always got",
+  );
+  assert(
+    acceptanceComment(log(), SPEC_BODY, HEAD, { derivedSpec: derived }) ===
+      acceptanceComment(log(), SPEC_BODY, HEAD),
+    "(1b) …and an authored block still wins over the record, byte for byte",
+  );
 }
 
 // ── (1) the truth table on the reader, read at CALL time ─────────────────────

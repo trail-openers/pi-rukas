@@ -32,7 +32,6 @@
  * run's branch, and the tree must pass lean's clean-tree gate (`assertTreeClean`).
  */
 
-import { isFullCommitSha } from "../commit-sha.ts";
 import { testsFromLog } from "./build.ts";
 import type { CiDeps } from "./ci-deps.ts";
 import { CI_FULL_TIER, fullTierExcuse } from "./ci-excuse.ts";
@@ -56,6 +55,7 @@ import {
 import type { RedRecord } from "./state-outcome-gates.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { Outcome, Step } from "./state.ts";
+import { newestVerifiedHead } from "./state.ts";
 import { budgetFor } from "./step-budget.ts";
 import { preexistingReason } from "./verify-baseline-excuse.ts";
 import { assertTreeClean } from "./verify-recheck.ts";
@@ -76,17 +76,6 @@ export { CI_POLL_MS };
 function ciMinutes(cfg: WorkConfig): number {
   const configured = budgetFor(cfg, "ci")?.minutes ?? 0;
   return configured > 0 ? configured : (DEFAULT_BUDGETS.ci?.minutes ?? 30);
-}
-
-/** The newest decided `verify`'s full head, which is what CI must run against. */
-function verifiedHead(ctx: HandlerCtx): string | undefined {
-  for (let i = ctx.steps.length - 1; i >= 0; i--) {
-    const step = ctx.steps[i];
-    if (step?.state !== "verify" || step.outcome === undefined) continue;
-    const head = step.outcome.verifiedHead;
-    return typeof head === "string" && isFullCommitSha(head) ? head : undefined;
-  }
-  return undefined;
 }
 
 /**
@@ -190,7 +179,8 @@ function contractCriteria(steps: Step[]): string[] {
  * since (`assertDiskAtVerifiedHead`).
  */
 export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome> {
-  const verified = verifiedHead(ctx);
+  // The newest decided `verify`'s full head, which is what CI must run against.
+  const verified = newestVerifiedHead(ctx.steps);
   if (verified === undefined)
     throw new VerifyInfraError("the step log records no verified head to run CI against");
   const prNumber = prNumberFromLog(ctx.steps);

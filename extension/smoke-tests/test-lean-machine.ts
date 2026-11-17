@@ -112,7 +112,7 @@ for (const state of HANDLER_STATES) {
   }
 }
 assert(
-  pairs === 24,
+  pairs === 25,
   `all ${pairs} forward-routed pairs enumerated — the registry grew or shrank, check the spec`,
 );
 
@@ -227,6 +227,13 @@ for (const [state, kind] of REFUSED_PAIRS) {
 
 assert(next(run("ready"), { kind: "ok" }).state === "specify", "ready ok → specify");
 assert(next(run("ready"), { kind: "fail" }).state === "decline", "ready fail → decline");
+// `infra` is the derivation's route: a model call that died or timed out is not a
+// verdict on the issue, so the run hands back to the operator instead of posting a
+// not-ready comment on the ticket.
+assert(
+  next(run("ready"), { kind: "infra" }).state === "handback",
+  "ready infra → handback (a failed derivation is not the author's fault)",
+);
 assert(next(run("specify"), { kind: "ok" }).state === "build", "specify ok → build");
 assert(
   next(run("specify"), { kind: "no-red-test" }).state === "decline",

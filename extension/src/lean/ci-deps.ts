@@ -34,8 +34,6 @@ export interface CiDeps {
    * `verify.ts`'s `verifyCmdAtHead`.
    */
   readVerifyCmd?: (wt: string, head: string) => Promise<string | undefined>;
-  /** The head the run's gate certified — the commit `readVerifyCmd` reads at. */
-  head?: string;
   /**
    * The full tier's wall clock, in ms. Production leaves it unset and the step takes
    * the `ci` budget's minutes, so a hung suite is an observed timeout rather than a

@@ -75,12 +75,11 @@ import type { DispatchResult, DispatchSpec } from "../types.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { leanReviewAcceptanceEnabled } from "./review-acceptance-switch.ts";
-import { assertHeadIsVerified, renderAcceptanceSection } from "./review-acceptance.ts";
+import { acceptanceSection, assertHeadIsVerified } from "./review-acceptance.ts";
 import { type StepStop, reviewBoundRecord, stepBound, unjudgedLenses } from "./review-bound.ts";
 import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
-import { fixRound, noteFixDisclosure, reviewedHead } from "./review-git.ts";
+import { derivedArg, fixRound, noteFixDisclosure, reviewedHead } from "./review-git.ts";
 import {
   fixRunId,
   fixRunIdFromLog,
@@ -98,6 +97,7 @@ import {
   assertRangedOverTheFix,
 } from "./review-round-guards.ts";
 import { budgetStopped, reviewedPass } from "./review-step.ts";
+import { reviewTally } from "./review-tally.ts";
 import { closeFixTrees } from "./review-tree.ts";
 import {
   CAUSE_NO_CHANGE,
@@ -107,49 +107,19 @@ import {
   lensBlocks,
 } from "./review-waves.ts";
 import { specifyBranch } from "./specify-tree.ts";
-import {
-  ROUNDS_MAX,
-  type ReviewRoundCounts,
-  WAVES_MAX,
-  roundCounts,
-} from "./state-outcome-gates.ts";
-// The error lives in a leaf module so the extracted predicates can throw it without
-// importing this handler back; re-exported so existing import sites keep working.
+// Re-exported so every importer of the step names one module: the error lives in a
+// leaf (so the extracted predicates can throw it without importing this handler back)
+// and the arg shapes live in `review-args.ts`.
 export { ReviewInfraError } from "./review-errors.ts";
-// Re-exported for the same reason: the shapes live in `review-args.ts`.
-export type {
-  AdversarialArgs,
-  FixRunId,
-  LensArgs,
-  LensRound,
-  ReviewDeps,
-} from "./review-args.ts";
-// Re-exported for the same reason: the one-wave policy lives in `review-waves.ts`.
-export {
-  CAUSE_NEW_CRITICAL,
-  CAUSE_NO_CHANGE,
-  CAUSE_NOT_ADDRESSED,
-  LENS_DID_NOT_RUN,
-  PASS_ROWS,
-  REVIEW_CHILD_BUDGET,
-  REVIEW_PASSES,
-} from "./review-waves.ts";
+export type { AdversarialArgs, FixRunId, LensArgs, LensRound, ReviewDeps } from "./review-args.ts";
 import type { LensRound, ReviewDeps, ReviewWave } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
-import type { Outcome, ReviewBoundRecord, Step } from "./state.ts";
+import type { LeanRun, Outcome, ReviewBoundRecord } from "./state.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 import { armBudget, budgetFor } from "./step-budget.ts";
 
 /** The fixer's wall clock, the shape the other steps pass as `childBoundMs`. */
 export const FIX_BOUND_MS = 20 * 60_000;
-
-/** The step's one acceptance section, or `undefined` when it has none — the off arm
- * and an unparsable spec both. Read once, at the top of the step. */
-function acceptanceSection(steps: Step[], issueBody: string | undefined): string | undefined {
-  if (!leanReviewAcceptanceEnabled()) return undefined;
-  const section = renderAcceptanceSection(steps, issueBody);
-  return section === "" ? undefined : section;
-}
 
 /**
  * The `review` step. Returns one of the step's two pass kinds — `done` or
@@ -200,12 +170,10 @@ async function reviewPass(
   const issueBody = await deps.fetchIssueBody(repoRoot, issue).catch((err: unknown) => {
     throw new ReviewInfraError(`could not read the issue: ${(err as Error).message}`);
   });
-  // The executed acceptance table, composed ONCE per step from the run's own step log
-  // (read, never re-executed — `verify` already ran the frozen files at this head) and
-  // handed to both passes of both gates and to the PR comment, so six lens briefs, one
-  // adversarial brief per pass and one comment all carry the SAME bytes. `undefined`
-  // rather than `""` when there is none, which is what makes the off arm byte-identical.
-  const acceptanceTable = acceptanceSection(ctx.steps, issueBody);
+  // The executed acceptance table, composed ONCE per step and handed to both passes
+  // of both gates and the PR comment, so every brief and the comment carry the SAME
+  // bytes. `undefined` rather than `""` when there is none, the off arm's byte-identity.
+  const acceptanceTable = acceptanceSection(ctx.steps, issueBody, ctx.run);
   // The blocking bar, resolved ONCE for the whole step at the run's base commit for the
   // same reason: it is a fact the step needs before it pays for a pass. Never per pass —
   // see `ReviewDeps.reviewThreshold`.
@@ -248,39 +216,19 @@ async function reviewPass(
   // no git read.
   if (acceptanceTable !== undefined)
     await assertHeadIsVerified(deps, ctx.steps, repoRoot, branch, head, rows);
-  /**
-   * The step's account of what it judged, accumulated across the WHOLE step.
-   *
-   * `rows` is the cost of every child; this is the verdict of every round. Both are
-   * step-wide rather than per-pass for the same reason: a host reading the run's record
-   * asks what the review found in total, and a second pass that overwrote the first
-   * would report a CRITICAL the run fixed as one the run never saw. `waves` holds only
-   * the wave that actually pushed — a pass that cleared on the first round bought no
-   * fixer and records no head.
-   */
-  const rounds: ReviewRoundCounts[] = [];
-  const waves: { wave: "full" | "fix"; head: string }[] = [];
-  /** Fold one judged round's rows into the published tally, at the record's own cap. */
-  const noteRound = (round: LensRound): void => {
-    if (rounds.length < ROUNDS_MAX)
-      rounds.push(roundCounts([...round.reported, ...round.advisory]));
-  };
-  /** Record the head the one fix wave pushed, at the record's own cap. */
-  const noteWave = (wave: "full" | "fix", pushed: string): void => {
-    if (waves.length < WAVES_MAX) waves.push({ wave, head: pushed });
-  };
+  // The step's account of what it judged, accumulated across the WHOLE step —
+  // `review-tally.ts` owns the fold and its caps; this is the one handle.
+  const tally = reviewTally();
+  const { noteRound, noteWave } = tally;
   /** What the fix wave could not supply; `withRecord` appends it — see `noteFixDisclosure`. */
   let fixDisclosure: string | undefined;
   /** Attach what the step judged, so every exit — pass, wave, or stopped mid-wave —
    *  carries the rounds it actually judged rather than losing them on a stopped arm. */
-  const withRecord = (pass: Outcome): Outcome => ({
-    ...pass,
-    ...noteFixDisclosure(pass, fixDisclosure),
-    ...(rounds.length === 0 && waves.length === 0
-      ? {}
-      : { review: { rounds: rounds.map((r) => ({ ...r })), waves: waves.map((w) => ({ ...w })) } }),
-    ...(boundRecord === undefined ? {} : { reviewBound: boundRecord }),
-  });
+  const withRecord = (pass: Outcome): Outcome =>
+    tally.attach(
+      { ...pass, ...noteFixDisclosure(pass, fixDisclosure) },
+      boundRecord === undefined ? {} : { reviewBound: boundRecord },
+    );
   // This attempt's number, from the log the engine resumes off — see
   // `reviewAttemptFromLog`. Part of the fix tree's name, so read once here.
   const attempt = reviewAttemptFromLog(ctx.steps);
@@ -308,6 +256,7 @@ async function reviewPass(
       head,
       branch,
       issueBody,
+      ...derivedArg(ctx.run),
       acceptanceTable,
       pr,
       threshold,
@@ -381,6 +330,7 @@ async function reviewPass(
       frozen,
       findings,
       issueBody,
+      ...derivedArg(ctx.run),
       gate: gateName,
       wave: "full",
       // The arm the tree's name carries: "a" when the findings came from the
@@ -423,6 +373,7 @@ async function reviewPass(
       branch,
       wave: "fix" as const,
       issueBody,
+      ...derivedArg(ctx.run),
       acceptanceTable,
       pr,
       carried,
@@ -468,6 +419,7 @@ async function reviewPass(
       head,
       branch,
       issueBody,
+      ...derivedArg(ctx.run),
       acceptanceTable,
       wave: "fix",
       // The CRITICAL bar the second pass judges against: the rows the fix range itself is
@@ -486,11 +438,16 @@ async function reviewPass(
     // still owes the reader what the gate said), in the order and with the failure
     // handling `postReviewDisclosures` states. What the forge refused travels out through
     // `lost`, which `reviewOutcome` reads once this `finally` has settled it.
-    postsOwed = await postReviewDisclosures(deps, repoRoot, issue, ctx.steps, issueBody, head, {
-      pr,
-      acceptanceTable,
-      bound: boundRecord,
-    });
+    postsOwed = await postReviewDisclosures(
+      deps,
+      repoRoot,
+      issue,
+      ctx.steps,
+      issueBody,
+      head,
+      { pr, acceptanceTable, bound: boundRecord },
+      ctx.run,
+    );
     lost.owed = postsOwed;
     // Scoped to THIS attempt's trees (issue, attempt, epoch) — see `closeFixTrees`.
     // An unscoped `-fix-` match would tear down a concurrent attempt's live tree.

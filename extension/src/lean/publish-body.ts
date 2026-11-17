@@ -17,6 +17,7 @@
  * prints that rather than printing nothing.
  */
 
+import type { SpecSource } from "./spec-for.ts";
 import type { PiSpec } from "./spec.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import { PREEXISTING_NAMES_CAP } from "./state-outcome-maps.ts";
@@ -50,6 +51,13 @@ export interface PublishBodyInput {
   spec: PiSpec;
   /** criterion id -> the test files that cover it, merged from the step log. */
   tests: Record<string, string[]>;
+  /**
+   * Where the contract came from. `derived` prints a provenance line under the
+   * table: an authored list says what the author asked for, a derived one says what
+   * a model read into the ticket, and only the second needs checking against the
+   * issue. Absent (or `issue`) prints nothing — today's body, byte for byte.
+   */
+  specSource?: SpecSource;
   /** The verdict the run's own gate last recorded, or none if it never ran. */
   verifyKind: "green" | "red" | undefined;
   /** The 40-hex commit the green verdict was decided about. */
@@ -238,6 +246,11 @@ export function publishBody(o: PublishBodyInput): string {
       `| ${oneLine(c.id, 40)} | ${oneLine(c.text, 200)} | ${c.verify} | ${testsCell(o.tests[c.id])} | ${resultCell(c, o.verifyKind, passedCommands, o.commandNotRunnable)} |`,
     );
   }
+  if (o.specSource === "derived")
+    lines.push(
+      "",
+      "`spec: derived` — the criteria above were read out of the issue by this run (its issue carried no `pi-spec v1` block), not written by an author. Check them against the ticket.",
+    );
   lines.push("", "## Verification");
   lines.push(
     `- head: ${o.verifiedHead === undefined ? "not verified (draft)" : `\`${o.verifiedHead}\``}`,

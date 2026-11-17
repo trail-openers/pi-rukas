@@ -37,8 +37,9 @@ import {
 } from "../adversarial-prompts.ts";
 import { renderSpecCriteriaSection } from "./review-criteria.ts";
 import { leanReviewProblemEnabled } from "./review-problem-switch.ts";
-import { parsePiSpec } from "./spec.ts";
+import { specFor } from "./spec-for.ts";
 import { normalizeProse, stripPiSpecBlocks } from "./spec.ts";
+import type { ContractSource } from "./state-derived-spec.ts";
 
 /** Whether lean's review seats receive the split rendering. */
 export function leanReviewSpecSplitEnabled(): boolean {
@@ -54,9 +55,8 @@ export function renderReviewProse(rawBody: string | undefined): string {
   return fencedIssueBody(stripPiSpecBlocks(rawBody ?? ""));
 }
 
-/** What the lead-in adds to the shared sentence when a criteria section follows:
- * the seat is told where the rest of the contract is, because the body it just
- * read no longer contains it. */
+/** What the lead-in adds when a criteria section follows: the seat is told where the
+ * rest of the contract is, because the body it just read no longer contains it. */
 const CRITERIA_CLAUSE =
   " Its acceptance criteria are printed in their own section below and are not truncated by the issue's length.";
 
@@ -64,24 +64,25 @@ const CRITERIA_CLAUSE =
  * The issue block a lean review seat receives with the split on: the stripped
  * prose and the criteria section, one lead-in over both.
  *
- * `rule` is the seat's own sentence about what to do with the requirements —
- * each print site keeps its copy, because the fixer's rule and a lens's rule are
- * not the same instruction. An absent or blank body yields `""`: no block, and
- * never the string "undefined".
+ * `rule` is the seat's own sentence about what to do with the requirements — each
+ * print site keeps its copy, because the fixer's rule and a lens's rule are not the
+ * same instruction. An absent or blank body yields `""`: no block, never "undefined".
  *
- * The prose block is DROPPED when it is the spec's own `problem` restated — the
- * shape `/plan` files, where the body opens by repeating the statement. The
- * section below prints that statement under the criteria cap, which is far above
- * the prose bound, so a second copy here would be a second contract to disagree
- * with AND a tail the shorter bound already cut. The comparison is the one
- * `leanIssueSection` applies — both sides whitespace-collapsed BEFORE any bound or
- * fence — and it is gated on the problem switch, so with `=0` the prose block
- * always prints exactly as it did today.
+ * The prose block is DROPPED when it is the spec's own `problem` restated — the shape
+ * `/plan` files. The section below prints that statement under the criteria cap, far
+ * above the prose bound, so a second copy here is a second contract to disagree with
+ * AND a tail the shorter bound already cut. The comparison is `leanIssueSection`'s —
+ * both sides whitespace-collapsed BEFORE any bound or fence — gated on the problem
+ * switch, so with `=0` the prose prints exactly as it did today.
  */
-export function renderReviewIssueBlock(rawBody: string | undefined, rule: string): string {
+export function renderReviewIssueBlock(
+  rawBody: string | undefined,
+  rule: string,
+  run: ContractSource = {},
+): string {
   const prose = renderReviewProse(rawBody);
   if (prose === "") return "";
-  const criteria = renderSpecCriteriaSection(rawBody);
+  const criteria = renderSpecCriteriaSection(rawBody, run);
   // With no parsable block the seat reads exactly what it read before the split:
   // same lead-in, same rule, same fenced body. A body that never carried a spec
   // cannot tell the switch is on, which is what makes the no-spec arm of the
@@ -89,7 +90,7 @@ export function renderReviewIssueBlock(rawBody: string | undefined, rule: string
   if (criteria === "") return fencedIssuePromptBlock(rawBody, rule, fencedIssueBody);
   const statementShown =
     leanReviewProblemEnabled() &&
-    normalizeProse(stripPiSpecBlocks(rawBody ?? "")) === normalizeProse(specProblem(rawBody));
+    normalizeProse(stripPiSpecBlocks(rawBody ?? "")) === normalizeProse(specProblem(rawBody, run));
   return `\n\n${ISSUE_PROMPT_LEAD} ${ADVERSARIAL_FINDING_RULE}${CRITERIA_CLAUSE} ${rule}\n\n${
     statementShown ? "" : `${prose}\n\n`
   }${criteria}`;
@@ -97,10 +98,10 @@ export function renderReviewIssueBlock(rawBody: string | undefined, rule: string
 
 /** The parsed spec's `problem`, or `""` when the body carries no readable one —
  * the value the dedupe above compares the stripped prose against. */
-function specProblem(rawBody: string | undefined): string {
+function specProblem(rawBody: string | undefined, run: ContractSource): string {
   if (rawBody === undefined) return "";
-  const parsed = parsePiSpec(rawBody);
-  return parsed.ok ? parsed.spec.problem : "";
+  const read = specFor(rawBody, run);
+  return read.ok ? read.spec.problem : "";
 }
 
 /**
@@ -108,10 +109,13 @@ function specProblem(rawBody: string | undefined): string {
  * loop. The loop takes the prose as `issueBody` and this as its own field, so the
  * switch is read once per gate call and an off arm threads nothing.
  */
-export function reviewCriteriaSection(rawBody: string | undefined): {
+export function reviewCriteriaSection(
+  rawBody: string | undefined,
+  run: ContractSource = {},
+): {
   reviewCriteria?: string;
 } {
-  const criteria = leanReviewSpecSplitEnabled() ? renderSpecCriteriaSection(rawBody) : "";
+  const criteria = leanReviewSpecSplitEnabled() ? renderSpecCriteriaSection(rawBody, run) : "";
   return criteria === "" ? {} : { reviewCriteria: criteria };
 }
 
@@ -133,9 +137,17 @@ export function reviewCriteriaSection(rawBody: string | undefined): {
  * own bound to what it prints. Stripping and re-bounding here would be the second
  * bound `MAX_ISSUE_CHARS` exists to forbid.
  */
-export function seatIssueBody(rawBody: string | undefined): string | undefined {
+export function seatIssueBody(
+  rawBody: string | undefined,
+  run: ContractSource = {},
+): string | undefined {
   if (!leanReviewSpecSplitEnabled()) return rawBody;
-  return renderSpecCriteriaSection(rawBody) === "" ? rawBody : stripPiSpecBlocks(rawBody ?? "");
+  // The same `run` the criteria section is rendered with: this value and that
+  // section are one pair (see the header), and rendering the criteria from the body
+  // alone would split the pair for exactly the runs that carry a derived contract.
+  return renderSpecCriteriaSection(rawBody, run) === ""
+    ? rawBody
+    : stripPiSpecBlocks(rawBody ?? "");
 }
 
 /**
@@ -144,8 +156,12 @@ export function seatIssueBody(rawBody: string | undefined): string | undefined {
  * — the parse, the strip and the criteria render never happen — and with it on it
  * is the split block above.
  */
-export function reviewIssueBlock(rawBody: string | undefined, rule: string): string {
+export function reviewIssueBlock(
+  rawBody: string | undefined,
+  rule: string,
+  run: ContractSource = {},
+): string {
   return leanReviewSpecSplitEnabled()
-    ? renderReviewIssueBlock(rawBody, rule)
+    ? renderReviewIssueBlock(rawBody, rule, run)
     : fencedIssuePromptBlock(rawBody, rule, fencedIssueBody);
 }

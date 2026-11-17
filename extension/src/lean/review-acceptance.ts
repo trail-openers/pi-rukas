@@ -10,61 +10,53 @@
  * spec, `testsFromLog`, and the newest green `verify`'s `verifiedHead`,
  * `commandCriteria` and `commandNotRunnable`. Executed evidence, not model output.
  *
- * A `command` cell reads the gate's OWN per-criterion record and never the gate's
- * overall verdict, which is a claim about the tier rather than about that file. A
- * `test` criterion the log records no frozen test for says `could-not-run`:
- * `specify` answers `uncovered` and hands back before a criterion rides this far,
- * and a renderer that guessed "pass" for an absent map entry would be the loudest
- * lie this file could tell.
- *
- * Both payloads are disarmed at the print site by `fenceText` — a criterion's text
- * is issue authorship and a `commandNotRunnable` reason is prose out of a path
- * check, and this section goes into six lens briefs, one adversarial brief and a
- * public PR comment. The table is bounded to the spec's own criteria count.
- *
+ * A `command` cell reads the gate's OWN per-criterion record, never the gate's
+ * overall verdict (a claim about the tier, not that file). A `test` criterion the
+ * log records no frozen test for says `could-not-run`: `specify` answers
+ * `uncovered` before a criterion rides this far, and a renderer guessing "pass"
+ * for an absent entry would be the loudest lie this file could tell. Both payloads
+ * are disarmed at the print site by `fenceText` (a criterion's text is issue
+ * authorship; a `commandNotRunnable` reason is path-check prose) because this
+ * section reaches six lens briefs, an adversarial brief and a public PR comment.
  * `leanReviewAcceptanceEnabled` gates all of it; this module never consults it, so
  * the step's call sites stay the only place the switch is read.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { testsFromLog } from "./build.ts";
+import { leanReviewAcceptanceEnabled } from "./review-acceptance-switch.ts";
 import type { ReviewDeps } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
-import { parsePiSpec } from "./spec.ts";
+import { specFor } from "./spec-for.ts";
 import { gitQuiet } from "./specify-reset.ts";
+import type { ContractSource } from "./state-derived-spec.ts";
 import type { Step } from "./state.ts";
 import { newestDecided } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
 
-/** The heading the section opens with, in a seat's brief and in the PR comment
- * alike, so both cite the same words for the same table. */
+/** The heading the section opens with, in a seat's brief and the PR comment alike. */
 export const LEAN_REVIEW_ACCEPTANCE_HEADING =
   "## The acceptance table (executed by the gate at the head)";
 
-/** What the seat is told the table is: every cell came from the step that ran it,
- * at the head named in the same section. */
+/** What the seat is told the table is: every cell came from the step that ran it. */
 export const LEAN_REVIEW_ACCEPTANCE_LEAD =
   "Each row is one acceptance criterion of this issue, the frozen test the run recorded for it, and the result the verify step REPORTED for it at the head named below — read off that step's own record, not from a model. `pass at <head>` means that gate executed it there; `could-not-run` and `manual` are the gate's own answers, not this step's guesses. A finding whose fix would contradict a row is not a finding.";
 
-/** The table's own cap and its own clip notice — the bound the criteria and
- * carried-findings blocks at these print sites carry, in words that say WHICH
- * payload was cut (see `review-criteria.ts`). */
+/** The table's cap and clip notice — the bound these print sites carry, naming
+ * WHICH payload was cut (see `review-criteria.ts`). */
 const MAX_TABLE_CHARS = 20_000;
 const TABLE_TRUNCATION_MARKER = "…(acceptance table truncated)";
 
-/** Head clips to the 12 every other lean reason line prints; the reason bound is
- * the one the durable record puts on `commandNotRunnable`, so a cell never carries
- * more than the record could hold. */
+/** Head clips to the 12 every lean reason line prints; the reason bound is the one
+ * the durable record puts on `commandNotRunnable`, so a cell never outgrows the record. */
 const HEAD_CLIP = 12;
 const REASON_MAX_CHARS = 300;
 
-/** The PR comment's own cap on the head it names: a 40-hex oid, with room for the
- * tree-ish a caller may hold. */
+/** The comment's cap on the head it names: a 40-hex oid, with room for a tree-ish. */
 const HEAD_MAX_CHARS = 64;
 
-/** Print bounds per field. The text bound is the one the PR body's criteria table
- * puts on the same field; the branch bound is the fixer's brief's. */
+/** Per-field print bounds, matching the PR body's criteria table and the fixer brief. */
 const ID_MAX_CHARS = 40;
 const TEXT_MAX_CHARS = 200;
 const PATH_MAX_CHARS = 200;
@@ -91,25 +83,27 @@ export interface AcceptanceRow {
   result: string;
 }
 
-/** Did any decided `verify` of this run come back green at all? The renderer's
- * anchor line asks this to tell "a later gate came back red" apart from "no gate
- * ever ran", and the two are different facts for the operator reading the comment.
- * `newestGreenVerify` cannot answer it — it reads the NEWEST decided verify alone. */
-function anyGreenVerify(steps: Step[]): boolean {
-  return steps.some((s) => s.state === "verify" && s.outcome?.kind === "green");
-}
-
-/** The newest DECIDED `verify` whose verdict was green, or `undefined`: a red or
- * errored verify says nothing about a head, and an undecided tail is the engine's
- * replay marker, which says less. */
-function newestGreenVerify(steps: Step[]): Step | undefined {
-  const v = newestDecided(steps, "verify");
-  return v?.outcome?.kind === "green" ? v : undefined;
+/**
+ * What the run's own gate recorded, in the two shapes the table asks for.
+ *
+ * Both read the NEWEST decided `verify` and nothing else: a red or errored verify
+ * says nothing about a head, and an undecided tail is the engine's replay marker,
+ * which says less. `any` is the second question — did ANY decided verify of this
+ * run come back green — and the renderer needs it to tell "a later gate came back
+ * red" apart from "no gate ever ran", two different facts for the operator reading
+ * the comment and one the newest verdict alone cannot distinguish.
+ */
+function greenVerify(steps: Step[]): { step: Step | undefined; any: boolean } {
+  const step = newestDecided(steps, "verify");
+  return {
+    step: step?.outcome?.kind === "green" ? step : undefined,
+    any: steps.some((x) => x.state === "verify" && x.outcome?.kind === "green"),
+  };
 }
 
 /** The head the gate certified, as a full sha or nothing. */
 function certifiedHead(steps: Step[]): string | undefined {
-  const head = newestGreenVerify(steps)?.outcome?.verifiedHead;
+  const head = greenVerify(steps).step?.outcome?.verifiedHead;
   return typeof head === "string" && isFullCommitSha(head) ? head : undefined;
 }
 
@@ -150,7 +144,7 @@ export function acceptanceRows(
   spec: { criteria: { id: string; text: string; verify: AcceptanceRow["verify"] }[] },
 ): AcceptanceRow[] {
   const head = certifiedHead(steps);
-  const green = newestGreenVerify(steps);
+  const green = greenVerify(steps).step;
   const tests = testsFromLog(steps);
   return spec.criteria.map((c) => {
     const paths = tests?.[c.id] ?? [];
@@ -186,21 +180,33 @@ function rowLine(row: AcceptanceRow): string {
 const HEADER = "| Criterion | Requirement | Verify | Frozen tests | Result at head |";
 const DIVIDER = "| --- | --- | --- | --- | --- |";
 
-/** The section a review seat reads, or `""` when it has nothing to say: no body, no
- * parsable block, no criteria. A body whose spec cannot be parsed has no criteria,
- * and a table invented from prose would be a contract nothing enforces. */
-export function renderAcceptanceSection(steps: Step[], issueBody: string | undefined): string {
-  if (issueBody === undefined || issueBody.trim() === "") return "";
-  const parsed = parsePiSpec(issueBody);
-  if (!parsed.ok) return "";
-  const rows = acceptanceRows(steps, parsed.spec);
-  if (rows.length === 0) return "";
+/** The section a review seat reads, or `undefined` when it has nothing to say — the
+ * switch's off arm, and an unparsable spec. Read ONCE per step.
+ *
+ * The switch is read here and never in the renderer, so the step's call sites stay
+ * the only place it is consulted, and "no table" is one answer (`undefined`) rather
+ * than two (`""` and a missing key) a caller could conflate.
+ */
+export function acceptanceSection(
+  steps: Step[],
+  issueBody: string | undefined,
+  run: ContractSource = {},
+): string | undefined {
+  if (!leanReviewAcceptanceEnabled()) return undefined;
+  if (issueBody === undefined || issueBody.trim() === "") return undefined;
+  // The accessor, with the record consulted: a table printed for a derived run must
+  // be a table of the criteria it was built to, and "nothing to say" stays the answer
+  // whenever no contract exists to tabulate — never a table invented from prose.
+  const read = specFor(issueBody, run);
+  if (!read.ok) return undefined;
+  const rows = acceptanceRows(steps, read.spec);
+  if (rows.length === 0) return undefined;
   const head = certifiedHead(steps);
   // Which absence the reader is told about is a separate question from whether there
   // is one: a run whose newest decided verify came back RED (the shape a CI-fix round
   // leaves) and a run that never verified anything both name no head, and a comment
   // that called the first the second would send the operator looking at the wrong gate.
-  const red = head === undefined && anyGreenVerify(steps);
+  const red = head === undefined && greenVerify(steps).any;
   const anchor =
     head === undefined
       ? red
@@ -214,6 +220,16 @@ export function renderAcceptanceSection(steps: Step[], issueBody: string | undef
   )}`;
 }
 
+/** The section with the switch not consulted, for the renderers that own their own
+ * absence rule (`acceptanceComment`) and for the suites that pin the rendering. */
+export function renderAcceptanceSection(
+  steps: Step[],
+  issueBody: string | undefined,
+  run: ContractSource = {},
+): string {
+  return acceptanceSection(steps, issueBody, run) ?? "";
+}
+
 /** The comment the step posts on its own PR, once per attempt. `publish` wrote the
  * PR body before this step ran and nothing re-enters it, so the body cannot carry
  * what this step learned: this is an ADDITIVE disclosure, and the body's own
@@ -224,8 +240,9 @@ export function acceptanceComment(
   steps: Step[],
   issueBody: string | undefined,
   reviewedHead: string,
+  run: ContractSource = {},
 ): string {
-  const section = renderAcceptanceSection(steps, issueBody);
+  const section = renderAcceptanceSection(steps, issueBody, run);
   if (section === "") return "";
   const same = certifiedHead(steps) === reviewedHead;
   return `${section}\n\nReviewed head: \`${oneLine(reviewedHead, HEAD_MAX_CHARS)}\` — the commit the gates read, ${

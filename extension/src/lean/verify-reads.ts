@@ -17,9 +17,12 @@
  * answer" is how a run starts treating one as a verdict.
  */
 import { trace } from "../trace.ts";
-import { parsePiSpec, readiness } from "./spec.ts";
+import { specFor } from "./spec-for.ts";
+import { NO_BLOCK_RULE } from "./spec-intake.ts";
+import { readiness } from "./spec.ts";
 import type { Criterion } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
+import type { ContractSource } from "./state-derived-spec.ts";
 import { oneLine } from "./text-fence.ts";
 import type { CommandCriteriaOutcome } from "./verify-commands.ts";
 import type { Executed } from "./verify-steps.ts";
@@ -102,17 +105,21 @@ export async function specCriteriaFor(
   deps: { fetchIssueBody: (repoRoot: string, issue: number) => Promise<string> },
   repoRoot: string,
   issue: number,
+  run: ContractSource = {},
 ): Promise<Criterion[]> {
   const body = await deps.fetchIssueBody(repoRoot, issue).catch((err: unknown) => {
     throw new VerifyInfraError(
       `could not read the issue's spec for the command criteria: ${(err as Error)?.message ?? String(err)}`,
     );
   });
-  const parsed = parsePiSpec(body);
-  if (!parsed.ok) {
-    if (parsed.reason !== "no pi-spec v1 block")
+  // The accessor, so a derived run is graded against its own criteria. The one
+  // reason this reader treats as "nothing to run" stays the missing-block reason,
+  // and its trace line is today's.
+  const read = specFor(body, run);
+  if (!read.ok) {
+    if (read.reason !== NO_BLOCK_RULE)
       throw new VerifyInfraError(
-        `the issue's spec could not be read for the command criteria: ${parsed.reason}`,
+        `the issue's spec could not be read for the command criteria: ${read.reason}`,
       );
     trace("lean/verify: no command criteria — the issue carries no pi-spec block");
     return [];
@@ -121,12 +128,12 @@ export async function specCriteriaFor(
   // sharing one id, for example, mean the record keys two verdicts on one slot and one reason
   // silently stands for both. `specify` gates the run on this same judgement, so re-reading it
   // here is the rule applied where its violation would otherwise be invisible.
-  const unready = readiness(parsed.spec);
+  const unready = readiness(read.spec);
   if (unready.length > 0)
     throw new VerifyInfraError(
       `the issue's spec is not ready for the command criteria: ${oneLine(unready.join("; "), 300)}`,
     );
-  return parsed.spec.criteria;
+  return read.spec.criteria;
 }
 
 /**

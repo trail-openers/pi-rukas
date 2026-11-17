@@ -49,6 +49,8 @@
 // skipped equality check fails a case instead of passing one.
 
 import { readFileSync } from "node:fs";
+import { execp } from "../src/exec.ts";
+import { loadWorkConfig } from "../src/lean/config.ts";
 import { handlersFor, leanSeed, phase1Handlers, readyOutcome } from "../src/lean/command.ts";
 import { type LeanHandler, runLean } from "../src/lean/engine.ts";
 import { leanStateFile } from "../src/lean/state.ts";
@@ -325,8 +327,12 @@ const { assert, failures } = makeAssert();
     const seeded = await withGh(fakeGhDir(BODY), () =>
       readyOutcome(repo.repoRoot, 4205, { baseSha: repo.originHead }),
     );
+    // The config itself is no longer on the facts — every step reads it through the
+    // loader at the run's base — so this half asks the loader directly that an
+    // absent file is defaults, and `ready` that an absent file is not a refusal.
+    const defaults = await loadWorkConfig(execp, repo.repoRoot, repo.originHead);
     assert(
-      seeded.kind === "ok" && seeded.facts.config?.version === 1,
+      seeded.kind === "ok" && defaults.version === 1,
       `a base with no .pi/work.json still gives ok on defaults (got ${seeded.kind} ${JSON.stringify(seeded.facts.failedRules)})`,
     );
   } finally {

@@ -48,6 +48,11 @@ const REGISTRY: Record<string, { spawnCalls: number; stamp: RegExp }> = {
     stamp: /^\s*workCycleTrust: runOpts\.workCycleTrust,$/m,
   },
   "work-driver-policy.ts": { spawnCalls: 1, stamp: /^\s*workCycleTrust,$/m },
+  // The spec-intake child, reached from `work-driver.ts` through `command.ts` →
+  // `spec-intake.ts`. `deriveDeps(headless)` is the only thing that spawns it, so the
+  // stamp is the run's own threaded mode and the budget's kill reaches the child's
+  // tool tree through its own process group.
+  "lean/spec-derive.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
 };
 
 /** Files allowed to name dispatchCore: its definition and the one cycle entry. */
@@ -70,6 +75,10 @@ const LEAN_REGISTRY: typeof REGISTRY = {
   // judgement is drivable with stubs and no child is ever spawned from the file
   // that decides — which is also why THIS is the file the auditor must see.
   "lean/review-deps.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
+  // The spec-intake child. Same threaded-mode stamp: `deriveDeps(headless)` is the only
+  // thing that spawns it, so a deriving run carries its own mode, and the budget's kill
+  // needs the child's own process group (the dispatch sets `processGroup`).
+  "lean/spec-derive.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
 };
 
 /** The code on each line: whole-line comments dropped, trailing ` // …` comments cut. */
@@ -177,6 +186,9 @@ function auditDispatchSites(
  */
 function auditLeanDispatchSites(readFn: (rel: string) => string): string[] {
   const files = new Map<string, string>();
+  // `lean/spec-derive.ts` needs no root here: the spec-intake child is dispatched from
+  // inside `ready`, so its closure hangs off `command.ts` and section 2 already reaches
+  // it through `command.ts` → `spec-intake.ts`.
   for (const root of ["lean/build.ts", "lean/challenge.ts", "lean/command.ts"]) {
     for (const [rel, text] of closureOf(root, readFn)) {
       if (rel.startsWith("lean/")) files.set(rel, text);

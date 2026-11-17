@@ -144,6 +144,22 @@ function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: numbe
 }
 
 /**
+ * Copy `ready`'s two run-level fields off its verdict onto the run — field by
+ * field, and only from `ready`, because each is owned by that step's verdict
+ * (`OWNER_OF_FIELD`) and a step that cannot own a field on the record cannot put
+ * it there either. The config is NOT one of them: every step reads it through the
+ * loader at the run's base, so a snapshot on the record would be a second answer
+ * to one question, and one a hand edit could change.
+ */
+function applyReadyFacts(run: LeanRun, outcome: Outcome): LeanRun {
+  return {
+    ...run,
+    ...(outcome.baseSha === undefined || run.baseSha !== "" ? {} : { baseSha: outcome.baseSha }),
+    ...(outcome.derivedSpec === undefined ? {} : { derivedSpec: outcome.derivedSpec }),
+  };
+}
+
+/**
  * Has this run earned the merge? The newest DECIDED `verify` AND `ci` both green, and no `draft`
  * left standing. Rules live in `engine-facts.ts`, shared with the stamp check.
  */
@@ -214,26 +230,30 @@ async function settle(
     outcome = errorOutcome(state, err);
   }
   const logged = withOutcome(run, key, outcome, now());
+  // `ready`'s verdict also has to land on the RUN, not only its step record:
+  // `derivedSpec` is the only copy of a contract that exists on no issue. Keyed on the
+  // step's STATE — `key` is `<issue>:<state>:<n>`, so it is never the bare `ready`.
+  const withFacts = state === "ready" ? applyReadyFacts(logged, outcome) : logged;
   if (outcome.kind === "error") {
-    drive.save(logged);
+    drive.save(withFacts);
     return endRun(
       drive,
-      logged,
+      withFacts,
       "handed-back",
       `handler error at ${state}: ${String(outcome.message ?? "")}`,
     );
   }
   // An outcome the table does not list is a handler bug, whatever the state.
   if (!hasTransition(state, outcome.kind)) {
-    drive.save(logged);
+    drive.save(withFacts);
     return endRun(
       drive,
-      logged,
+      withFacts,
       "handed-back",
       `no transition for ${state} + ${JSON.stringify(outcome.kind)}`,
     );
   }
-  return apply(drive, logged, outcome);
+  return apply(drive, withFacts, outcome);
 }
 
 /**

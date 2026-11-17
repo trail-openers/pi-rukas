@@ -48,18 +48,7 @@ import { authorFromRead, evidenceAuthorRead, heldForMergeAuthor } from "./../mer
 import type { HandlerCtx } from "./engine.ts";
 import type { LandDeps } from "./land-deps.ts";
 import { specifyBranch } from "./specify-tree.ts";
-import type { Outcome } from "./state.ts";
-
-/** The newest decided `verify`'s head, which is what the merge must be about. */
-function verifiedHead(ctx: HandlerCtx): string | undefined {
-  for (let i = ctx.steps.length - 1; i >= 0; i--) {
-    const step = ctx.steps[i];
-    if (step?.state !== "verify" || step.outcome === undefined) continue;
-    const head = step.outcome.verifiedHead;
-    return typeof head === "string" && isFullCommitSha(head) ? head : undefined;
-  }
-  return undefined;
-}
+import { type Outcome, newestVerifiedHead } from "./state.ts";
 
 /** The `land` step. Returns `merged` | `refused`; never throws. */
 export async function landOutcome(ctx: HandlerCtx, deps: LandDeps): Promise<Outcome> {
@@ -67,7 +56,8 @@ export async function landOutcome(ctx: HandlerCtx, deps: LandDeps): Promise<Outc
     kind: "refused",
     reason: `land refused: ${why}`,
   });
-  const head = verifiedHead(ctx);
+  // The newest decided `verify`'s head, which is what the merge must be about.
+  const head = newestVerifiedHead(ctx.steps);
   if (head === undefined) return refuse("no verified head on the step log");
 
   // Two states, deliberately not collapsed into one `false`: the `.then` arm is

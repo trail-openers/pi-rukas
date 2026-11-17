@@ -53,6 +53,12 @@ export function loadRun(repoRoot: string, issue: number): LeanRun | undefined {
  * Persist atomically. A failed write cleans up its tmp file and rethrows: the
  * caller keeps the previous good file and learns the save did not happen,
  * rather than believing a step was durable when it was not.
+ *
+ * No validation on the write path. `assertRunFile` is the load gate, and the
+ * suites that pin it hand `saveRun` a deliberately-invalid record and assert
+ * that `loadRun` is the one that refuses it — validating here would fire one
+ * call earlier and test the writer instead of the reader. A derived spec a
+ * `ready` handler attaches is checked by that same reader on the next load.
  */
 export function saveRun(repoRoot: string, run: LeanRun): void {
   const file = leanStateFile(repoRoot, run.issue);

@@ -51,6 +51,7 @@ import { type FixRunId, ReviewInfraError } from "./review.ts";
 import { gitQuiet, resetWorktreeToBase } from "./specify-reset.ts";
 import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
+import type { ContractSource, DerivedSpec } from "./state-derived-spec.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 
 /**
@@ -156,6 +157,15 @@ export function noteFixDisclosure<R extends { reason?: string }>(
     : { ...pass, reason: `${pass.reason}; ${clause}` };
 }
 
+/** The contract's provenance as the review gates' args want it: the KEY is present only
+ *  when the record carries a contract. A `derivedSpec: undefined` is not the same object
+ *  as one without the key, and every brief decides whether to print a contract section by
+ *  whether the field is there — so the guard lives here, once, where no call site can drop
+ *  it. */
+export function derivedArg(run: ContractSource): ContractSource {
+  return run.derivedSpec === undefined ? {} : { derivedSpec: run.derivedSpec };
+}
+
 /**
  * What a fix round hands back: the head now on origin, or the budget's verdict when the step's
  * own ceiling stopped the fixer. `stop` is optional on both arms so the caller narrows on one
@@ -183,6 +193,8 @@ export async function fixRound(
     findings: string;
     /** The run's issue, printed into the fixer's brief (see `ReviewFixArgs`). */
     issueBody: string;
+    /** See `AdversarialArgs.derivedSpec`. */
+    derivedSpec?: DerivedSpec;
     gate: string;
     wave: ReviewWave;
     arm: FixArm;
@@ -213,6 +225,7 @@ export async function fixRound(
       gate: opts.gate,
       findings: opts.findings,
       issueBody: opts.issueBody,
+      ...(opts.derivedSpec === undefined ? {} : { derivedSpec: opts.derivedSpec }),
       worktree: wt,
       repoRoot: ctx.repoRoot,
       branch: specifyBranch(ctx.run.branch, ctx.issue),

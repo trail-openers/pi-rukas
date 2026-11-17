@@ -59,10 +59,11 @@ import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { MAX_BUILD_ATTEMPTS } from "./machine.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
-import { type PiSpec, parsePiSpec } from "./spec.ts";
+import { specFor } from "./spec-for.ts";
+import type { PiSpec } from "./spec.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
-import type { Outcome, Step } from "./state.ts";
+import type { LeanRun, Outcome, Step } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 import {
   type BudgetOpts,
@@ -191,16 +192,23 @@ interface SpecRead {
 }
 
 /** The spec, re-read from the forge: a build against an unread spec is fiction. */
-async function specOf(deps: BuildDeps, repoRoot: string, issue: number): Promise<SpecRead> {
+async function specOf(
+  deps: BuildDeps,
+  repoRoot: string,
+  issue: number,
+  run: LeanRun,
+): Promise<SpecRead> {
   let body: string;
   try {
     body = await deps.fetchIssueBody(repoRoot, issue);
   } catch (err) {
     throw new BuildInfraError(`could not read the issue: ${(err as Error).message}`);
   }
-  const parsed = parsePiSpec(body);
-  if (!parsed.ok) throw new BuildInfraError(`the issue's spec is unusable: ${parsed.reason}`);
-  return { spec: parsed.spec, body };
+  // The accessor: a derived run has no block on its issue, and demanding one here
+  // would hand back over a contract `ready` already validated.
+  const read = specFor(body, run);
+  if (!read.ok) throw new BuildInfraError(`the issue's spec is unusable: ${read.reason}`);
+  return { spec: read.spec, body };
 }
 
 /** The `build` step. Returns `ok` | `exhausted` | `blocked`; THROWS on infrastructure. */
@@ -242,7 +250,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   const config = await deps.loadConfig(repoRoot, base).catch((err: unknown) => {
     throw new BuildInfraError(`could not load the project config: ${(err as Error).message}`);
   });
-  const { spec, body: issueBody } = await specOf(deps, repoRoot, issue);
+  const { spec, body: issueBody } = await specOf(deps, repoRoot, issue, ctx.run);
   // Rounds this run has DISPATCHED and paid for. `buildAttempts` is the authority
   // now the table bills a round on entering `build` and never on leaving it: it
   // counts dispatches, not table visits, so one child a ceiling stopped costs one

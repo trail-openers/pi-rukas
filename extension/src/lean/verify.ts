@@ -273,9 +273,9 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // entry at both `baseSha` and HEAD with `git ls-tree` and hashes the WORKING file against the base blob — an
   // index trick like `--assume-unchanged` keeps the porcelain quiet about a rewritten file.
   //
-  // A spec the gate cannot read is infrastructure and THROWS; only a body that parsed and holds no `command`
-  // criterion is "none".
-  const specCriteria = await specCriteriaFor(deps, repoRoot, issue);
+  // A spec the gate cannot read is infrastructure and THROWS; only a body that parsed and holds
+  // no `command` criterion is "none".
+  const specCriteria = await specCriteriaFor(deps, repoRoot, issue, ctx.run);
   const commands = await commandCriteriaOutcome(
     specCriteria,
     config.verify.test,

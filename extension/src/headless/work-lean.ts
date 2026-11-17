@@ -48,6 +48,7 @@ import { MINUTE_MS } from "../lean/deadline.ts";
 import type { RunLeanResult } from "../lean/engine.ts";
 import { LeanLockError } from "../lean/lock.ts";
 import { EXIT_CODES, exitCodeFor } from "../lean/machine.ts";
+import { applySpecIntakeFlag } from "../lean/spec-intake-switch.ts";
 import { validPrUrl } from "../lean/state-outcome.ts";
 import { type Step, newestDecided } from "../lean/state.ts";
 import { oneLine } from "../lean/text-fence.ts";
@@ -65,9 +66,9 @@ import { leanResultDocument } from "./work-lean-result.ts";
  * value, because the parser must not read the next token as positional for a
  * flag that has none.
  */
-export const WORK_LEAN_FLAGS = ["--json", "--timeout"] as const;
+export const WORK_LEAN_FLAGS = ["--json", "--spec-intake", "--timeout"] as const;
 /** The flags that take one value. Published beside the bools for `--capabilities`. */
-export const WORK_LEAN_VALUE_FLAGS = ["--timeout"] as const;
+export const WORK_LEAN_VALUE_FLAGS = ["--spec-intake", "--timeout"] as const;
 
 /** What a run is described by once its document is built. */
 export interface LeanRunOutcome {
@@ -192,11 +193,15 @@ export async function runWorkLeanVerb(
   });
   if ("error" in p) return badArguments(p.error);
   if (p.positional.length !== 1 || !/^\d+$/.test(p.positional[0] as string)) {
-    return badArguments("usage: work-lean <issue> [--json] [--timeout <minutes>]");
+    return badArguments(
+      "usage: work-lean <issue> [--json] [--timeout <minutes>] [--spec-intake <require|derive>]",
+    );
   }
   const issue = Number.parseInt(p.positional[0] as string, 10);
   if (!Number.isInteger(issue) || issue <= 0) {
-    return badArguments("usage: work-lean <issue> [--json] [--timeout <minutes>]");
+    return badArguments(
+      "usage: work-lean <issue> [--json] [--timeout <minutes>] [--spec-intake <require|derive>]",
+    );
   }
   // `--timeout <minutes>` means the same number to both engines, so it is
   // refused with the same words `work`'s parser uses and reaches the engine as
@@ -210,6 +215,14 @@ export async function runWorkLeanVerb(
     }
     timeoutMs = minutes * MINUTE_MS;
   }
+  // `--spec-intake <mode>` overrides both the env and the committed
+  // `lean.specIntake` for THIS run: it is the host's word on whether a prose
+  // ticket may be derived into a contract, and a host driving one issue at a
+  // time should not have to edit the repo's config or the shared env to say it.
+  // Written as late as it can be (see `applySpecIntakeFlag`) because `process.env`
+  // is process-wide and a stale value would arm the next run in this host.
+  const intakeRefusal = applySpecIntakeFlag(p.value.get("--spec-intake"));
+  if (intakeRefusal !== undefined) return badArguments(intakeRefusal);
   // Every host send goes through here. `sendUserMessage` is a host seam, and a
   // host whose chat channel throws (a closed stream, a Pi mid-turn rejection)
   // must not turn a run that FINISHED into an escaped exception out of the

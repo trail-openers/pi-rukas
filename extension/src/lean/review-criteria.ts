@@ -26,7 +26,8 @@
  */
 import { leanReviewProblemEnabled } from "./review-problem-switch.ts";
 import { criteriaBlock } from "./spec-blocks.ts";
-import { parsePiSpec } from "./spec.ts";
+import { specFor } from "./spec-for.ts";
+import type { ContractSource } from "./state-derived-spec.ts";
 import { fenceText } from "./text-fence.ts";
 
 /** The cap on the rendered criteria section — the bound the carried-findings block
@@ -37,12 +38,10 @@ const MAX_CRITERIA_CHARS = 20_000;
  * so neither half is cut shorter by the other's length. */
 const MAX_PROBLEM_CHARS = 20_000;
 
-/** What the criteria fence says when it clipped. Deliberately NOT the prose block's
- * marker: two cuts that read alike cannot be told apart by the child weighing them. */
+/** Each fence's own clip notice. Deliberately two different markers: two cuts that
+ * read alike cannot be told apart by the child weighing them, and a seat cannot
+ * weigh a cut contract it cannot locate. */
 const CRITERIA_TRUNCATION_MARKER = "…(criteria truncated)";
-
-/** What the statement's fence says when IT clipped — its own words, for the same
- * reason: a seat cannot weigh a cut contract it cannot locate. */
 const PROBLEM_TRUNCATION_MARKER = "…(problem truncated)";
 
 /** Names where the ids come from, so a reviewer can cite one back. */
@@ -54,19 +53,16 @@ export const LEAN_REVIEW_CRITERIA_HEADING = "## The acceptance criteria (pi-spec
 export const LEAN_REVIEW_CRITERIA_LEAD =
   "Every criterion below is a requirement of this issue, printed in full up to its own cap, with its own marker when that cap cut it. A finding whose fix would contradict one is not a finding.";
 
-/** What the seat is told the block above the list is, and what to make of the
- * prose it may have come from. Both halves hold on both shapes: the prose is
- * always the shorter-bound thing, and on the shape where it only restates this
- * statement the renderer omits it — so the sentence never claims the brief
- * contains issue text it does not. */
+/** What the seat is told the block above the list is, and what to make of the prose it
+ * may have come from. Both halves hold on both shapes: the prose is always the shorter-
+ * bound thing, and where it only restates this statement the renderer omits it — so the
+ * sentence never claims the brief contains issue text it does not. */
 export const LEAN_REVIEW_PROBLEM_LEAD =
   "The statement of the problem this run is for, printed in full up to its own cap, with its own marker when that cap cut it. The issue's prose is bounded far shorter, and is omitted when it only restates this, so this is the whole of what the run was asked to do.";
 
-/** The statement's payload: `fenceText`'s disarm at its own cap, whose clip notice
- * is this payload's own marker. The marker is handed to the renderer rather than
- * substituted into its output, so issue text that quotes the OTHER payload's marker
- * cannot be mistaken for this fence's cut — the notice is written once, at the tail,
- * and no regex reaches back into the kept bytes to choose which occurrence to rewrite. */
+/** The statement's payload: `fenceText`'s disarm at its own cap. The marker is handed
+ * to the renderer rather than substituted into its output, so issue text that quotes the
+ * OTHER payload's marker cannot be mistaken for this fence's cut. */
 function fenceProblem(problem: string): string {
   return fenceText(problem, MAX_PROBLEM_CHARS, PROBLEM_TRUNCATION_MARKER);
 }
@@ -88,14 +84,20 @@ function fenceCriteria(block: string): string {
  * render: two readers of one knob, read at two moments, is how an off state ends
  * up printing half of itself.
  */
-export function renderSpecCriteriaSection(rawBody: string | undefined): string {
+export function renderSpecCriteriaSection(
+  rawBody: string | undefined,
+  run: ContractSource = {},
+): string {
   if (rawBody === undefined || rawBody.trim() === "") return "";
-  const parsed = parsePiSpec(rawBody);
-  if (!parsed.ok) return "";
-  const block = criteriaBlock(parsed.spec);
+  // The accessor, so the criteria a seat is judged against are the criteria the
+  // run was built to. A run with no contract anywhere still returns `""` and the
+  // raw-body fallbacks elsewhere stay in force.
+  const read = specFor(rawBody, run);
+  if (!read.ok) return "";
+  const block = criteriaBlock(read.spec);
   if (block.trim() === "") return "";
   const lead = leanReviewProblemEnabled()
-    ? `${LEAN_REVIEW_PROBLEM_LEAD}\n\n${fenceProblem(parsed.spec.problem)}\n\n`
+    ? `${LEAN_REVIEW_PROBLEM_LEAD}\n\n${fenceProblem(read.spec.problem)}\n\n`
     : "";
   return `${LEAN_REVIEW_CRITERIA_HEADING}\n\n${LEAN_REVIEW_CRITERIA_LEAD}\n\n${lead}${fenceCriteria(block)}`;
 }
