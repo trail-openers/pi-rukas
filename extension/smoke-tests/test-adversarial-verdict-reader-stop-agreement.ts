@@ -423,6 +423,17 @@ const SHAPES: Array<[string, string, boolean | "agree"?]> = [
       "a heading whose hashes are followed straight by the token, with no space (`VERDICT_HEADING_RE`'s `\\s*` accepts `###VERDICT` where the loop's heading pattern demands at least one space)",
       "Findings above.\n\n###VERDICT\nAPPROVED",
     ],
+    // A lone `\r` is a line ending to CommonMark's line-splitter and to nothing
+    // here: the loop's split is on `\n` with ONE trailing `\r` per line stripped,
+    // so a CR-only reply is one line and a `$`-anchored column-0 rule sees a token
+    // buried after the first line's text. The stop's reader is not anchored, so it
+    // reads the value straight through the carriage return. Safe direction — the
+    // child keeps reviewing — and not this reader's to close: a reply whose only
+    // line ending is `\r` is not something a reviewer child writes.
+    [
+      "a CR-only (lone `\\r`) line ending: the loop splits on `\\n` and strips one trailing `\\r`, so the token is not at the start of any line it sees, while `readEnumMarker` is unanchored and reads through the carriage return",
+      "Findings above.\rVERDICT: APPROVED",
+    ],
   ];
   for (const [label, reply] of diverging) {
     const stop = stopReads(reply);

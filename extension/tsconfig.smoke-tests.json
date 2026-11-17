@@ -462,6 +462,7 @@
     "smoke-tests/test-lean-spec-intake-state.ts",
     "smoke-tests/lib/lean-review-acceptance-fixtures.ts",
     "smoke-tests/test-lean-review-acceptance-briefs.ts",
-    "smoke-tests/test-lean-review-acceptance-briefs-derived.ts"
+    "smoke-tests/test-lean-review-acceptance-briefs-derived.ts",
+    "smoke-tests/test-adversarial-verdict-fence-matrix.ts"
   ]
 }

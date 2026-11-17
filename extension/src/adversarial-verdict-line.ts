@@ -32,36 +32,51 @@ function statusAlt_(): string {
   return statusAlt;
 }
 
-/** A line that opens or closes a ``` or ~~~ fenced block. `~~~` needs three
- *  markers, like CommonMark: `~~x~~` is a strikethrough idiom, and reading two
- *  tildes as a fence would fence half a report.
+/** A line whose run of fence characters makes it a delimiter rather than prose:
+ *  any leading whitespace, then a run of three or more of ONE fence character. The
+ *  class holds backtick and tilde and no quantifier crosses between them, so a run
+ *  that mixes the two is not a delimiter, and `~~~` needs three markers like
+ *  CommonMark: `~~x~~` is a strikethrough idiom, and reading two tildes as a fence
+ *  would fence half a report.
  *
- *  This is only the SHAPE of a fence line, not its role. A fence has direction —
- *  an opener is closed only by a bare run of the SAME character at least as long
- *  — and a reader that asks "how many of these sit above me" (a parity count) gets
- *  that direction wrong in both directions: a ``` line inside a ```` block flips
- *  the count and puts a forged signature OUTSIDE a block the reviewer pasted, and
- *  a ```js opener whose only closer is two backticks flips it back.
- *  `fencePositions` below is the walk that answers the question; this pattern is
- *  what a caller uses to recognise a delimiter line on its own. */
-export const FENCE_RE = /^ {0,3}(```|~~~)/;
+ *  This is the SHAPE of a delimiter line and deliberately no more than the shape: it
+ *  says nothing about what follows the run, so no spelling of an info string can make
+ *  a line that opens nothing. `fencePositions` below decides the ROLE of such a line
+ *  — opener, closer, or a delimiter the walk treats as an opener because no block is
+ *  open — and the candidate walk in `adversarial-verdict-read.ts` asks only whether a
+ *  line is a delimiter at all, since no signature begins on one. Both ask it of this
+ *  one predicate rather than keeping their own pattern, which is what keeps the two
+ *  from disagreeing about what a delimiter looks like.
+ *
+ *  The indent is `[ \t]*` rather than CommonMark's three spaces because a line
+ *  indented 4+ spaces or by a tab is a fence the reviewer is QUOTING, and a reader
+ *  that opened nothing there let a column-0 signature below it out-rank a real one —
+ *  fencing more lines is the only direction this may ever err in. The line is
+ *  ANCHORED at the start because a line that merely CONTAINS a fence run is prose,
+ *  not a delimiter: `prose ``` inline` must not fence the rest of a report.
+ *
+ *  A reader that asks "how many of these sit above me" (a parity count) gets the
+ *  direction wrong in both directions: a ``` line inside a ```` block flips the count
+ *  and puts a forged signature OUTSIDE a block the reviewer pasted, and a ```js
+ *  opener whose only closer is two backticks flips it back. `fencePositions` below is
+ *  the walk that answers the question; this pattern is what a caller uses to recognise
+ *  a delimiter line on its own. */
+export const FENCE_RE = /^[ \t]*(`{3,}|~{3,})/;
 
-/** A fence line in CommonMark's sense: any leading whitespace, then a run of three
- *  or more of ONE fence character, then either nothing but spaces (a closer, or a
- *  bare opener) or an info string (an opener only). Only a BACKTICK fence refuses
- *  its own character in the info string, so the info class excludes backticks and
- *  nothing else: `~~~ ~~~` and `~~~x~~~` are openers, while a two-tilde run is never
- *  a delimiter at all and leaves `~~x~~ text` the ordinary prose line it is. The
- *  indent is `[ \t]*` rather than CommonMark's three spaces because a line indented
- *  4+ spaces or by a tab is a fence the reviewer is QUOTING, and a reader that
- *  opened nothing there let a column-0 signature below it out-rank a real one —
- *  fencing more lines is the only direction this may ever err in. The whole line is
- *  anchored because a line that merely CONTAINS a backtick run is prose, not a
- *  delimiter. */
-const FENCE_LINE_FULL_RE = /^[ \t]*(`{3,}|~{3,})([^`]*)$/;
+/** A delimiter line's fence character and run length, or null when the line is
+ *  prose. The walk below is the only caller: it needs the run's character and
+ *  length to decide the closer, and asks nothing else of the line. What follows the
+ *  run is an info string to CommonMark and is not consulted here — which is the whole
+ *  difference between this walk and a reader that follows the spec. */
+function fenceRun(line: string): { char: string; length: number } | null {
+  const hit = FENCE_RE.exec(line);
+  if (hit === null) return null;
+  const run = hit[1] as string;
+  return { char: run[0] as string, length: run.length };
+}
 
-/** Which side of a fenced block a line sits on, decided by a CommonMark fence walk
- *  rather than a parity count.
+/** Which side of a fenced block a line sits on, decided by a fence walk rather
+ *  than a parity count.
  *
  *  `outside` — no fence was open above it. `inside` — an opener above it is still
  *  open at this line, which includes an opener the reply never closed: a reviewer
@@ -69,31 +84,38 @@ const FENCE_LINE_FULL_RE = /^[ \t]*(`{3,}|~{3,})([^`]*)$/;
  *  unclosed fence fails closed. `fence` — the line IS a delimiter; no signature
  *  begins on one, and the caller decides what it delimits.
  *
- *  The walk keeps one piece of state: the character and run length of the opener
- *  that is still live. A line closes it only when it uses the SAME character in a
- *  run at least as long with no info string, which is what makes a ``` line inside
- *  a ```` block content rather than a closer, and a ~~~ line inside a ``` block
- *  content too. */
+ *  The walk is opener state plus ONE closer test, and that is the whole of it:
+ *
+ *   - **Opener.** With no block open, ANY delimiter line opens one of its character
+ *     and run length — whatever text follows the run. CommonMark refuses a backtick
+ *     opener whose info string carries a backtick, and this walk does not: a reply
+ *     never needs that spelling, and treating it as a fence is the direction this
+ *     reader is built to err in. The refusal was not moved from tildes to backticks
+ *     — a rule with an info-string exception anywhere in it has one more spelling
+ *     that opens nothing, and every one of them is a forgery that signs.
+ *   - **Closer.** With a block open, a line closes it only when it is a delimiter of
+ *     the SAME character and its run is at least as long as the opener's — nothing
+ *     else about the line is consulted, so a closer carrying an info string is a
+ *     fence the reviewer is showing, not the end of the block. That is what makes a
+ *     ``` line inside a ```` block content rather than a closer, and a ~~~ line
+ *     inside a ``` block too.
+ *   - **Content.** Every other line under an open block is fenced, and a block the
+ *     reply never closes fences to the end of it. */
 export type FencePosition = "outside" | "inside" | "fence";
 
 export function fencePositions(lines: readonly string[]): FencePosition[] {
   const out: FencePosition[] = [];
   // undefined — no block is open. Otherwise the character and run length of the
-  // opener that is still live.
+  // opener that is still live: the walk's only state.
   let open: { char: string; length: number } | undefined;
   for (const line of lines) {
-    const hit = FENCE_LINE_FULL_RE.exec(line);
-    if (hit === null) {
+    const run = fenceRun(line);
+    if (run === null) {
       out.push(open === undefined ? "outside" : "inside");
       continue;
     }
-    const run = hit[1] as string;
-    const info = (hit[2] as string).trim();
-    if (open === undefined) {
-      open = { char: run[0] as string, length: run.length };
-    } else if (run[0] === open.char && run.length >= open.length && info === "") {
-      open = undefined;
-    }
+    if (open === undefined) open = run;
+    else if (run.char === open.char && run.length >= open.length) open = undefined;
     out.push("fence");
   }
   return out;
@@ -360,9 +382,9 @@ export function inlineValue(line: string): AdversarialVerdictStatus | undefined 
  *  what a quotation looks like.
  *
  *  The fence test is `FENCE_RE` rather than the caller's walk, because the caller's
- *  walk is what decided about the token line: a value line that IS the ``` opener
- *  is outside the block by that walk, yet no signature can begin on a fence
- *  delimiter — and the value the reviewer meant, if it follows the opener, sits
+ *  walk is what decided about the token line: a value line that IS the ``` opener is
+ *  a `fence` to that walk rather than an `inside` line, yet no signature can begin on
+ *  a delimiter — and the value the reviewer meant, if it follows the opener, sits
  *  inside the block and is refused there. */
 export function headingValueLine(line: string): AdversarialVerdictStatus | undefined {
   if (structuralLine(line) || FENCE_RE.test(line)) return undefined;
