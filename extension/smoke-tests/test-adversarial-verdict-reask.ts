@@ -48,9 +48,9 @@ import {
   TRANSCRIPT,
   armReviewer,
   dispatches,
-  setNextTranscript,
   isolateLedger,
   reaskShapesAreFenced,
+  setNextTranscript,
 } from "./lib/adversarial-reask-fixtures.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
@@ -147,9 +147,21 @@ for (const shape of SHAPES) {
       !r.text.includes("verdict obtained on re-ask"),
       `(2) ${shape.name}: and nothing claims a re-ask it never ran`,
     );
+    // The pre-feature record for this arm, pinned against the base's own bytes:
+    // the reportOnly guard returns `infraFailureResult`, which never carried the
+    // round it lost — `adversarialRounds` was `toRoundRecords([])`, an EMPTY
+    // array, while `roundsExecuted` counted the round anyway. The previous
+    // dispatch "fixed" that disagreement; R0 rules it out of scope, so the off arm
+    // has to land back on it. (The `midloop` arm in
+    // `test-adversarial-verdict-reask-off-arm.ts` pins the same shape on the other
+    // producer, and the goldens there are the authority for the bytes.)
     assert(
-      r.adversarialRounds?.[0]?.verdictParsed === false,
-      `(2) ${shape.name}: the round record still says no verdict was parsed`,
+      Array.isArray(r.adversarialRounds) &&
+        r.adversarialRounds.length === 0 &&
+        r.roundsExecuted === 1,
+      `(2) ${shape.name}: adversarialRounds is the pre-feature empty array while roundsExecuted counts the lost round (got ${JSON.stringify(
+        r.adversarialRounds,
+      )} / roundsExecuted ${String(r.roundsExecuted)})`,
     );
   }
   // The byte-identity claim, proved on the pre-fix sentence the loop has always

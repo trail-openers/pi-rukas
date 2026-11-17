@@ -5,7 +5,7 @@
  */
 import { classifyDispatchOutcome } from "./adversarial-classify.ts";
 import { abortableSleep } from "./dispatch-retry.ts";
-import type { AdversarialVerdict, DispatchResult } from "./types.ts";
+import type { DispatchResult } from "./types.ts";
 import { retryLadderKillCause } from "./work-driver-adversarial-fanout-capkill.ts";
 import { jitteredMs } from "./work-driver-failure-taxonomy.ts";
 
@@ -51,26 +51,7 @@ export interface InfraCtx {
   usage: DispatchResult["usage"];
   lastTranscript: string | undefined;
   lastModel: string | undefined;
-  toRoundRecords: (rounds: RoundRecordLike[]) => DispatchResult["adversarialRounds"];
-  /**
-   * The loop's own verdict reader, OPTIONAL. When the caller supplies it, the
-   * round that died in infrastructure is recorded through `toRoundRecords` with
-   * the verdict the reader actually produced for its reply — including
-   * `verdictParsed: false` — so the ledger row and `roundsExecuted` cannot
-   * disagree about whether a round ran. When it is absent the records stay what
-   * this function always produced for them, because a caller that cannot say how
-   * a reply is read should not have its round records guessed at.
-   */
-  parseVerdict?: (text: string) => RoundRecordLike["verdict"];
-}
-
-/** The shape `toRoundRecords` accepts, restated here rather than imported from
- * the verdict module to keep this file's dependency surface at what it already
- * had. `ms` is what the completed rounds carry; a synthesized failed round has
- * no dispatch duration to report and omits it. */
-export interface RoundRecordLike {
-  round: number;
-  verdict: AdversarialVerdict;
+  toRoundRecords: (rounds: never[]) => DispatchResult["adversarialRounds"];
 }
 
 /**
@@ -168,23 +149,7 @@ export const infraFailureResult = (
     model: c.lastModel,
     transcriptPath: c.lastTranscript,
     loopOutcome: "infra-failure",
-    adversarialRounds:
-      // Without a reader there is no honest record of the failed round's verdict,
-      // and silence is not a pass: the value stays exactly what this function
-      // always returned for it (`toRoundRecords([])` — `undefined` or `[]`),
-      // rather than one invented from a guessed parse.
-      c.parseVerdict === undefined
-        ? c.toRoundRecords([])
-        : [
-            // The failed round is recorded too — the completed rounds first, then
-            // this one with the verdict the reader produced for its reply (a round
-            // whose reply signed nothing keeps `verdictParsed: false`). Before, a
-            // round lost to the ladder or to an unreadable verdict was absent from
-            // the ledger row while `roundsExecuted` counted it, so the two
-            // disagreed about whether a round had run at all.
-            ...(c.toRoundRecords([]) ?? []),
-            ...(c.toRoundRecords([{ round, verdict: c.parseVerdict(r.text) }]) ?? []),
-          ],
+    adversarialRounds: c.toRoundRecords([] as never),
     roundsExecuted: round,
     // #543 / #1243 — thread the kill cause through the synthesized loop result.
     // Two DIFFERENT projections, both read off the same field by the fan-out:

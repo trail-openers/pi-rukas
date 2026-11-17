@@ -166,7 +166,6 @@ export async function runAdversarialLoop(
     lastTranscript: tally.lastTranscript,
     lastModel: tally.lastModel,
     toRoundRecords,
-    parseVerdict,
   });
   /** The fix-phase failures' result state: the same tally at call time + rounds. */
   const roundStateNow = (completed: RoundRecord[]) => ({

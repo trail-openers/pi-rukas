@@ -471,6 +471,8 @@
     "smoke-tests/test-adversarial-verdict-reply-shapes.ts",
     "smoke-tests/test-adversarial-verdict-reask.ts",
     "smoke-tests/test-adversarial-verdict-reask-child.ts",
-    "smoke-tests/lib/adversarial-reask-fixtures.ts"
+    "smoke-tests/test-adversarial-verdict-reask-off-arm.ts",
+    "smoke-tests/lib/adversarial-reask-fixtures.ts",
+    "smoke-tests/lib/adversarial-verdict-reask-off-arm-golden.ts"
   ]
 }

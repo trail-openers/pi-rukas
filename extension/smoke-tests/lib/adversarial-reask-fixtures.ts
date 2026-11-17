@@ -49,6 +49,9 @@ export const REASK_USAGE = {
 
 export interface Shape {
   name: string;
+  /** The short key (`a`–`d`) the off-arm goldens are keyed by. Part of the shape
+   * so a key cannot drift from the shape it names. */
+  key: string;
   lines: string[];
   verdict: string;
 }
@@ -77,11 +80,13 @@ export function fencedReport(opts: {
 
 export const SHAPES: Shape[] = [
   {
+    key: "a",
     name: "(a) 99 lines, fence opens at 4 and closes on the last line",
     lines: fencedReport({ total: 99, open: 4, close: 99, verdictAt: 5, verdict: "ISSUES_FOUND" }),
     verdict: "ISSUES_FOUND",
   },
   {
+    key: "b",
     name: "(b) 70 lines, fence 4–70",
     lines: fencedReport({
       total: 70,
@@ -93,6 +98,7 @@ export const SHAPES: Shape[] = [
     verdict: "CRITICAL_ISSUES_FOUND",
   },
   {
+    key: "c",
     name: "(c) 44 lines, fence 9–43",
     lines: fencedReport({
       total: 44,
@@ -104,6 +110,7 @@ export const SHAPES: Shape[] = [
     verdict: "MINOR_OBSERVATIONS",
   },
   {
+    key: "d",
     name: "(d) the short repro: report, blank, fence, verdict, two findings, close",
     lines: [
       "Review report:",
