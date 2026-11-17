@@ -189,6 +189,46 @@ function assert(cond: boolean, msg: string) {
       parseVerdict(menu.join("\n")).verdictParsed === false,
       "…while the whole menu echoed back is still a recitation, not a verdict (AC4)",
     );
+
+    // The half of the field shape AC4 cannot reach, pinned so it is a documented
+    // refusal rather than an accident: a reviewer that copies the menu AND forgets the
+    // blank line before its signature ends inside one run, and the run rule refuses
+    // the block whole. Exempting the run's last line would read that reply — but it
+    // also reads the plain echo above as `CRITICAL_ISSUES_FOUND`, because the brief's
+    // menu itself ends on a value. So the refusal stands, and a reviewer that closes
+    // with a blank line under its paste signs (the AC4 arm above).
+    assert(
+      parseVerdict(`${menu.join("\n")}\nVERDICT: APPROVED`).verdictParsed === false,
+      "DELIBERATE: a pasted menu glued to its signature reads unparsed — exempting the run's tail would turn the whole-menu echo above into a verdict, so the reply gets a fix round rather than a guess",
+    );
+    assert(
+      parseVerdict(`${menu.join("\n")}\n\nVERDICT: APPROVED`).verdictParsed === true,
+      "…and the same reviewer with the blank line its brief asks for does sign — so the refusal is the missing separator, not the paste",
+    );
+    // A signature ABOVE the paste survives on its own line but not glued to it, which
+    // is the asymmetry the run rule trades for its safety; both directions are pinned.
+    assert(
+      readAdversarialVerdict(`VERDICT: ISSUES_FOUND\n\n${menu.join("\n")}`) ===
+        "ISSUES_FOUND",
+      "a real signature separated from the pasted menu still reads",
+    );
+    assert(
+      readAdversarialVerdict(`VERDICT: ISSUES_FOUND\n${menu.join("\n")}`) === undefined,
+      "…while glued to it the whole block is refused, which is the cost of taking no tail exemption — disclosed, never silent (the reviewer brief asks for a blank line)",
+    );
+
+    // Fenced final verdict: the shape a reviewer files when it puts its verdict in a
+    // code block. Refused by the fence rule (it was refused before this ticket too),
+    // and now pinned so the two rules cannot be confused with each other.
+    assert(
+      readAdversarialVerdict("Findings.\n\n```\nVERDICT: APPROVED\n```") === undefined,
+      "a verdict inside the final ``` block signs nothing — the fence rule owns that shape, not the run rule",
+    );
+    assert(
+      readAdversarialVerdict("VERDICT: ISSUES_FOUND\n\n```\nVERDICT: APPROVED\n```") ===
+        "ISSUES_FOUND",
+      "…and a fenced APPROVED under a real signature does not out-rank it",
+    );
   }
 
   // #2322: the heading form used to judge only its TOKEN line, so a column-0

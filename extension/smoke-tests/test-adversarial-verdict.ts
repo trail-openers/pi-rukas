@@ -25,6 +25,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { buildAdversarialPrompt } from "../src/adversarial-prompts.ts";
 import { readAdversarialVerdict } from "../src/adversarial-verdict-read.ts";
 import { decideLoopAction, parseVerdict } from "../src/adversarial-verdict.ts";
 
@@ -202,35 +203,58 @@ const MAX = 3;
   // four consecutive VERDICT lines at column 0 (#2322 de-dented them so a copied
   // line is a signature), and a child that recites its brief back is a shape the
   // incident reproduces on. Every line of such a run is excluded, so the verdict
-  // stays the real one above it. The fixture below is the indented spelling — the
-  // shape a reviewer PASTES out of a quoted or code-blocked block, which the
-  // column-0 rule refuses line by line (every candidate of it is `structural`) so
-  // the reply reads as having signed nothing rather than as carrying no verdict.
-  const MENU = [
-    "  VERDICT: APPROVED",
-    "  VERDICT: MINOR_OBSERVATIONS",
-    "  VERDICT: ISSUES_FOUND",
-    "  VERDICT: CRITICAL_ISSUES_FOUND",
-  ].join("\n");
-  const echoed = parseVerdict(`${AFTER}Return a verdict line at the end matching one of:\n${MENU}`);
+  // stays the real one above it.
+  //
+  // The fixture is taken from the built prompt rather than retyped, so this suite and
+  // `test-review-post-verdict.ts` cannot disagree about what the brief actually
+  // prints — a hand-retyped copy stayed indented after the de-dent and kept its
+  // canaries green while testing a spelling no reviewer is ever shown. The indented
+  // spelling is kept as a second fixture, because a paste out of a quoted or code-
+  // blocked block arrives that way and the column-0 rule refuses it line by line
+  // (every candidate of it is `structural`), so the reply reads as having signed
+  // nothing rather than as carrying no verdict.
+  const MENU = (() => {
+    const prompt = buildAdversarialPrompt({
+      diff: "+const x = 1;",
+      context: "c",
+      round: 1,
+      maxRounds: 3,
+    });
+    const lines = prompt
+      .split("\n")
+      .filter((l) => /^\s*VERDICT: [A-Z_]+$/.test(l))
+      .map((l) => l.trim());
+    assert(
+      lines.length === 4,
+      `the built prompt carries the four-line menu (${lines.length})`,
+    );
+    return lines;
+  })();
   assert(
-    echoed.status === "APPROVED" && echoed.verdictParsed,
-    `canary: the brief's own menu echoed back after a real APPROVED leaves APPROVED (got ${echoed.status})`,
+    MENU.every((l) => /^VERDICT: [A-Z_]+$/.test(l)),
+    "canary: the brief prints its menu at column 0, so a line copied verbatim is a signature",
   );
-
-  // The recitation rule (the stop's `blockRefusesVerdict` mirrored into the
-  // gate): a reply whose ONLY verdict lines are a menu named ≥2 values states no
-  // verdict, so it is unreadable — a fix round mid-loop, `incomplete` at the
-  // terminal round. Silence is never a pass.
-  const recited = parseVerdict(MENU);
-  assert(
-    recited.verdictParsed === false,
-    "canary: a reply that is nothing but the verdict menu reads verdictParsed:false — reciting the protocol is not choosing",
-  );
-  assert(
-    decideLoopAction(recited.status, MAX, MAX, recited.verdictParsed) === "incomplete",
-    "…and a recitation at the terminal round is INCOMPLETE, never a pass",
-  );
+  const MENU_COL0 = MENU.join("\n");
+  const MENU_INDENTED = MENU.map((l) => `  ${l}`).join("\n");
+  for (const [spelling, menu] of [
+    ["column 0", MENU_COL0],
+    ["indented", MENU_INDENTED],
+  ] as const) {
+    const echoed = parseVerdict(`${AFTER}Return a verdict line at the end matching one of:\n${menu}`);
+    assert(
+      echoed.status === "APPROVED" && echoed.verdictParsed,
+      `canary: the brief's own menu echoed back (${spelling}) after a real APPROVED leaves APPROVED (got ${echoed.status})`,
+    );
+    const recited = parseVerdict(menu);
+    assert(
+      recited.verdictParsed === false,
+      `canary: a reply that is nothing but the verdict menu (${spelling}) reads verdictParsed:false — reciting the protocol is not choosing`,
+    );
+    assert(
+      decideLoopAction(recited.status, MAX, MAX, recited.verdictParsed) === "incomplete",
+      `…and a ${spelling} recitation at the terminal round is INCOMPLETE, never a pass`,
+    );
+  }
 
   // The exclusions must not eat a legitimate verdict: the same value twice is a
   // reviewer that wrote its verdict twice, and one line naming one value is a

@@ -246,6 +246,20 @@ export function verdictCandidateLines(text: string): VerdictLine[] {
       if (ownEligible.get(i) === true) eligible.add(v);
     }
     if (run.length >= 2 && offered.size >= 2 && eligible.size >= 2) {
+      // Nothing is exempted, not even the line that ends the run, and the reason is
+      // measured rather than assumed. The obvious relaxation — let the line a run
+      // stopped on sign, which is what saves a reviewer that pasted the brief's menu
+      // and signed on the very next line — cannot be taken: the brief's menu ENDS on
+      // `VERDICT: CRITICAL_ISSUES_FOUND`, so a reply that echoes the protocol and
+      // signs nothing ends on a value, and exempting the tail reads the echo as a
+      // choice (`verdictCandidateLines` of the four-line menu then leaves
+      // CRITICAL_ISSUES_FOUND standing, and a menu followed by a fenced APPROVED reads
+      // APPROVED). The two shapes differ only in whether a line follows the run, and
+      // the run walk makes them indistinguishable: a run is maximal by construction,
+      // so "a marker sits below" and "the run ended before the reply" are the same
+      // test and both are true of a glued signature. Refusing the whole block is the
+      // direction this gate is built to fail in — a fix round mid-loop, `incomplete`
+      // at the terminal round, never a pass on a reply that chose nothing.
       for (const i of run) menuRun.add(i);
     }
     run = [];
