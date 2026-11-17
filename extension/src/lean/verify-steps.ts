@@ -69,10 +69,9 @@ export function tailLines(out: string, n: number = TIER_TAIL_LINES): string {
 }
 
 /**
- * Did the toolchain canary PROVE the compiler unsound?
- *
- * Only `failure` is a throw: `guardCompilerIntegrity` reports an unaskable canary as a `note`, so
- * "could not look" never accuses a compiler.
+ * Did the toolchain canary PROVE the compiler unsound? Only `failure` is a throw:
+ * `guardCompilerIntegrity` reports an unaskable canary as a `note`, so "could not look" never
+ * accuses a compiler.
  */
 async function canaryReason(
   cmd: string,
@@ -89,11 +88,8 @@ async function canaryReason(
 }
 
 /**
- * Run every configured tier's compiler-integrity canary.
- *
- * Each tier is canaried at the directory ITS command resolves the pinned compiler against
- * (`packageDirFor`): a tier that opens with `cd extension` runs a different compiler than one that
- * runs at the root.
+ * Run every configured tier's compiler-integrity canary. Each tier is canaried at the directory
+ * ITS command resolves the pinned compiler against (`packageDirFor`).
  */
 export async function canaryFailure(
   tiers: string[],
@@ -124,11 +120,10 @@ export const FROZEN_TIMEOUT_HEAD = "frozen tests timed out (the head's code may 
  * bound: after the first wall-clock kill nothing further runs, so a hang costs at most ONE bound
  * per verify.
  *
- * A wall-clock kill is a RED here: every file in the contract was proved red against the base
- * before `runTestPipeline` committed it, so a head that now hangs it is the code under build
- * failing. The other `infra` shapes stay throws — a runner that never started, a template with
- * nothing to run, and a run whose output flooded past the executor's bound all observed nothing.
- * A flood is not a hang.
+ * A wall-clock kill is a RED here: every file in the contract was proved red against the base before
+ * `runTestPipeline` committed it, so a head that now hangs it is the code under build failing. The
+ * other `infra` shapes stay throws — a runner that never started, a template with nothing to run,
+ * and a run whose output flooded past the executor's bound all observed nothing.
  */
 export async function frozenTestFailure(
   frozen: Record<string, string>,
@@ -150,7 +145,7 @@ export async function frozenTestFailure(
     });
     if (proof.kind === "infra") {
       // Switched on the classifier's own `infraShape` rather than re-derived here, so the halves
-      // cannot disagree about a hang. The `default` is the exhaustiveness check.
+      // cannot disagree about a hang.
       switch (proof.infraShape) {
         case "killed": {
           // One bound per verify: the files this kill stopped short of are counted, not run.
@@ -192,8 +187,7 @@ export async function frozenTestFailure(
  *
  * `env` is the scrubbed child env: the driver's own knobs are stripped so a headless runner's
  * configuration cannot flip behaviour inside the project's tests. `killGroup` is what makes the
- * timeout real — a build that spawns a grandchild holding stdout keeps the pipe open past Node's
- * own kill.
+ * timeout real.
  */
 export async function runTier(
   name: string,
@@ -224,8 +218,8 @@ export async function runTier(
     throw new VerifyInfraError(
       `the verify.${name} tier was killed or timed out at ${timeoutMs}ms: ${cmd}`,
     );
-  // `execp` stamps `overflow` on the maxBuffer path and does NOT stamp `timedOutKill`, so a
-  // chatty tier is not mistaken for a hung one. Nor is it a verdict: the output was truncated.
+  // `execp` stamps `overflow` on the maxBuffer path and does NOT stamp `timedOutKill`, so a chatty
+  // tier is not mistaken for a hung one. Nor is it a verdict: the output was truncated.
   if (e.overflow !== undefined)
     throw new VerifyInfraError(
       `the verify.${name} tier exceeded its output bound on ${e.overflow}: ${cmd}`,
