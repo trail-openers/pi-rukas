@@ -47,6 +47,7 @@ import {
 } from "./lib/lean-review-fixtures.ts";
 import {
   INSIDE,
+  SUB,
   attachSubmodule,
   makeSubmoduleUnfetchable,
   remoteRepo,
@@ -64,7 +65,7 @@ const { assert, failures } = makeAssert();
  * the submodule is in every commit the reset can land on and the step's `clean
  * -fdx` is what empties it.
  */
-async function drive(tag: string, local?: "0") {
+async function drive(tag: string, local?: "0", preflight?: "0") {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
   // The submodule's source is deleted before ANY checkout of it exists — the run's
@@ -113,7 +114,17 @@ async function drive(tag: string, local?: "0") {
   };
   // The inner switch selects WHICH submodule call the integration's reset makes; `undefined`
   // keeps the shipped local arm, `"0"` the release's own. See (b) for why the control needs it.
-  await (local === undefined ? round() : withEnv({ PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: local }, round));
+  await (
+    local === undefined && preflight === undefined
+      ? round()
+      : withEnv(
+          {
+            ...(local === undefined ? {} : { PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: local }),
+            ...(preflight === undefined ? {} : { PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: preflight }),
+          },
+          round,
+        )
+  );
   return {
     outcome,
     threw,
@@ -177,6 +188,28 @@ async function drive(tag: string, local?: "0") {
   assert(
     on.insideAfter === false,
     "(b) and its recovery FAILED — the tree the step handed on still held no submodule, which is what the throw says",
+  );
+}
+
+// ── (c) #2319 Resolution 4: the fix round says the disclosure in the step's OWN reason
+{
+  // The arm that owes it: preflight ON, so a pass ran and had something to report. A fix
+  // integrated from a tree whose submodule was never populated is a fix nobody can re-run, and
+  // the reason the caller composes is what lands on the run record, the PR and the handoff — the
+  // surfaces an operator who never opens the log sees. Deleting the `submodules` field from
+  // `fixRound`'s return in `review-git.ts`, or the `fixDisclosure` fold in `review.ts`, turns
+  // this red.
+  const folded = await drive("fold");
+  assert(
+    folded.threw === undefined && folded.origin !== folded.baseSha,
+    `(c) the round integrated and pushed over the sabotaged submodule (${folded.threw?.message?.split("\n")[0] ?? `origin ${folded.origin.slice(0, 12)}`})`,
+  );
+  assert(
+    (folded.outcome as { reason?: string } | undefined)?.reason?.includes(SUB) === true &&
+      /seeded nothing there/.test(
+        (folded.outcome as { reason?: string } | undefined)?.reason ?? "",
+      ),
+    `(c) and the step's own reason carries the submodule disclosure, not just the trace (reason ${JSON.stringify((folded.outcome as { reason?: string } | undefined)?.reason)})`,
   );
 }
 

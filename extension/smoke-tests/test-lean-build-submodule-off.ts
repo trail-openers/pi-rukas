@@ -25,8 +25,11 @@
 
 import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
+import { emptyRunningState } from "../src/progress.ts";
+import { defaultConfig } from "../src/lean/config.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { buildFixture, runBuild } from "./lib/lean-build-fixture.ts";
+import { configWithRunner } from "./lib/lean-build-asserts.ts";
 import {
   INSIDE,
   SUB,
@@ -56,9 +59,13 @@ async function drive(
   // seeding); `"0"` selects the release's single `submodule update --init --recursive` — the
   // only arm that hands a recorded URL to git, and so the only one (b) can control.
   local?: "0",
+  // The OUTER gate. `"0"` makes the step ask git to populate nothing at all — which is (a)'s
+  // claim, and also why the disclosure cannot be asserted there: with no pass there is nothing
+  // to disclose, and the switch's whole contract is that the run looks as if it never had one.
+  preflight?: "0",
 ): Promise<{
   threw?: Error;
-  outcome?: { kind?: string };
+  outcome?: { kind?: string; reason?: string };
   submoduleArgv: readonly (readonly string[])[];
   committed: string;
   /** Whether the submodule's file exists in the run's tree AFTER the step returned. */
@@ -120,7 +127,17 @@ async function drive(
       },
     });
   };
-  await (local === undefined ? run() : withEnv({ PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: local }, run));
+  await (
+    local === undefined && preflight === undefined
+      ? run()
+      : withEnv(
+          {
+            ...(local === undefined ? {} : { PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: local }),
+            ...(preflight === undefined ? {} : { PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: preflight }),
+          },
+          run,
+        )
+  );
   return {
     threw: r?.threw,
     outcome: r?.outcome,
@@ -200,6 +217,65 @@ function commit(wt: string, message: string): void {
   assert(
     on.insideAfter === false,
     `(b) and its recovery FAILED — the tree the fold left still held no submodule (found ${String(on.insideAfter)}), which is what the throw says`,
+  );
+}
+
+// ── (c) #2319 Resolution 4: the fold says the disclosure in its OWN reason
+{
+  // The arm that owes it: preflight ON (so a pass actually ran and had something to report) and
+  // the local rule ON (so the missing submodule is a disclosure rather than a hand-back). The
+  // fold commits bytes built against a tree with nothing at that path, and the reason line is the
+  // only surface a reader judging the commit has — the log is not it. Deleting the
+  // `report.submodules ?? ""` entry from the fold's `joinNotes` in `build.ts` turns this red.
+  const folded = await drive(913);
+  assert(
+    folded.threw === undefined && folded.outcome?.kind === "ok",
+    `(c) the fold ran over the sabotaged submodule and committed (${folded.threw?.message?.split("\n")[0] ?? `kind ${String(folded.outcome?.kind)}`})`,
+  );
+  assert(
+    folded.outcome?.reason?.includes(SUB) === true &&
+      /seeded nothing there/.test(folded.outcome?.reason ?? ""),
+    `(c) and the fold's own reason carries the submodule disclosure, not just the trace (reason ${JSON.stringify(folded.outcome?.reason)})`,
+  );
+}
+
+// ── (d) #2319 Resolution 4: the BUDGET-stopped fold carries it too
+{
+  // The fold a ceiling stops is a DIFFERENT call site from (c)'s: `foldStoppedBuild` builds its
+  // verdict's reason itself rather than through the `ok` arm's `joinNotes`, so a disclosure
+  // folded into one can be missing from the other. Same shape as the field bug — the run hands
+  // back a budget verdict, and the tree its commit was built on held nothing at that path.
+  const BUILD_TURNS = 3;
+  const built = buildFixture(914);
+  const remote = remoteRepo("build-stopped");
+  attachSubmodule(built.worktree, remote, "add the vendored submodule");
+  const headBefore = gitHead(built.worktree);
+  makeSubmoduleUnfetchable(remote, built.worktree);
+  const swept = new Set([...moduleStores(built.worktree), ...moduleStores(built.repoRoot)]);
+  for (const dir of swept) rmSync(path.join(dir, "modules"), { recursive: true, force: true });
+  let r: Awaited<ReturnType<typeof runBuild>> | undefined;
+  r = await runBuild({
+    issue: 914,
+    built: { ...built, headBefore },
+    config: {
+      ...configWithRunner(),
+      budgets: { ...defaultConfig().budgets, build: { turns: BUILD_TURNS, tokens: 0, minutes: 0 } },
+    },
+    child: (wt) => {
+      write(wt, "src/feature.ts", "export const f = 1;\n");
+      commit(wt, "build: the child's work");
+    },
+    onProgressTick: (onProgress) =>
+      onProgress?.({ ...emptyRunningState("developer"), turns: BUILD_TURNS + 1 }),
+  });
+  const outcome = r?.outcome as { kind?: string; reason?: string } | undefined;
+  assert(
+    outcome?.kind === "budget",
+    `(d) the round stopped at its own ceiling and gave a budget verdict (got ${JSON.stringify(outcome?.kind)}, threw ${r?.threw?.message?.split("\n")[0] ?? "no"})`,
+  );
+  assert(
+    outcome?.reason?.includes(SUB) === true && /seeded nothing there/.test(outcome?.reason ?? ""),
+    `(d) and the budget verdict's reason carries the submodule disclosure too (reason ${JSON.stringify(outcome?.reason)})`,
   );
 }
 

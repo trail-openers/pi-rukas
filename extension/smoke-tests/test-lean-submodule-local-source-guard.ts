@@ -65,7 +65,12 @@ function storeAt(gitDir: string, sub: string): string {
 
 /** A real git dir, so a refusal cannot be blamed on a fixture that built nothing. */
 function git(dirPath: string): void {
-  const r = spawnSync("git", ["init", "-q", "-b", "main", dirPath], { env: gitEnv() });
+  // `encoding: "utf8"` is not cosmetic: without it `r.stderr` is a Buffer, and the
+  // refusal this line builds reads `[object Object]`-ish bytes instead of git's reason.
+  const r = spawnSync("git", ["init", "-q", "-b", "main", dirPath], {
+    env: gitEnv(),
+    encoding: "utf8",
+  });
   if (r.status !== 0) throw new Error(`git init ${dirPath}: ${(r.stderr ?? "").trim()}`);
 }
 

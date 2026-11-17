@@ -32,6 +32,7 @@ import { withEnv } from "./lib/env-scope.ts";
 import {
   type ChallengeBuilt,
   challengeFixture,
+  greenEdge,
   put,
   redEdge,
   runChallenge,
@@ -39,6 +40,7 @@ import {
 } from "./lib/lean-challenge-fixture.ts";
 import {
   INSIDE,
+  SUB,
   attachSubmodule,
   makeSubmoduleUnfetchable,
   remoteRepo,
@@ -64,9 +66,15 @@ async function drive(
   // --init --recursive`, which is the only arm that hands a recorded URL to git and therefore
   // the only one this file's (b) can control.
   local?: "0",
+  // The OUTER gate. `"0"` is (a)'s arm; (c) needs it ON, because with no pass there is nothing
+  // to disclose and the switch's contract is that the run looks as if it never had one.
+  preflight?: "0",
+  // `"green"` makes the adversary's file pass at the base, which is what routes the round down
+  // the `empty` arm — the one that sweeps with `challenge`'s own reset instead of the pipeline's.
+  verdict?: "green",
 ): Promise<{
   threw?: Error;
-  outcome?: { kind?: string };
+  outcome?: { kind?: string; reason?: string };
   submoduleArgv: readonly (readonly string[])[];
   /** Whether the submodule's file exists in the run's tree AFTER the step returned. */
   insideAfter: boolean;
@@ -96,14 +104,20 @@ async function drive(
       // is empty on both arms and separates nothing. `insideAfter` is the observation
       // that does — read after the step returned, so it is the outcome of the call.
       child: (wt) => {
-        put(wt, TEST_REL, redEdge(TEST_REL), 0o755);
+        put(wt, TEST_REL, verdict === "green" ? greenEdge(TEST_REL) : redEdge(TEST_REL), 0o755);
       },
       toolUses: [submit("AC1", [TEST_REL])],
     });
   };
-  await (local === undefined
+  await (local === undefined && preflight === undefined
     ? run()
-    : withEnv({ PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: local }, run));
+    : withEnv(
+        {
+          ...(local === undefined ? {} : { PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: local }),
+          ...(preflight === undefined ? {} : { PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: preflight }),
+        },
+        run,
+      ));
   return {
     threw: r?.threw,
     outcome: r?.outcome,
@@ -172,6 +186,48 @@ async function drive(
   assert(
     on.insideAfter === false,
     `(b) and the call it issued could not put the submodule back (found ${String(on.insideAfter)}) — the source is gone for BOTH arms, so (a)'s empty tree is the switch not asking, not this file's setup`,
+  );
+}
+
+// ── (c) #2319 Resolution 4: the round says the disclosure in its OWN reason
+{
+  // The arm that owes it: preflight ON, so a pass ran and had something to report. `challenge`
+  // pays an adversary to attack tests it may not be able to collect, so "the tree had no
+  // submodule at `vendor/lib`" belongs beside the verdict, not in another step's log.
+  //
+  // `challenge` reaches a disclosure through BOTH of its resets, and they are separate claims
+  // with separate code: the pipeline's own reset reports through `prepare`'s `problem`
+  // (`specify-run.ts`'s `treeProblem`), and the `empty`-round sweep reports through
+  // `resetAndProvision`'s clause (`challenge.ts`). A round that froze a test exercises only the
+  // first, so (c) pins that one; the sweep's clause is pinned by (d), whose round commits nothing
+  // and therefore takes that path.
+  const folded = await drive(903);
+  assert(
+    folded.threw === undefined && folded.outcome?.kind === "new-tests",
+    `(c) the round ran over the sabotaged submodule and froze its test (${folded.threw?.message?.split("\n")[0] ?? `kind ${String(folded.outcome?.kind)}`})`,
+  );
+  assert(
+    folded.outcome?.reason?.includes(SUB) === true &&
+      /seeded nothing there/.test(folded.outcome?.reason ?? ""),
+    `(c) and the round's own reason carries the submodule disclosure, not just the trace (reason ${JSON.stringify(folded.outcome?.reason)})`,
+  );
+}
+
+// ── (d) the empty round's OWN sweep carries it too — the other of challenge's two resets
+{
+  // An adversary whose every submitted file came back green at the base is an `empty` round, and
+  // that arm sweeps the tree with `challenge`'s own `resetAndProvision` rather than the
+  // pipeline's. Deleting the `submodule` entry from that clause in `challenge.ts` turns this red
+  // and leaves (c) green, which is why both are needed.
+  const swept = await drive(904, undefined, undefined, "green");
+  assert(
+    swept.threw === undefined && swept.outcome?.kind === "none",
+    `(d) the empty round ran to a verdict (${swept.threw?.message?.split("\n")[0] ?? `kind ${String(swept.outcome?.kind)}`})`,
+  );
+  assert(
+    swept.outcome?.reason?.includes(SUB) === true &&
+      /seeded nothing there/.test(swept.outcome?.reason ?? ""),
+    `(d) and the sweep's clause reaches the round's reason too (reason ${JSON.stringify(swept.outcome?.reason)})`,
   );
 }
 

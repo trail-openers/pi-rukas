@@ -434,6 +434,12 @@ export async function runTestPipeline(
       reason: [
         `no submitted test was red against ${headBefore}${skippedNote}`,
         lead,
+        // #2319 Resolution 4: every kind's reason carries the tree's caveat, and `empty` is the
+        // kind that needs it most. Its own reset is where an unseeded gitlink is discovered, and
+        // this is the record the operator reads to find out why nothing was frozen: a submitted
+        // test that died on a missing vendored import reads exactly like an adversary that wrote
+        // nothing red, unless the reason says the submodule was never populated.
+        treeProblem ?? "",
         [evidence, checkNote].filter((s) => s !== "").join(" "),
       ]
         .filter((s) => s !== "")

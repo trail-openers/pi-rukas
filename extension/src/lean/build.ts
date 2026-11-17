@@ -379,6 +379,12 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
         ...(atCap ? [`after ${String(dispatchedBefore + tries + 1)} build attempts`] : []),
         failing.length === 0 ? "" : `still failing: ${clipList(failing, LIST_CLIP)}`,
         kept.files.length === 0 ? "" : `kept ${String(kept.files.length)} file(s)`,
+        // #2319 Resolution 4: the disclosure is folded into EACH of the build step's outcomes, and
+        // a ceiling-stopped fold is one of them — its reason is composed here rather than by the
+        // `ok` arm's list, so folding it into only that list would leave this verdict silent
+        // about a commit built on a tree with nothing at that path. The handback and the retry's
+        // prompt both read this line.
+        kept.submodules ?? "",
         waitNote(),
       ]),
     };
