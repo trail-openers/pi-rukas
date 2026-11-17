@@ -1,15 +1,12 @@
 /**
  * lean/specify-prompt — the adversary's instructions for the specify step.
  *
- * The step's whole value is that the tests it freezes FAIL on the base code: a test
- * that passes before the feature exists proves nothing about the feature. So every
- * sentence below that is not logistics exists to make an always-failing stub and an
- * already-green test both useless to the child — the parent runs each file against
- * the base commit, and one that exits 0 there is dropped.
+ * The step's whole value is that the tests it freezes FAIL on the base code: a test that passes before the
+ * feature exists proves nothing about it. Every sentence below that is not logistics exists to make an
+ * always-failing stub and an already-green test both useless to the child.
  *
- * The spec's problem and criteria go in VERBATIM. A paraphrase would be a second
- * spec to keep in step, and the child would be tested against the paraphrase rather
- * than the contract.
+ * The spec's problem and criteria go in VERBATIM — a paraphrase would be a second spec to keep in step,
+ * and the child would be tested against the paraphrase.
  */
 
 import type { TestLocation } from "./config-test-location.ts";
@@ -44,10 +41,9 @@ export interface SpecifyPromptOpts {
    */
   resubmit?: boolean;
   /**
-   * The issue body the step re-read from the forge, rendered as its own section —
-   * not "The problem", which is one clipped sentence, while the constraints the
-   * frozen tests must honour live in the prose around it. Absent, blank, or with
-   * `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0`, the section is not rendered.
+   * The issue body the step re-read from the forge, rendered as its own section — not "The problem",
+   * which is one clipped sentence while the constraints live in the prose around it. Absent, blank, or
+   * with `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0`, it is not rendered.
    */
   issueBody?: string;
 }
@@ -58,25 +54,19 @@ const REFUSAL_LINES_MAX = 20;
 const REFUSAL_LINE_MAX = 300;
 
 /**
- * Why a dropped file is a SIZE refusal, as opposed to a misplaced, duplicated
- * or already-green one: only these sentences describe a file the child can fix
- * by making it smaller. An `lstat` count is deliberately NOT matched —
- * `fileProblem` states a link's hard-link count, which no amount of splitting
- * fixes, and a remedy that fires there teaches the child that the rules are
- * arbitrary.
+ * Why a dropped file is a SIZE refusal, as opposed to a misplaced, duplicated or already-green one: only
+ * these sentences describe a file the child can fix by making it smaller. An `lstat` count is not matched —
+ * a remedy that fires there teaches the child the rules are arbitrary.
  */
 const SIZE_REFUSAL =
   / lines; an acceptance test is at most | bytes; an acceptance test is at most | is not a text file/;
 
 /**
- * The one remedy the retry states that the bullets do not: HOW to fix an
- * over-cap test. A bullet says "154 lines, cap 150" and stops there, and
- * {@link TEST_SCOPE_CONTRACT} pushes the other way ("Prefer one focused file
- * per criterion"), so a child that obeyed it had no legal way down and overshot
- * again. `MAX_TEST_FILES_PER_CRITERION` already allows a split, so the remedy
- * names both numbers and says plainly which two sentences it overrides for this
- * attempt. It sits OUTSIDE the per-reason clip, because a remedy inside a bullet
- * is destroyed by the same 300 characters that hid the reason it explains.
+ * The one remedy the retry states that the bullets do not: HOW to fix an over-cap test. A bullet says the
+ * numbers and stops there, and {@link TEST_SCOPE_CONTRACT} pushes the other way, so a child that obeyed it
+ * had no legal way down and overshot again. The remedy names both numbers and says which two sentences it
+ * overrides. It sits OUTSIDE the per-reason clip — inside a bullet it is destroyed by the same characters
+ * that hid the reason.
  */
 function splitInstruction(reasons: string[]): string {
   if (!reasons.some((reason) => SIZE_REFUSAL.test(reason))) return "";
@@ -86,10 +76,9 @@ function splitInstruction(reasons: string[]): string {
 /**
  * The section a retried adversary reads after the normal prompt: each drop the
  * boundary made on its last submission, attributed (`<criterionId> <path>: <reason>`,
- * see `droppedLabel`), one per line. The child never saw those reasons, so an
- * over-long test and a green test were both indistinguishable from "the step
- * found nothing" — naming them is the whole point of the retry. Identical lines
- * are shown once; past the cap the section says how many it left out.
+ * see `droppedLabel`), one per line. The child never saw those reasons, so naming
+ * them is the whole point of the retry. Identical lines are shown once; past the cap
+ * the section says how many it left out.
  */
 export function refusalFeedback(reasons: string[]): string {
   if (reasons.length === 0) return "";
@@ -118,47 +107,34 @@ export function testCriteria(spec: PiSpec) {
 }
 
 /**
- * The red-proof contract, stated in both adversary prompts.
- * `specify-proof.ts` classifies a run red only when it exited non-zero **and** its
- * output named the file (path or basename); anything else is `unclear` and the file
- * is dropped. A project's runner is not required to echo the path, so the child is
- * told to print it itself — that tells the child how to satisfy the rule, it does
- * not change what the rule accepts. One const, so the two prompts cannot drift in
- * the wording a test pins.
+ * The red-proof contract, stated in both adversary prompts. `specify-proof.ts` classifies a run red only
+ * when it exited non-zero **and** its output named the file; anything else is `unclear` and dropped. A
+ * project's runner need not echo the path, so the child is told to print it itself. One const, so the two
+ * prompts cannot drift in the wording a test pins.
  */
 export const RED_PROOF_CONTRACT =
   "**Every test file must print its own file basename when it fails**, e.g. `FAIL AC1-retry.test.ts: expected 3 retries, got 1`, and exit non-zero. The parent counts a file as a real red only when its failure output names that file; a failing file whose output never names it is dropped as unclear and its criterion is left uncovered.";
 
 /**
- * The test-writing scope contract, stated in BOTH adversary prompts for the same
- * reason as {@link RED_PROOF_CONTRACT}: one const, so a rewrite to one step's prompt
- * cannot quietly re-tell the other adversary a different rule.
+ * The test-writing scope contract, stated in BOTH adversary prompts for the same reason as
+ * {@link RED_PROOF_CONTRACT}.
  *
- * A lean trial's adversary wrote 540 lines to prove one parameter had been removed —
- * tests for hypothetical misuse and for the shape of the implementation rather than
- * the behaviour the criterion named. The contract bounds size by asking for the
- * smallest thing that proves the criterion, and states the three numbers the boundary
- * enforces (`MAX_TEST_LINES`, `MAX_TEST_BYTES`, `MAX_TEST_FILES_PER_CRITERION`, all
- * in `test-size.ts`) and where the bytes come from: the project's own test helpers. A
- * number alone is met by padding, so the rule is still the property.
+ * It bounds size by asking for the smallest thing that proves the criterion, and states the three numbers
+ * the boundary enforces (all in `test-size.ts`) and where the bytes come from. A number alone is met by
+ * padding, so the rule is still the property.
  */
 export const TEST_SCOPE_CONTRACT = `**Write the smallest test that proves the criterion fails today and will pass when it is met.** Assert observable behaviour — what the entry point returns, throws, or writes — not the shape of the implementation. Do not test hypothetical misuse, or implementation details the criterion does not name: a criterion that says one parameter was removed is proved by one call and one assertion, not by a file of variants. Prefer one focused file per criterion. A kept test file is at most ${MAX_TEST_LINES} lines and ${MAX_TEST_BYTES} bytes, and a criterion gets at most ${MAX_TEST_FILES_PER_CRITERION} files, so reuse the project's existing test helpers in the test folder rather than rebuilding a harness — the parent drops a longer or larger file and the extra files it cannot use.`;
 
 /**
- * The elicitation section, rendered between {@link TEST_SCOPE_CONTRACT} and the
- * non-test-file fence so it precedes "What you report", and only where there are test
- * criteria. One const, the reason the two above give: the kickoff, the refusal retry
- * and the resubmit retry must tell the child the same rule.
+ * The elicitation section, rendered between {@link TEST_SCOPE_CONTRACT} and the non-test-file fence, and
+ * only where there are test criteria. One const, for the same reason as the two above: the kickoff and both
+ * retries must tell the child the same rule.
  *
- * The requirements lean's bench rejected missed were implied rather than unstated,
- * and each was findable in the repository — so the section demands a `path:line`
- * comment for what it keeps and drops anything it cannot ground. Extra CASES go inside
- * the criterion's own file and open no new one, since a file of its own would spend
- * the {@link TEST_SCOPE_CONTRACT} quota on an implied case.
+ * The requirements a bench rejected missed were implied rather than unstated, and each was findable in the
+ * repository — so the section demands a `path:line` comment and drops anything it cannot ground. Extra
+ * CASES open no new file, which would spend the {@link TEST_SCOPE_CONTRACT} quota on an implied case.
  *
- * The examples are deliberately generic: this section is measured on a bench whose
- * tasks have their own named defects, and an example naming one would hand the child
- * the answer it is supposed to find.
+ * The examples are deliberately generic: naming a bench defect would hand the child the answer to find.
  */
 export const IMPLIED_REQUIREMENTS = `## Implied requirements
 
@@ -171,21 +147,17 @@ Before you freeze your tests, search THIS repository for requirements the issue 
 For each one you can point at, add an extra test CASE inside the test file of the criterion it refines, opening no new file for it, with a comment naming the base-commit evidence as \`path:line\`. An implied case never replaces or displaces the criterion's own test. Skip any you cannot ground in a file that exists at the base commit — no evidence, no case.`;
 
 /**
- * The one place the test-location sentence is spelled, for BOTH adversary prompts —
- * same reasoning as {@link RED_PROOF_CONTRACT}: a rewrite to one prompt must not
- * quietly un-tell the other step's adversary where its files go. A builder rather
- * than a const because the folder comes from the project's config. Everything the
- * boundary later refuses is stated here first (wrong folder, nested folder, wrong
- * name), so a child that obeyed the prompt never meets an unwarned drop.
+ * The one place the test-location sentence is spelled, for BOTH adversary prompts (same reasoning as
+ * {@link RED_PROOF_CONTRACT}). A builder rather than a const because the folder comes from config. Everything
+ * the boundary later refuses is stated here first, so a child that obeyed the prompt meets no unwarned drop.
  */
 export function testLocationInstruction(loc: TestLocation): string {
   return `**Write every test file directly inside \`${loc.testDir}/\`, named to match \`${loc.testGlob}\` (for example \`${loc.testDir}/${exampleName(loc)}\`), importing the project's code with paths relative to that folder.** The parent refuses a submitted test anywhere else — a different directory, a subdirectory of it, or a file name that does not match the pattern — and a refused test leaves its criterion uncovered.`;
 }
 
 /**
- * A sample file name for the prompt: the glob with its `*` filled in. Derived
- * from the pattern rather than hard-coded, so the example the child copies is
- * always a name the boundary would actually accept.
+ * A sample file name for the prompt: the glob with its `*` filled in, so the example the child copies is
+ * always a name the boundary would accept.
  */
 function exampleName(loc: TestLocation): string {
   return loc.testGlob.replace("*", "AC1-example");

@@ -1,20 +1,16 @@
 /**
- * lean/review-round-guards — the two questions a lens round must answer before its
- * verdict means anything.
+ * lean/review-round-guards — the two questions a lens round must answer before its verdict means
+ * anything.
  *
- * Split from `review.ts`, which passed the size cap once the wave's decision
- * procedure carried its own verification. Both predicates here are *preconditions
- * on evidence*, in the same sense `assertFixAdvanced` is one for a fixer: they take
- * what a round reported and refuse it, or resolve names so the caller can compare
- * them, and neither reads a verdict or decides an outcome. Keeping them out of the
- * step is what makes each one readable on its own — the step decides; these say when
- * a round is not entitled to a decision.
+ * Split from `review.ts`, which passed the size cap once the wave's decision procedure carried its own
+ * verification. Both predicates here are *preconditions on evidence*, as `assertFixAdvanced` is one for a
+ * fixer: they take what a round reported and refuse it, or resolve names to compare, and neither reads a
+ * verdict or decides an outcome.
  *
- * Both are called on BOTH passes, and the two range guards are the two arms of ONE
- * question — which range did this re-review judge? — asked of the arm the step bought.
- * That symmetry is load-bearing: `review` has only clean passes as exits, so a guard
- * on the first round alone lets the second one's silence read as "the fixer answered
- * everything" — a pass, arrived at by nobody.
+ * Both are called on BOTH passes, and the two range guards are the arms of ONE question — which range did
+ * this re-review judge? — asked of the arm the step bought. The symmetry is load-bearing: `review` has only
+ * clean passes as exits, so a guard on the first round alone lets the second one's silence read as "the
+ * fixer answered everything" — a pass, arrived at by nobody.
  */
 
 import { incompleteLanes } from "../lens-review-incomplete.ts";
@@ -24,29 +20,19 @@ import { gitQuiet } from "./specify-reset.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
- * A round that did not complete is refused BEFORE its verdict is read, in both
- * directions: it is not a pass to walk on, and it is not a verdict to fix against.
+ * A round that did not complete is refused BEFORE its verdict is read, in both directions: it is not a
+ * pass to walk on, and not a verdict to fix against.
  *
- * Two arms, because a round can fail to run in two ways the layer reports
- * differently, and each is a clean-looking answer with nothing behind it:
+ * Two arms, because a round fails to run in two ways the layer reports differently, each a clean-looking
+ * answer with nothing behind it:
  *
- *  - `noReview` — the layer decided the range held nothing to review, so no lens ran
- *    and the "nothing outstanding" is the absence of an opinion rather than one.
- *    Reachable on the FIRST pass too, not only the re-review: the fix having moved
- *    the head makes a second empty round less likely, not impossible, and the wave's
- *    named no-change cause is a different claim (it is about what the FIXER changed,
- *    which this predicate cannot see).
- *  - no `usage` — the lenses ran but reported nothing, so the step would be told a
- *    round cost nothing and produced a verdict. Quoting the round's findings is not
- *    enough to make that refusal actionable: on the shape the review layer produces
- *    for an unreadable diff (#2261) there are no findings, and the cause — the size
- *    limit the read hit, the provider that refused the prompt for its size — lives on
- *    the lane rows. So the arm appends those lanes, rendered by the layer's own
- *    renderer, and the cause reaches the handback instead of dying on the rows.
+ *  - `noReview` — the layer decided the range held nothing to review, so no lens ran and "nothing
+ *    outstanding" is the absence of an opinion. Reachable on the FIRST pass, not only the re-review.
+ *  - no `usage` — the lenses ran but reported nothing, so the step is told a round cost nothing and
+ *    produced a verdict. The cause lives on the lane rows, so the arm appends those lanes.
  *
- * Checking the clean bar before this one would let `REVIEW_INCOMPLETE` fall through
- * the non-blocking branch into a `done`: a head nobody reviewed, certified by the
- * same round that should have thrown.
+ * Checking the clean bar first would let `REVIEW_INCOMPLETE` fall through the non-blocking branch into a
+ * `done`: a head nobody reviewed, certified by the round that should have thrown.
  */
 export function assertRan(round: LensRound & { head: string }, rows: DispatchUsageRow[]): void {
   if (round.noReview === true)
@@ -57,13 +43,9 @@ export function assertRan(round: LensRound & { head: string }, rows: DispatchUsa
       rows,
     );
   if (round.usage === undefined) {
-    // The lanes the layer says left this round incomplete, in the layer's own words
-    // (`incompleteLanes`, the same renderer the driver's cap-hit event prints — a
-    // second wording here would be two stories about one lane). Derived from the
-    // rows the round already carries rather than from a field the wiring would have
-    // to carry up: the step receives these rows either way, so the cause cannot be
-    // dropped by an adapter that forgot one field (#2261's lean gap was exactly a
-    // reason that survived only on rows nothing rendered).
+    // The lanes the layer says left the round incomplete, in the layer's own words (`incompleteLanes`,
+    // the renderer the driver's cap-hit event prints). Derived from rows the round already carries, so the
+    // cause cannot be dropped by an adapter that forgot one field.
     const lanes = incompleteLanes(round.lenses).join("; ");
     throw new ReviewInfraError(
       `the six-lens review reported ${round.verdict} with no usage from any lens child — that is not a pass: ${round.findings.slice(0, 300)}${lanes === "" ? "" : ` — lanes: ${lanes.slice(0, 900)}`}`,
@@ -75,11 +57,9 @@ export function assertRan(round: LensRound & { head: string }, rows: DispatchUsa
 /**
  * Do these two revisions name the SAME commit?
  *
- * Both sides are resolved with `git rev-parse` before they are compared, because the
- * layer records the `since` it was handed — which may be an abbreviation or a ref —
- * while the step holds a 40-hex sha. Either side that will not resolve is NOT the
- * same commit: an unresolvable bound is a range nobody can account for, and the
- * caller refuses it. A `rev-parse` failure is also never read as "equal".
+ * Both sides are resolved with `git rev-parse` first, because the layer records the `since` it was handed
+ * — possibly an abbreviation or a ref — while the step holds a 40-hex sha. Either side that will not
+ * resolve is NOT the same commit: an unresolvable bound is a range nobody can account for.
  */
 export async function sameCommit(
   deps: ReviewDeps,
@@ -94,24 +74,17 @@ export async function sameCommit(
 }
 
 /**
- * The re-review must prove WHICH RANGE IT JUDGED, or its verdict is not evidence
- * that the fix answered anything.
+ * The re-review must prove WHICH RANGE IT JUDGED, or its verdict is not evidence the fix answered anything.
  *
- * The round's range is the step's own claim — it names `since` on the fix wave —
- * and the layer reports what it actually ranged over in `deltaReview`, so three
- * readings are required: the stamp present, its `since` the commit the step named,
- * and its `head` the head the step holds. An absent stamp is refused, not forgiven:
- * `runLensReview` omits the field when it did not run a `since..head` delta at all,
- * and a re-review that cannot show its range is a round that may have read the whole
- * branch — and a verdict on the `base..head` branch says nothing about whether the
- * fix addressed the findings. Neither `assertRan` nor the did-not-run bar can tell
- * that round from one that ranged over the fix, so the check is its own.
+ * The round's range is the step's own claim; the layer reports what it ranged over in `deltaReview`, so
+ * three readings are required: stamp present, its `since` the commit the step named, its `head` the head
+ * the step holds. An absent stamp is refused, not forgiven: `runLensReview` omits the field when it ran no
+ * `since..head` delta, and a verdict on `base..head` says nothing about whether the fix addressed the
+ * findings. Neither `assertRan` nor the did-not-run bar can tell those rounds apart, so this is its own.
  *
- * Fail closed, which is why the two refusals are separate causes: "could not show
- * its range" and "showed a range the step did not name" are different facts for the
- * operator, and the second one quotes both ranges so the mismatch is readable
- * without the transcript. Both bounds are compared with `sameCommit`, so a stamp
- * that will not resolve refuses rather than matching nothing quietly.
+ * Fail closed, and the two refusals are separate causes: "could not show its range" and "showed a range
+ * the step did not name" are different facts for the operator. Both bounds go through `sameCommit`, so a
+ * stamp that will not resolve refuses rather than matching nothing quietly.
  */
 export async function assertRangedOverTheFix(
   deps: ReviewDeps,
@@ -137,12 +110,10 @@ export async function assertRangedOverTheFix(
 }
 
 /**
- * The whole-branch re-review's range claim: it judged the fixed head, and proved it
- * by stamping NO delta — the mirror of `assertRangedOverTheFix`. The layer stamps
- * only a resolved `since..head` delta, so the one round shape that can retire a
- * carried CRITICAL has no stamp to show and the delta guard would refuse it for
- * that. An ABSENT stamp is therefore required (what stops the arms being
- * interchanged) and `round.head` must resolve to the post-fix head.
+ * The whole-branch re-review's range claim: it judged the fixed head and proved it by stamping NO delta —
+ * the mirror of `assertRangedOverTheFix`. The layer stamps only a resolved delta, so the one round shape
+ * that can retire a carried CRITICAL has no stamp to show. An ABSENT stamp is therefore required (what
+ * stops the arms being interchanged) and `round.head` must resolve to the post-fix head.
  */
 export async function assertJudgedWholeBranch(
   deps: ReviewDeps,
@@ -173,7 +144,6 @@ async function resolveCommit(
   if (rev.trim() === "") return undefined;
   const out = await gitQuiet(deps.exec, repoRoot, ["rev-parse", "--verify", `${rev}^{commit}`]);
   const sha = (out?.stdout ?? "").trim();
-  // A prefix match is enough for equality, but a garbage read is not: hold both
-  // sides to the shape of an oid before comparing.
+  // A prefix match is enough for equality, but a garbage read is not: hold both sides to an oid shape.
   return /^[0-9a-f]{7,40}$/.test(sha) ? sha : undefined;
 }

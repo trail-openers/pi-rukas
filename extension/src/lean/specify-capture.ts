@@ -1,31 +1,26 @@
 /**
  * lean/specify-capture — CAPTURE, the one read of the child's bytes.
  *
- * The specify step keeps exactly one thing from the adversary's worktree: the bytes of
- * each submitted test file, held in memory. Everything else the child did — its own
- * commits, a rewritten test, a `.gitignore` hiding a stray file — is irrelevant
- * afterwards, because the step resets the tree and writes these bytes back. That holds
- * only if the bytes here are the bytes of the file the step validated, which is what
- * this module is for.
+ * The specify step keeps exactly one thing from the adversary's worktree: the bytes of each submitted test
+ * file, held in memory. Everything else the child did — its commits, a rewritten test, a `.gitignore` hiding
+ * a stray file — is irrelevant afterwards, because the step resets the tree and writes these bytes back.
+ * That holds only if these are the bytes of the file the step validated, which is what this module is for.
  *
- * `specify-path.ts`'s `fileProblem` is a fact about a NAME, and a name can be swapped
- * between that check and this read: the child submits its path from its own side of the
- * step, so it has a window. So nothing here re-resolves a path:
+ * `fileProblem` is a fact about a NAME, and a name can be swapped between that check and this read — the
+ * child submits its path from its own side of the step, so it has a window. Nothing here re-resolves a path:
  *
- *   - one `openSync` with `O_RDONLY | O_NOFOLLOW` pins the inode, so a symlink swapped
- *     in afterwards is a refusal, not a read of wherever it points;
- *   - `fstat` on that fd must see a REGULAR file with `nlink === 1` — the hard-link
- *     check lives here as well as in `fileProblem` because `lstat` ran before the swap
- *     and this is the only look a post-swap link gets (a hard link is not a link:
- *     `lstat` sees an ordinary file and `realpath` stays inside the tree, so only the
- *     link count tells on it);
+ *   - one `openSync` with `O_RDONLY | O_NOFOLLOW` pins the inode, so a symlink swapped in later is a refusal,
+ *     not a read of wherever it points;
+ *   - `fstat` on that fd must see a REGULAR file with `nlink === 1` — the hard-link check lives here as well
+ *     as in `fileProblem` because `lstat` ran before the swap and this is the only look a post-swap link
+ *     gets (a hard link is not a link: `lstat` sees an ordinary file and `realpath` stays inside the tree);
  *   - the whole file is read from that descriptor, never by name;
- *   - `fstat` again on the same fd must agree with the first — same `ino`, `size` and
- *     `mtimeMs` — or what was read was not one file the whole time.
+ *   - `fstat` again on the same fd must agree with the first — same `ino`, `size`, `mtimeMs` — or what was
+ *     read was not one file the whole time.
  *
- * A file that fails any of it is DROPPED with its reason, like every other failed check
- * on a submitted row: the row leaves, its criterion goes uncovered, and the step
- * reports a verdict about the child's work rather than an infrastructure fault.
+ * A file failing any of it is DROPPED with its reason, like every other failed check on a row: the row
+ * leaves, its criterion goes uncovered, and the step reports a verdict about the child's work rather than an
+ * infrastructure fault.
  */
 
 import { constants as fsConstants } from "node:fs";
@@ -55,11 +50,9 @@ export const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 const MAX_CAPTURE_TOTAL_BYTES = 64 * 1024 * 1024;
 
 /**
- * The aggregate ceiling a capture runs under. `admit` takes a file's size and
- * says whether it fits; the first file that does not fit stops the capture for
- * good. Stopping rather than skipping keeps the rule "the capture ends once the
- * total reaches the ceiling", where a smaller file behind a large one would
- * otherwise slip in.
+ * The aggregate ceiling a capture runs under. `admit` takes a file's size and says whether it fits; the first
+ * that does not stops the capture for good. Stopping rather than skipping keeps the rule "the capture ends once the
+ * total reaches the ceiling", where a smaller file behind a large one would otherwise slip in.
  */
 export class CaptureBudget {
   private readonly ceiling: number;
@@ -97,9 +90,9 @@ type OneRead = { bytes: Buffer; exec: boolean } | { why: string };
 /**
  * Read one file through a single descriptor, or say why it cannot.
  *
- * `build` reads the developer's files through this too, so the rules are the
- * same for every captured byte in this step family: a refusal is a verdict on
- * the child's file (the caller drops it and says why), never an exception.
+ * `build` reads the developer's files through this too, so the rules are the same for every captured byte in
+ * the step family: a refusal is a verdict on the child's file (the caller drops it and says why), never an
+ * exception.
  */
 export function readOneDescriptor(abs: string): OneRead {
   let fd: number;
@@ -118,8 +111,8 @@ export function readOneDescriptor(abs: string): OneRead {
     if (!first.isFile()) return { why: "is not a regular file" };
     if (first.nlink !== 1)
       return { why: `has ${first.nlink} hard links — not a file of this worktree` };
-    // Zero bytes is never a test: a frozen empty file would hash to the empty
-    // digest and pass as a test that tests nothing.
+    // Zero bytes is never a test: a frozen empty file hashes to the empty digest and passes as a test that
+    // tests nothing.
     if (first.size === 0) return { why: "is empty" };
     if (first.size > MAX_CAPTURE_BYTES)
       return { why: `is ${first.size} bytes, over the ${MAX_CAPTURE_BYTES}-byte capture ceiling` };
@@ -161,11 +154,11 @@ export interface CaptureResult {
 }
 
 /**
- * Read the bytes of every kept test file into memory, one descriptor each, until
- * the aggregate `budget` is spent.
+ * Read the bytes of every kept test file into memory, one descriptor each, until the aggregate `budget` is
+ * spent.
  *
- * `owners` maps a path to the criterion that claimed it, so a dropped row names
- * the criterion the step must then call uncovered.
+ * `owners` maps a path to the criterion that claimed it, so a dropped row names the criterion the step must
+ * then call uncovered.
  */
 export function captureTestBytes(
   wt: string,

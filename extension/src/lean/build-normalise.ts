@@ -1,40 +1,33 @@
 /**
  * lean/build-normalise — CAPTURE, RESET, REWRITE for the build step.
  *
- * The developer child is a model: it may commit, edit a frozen acceptance test, write
- * into `.pi/` or `.github/`, or hand the tree a symlink and a hard link. `specify`
- * already owns an algorithm that survives exactly that — read the bytes you intend to
- * keep, reset the tree to a known commit, write those bytes back — and `build` uses
- * the same shape, so there is ONE design for "the tree is not trustworthy" in this
- * step family rather than two.
+ * The developer child is a model: it may commit, edit a frozen acceptance test, write into `.pi/` or
+ * `.github/`, or hand the tree a symlink and a hard link. `specify` already owns an algorithm that
+ * survives exactly that — read the bytes you intend to keep, reset the tree to a known commit, write
+ * those bytes back — so there is ONE design for "the tree is not trustworthy" in this step family.
  *
- *   1. HEAD must still descend from `headBefore`. A child that reset HEAD is refused
- *      outright — the `merge-base --is-ancestor` check, read before anything mutates.
+ *   1. HEAD must still descend from `headBefore`. A child that reset HEAD is refused outright — the
+ *      `merge-base --is-ancestor` check, read before anything mutates.
  *   2. The changed set is `git diff --name-only -z headBefore` unioned with
  *      `git ls-files --others --exclude-standard -z`.
- *   3. Each path is classified. A frozen or protected path in that set is IGNORED —
- *      stage 4 undoes it — and only recorded, so the handback can say what was put
- *      back. Anything else is inspected with `lstat` at every step (`entryAt`): only a
- *      name with nothing at it, nothing in its way, is a DELETION. A link, device,
- *      directory, or a name behind one is REMOVED with its reason and never followed.
- *      A regular file is CAPTURED through `readOneDescriptor`, the same
- *      single-descriptor read `specify` uses; a refusal also removes the path.
- *   4. `resetWorktreeToBase` puts the tree back to `headBefore` — commits, index,
- *      untracked files, ignore tricks and dependency links all go — and provisioning
- *      rebuilds the links. Frozen and protected files are then exactly as at
- *      `headBefore`, because git put them there, not this file.
- *   5. The captured bytes go back through `writeCaptured` (no symlinked ancestor, temp
- *      file plus rename), executable bits are restored, and deletions are applied.
- *   6. Nothing captured and nothing to delete is the honest answer to "did the
- *      developer change anything": `files: []`, and the caller routes `exhausted`.
- *   7. One commit with an EXPLICIT pathspec — `git add -- <paths>` and `git commit --
- *      <paths>`, never `add -A`. Then four claims are proved about it: parent is
- *      `headBefore`; its diff names no frozen and no protected path; the tree is
- *      clean; every frozen blob at the new head hashes to its record.
+ *   3. Each path is classified. A frozen or protected path in that set is IGNORED — stage 4 undoes it
+ *      — and only recorded. Anything else is inspected with `lstat` at every step (`entryAt`): only a
+ *      name with nothing at it, nothing in its way, is a DELETION. A link, device, directory, or a
+ *      name behind one is REMOVED with its reason and never followed. A regular file is CAPTURED
+ *      through `readOneDescriptor`; a refusal also removes the path.
+ *   4. `resetWorktreeToBase` puts the tree back to `headBefore` — commits, index, untracked files,
+ *      ignore tricks and dependency links all go — and provisioning rebuilds the links.
+ *   5. The captured bytes go back through `writeCaptured`, executable bits are restored, and
+ *      deletions are applied.
+ *   6. Nothing captured and nothing to delete is the honest answer to "did the developer change
+ *      anything": `files: []`, and the caller routes `exhausted`.
+ *   7. One commit with an EXPLICIT pathspec — `git add -- <paths>` and `git commit -- <paths>`, never
+ *      `add -A`. Then four claims are proved about it: parent is `headBefore`; its diff names no
+ *      frozen and no protected path; the tree is clean; every frozen blob at the new head hashes to
+ *      its record.
  *
- * Every git call goes through `build-git.ts`, which carries the hook and fsmonitor
- * guard (`NO_HOOKS`). Anything unproven throws — the step's output is a commit the
- * run merges.
+ * Every git call goes through `build-git.ts`, which carries the hook and fsmonitor guard (`NO_HOOKS`).
+ * Anything unproven throws — the step's output is a commit the run merges.
  */
 
 import { chmodSync, rmSync } from "node:fs";
@@ -59,10 +52,9 @@ import { resetWorktreeToBase, writeCaptured } from "./specify-reset.ts";
 import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 
 /**
- * Is `rel` a path whose contents decide what verification means? The canonical
- * set in `work-driver-doctrine.ts` covers `agents.json`, `CODEOWNERS` at any
- * depth, and `.pi/` / `.github/`; `.gitmodules` moves the tree a verify run sees,
- * so that one is added here.
+ * Is `rel` a path whose contents decide what verification means? The canonical set in
+ * `work-driver-doctrine.ts` covers `agents.json`, `CODEOWNERS` at any depth, and `.pi/` /
+ * `.github/`; `.gitmodules` moves the tree a verify run sees, so that one is added here.
  */
 function isProtectedPath(rel: string): boolean {
   return canonicalProtectedPath(rel) || rel === ".gitmodules";
@@ -75,9 +67,9 @@ interface Classified {
 }
 
 /**
- * Sort the child's changed paths into kept, restored, reverted, removed, deleted.
- * Frozen and protected paths are only RECORDED here — the reset undoes them — so
- * this runs first: after the reset, "what the child did" is unrecoverable.
+ * Sort the child's changed paths into kept, restored, reverted, removed, deleted. Frozen and protected
+ * paths are only RECORDED here — the reset undoes them — so this runs first: after the reset "what the
+ * child did" is unrecoverable.
  */
 function classify(
   wt: string,
@@ -104,8 +96,8 @@ function classify(
     }
     const entry = entryAt(wt, rel);
     if (entry.kind === "absent") {
-      // Genuinely absent: the reset leaves nothing here either way, so the path
-      // is simply gone — a deletion the commit must carry.
+      // Genuinely absent: the reset leaves nothing here either way, so the path is simply gone — a
+      // deletion the commit must carry.
       report.deleted.push(rel);
       continue;
     }
@@ -113,8 +105,8 @@ function classify(
       report.removed.push({ path: rel, why: entry.why });
       continue;
     }
-    // Once the aggregate ceiling is spent the path is removed unread, so the
-    // step never holds more than the budget in memory.
+    // Once the aggregate ceiling is spent the path is removed unread, so the step never holds more
+    // than the budget in memory.
     if (budget.stopped) {
       report.removed.push({ path: rel, why: `not captured: ${budget.why}` });
       continue;
@@ -136,8 +128,8 @@ function classify(
 /**
  * Fold the child's work into one provable commit on `headBefore`.
  *
- * Returns `files: []` when the tree held nothing to commit. Throws on a HEAD
- * the step cannot account for or on a commit whose contents it cannot prove.
+ * Returns `files: []` when the tree held nothing to commit. Throws on a HEAD the step cannot account
+ * for or on a commit whose contents it cannot prove.
  */
 export async function normaliseBuild(opts: {
   exec: BuildExec;
@@ -165,13 +157,10 @@ export async function normaliseBuild(opts: {
     opts.budget ?? new CaptureBudget(),
   );
 
-  // 4. RESET — child commits, staging, untracked files, ignore tricks and the
-  //    dependency links all go; frozen and protected files come back exactly as
-  //    at `headBefore`; provisioning rebuilds what the clean removed. `branch`
-  //    empty resets DETACHED, for a tree that owns no branch of its own. What the
-  //    reset's submodule pass could not supply is kept on the report: `build` owns the
-  //    reason the operator reads, and a fold that restored a tree with no submodule in
-  //    it is a fold whose commit cannot be reproduced.
+  // 4. RESET — child commits, staging, untracked files, ignore tricks and the dependency links all
+  //    go; frozen and protected files come back exactly as at `headBefore`; provisioning rebuilds what
+  //    the clean removed. What the reset's submodule pass could not supply is kept on the report: a
+  //    fold that restored a tree with no submodule in it is a fold whose commit cannot be reproduced.
   let submoduleNotes: readonly SubmoduleNote[] = [];
   try {
     submoduleNotes = await resetWorktreeToBase(exec, wt, headBefore, branch);
@@ -189,11 +178,9 @@ export async function normaliseBuild(opts: {
     );
   }
 
-  // 5. REWRITE the kept bytes, then delete what the child deleted. Both happen
-  //    after the reset, and each path is looked at again first: the reset gave
-  //    back the base tree, so a name the child turned into a directory (or put a
-  //    file under) is a kind change to refuse with its reason, not a write that
-  //    throws. Nothing is written or removed through a link.
+  // 5. REWRITE the kept bytes, then delete what the child deleted. Both happen after the reset, and
+  //    each path is looked at again first: a name the child turned into a directory is a kind change
+  //    to refuse with its reason, not a write that throws.
   const payload = new Map<string, Buffer>();
   for (const [rel, one] of captured) {
     const now = entryAt(wt, rel);
@@ -230,10 +217,9 @@ export async function normaliseBuild(opts: {
   }
   report.deleted = applied;
 
-  // The deletions the commit must carry are the ones git knows: a tracked file
-  // the child removed. A link the child left is a deletion of nothing in HEAD,
-  // and naming it to `git add` would fail the whole commit. The index is at
-  // `headBefore` now, so `ls-files` answers for the reset tree.
+  // The deletions the commit must carry are the ones git knows: a tracked file the child removed. A
+  // link the child left is a deletion of nothing in HEAD, and naming it to `git add` would fail the
+  // whole commit. The index is at `headBefore` now.
   const deletions =
     report.deleted.length === 0
       ? []
@@ -249,8 +235,8 @@ export async function normaliseBuild(opts: {
   // 6. Nothing to commit is an answer, not a fault.
   if (captured.size === 0 && deletions.length === 0) return report;
 
-  // 7. One commit, the pathspec named on both the add and the commit: the commit
-  //    holds these paths and no other, whatever else the index or tree holds.
+  // 7. One commit, the pathspec named on both the add and the commit: the commit holds these paths
+  //    and no other, whatever else the index or tree holds.
   const paths = [...captured.keys(), ...deletions];
   await must(
     exec,
@@ -277,10 +263,9 @@ export async function normaliseBuild(opts: {
 }
 
 /**
- * Prove the commit the step just made: parent is `headBefore`; no frozen or
- * protected path is in its diff; the tree is clean; every frozen blob at the
- * new head hashes to its record. Each check throws rather than reporting,
- * because the caller's next step merges whatever this returns.
+ * Prove the commit the step just made: parent is `headBefore`; no frozen or protected path is in its
+ * diff; the tree is clean; every frozen blob at the new head hashes to its record. Each check throws
+ * rather than reporting, because the caller's next step merges whatever this returns.
  */
 async function verifyCommit(
   exec: BuildExec,
@@ -289,10 +274,8 @@ async function verifyCommit(
   frozen: Record<string, string>,
   report: NormaliseReport,
 ): Promise<void> {
-  // Whole SHAs compared as full strings: a short `rev-parse` and a full
-  // `headBefore` would never be equal, and a prefix match would pass a fork.
-  // `HEAD^` is the commit before the one just made, so this also proves HEAD
-  // moved — a fold that made no commit has an unreadable parent here.
+  // Whole SHAs compared as full strings: a prefix match would pass a fork. Reading `HEAD^` also proves
+  // HEAD moved — a fold that made no commit has an unreadable parent here.
   const newHead = await headSha(exec, wt);
   const parent = await must(exec, wt, ["rev-parse", "HEAD^"], "read the build commit's parent");
   if (parent !== headBefore)
@@ -325,8 +308,8 @@ export async function assertFrozenIntact(
   headBefore: string,
   frozen: Record<string, string>,
 ): Promise<void> {
-  // An empty map is not a mismatch: no record exists to match, so the step
-  // says there is nothing to build against rather than a hash that failed.
+  // An empty map is not a mismatch: the step says there is nothing to build against rather than
+  // reporting a hash that failed.
   if (Object.keys(frozen).length === 0)
     throw new BuildInfraError("the run froze no tests — build has nothing to build against");
   const bad = await frozenMatches(exec, wt, headBefore, frozen);

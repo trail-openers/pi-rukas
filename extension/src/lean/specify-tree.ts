@@ -5,34 +5,22 @@
  *
  * Four jobs, all deterministic git/file facts with no model in the loop:
  *
- *   1. `ensureSpecifyWorktree` — a path nobody has to guess (`<repoRoot>/
- *      .worktrees/lean-<issue>`), created at the run's base sha, plus
- *      `assertSpecifyWorktreeOwned`, which refuses a path at that location the
- *      step does not own. A directory someone else made is not the step's to
- *      `reset --hard`.
- *   2. `validateSubmitRows` (in submit-tests-cap.ts, re-exported here) — the
- *      boundary a `submit_tests` row must pass before the step believes a file is
- *      a test the child wrote, including the check that a kept path is an ordinary
- *      file of the worktree. The size rules it applies live in `test-size.ts`,
- *      imported there directly: the facade re-exports only what callers import
- *      through it, because an unused re-export is a second public surface that
- *      drifts.
- *   3. `captureTestBytes` (in specify-capture.ts) — the ONLY thing that survives the
- *      child: the bytes of each kept file, read into memory through one descriptor
- *      per file, so a link swapped in after validation is refused rather than
- *      followed.
- *   4. `resetWorktreeToBase` — discard child commits, staged changes, untracked
- *      files and ignore tricks, re-initialise the submodules `clean -fdx`
- *      de-populated, then PROVE the tree is at base and clean, or throw. A reset
- *      nobody confirmed is a claim, not a fact, and a reset that emptied a
- *      submodule hands the child a test it cannot collect.
+ *   1. `ensureSpecifyWorktree` — a path nobody has to guess, created at the run's base sha, plus
+ *      `assertSpecifyWorktreeOwned`, which refuses a path at that location the step does not own.
+ *   2. `validateSubmitRows` (in submit-tests-cap.ts, re-exported here) — the boundary a `submit_tests`
+ *      row must pass before the step believes a file is a test the child wrote. The facade re-exports
+ *      only what callers import through it — an unused re-export is a second public surface that drifts.
+ *   3. `captureTestBytes` (in specify-capture.ts) — the ONLY thing that survives the child: the bytes of
+ *      each kept file, read through one descriptor per file, so a link swapped in after validation is
+ *      refused rather than followed.
+ *   4. `resetWorktreeToBase` — discard child commits, staging, untracked files and ignore tricks,
+ *      re-initialise the submodules `clean -fdx` de-populated, then PROVE the tree is at base and clean,
+ *      or throw. A reset nobody confirmed is a claim, not a fact.
  *
- * The worktree is created through `worktreeCreate` from ../worktree.ts, so it gets
- * the driver's pre-add guards and dependency provisioning — what lets the project's
- * runner execute in a tree that is otherwise only tracked files.
+ * The worktree is created through `worktreeCreate`, so it gets the driver's pre-add guards and dependency
+ * provisioning — what lets the project's runner execute in a tree that is otherwise only tracked files.
  *
- * Every git call here is argv form: the worktree path and the base sha come from the
- * run, and neither is allowed to become a word a shell re-parses.
+ * Every git call here is argv form: the path and the base sha never become a word a shell re-parses.
  */
 
 import { existsSync, realpathSync } from "node:fs";
@@ -79,7 +67,7 @@ async function registeredWorktreePaths(
     });
     stdout = r.stdout;
   } catch {
-    // Unreadable listing is NOT "no worktrees here" — the caller refuses.
+    // An unreadable listing is NOT "no worktrees here" — the caller refuses.
     return undefined;
   }
   const out: string[] = [];
@@ -98,25 +86,17 @@ async function registeredWorktreePaths(
  * The precondition for a worktree that is ALREADY there: this step owns it, or the
  * step does not touch it.
  *
- * `.worktrees/lean-<issue>` is a name another tool — or a human — can also use.
- * `reset --hard` and `clean -fdx` in a tree the step does not own destroys somebody
- * else's work, so ownership is PROVEN rather than inferred from the directory
- * existing: the path appears in `git worktree list --porcelain` of this repo, and
- * its HEAD sits at the required commit — on the run's branch or detached there —
- * or, with `allowAheadOfBase`, on the run's branch and descending from it. Anything
- * else, including an unreadable listing, throws before a single mutation, and the
- * foreign tree is left exactly as found.
+ * `.worktrees/lean-<issue>` is a name another tool — or a human — can also use, and `reset --hard` in a
+ * tree the step does not own destroys somebody else's work. Ownership is therefore PROVEN: the path appears
+ * in `git worktree list --porcelain` of this repo and its HEAD sits at the required commit — on the run's
+ * branch or detached there — or, with `allowAheadOfBase`, on the run's branch descending from it. Anything
+ * else, including an unreadable listing, throws before a single mutation.
  *
- * `headMustBe` is what a step other than `specify` asks the tree to sit at.
- * `specify` requires the base, because its claim is that it froze the tests ON the
- * base; `build` runs after that commit exists and would refuse every legitimate run
- * demanding the base, so it passes the head the frozen records were hashed at.
+ * `headMustBe` is what a step other than `specify` asks the tree to sit at: `specify` requires the base,
+ * while `build` passes the head the frozen records were hashed at.
  *
- * `allowAheadOfBase` is for the caller that resets HEAD itself next: a tree on the
- * run's branch descending from the base is then its own to reset — ON that branch,
- * since a HEAD the reset would move must be one the run named; detached or
- * unreadable is refused. The probe only ADDS a refusal: one that could not answer
- * throws.
+ * `allowAheadOfBase` is for the caller that resets HEAD itself next. The probe only ADDS a refusal: one
+ * that could not answer throws.
  */
 export async function assertSpecifyWorktreeOwned(
   exec: ExecFn,
@@ -150,9 +130,8 @@ export async function assertSpecifyWorktreeOwned(
   const actual = (head?.stdout ?? "").trim();
   const want = opts.headMustBe ?? opts.baseSha;
   let aheadOk = false;
-  // The two failure messages name what was actually found: "detached at the
-  // base" and "on the run's branch but two commits ahead of it" are different
-  // diagnoses for whoever reads the handback, and both were the same lie before.
+  // The failure names what was actually found — "detached at the base" and "on the branch but two
+  // commits ahead" are different diagnoses for whoever reads the handback.
   if (actual !== want) {
     aheadOk =
       opts.allowAheadOfBase === true && actual !== "" && (await headDescends(exec, opts.wt, want));
@@ -168,11 +147,9 @@ export async function assertSpecifyWorktreeOwned(
     maxBuffer: 1024 * 1024,
   }).catch(() => ({ stdout: "" }));
   const on = (symbolic.stdout ?? "").trim();
-  // The ahead path is the reset that moves commits: those belong to the run's
-  // branch, so the tree must name it — an empty `on` (detached, or a
-  // symbolic-ref that would not answer) is refused as foreign. A tree sitting
-  // exactly AT the base is where `resetWorktreeToBase` leaves its own detached
-  // trees, so there an empty `on` stays owned.
+  // The ahead path is the reset that moves commits, and those belong to the run's branch, so the tree
+  // must name it — an empty `on` is refused as foreign. A tree exactly AT the base is where
+  // `resetWorktreeToBase` leaves its own detached trees, so there an empty `on` stays owned.
   if (aheadOk ? on !== opts.branch : on !== "" && on !== opts.branch) throw new Error(foreign);
 }
 
@@ -203,12 +180,8 @@ export async function ensureSpecifyWorktreeWithProvision(
       branch: opts.branch,
       allowAheadOfBase: opts.allowAheadOfBase,
     });
-    // The reset cleans WITHOUT exemptions — `git clean -fdx` takes the
-    // dependency links AND the submodule contents — and provisioning then builds
-    // the links again, which also re-writes the `info/exclude` entries. One code
-    // path for a created tree and a leftover one, so neither can keep a link the
-    // other did not — and the reset re-initialises the submodules the clean
-    // emptied itself, whether or not this reset moved anything.
+    // The reset cleans WITHOUT exemptions — `clean -fdx` takes the dependency links AND the submodule
+    // contents — and provisioning rebuilds the links. One code path for a created and a leftover tree.
     const notes = await resetWorktreeToBase(
       exec,
       wt,
@@ -226,10 +199,8 @@ export async function ensureSpecifyWorktreeWithProvision(
     fromRef: opts.fromRef,
   });
   const tree = created.path;
-  // The step owns the tree outright (see `resetWorktreeToBase`), so the branch
-  // is pointed at the base rather than left detached at it — the commit that
-  // freezes the tests is then a commit ON the run's branch. `resetWorktreeToBase`
-  // does the `-B` and the `--hard` together and then proves the tree got there.
+  // The step owns the tree outright, so the branch is pointed at the base rather than left detached at
+  // it — the commit that freezes the tests is then one ON the run's branch.
   const notes = await resetWorktreeToBase(
     exec,
     tree,
@@ -242,9 +213,8 @@ export async function ensureSpecifyWorktreeWithProvision(
 }
 
 /**
- * `git merge-base --is-ancestor sha HEAD` in `wt`: git's own exit 1 is `false`,
- * any other outcome throws — never read as "descends". Like `headDescendsFrom`
- * in build-git.ts, whose error type belongs to that step.
+ * `git merge-base --is-ancestor sha HEAD` in `wt`: git's own exit 1 is `false`, any other outcome throws —
+ * never read as "descends". Like `headDescendsFrom` in build-git.ts, whose error type belongs to that step.
  */
 async function headDescends(exec: ExecFn, wt: string, sha: string): Promise<boolean> {
   const r = await exec("git", {
@@ -262,15 +232,9 @@ async function headDescends(exec: ExecFn, wt: string, sha: string): Promise<bool
 }
 
 /**
- * The `problem` field of a provisioning result, spread only when present — with the
- * submodule clause appended when the reset's pass could not supply one.
- *
- * Both notes share one field because they are the same kind of thing: a step that went
- * ahead on an incomplete tree, and said so. Provisioning's own wording stays verbatim in
- * front, since that is the sentence its gates and its tests quote. The trace line is the
- * durable record — this `problem` reaches a driver note and a trace, and nothing else;
- * the steps whose verdicts a missing submodule actually corrupts (`challenge`, `build`,
- * the review fix round) fold `submoduleNoteClause` into their own reasons instead.
+ * The `problem` field of a provisioning result, spread only when present, with the submodule clause
+ * appended when the reset's pass could not supply one. Both notes share one field because they are the
+ * same kind of thing: a step that went ahead on an incomplete tree and said so.
  */
 function problemOf(
   p: { problem?: string },
@@ -293,11 +257,9 @@ interface PorcelainEntry {
 /**
  * Parse `git status --porcelain=v1 -z` output.
  *
- * NUL-terminated records with no quoting or escaping, which is the only
- * porcelain shape that survives a path containing a space, a quote or a
- * newline. A rename/copy record (`R`/`C`) carries its source as a second
- * NUL-terminated field, which is consumed here so it never reaches a caller
- * as a phantom path.
+ * NUL-terminated records with no quoting or escaping — the only porcelain shape that survives a path
+ * containing a space, a quote or a newline. A rename/copy record carries its source as a second field,
+ * consumed here so it never reaches a caller as a phantom path.
  */
 export function parsePorcelainZ(out: string): PorcelainEntry[] {
   const fields = out.split("\0");

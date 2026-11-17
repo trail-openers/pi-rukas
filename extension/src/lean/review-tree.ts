@@ -2,14 +2,13 @@
  * lean/review-tree — the DISPOSABLE half of the review step's git surface.
  *
  * Everything here concerns a tree that exists to be thrown away: the fixer's worktree (named for one
- * round of one run, created detached, provisioned, proven clean, destroyed) and the run's own tree
- * put back where the gates read it after a refusal. The claims that decide whether a fix may reach
- * origin — ownership, ancestry, the frozen contract, the push — are `review-git.ts`. The seam is
- * lifetime rather than topic: one file mutates trees nobody will read afterwards, the other moves the
- * one ref everybody will.
+ * round of one run, created detached, provisioned, proven clean, destroyed) and the run's own tree put
+ * back where the gates read it after a refusal. The claims that decide whether a fix may reach origin
+ * are `review-git.ts`. The seam is lifetime rather than topic: one file mutates trees nobody will read
+ * afterwards, the other moves the one ref everybody will.
  *
- * Same rule as the rest of `lean/review*`: every git call is argv form through `ReviewDeps.exec`, so
- * a test drives the whole surface against a real temp repo with no model in the loop.
+ * Same rule as the rest of `lean/review*`: every git call is argv form through `ReviewDeps.exec`, so a
+ * test drives the whole surface against a real temp repo with no model in the loop.
  */
 
 import { existsSync } from "node:fs";
@@ -26,18 +25,15 @@ import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
  * The fixer's tree for ONE FIX OF ONE ATTEMPT: `<repoRoot>/.worktrees/lean-<issue>-fix-<arm>-<wave>-
- * <attempt>-<epoch>`. Every component is read out of the durable run, never out of anything the
- * process remembers: the engine re-runs exactly the undecided `review` step, so a discriminator the
- * step counted in memory restarts at zero on a resume and derives a DIFFERENT name for the same fix.
- *
- * Four values, three jobs:
+ * <attempt>-<epoch>`. Every component is read out of the durable run, never out of anything the process
+ * remembers: a discriminator the step counted in memory restarts at zero on a resume and derives a
+ * DIFFERENT name for the same fix.
  *
  * - `arm` ("a" = adversarial-only findings, "l" = lens-round findings) and `wave` make one run's fix
- *   trees distinct from each other.
- * - `attempt` is the step key's own `:N` — it keeps two CONCURRENT attempts on one issue from naming
- *   the same tree.
- * - `epoch` is `fixRunId`'s: the same value for the whole attempt, read back off the step log so a
- *   resumed attempt re-enters the paths its killed self left.
+ *   trees distinct.
+ * - `attempt` is the step key's own `:N` — it keeps two concurrent attempts on one issue apart.
+ * - `epoch` is `fixRunId`'s: read back off the step log so a resumed attempt re-enters the paths its
+ *   killed self left.
  *
  * The layout is `worktreePath`'s — the repo's single expression of where worktrees live.
  */
@@ -60,20 +56,17 @@ export type FixArm = "a" | "l";
 
 /**
  * The fixer's tree: created fresh, detached at the reviewed commit, provisioned, and proven clean
- * before the child is paid. The clean proof is the claim every lean step makes of a tree it is about
- * to hand a model: anything already in it is a leftover from a killed round, and a leftover the child
- * inherits becomes part of what the integration moves onto the branch. `--force` is for this step's
- * own path only.
+ * before the child is paid. The clean proof is the claim every lean step makes of a tree it is about to
+ * hand a model: a leftover the child inherits becomes part of what moves onto the branch. `--force` is
+ * for this step's own path only.
  *
- * **The path is unique to this round, so the claim is not a race.** A fixed path made `worktree add`
- * the only thing that could refuse a non-empty directory, and two awaits sat before the clean read.
- * With a per-round name, `add` refusing a path it created for a round that never completed is the
- * only collision left, and it is a refusal rather than an adoption.
+ * **The path is unique to this round, so the claim is not a race.** With a per-round name, `add`
+ * refusing a path it created for a round that never completed is the only collision left, and it is a
+ * refusal rather than an adoption.
  *
- * The clean proof is read WITHOUT `-uall`, deliberately: `provisionWorktree` has just linked the
- * project's dependency trees into this directory, and `-uall` expands a directory of links into every
- * file inside it, so a proof read that way would refuse every fix round. The default form still lists
- * any untracked path, so a leftover from a killed round cannot pass.
+ * The clean proof is read WITHOUT `-uall`: `provisionWorktree` has just linked the project's dependency
+ * trees into this directory, and `-uall` expands a directory of links into every file inside it, so a
+ * proof read that way would refuse every fix round. The default form still lists any untracked path.
  */
 export async function fixTree(
   deps: ReviewDeps,
@@ -130,9 +123,9 @@ export async function fixTree(
 }
 
 /**
- * Drop the disposable tree, and SAY so when the removal refused. A refusal is not a failure of the
- * step, so it does not throw; it is not silence either — the round stays blocked on that path until
- * the operator prunes it, and the operator is the one who has to know.
+ * Drop the disposable tree, and SAY so when the removal refused: not a failure of the step, so it does
+ * not throw, and not silence either — the round stays blocked on that path until the operator prunes
+ * it.
  */
 export async function removeWorktree(
   deps: ReviewDeps,
@@ -151,17 +144,16 @@ export async function removeWorktree(
 }
 
 /**
- * Destroy the disposable trees THIS ATTEMPT opened, whatever ended the step. The step's `finally`
- * calls this; a round that threw between `worktree add` and the child would otherwise leave a
- * registered tree the next attempt could not create again.
+ * Destroy the disposable trees THIS ATTEMPT opened, whatever ended the step. The step's `finally` calls
+ * this; a round that threw between `worktree add` and the child would otherwise leave a registered tree
+ * the next attempt could not create again.
  *
- * **Scoped to what this attempt could have created.** A selector that matched `-fix-` anywhere deleted
- * a sibling attempt's LIVE tree out from under a running fixer. The prefix now carries the issue, the
- * attempt and the epoch this attempt read from the log, so a sibling attempt's tree is not a candidate.
+ * **Scoped to what this attempt could have created.** A selector that matched `-fix-` anywhere deleted a
+ * sibling attempt's LIVE tree out from under a running fixer; the prefix carries the issue, the attempt
+ * and the epoch read from the log.
  *
  * The registry is a `git` question, not a memory one: `worktree list` finds a tree this PROCESS never
- * made, including one a killed attempt of the same run left behind, which a Set in memory could only
- * find after a restart that had already lost it.
+ * made, which a Set in memory could only find after a restart that had already lost it.
  */
 export async function closeFixTrees(
   deps: ReviewDeps,
@@ -193,9 +185,9 @@ export async function closeFixTrees(
 export type Restored = "restored" | "failed" | "absent";
 
 /**
- * Put the run's tree and its branch ref back at the commit the gates read, and say which of three
- * things happened. Best effort by design — it never throws, because it runs on a path that is already
- * throwing. What it does NOT do is stay silent: the caller folds the answer into the thrown cause.
+ * Put the run's tree and its branch ref back at the commit the gates read, and say which of three things
+ * happened. It never throws, because it runs on a path that is already throwing — but it does not
+ * stay silent: the caller folds the answer into the thrown cause.
  */
 export async function restore(
   deps: ReviewDeps,
@@ -216,10 +208,9 @@ export async function restore(
 }
 
 /**
- * The sentence the cause carries about the restore. "restored" gets one clause; the other two warn,
- * because for both `verify` and `publish` are about to read a tree that is NOT the one the gates
- * reviewed. The `why` annotation narrows `what` to the two warning members, so a fourth `Restored`
- * fails to type here.
+ * The sentence the cause carries about the restore. The two non-restored members warn, because for both
+ * `verify` and `publish` are about to read a tree that is NOT the one the gates reviewed. The `why`
+ * annotation narrows `what` to those two, so a fourth `Restored` fails to type here.
  */
 export function restoredSentence(what: Restored, wt: string, head: string): string {
   if (what === "restored") return ` — the run's tree was put back at ${head.slice(0, 12)}`;

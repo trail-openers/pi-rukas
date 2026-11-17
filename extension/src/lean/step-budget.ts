@@ -4,8 +4,8 @@
  * One per-state ceiling becomes three levers: **minutes** → `childBoundMs`, whose kill arrives as
  * `killCause: "child-bound"`; **turns / tokens** → an `AbortController` off the progress stream. A breach is
  * a VERDICT — the child worked and the ceiling stopped it — so the step returns `{kind: "budget"}` to be
- * routed by the table. That is why callers ask {@link readDispatched} BEFORE their infra throw: a stop read
- * as an infra failure never reaches the routing and the run loses the cause the ceiling produced.
+ * routed by the table. Callers ask {@link readDispatched} BEFORE their infra throw: a stop read as an infra
+ * failure never reaches the routing and the run loses the cause the ceiling produced.
  */
 
 import type { LensRunResult } from "../lens-review-types.ts";
@@ -50,7 +50,7 @@ export interface DispatchUsageRow {
 
 /**
  * A fixer row's tree identity: decimal epoch milliseconds, as DATA — a number is what `Number()` turns a
- * malformed id into `NaN` on the way into the durable record. Validated by `isRunId`.
+ * malformed id into `NaN` before it reaches the durable record. Validated by `isRunId`.
  */
 export type FixRunId = string & { readonly __fixRunId: unique symbol };
 
@@ -60,7 +60,7 @@ const CHILD_BOUND_CAUSE = "child-bound";
 /**
  * The proof a seam hands back INSTEAD of a `DispatchResult` when the ceiling ended the child. A
  * module-private symbol, not a boolean field: a replayed child result carrying a boolean marker would
- * become this step's verdict.
+ * become the step's verdict.
  */
 const STOP: unique symbol = Symbol("lean.budgetStop");
 
@@ -85,10 +85,7 @@ function minutesUsed(ms: number): number {
   return Math.max(1, Math.ceil(ms / 60_000));
 }
 
-/**
- * The typed trio a budget outcome must carry before any caller states it. Every reader of a recorded breach
- * goes through this check.
- */
+/** The typed trio a budget outcome must carry before any caller states it. */
 export function budgetTrio(oc: Outcome | undefined): BudgetFired | undefined {
   if (oc?.kind !== "budget") return undefined;
   const { limit, value, used } = oc;
@@ -108,14 +105,12 @@ function traceBreach(fired: BudgetFired, phrase: string): void {
   }
 }
 
-/**
- * The arms a step hands its dispatch seam: what the child gets, and the reader.
- */
+/** The arms a step hands its dispatch seam: what the child gets, and the reader. */
 export type BudgetArms = {
   opts: BudgetOpts;
   /**
-   * The verdict this arm saw: the turns/tokens the progress hook froze, else the minutes lever inferred from
-   * a `child-bound` kill cause.
+   * The verdict this arm saw: the turns/tokens the progress hook froze, else the minutes lever inferred
+   * from a `child-bound` kill cause.
    */
   fired: (result: DispatchResult) => BudgetFired | undefined;
   /** Set when a wall clock was armed that the runtime will not enforce (`PI_ENSEMBLE_DISPATCH_CAPS=0`). */
@@ -125,8 +120,8 @@ export type BudgetArms = {
 /**
  * Arm the three levers of one state's budget, or nothing when it has none.
  *
- * The `minutes` lever is `childBoundMs`, enforced by `spawn-child-bound.ts` — so the kill lands AFTER its
- * grace period and the reported `ms` overshoots; {@link minutesUsed} rounds that up.
+ * The `minutes` lever is `childBoundMs`, enforced by `spawn-child-bound.ts` — the kill lands AFTER its
+ * grace period and the reported `ms` overshoots, so {@link minutesUsed} rounds up.
  */
 export function armBudget(b: Budget | undefined): BudgetArms {
   const minutes = b?.minutes ?? 0;
@@ -163,8 +158,7 @@ export function armBudget(b: Budget | undefined): BudgetArms {
     }
     return minutesBreach(result);
   };
-  // The minutes lever is enforced by `armChildBound`, which returns early under
-  // `PI_ENSEMBLE_DISPATCH_CAPS=0` — arming it there buys nothing.
+  // `armChildBound` returns early under `PI_ENSEMBLE_DISPATCH_CAPS=0` — arming it there buys nothing.
   const inert =
     boundMs !== undefined && !capsEnabled()
       ? `${String(minutes)}-minute budget is inert: PI_ENSEMBLE_DISPATCH_CAPS=0`
@@ -192,8 +186,8 @@ export function armBudget(b: Budget | undefined): BudgetArms {
     hookFailureTraced = true;
     traceOnce(`lean budget: progress hook failed: ${(err as Error).message}`);
   };
-  // `spawn.ts` calls this from its stdout handler on the same tick it parses a child line: an exception here
-  // costs the dispatch. Nothing may escape, and the ABORT comes BEFORE the trace.
+  // `spawn.ts` calls this from its stdout handler on the same tick it parses a child line: an exception
+  // here costs the dispatch. Nothing may escape, and the ABORT comes BEFORE the trace.
   const onProgress = (s: RunningState): void => {
     let breach: BudgetFired | undefined;
     try {
@@ -260,8 +254,8 @@ export const LENS_ROLE = "code-review-specialist";
 export const FIXER_ROLE = "developer";
 
 /**
- * One six-lens round's cost, as one row per lens child that ran — NOT one synthetic row for the round, which
- * would lose five children's wall clock and halve the child count a host compares against.
+ * One six-lens round's cost, as one row per lens child that ran — NOT one synthetic row for the round,
+ * which would lose five children's wall clock and halve the child count a host compares against.
  */
 export function lensRows(lenses: LensRunResult[]): DispatchUsageRow[] {
   return lenses.map((lens) => ({
@@ -279,8 +273,7 @@ export function budgetSentence(state: LeanState, fired: BudgetFired): string {
 }
 
 /**
- * The verdict for a step that ran out of budget, not out of ideas. Callers ask {@link readDispatched} before
- * their infra throw, or this never gets to route.
+ * The verdict for a step that ran out of budget, not out of ideas.
  */
 function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
   return {
@@ -293,9 +286,8 @@ function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
 }
 
 /**
- * The budget verdict carrying the rows of every dispatch the step paid for, so a stopped round's tokens reach
- * the host. Clipped HERE to the validator's cap keeping the newest: over the cap `dispatchesProblem` refuses
- * the whole array.
+ * The budget verdict carrying the rows of every dispatch the step paid for, so a stopped round's tokens
+ * reach the host. Clipped HERE to the validator's cap, keeping the newest.
  */
 export function budgetVerdictWithRows(
   state: LeanState,

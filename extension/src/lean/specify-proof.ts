@@ -1,25 +1,18 @@
 /**
  * lean/specify-proof — runs one captured test file and reads its verdict.
  *
- * The step's claim is "these tests are red on the code as it stands", and that is worth
- * nothing unless something executed the file. This module runs the project's `verify.test`
- * template with `{file}` replaced and classifies the result. Four kinds, and they do NOT
- * all mean the same thing:
+ * The step's claim is "these tests are red on the code as it stands", which is worth nothing unless
+ * something executed the file. This module runs the project's `verify.test` template with `{file}` replaced
+ * and classifies the result. Four kinds, and they do NOT all mean the same thing:
  *
- *   - `red`     — non-zero exit AND the output named this file (path or basename). The
- *                 only kind that counts as proof.
- *   - `green`   — exit 0 on the base commit. Not a test of the feature, so the file is
- *                 dropped and its criterion goes uncovered.
+ *   - `red`     — non-zero exit AND the output named this file. The only kind that counts as proof.
+ *   - `green`   — exit 0 on the base. Not a test of the feature; the file is dropped.
  *   - `unclear` — non-zero without naming the file. Dropped with a reason.
- *   - `infra`   — the ONLY kind that throws: killed by the wall clock (`"killed"`),
- *                 flooded its output past the executor's bound (`"overflowed"` — a
- *                 chatty run, not a hung one), could not be STARTED (non-numeric
- *                 `code`), or the template named nothing to run.
+ *   - `infra`   — the ONLY kind that throws: killed by the wall clock, flooded past the executor's bound
+ *                 (a chatty run, not a hung one), could not be STARTED, or nothing named to run.
  *
- * There is deliberately no fifth shape: a classifier that threw on any output containing
- * `Cannot find module` would punish the canonical TDD red — what a test prints when it
- * imports a module not written yet. Whether the TOOLCHAIN works at all is answered once,
- * before the child is dispatched, by the base-health check in specify.ts.
+ * Deliberately no fifth shape: throwing on output containing `Cannot find module` would punish the canonical
+ * TDD red. Whether the TOOLCHAIN works is answered once, before the child, by the base-health check.
  */
 
 import { createHash } from "node:crypto";
@@ -32,26 +25,19 @@ import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 export const TEST_TIMEOUT_MS = 120_000;
 
 /**
- * The ceiling for one run, overridable so a test can inject a short one.
- * Production never sets it; a sleeper would otherwise cost the real two
- * minutes and the case asserting "a timeout is infra, never red" would be
- * untestable.
+ * The ceiling for one run, overridable so a test can inject a short one; production never sets them.
  */
 export interface TestRunLimits {
   timeoutMs?: number;
   /**
-   * The run's output ceiling, for a case that wants to watch the executor's own
-   * overflow kill. Production never sets it: `runTestFile` passes
-   * {@link TEST_MAX_BUFFER}, and a test that could not shrink the bound could not
-   * reach the maxBuffer path without printing eight megabytes.
+   * The output ceiling, for a case that wants to watch the executor's own overflow kill — without
+   * shrinking it a test cannot reach the maxBuffer path without printing eight megabytes.
    */
   maxBuffer?: number;
   /**
-   * The child's environment. The command-criteria tier passes the driver's
-   * scrubbed env (`verifyChildEnv()`) so a headless runner's own knobs cannot
-   * change what the project's tests see; absent, the ambient env — what the
-   * freeze-time proof runs want, since they judge the tree as the developer sees
-   * it.
+   * The child's environment. The command-criteria tier passes the scrubbed env so a headless runner's
+   * own knobs cannot change what the project's tests see; absent, the ambient env, which is what the
+   * freeze-time proof runs want.
    */
   env?: NodeJS.ProcessEnv;
 }
@@ -62,18 +48,13 @@ const TEST_MAX_BUFFER = 8 * 1024 * 1024;
 /**
  * The shape of a run that produced no verdict, as `runTestFile` classified it.
  *
- * The four say different things to the caller and must not be collapsed: a
- * wall-clock kill means the code under test never returned (and for a FROZEN file
- * already proven red at freeze time, that is a verdict — `frozenTestFailure` in
- * `verify-steps.ts`), while an output flood, a runner that could not be started and
- * a template that named nothing observed nothing at all. An overflow is a kill
- * (`killed: true`) but NOT a hang: the executor stamps `timedOutKill: false` and
- * names the stream in `overflow`.
+ * The four say different things to the caller and must not be collapsed: a wall-clock kill means the code
+ * under test never returned (and for a FROZEN file already proven red at freeze time, that IS a verdict —
+ * `frozenTestFailure` in `verify-steps.ts`), while a flood, an un-startable runner and an empty template
+ * observed nothing. An overflow is a kill (`killed: true`) but NOT a hang.
  *
- * `runTestFile` classifies the shape once, from the rejection's own stamps, and the
- * shape is carried out REQUIRED: a caller that re-derived it from the returned
- * `Proof` would find no `killed`/`timedOutKill`/`code` on it — a `Proof` is a value,
- * not the rejection — and would read every kill as a template problem.
+ * Carried out REQUIRED: a caller re-deriving it from the returned `Proof` would find no
+ * `killed`/`timedOutKill`/`code` on it and would read every kill as a template problem.
  */
 type ProofInfraShape = "killed" | "overflowed" | "never-started" | "nothing-to-run";
 
@@ -103,10 +84,9 @@ export type Proof = ProofVerdict | ProofInfra;
 /** Was this rejection a timeout or a signal rather than a non-zero exit? */
 export function wasKilled(err: unknown): boolean {
   const e = err as { killed?: boolean; signal?: string | null; timedOutKill?: boolean };
-  // `killed` AND `timedOutKill` are only decisive on their own: Node's
-  // execFile rejection for an ordinary non-zero exit carries `signal: null`
-  // as an OWN property, so `?? null` never falls through and a plain `exit 1`
-  // would otherwise be read as a kill and throw the whole step away.
+  // `killed` AND `timedOutKill` are only decisive on their own: Node's execFile rejection
+  // for an ordinary non-zero exit carries `signal: null` as an OWN property, so a plain
+  // `exit 1` would otherwise be read as a kill and throw the whole step away.
   if (e?.killed === true || e?.timedOutKill === true) return true;
   return e?.signal !== undefined && e.signal !== null;
 }
@@ -115,9 +95,8 @@ export function wasKilled(err: unknown): boolean {
  * Did this rejection come from the executor's OUTPUT bound rather than its clock?
  *
  * `execp` stamps `overflow` with the stream that broke its bound on that path and
- * deliberately leaves `timedOutKill` false, so an overflow is a kill that is not a
- * hang — the same reading `tierObserved` in `verify-baseline.ts` makes. Asked before
- * `wasKilled`, whose answer is true for both.
+ * leaves `timedOutKill` false, so an overflow is a kill that is not a hang. Asked
+ * before `wasKilled`, whose answer is true for both.
  */
 function outputOverflowed(err: unknown): boolean {
   return (err as { overflow?: unknown })?.overflow !== undefined;
@@ -160,12 +139,11 @@ export function renderTestCommand(template: string, file: string): string {
  * back as `kind: "infra"`, and the caller decides whether throwing is the right
  * response to a toolchain it cannot trust.
  *
- * `killGroup` is what makes a timeout classify at all: the runner is spawned in its
- * own process group so the timeout SIGKILLs the whole group and stamps the rejection
- * `killed` + `timedOutKill`. Without it, Node's plain exec timeout kills only the
- * direct child — and when that child is `sh` running a script that itself spawned
- * something holding stdout, the callback never fires. Either way a hang must be
- * infra, never read as a red or a green.
+ * `killGroup` is what makes a timeout classify at all: the runner is spawned in its own
+ * process group so the timeout SIGKILLs the whole group and stamps the rejection `killed` +
+ * `timedOutKill`. Without it, Node kills only the direct child — and when that child is `sh`
+ * running a script that spawned something holding stdout, the callback never fires. Either way
+ * a hang must be infra, never read as a red or a green.
  */
 export async function runTestFile(
   exec: VerifyExecFn,
@@ -173,14 +151,12 @@ export async function runTestFile(
 ): Promise<Proof> {
   const cmd = renderTestCommand(opts.template, opts.file);
   const timeout = opts.limits?.timeoutMs ?? TEST_TIMEOUT_MS;
-  // argv form: the template is read as the executable plus its arguments, so
-  // the project's runner never reaches a shell that would re-parse the
-  // worktree's path. config.ts refuses the shell-shaped templates that would
-  // want otherwise.
+  // argv form: the template is read as the executable plus its arguments, so the project's
+  // runner never reaches a shell that would re-parse the worktree's path.
   const [bin, ...args] = cmd.split(/\s+/).filter((w) => w !== "");
   if (bin === undefined || args.length === 0) {
-    // A template with no arguments cannot name a file to run: the placeholder
-    // check in config.ts rejects the shape, and this refuses it at the run.
+    // A template with no arguments cannot name a file to run; config.ts rejects the shape at
+    // load and this refuses it at the run.
     return {
       kind: "infra",
       cmd,
@@ -224,9 +200,9 @@ export async function runTestFile(
       infraShape: "never-started",
     };
   const code = exitCodeOf(err);
-  // The submitted PATH is what a runner echoes when it could not run the file at
-  // all, the BASENAME what it echoes when the file ran and its assertions failed.
-  // Either counts as "the output named this file".
+  // The submitted PATH is what a runner echoes when it could not run the file at all, the
+  // BASENAME what it echoes when the file ran and its assertions failed. Either counts as
+  // "the output named this file".
   if (!out.includes(base) && !out.includes(opts.file))
     return { kind: "unclear", cmd, code, detail: `exited ${String(code)} without naming ${base}` };
   return { kind: "red", cmd, code, detail: `exited ${String(code)}` };

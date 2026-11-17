@@ -2,35 +2,26 @@
  * lean/specify-run — the CAPTURE / RESET / REWRITE / PROVE / COMMIT pipeline
  * `specify` and `challenge` share.
  *
- * Both steps pay one adversary to write test files, and both must turn whatever it
- * submitted into frozen, committed, provably-red tests. They differ in TWO inputs,
- * not two algorithms:
+ * Both steps pay one adversary to write test files and must turn whatever it submitted into frozen,
+ * committed, provably-red tests. They differ in TWO inputs, not two algorithms:
  *
- *   - what the child is shown and asked for (`specifyPrompt` vs `challengePrompt`,
- *     assembled by the caller, which also owns the dispatch);
- *   - **`headBefore`** — the commit the tree is reset back to and the red proof runs
- *     against. For `specify` the run's base sha (the claim is the tests are red on
- *     code nobody wrote); for `challenge` the current head (a new test is worth
- *     freezing only if red against it).
+ *   - what the child is shown and asked for (`specifyPrompt` vs `challengePrompt`, assembled by the caller,
+ *     which also owns the dispatch);
+ *   - **`headBefore`** — the commit the tree is reset to and the red proof runs against: `specify`'s base
+ *     sha, `challenge`'s current head.
  *
- * Everything downstream of the dispatch is identical, so it lives here once: each
- * stage is a response to a way a child can lie about what it wrote (a symlink
- * swapped in after validation, a commit of its own, a green file reported as red, a
- * commit that quietly contains a stray edit), and the copy that drifts is the one
- * nobody is testing. `noteClause` is exported so `challenge`'s sweep shares its cap
- * with these.
+ * Everything downstream of the dispatch is identical, so it lives here once: each stage answers a way a child
+ * can lie about what it wrote (a symlink swapped in after validation, a commit of its own, a green file
+ * reported as red). The copy that drifts is the one nobody tests. `noteClause` is exported so `challenge`'s
+ * sweep shares the cap.
  *
- * The ref is a parameter and nothing else may vary by step: `resetWorktreeToBase`
- * is named for the base but takes any commit, and it verifies the tree got there
- * and is clean, so `challenge`'s reset to a head is exactly as proven as
- * `specify`'s reset to a base.
+ * The ref is a parameter and nothing else may vary by step: `resetWorktreeToBase` verifies the tree got there
+ * and is clean, whichever commit it was given.
  *
- * The COVERAGE RULE is an argument, not a branch: `specify` passes `"all-criteria"`
- * (one criterion without a red test refuses the run); `challenge` passes
- * `"any-red"` — an adversary that found one red edge for AC1 and nothing for AC2 has
- * done its job, and refusing that run would throw away the one genuine finding. The
- * judgement belongs to the caller, which is why this module returns `committed` /
- * `uncovered` / `empty`.
+ * The COVERAGE RULE is an argument, not a branch: `specify` passes `"all-criteria"` (one criterion without a red
+ * test refuses the run); `challenge` passes `"any-red"` — an adversary that found one red edge for AC1 and
+ * nothing for AC2 has done its job, and refusing that run throws away the one genuine finding. The judgement
+ * belongs to the caller, which is why this returns `committed` / `uncovered` / `empty`.
  */
 
 import { existsSync, rmSync } from "node:fs";
@@ -68,22 +59,17 @@ type PipelineVerdict =
   /** No submitted row survived validation, capture and the red proof. */
   | { kind: "empty"; reason: string }
   /**
-   * Only `"all-criteria"` returns this: at least one wanted criterion ended
-   * with no red file, and under that rule a gap is a refusal rather than a
-   * partial freeze. `reason` leads with the same `criterion <id> has no red
-   * test` lines as `uncovered` — the per-file drop notes follow — so a caller
-   * that surfaces only one of the two fields still tells the operator why.
+   * Only `"all-criteria"` returns this: a wanted criterion ended with no red file, and under that rule a gap
+   * is a refusal, not a partial freeze. `reason` leads with the same `criterion <id> has no red test` lines.
    */
   | { kind: "uncovered"; uncovered: string[]; reason: string };
 
 /**
  * What the pipeline requires of its coverage, decided by the caller.
  *
- * - `"all-criteria"` (`specify`): every id in `wanted` must have at least one red file,
- *   or the run is refused.
- * - `"any-red"` (`challenge`): at least one red file anywhere is enough. The round
- *   exists to surface SOME gap the frozen tests missed, so partial coverage is a result,
- *   not a failure — and everything proven red is kept.
+ * - `"all-criteria"` (`specify`): every id in `wanted` needs at least one red file, or the run is refused.
+ * - `"any-red"` (`challenge`): one red file anywhere is enough. The round exists to surface SOME gap the
+ *   frozen tests missed, so partial coverage is a result, not a failure.
  */
 type CoverageRule = "all-criteria" | "any-red";
 
@@ -96,9 +82,8 @@ interface RunTestsArgs {
   /** The run's branch — the ref `resetWorktreeToBase` points at the head. */
   branch: string;
   /**
-   * The commit the tree is reset to, the commit the red proof runs against, and
-   * the parent the frozen commit is checked against. `baseSha` for `specify`,
-   * the current head for `challenge`.
+   * The commit the tree is reset to, the commit the red proof runs against, and the parent the
+   * frozen commit is checked against.
    */
   headBefore: string;
   /** The project's `verify.test` template. Required — every caller checks first. */
@@ -106,9 +91,8 @@ interface RunTestsArgs {
   /** The ids of the criteria the step requires a red test for. */
   wanted: string[];
   /**
-   * The coverage rule, passed IN rather than inferred from which caller this
-   * is: the pipeline must not grow a `if challenge` branch, or the two steps
-   * drift apart in the one place they are supposed to share.
+   * The coverage rule, passed IN rather than inferred from the caller: the pipeline must not grow an
+   * `if challenge` branch, or the two steps drift apart in the one place they share.
    */
   coverage: CoverageRule;
   /** toolUses -> the rows the child declared, plus how many calls were malformed. */
@@ -124,12 +108,9 @@ interface RunTestsArgs {
   /** Per-run runner limits; a test injects a short timeout to prove a hang is infra. */
   testLimits?: TestRunLimits;
   /**
-   * The project's `verify.freezeCheck` command, when it configured one: a shell
-   * command over the whole tree that judges test-file CONTENT. The pipeline runs
-   * it twice — at the reset base with nothing in place, and again with the
-   * candidate files — and a gate green at base and red with the candidates drops
-   * the files it named rather than freezing an unwinnable contract. See
-   * `lean/freeze-check.ts`.
+   * The project's `verify.freezeCheck` command, if configured: a shell command over the whole tree judging
+   * test-file CONTENT, run twice — at the reset base and with the candidates — so a gate green at base and
+   * red with the candidates drops the files it named instead of freezing an unwinnable contract.
    */
   freezeCheck?: string;
   /** The bound for one freeze-check run; a test shortens it to observe a hang. */
@@ -148,8 +129,7 @@ function clip(detail: string): string {
 }
 
 /**
- * A capped `label N: a; b; c` clause, exported because every note family needs the
- * same bound — the pipeline's drop notes and `challenge`'s discarded-path clause.
+ * A capped `label N: a; b; c` clause, exported because every note family needs the same bound.
  */
 export function noteClause(label: string, notes: string[]): string {
   if (notes.length === 0) return "";
@@ -166,18 +146,15 @@ export interface DropLabel {
 }
 
 /**
- * The attributed form of one drop, `<criterionId> <path>: <reason>` with the
- * path omitted when there is none. The retry's feedback and the step's reason
- * both print it, so the child and an operator read the same attribution.
+ * The attributed form of one drop, `<criterionId> <path>: <reason>`, path omitted when there is none. The
+ * retry's feedback and the step's reason both print it.
  */
 export function droppedLabel(d: DropLabel): string {
   return `${d.criterionId}${d.path === undefined ? "" : ` ${d.path}`}: ${d.reason}`;
 }
 
 /**
- * A `dropped N (…) — a; b; c` clause, with NO leading space: each call site
- * supplies the separator its own position needs, so the clause does not carry
- * padding that a caller then has to trim before joining.
+ * A `dropped N (…) — a; b; c` clause with NO leading space: each call site supplies its own separator.
  */
 function dropNote(dropped: DropLabel[]): string {
   if (dropped.length === 0) return "";
@@ -206,12 +183,10 @@ function noteFor(cand: DeclaredPath, proof: Proof): string {
 /**
  * Why a runner the step cannot trust is infrastructure and not a verdict.
  *
- * `runTestFile` never throws — a kill, a timeout and a runner that could not be
- * started all come back as `kind: "infra"` — and the caller decides whether
- * throwing is right. It is, here: `specify`'s whole claim is that these tests are
- * red, and a red nobody executed proves nothing. Reading an unrunnable runner as
- * "this file was not red" would hand the run a `no-red-test` VERDICT about work the
- * toolchain never got to judge.
+ * `runTestFile` never throws — a kill, a timeout and an un-startable runner all come back as
+ * `kind: "infra"` — and throwing is right here: `specify`'s claim is that these tests are red, and a red
+ * nobody executed proves nothing. Reading an unrunnable runner as "not red" hands the run a verdict about
+ * work the toolchain never judged.
  */
 function assertRan(proof: Proof, file: string): void {
   if (proof.kind === "infra")
@@ -219,9 +194,8 @@ function assertRan(proof: Proof, file: string): void {
 }
 
 /**
- * Run the pipeline. THROWS `SpecifyInfraError` on anything the step cannot
- * establish about git, the tree or the runner; returns a verdict about the
- * CHILD's work otherwise.
+ * Run the pipeline. THROWS `SpecifyInfraError` on anything the step cannot establish about git, the tree or
+ * the runner; otherwise returns a verdict about the CHILD's work.
  */
 export async function runTestPipeline(
   args: RunTestsArgs,
@@ -229,14 +203,12 @@ export async function runTestPipeline(
 ): Promise<PipelineVerdict> {
   const { exec, wt, branch, headBefore, issue } = args;
 
-  // 1. Extract and validate at the boundary. A row whose path is not an
-  //    ordinary file of THIS worktree is dropped here, before a single byte of
-  //    it is read.
+  // 1. Extract and validate at the boundary: a row whose path is not an ordinary file of THIS worktree is
+  //    dropped before a byte of it is read.
   const { rows, skipped } = args.extract(input.toolUses);
-  // The boundary reads git (`existsAtBase`), so an unreadable base commit
-  // arrives as a rejection from inside it — and that is infrastructure, not a
-  // verdict. A git failure that fell through as "nothing was submitted" would
-  // report a broken repository as an adversary that found nothing.
+  // The boundary reads git (`existsAtBase`), so an unreadable base arrives as a rejection from inside it —
+  // infrastructure, not a verdict: a git failure falling through as "nothing was submitted" reports a broken
+  // repository as an adversary that found nothing.
   let kept: SubmitTestsRow[];
   let dropped: DroppedRow[];
   try {
@@ -260,19 +232,13 @@ export async function runTestPipeline(
     };
   }
 
-  // 2. CAPTURE: the bytes of every kept file, in memory, each through one
-  //    descriptor. Nothing else the child produced survives what comes next,
-  //    and a file that cannot be read that way — swapped for a hard link or a
-  //    symlink in the window after validation, emptied, truncated — is dropped
-  //    with its reason and never becomes a test.
+  // 2. CAPTURE: the bytes of every kept file, in memory, each through one descriptor. Nothing else the
+  //    child produced survives what comes next, and a file unreadable that way — swapped for a hard link or
+  //    symlink after validation — is dropped with its reason.
   //
-  //    The size rules bounded the file the boundary READ (their bound is per
-  //    validation), and the child owns this window: it can grow a kept file
-  //    between that read and this one. `readOneDescriptor` proves one file was
-  //    stable across its own read and `MAX_CAPTURE_BYTES` is a far looser
-  //    ceiling, so the byte bound is asserted again on the bytes actually held
-  //    before a single one of them is rewritten into the tree. A file that grew
-  //    past the bound is refused here, in the same words the boundary uses.
+  //    The size rules bounded the file the boundary READ; the child owns this window and can grow a kept
+  //    file between that read and this one. `readOneDescriptor` proves stability across its own read, so the
+  //    byte bound is asserted again on the bytes actually held, in the boundary's words.
   const owners = new Map(candidates.map((c) => [c.path, c.criterionId]));
   let captured: Map<string, Buffer>;
   try {
@@ -298,20 +264,14 @@ export async function runTestPipeline(
     throw new SpecifyInfraError((err as Error).message);
   }
 
-  // 3. RESET to `headBefore` — the child's commits, its staging, its untracked
-  //    files, its ignore rules and its dependency links all go, and the reset is
-  //    confirmed before anything is written back. The links are then rebuilt by
-  //    the caller's `prepare`, so the tree the runner executes in is provisioned
-  //    the same way whether it was created fresh or left behind by a crash.
-  // The freeze check's BASE run — the comparison that turns "the gate is red"
-  // into "YOUR files made it red". It happens in the one window where the tree
-  // is known to hold none of the candidates: after the reset to `headBefore` and
-  // `prepare`, before a single captured byte is written back. Any earlier and it
-  // would judge the child's own leftover writes rather than the base, which is
-  // how a run comes to blame a candidate for a red the adversary itself caused.
-  // A gate red at base is the mainline's own red, never attributed and never
-  // blocking (`verify`'s baseline probe owns that question); one that could not
-  // run blocks nothing but is disclosed below either way.
+  // 3. RESET to `headBefore` — the child's commits, staging, untracked files, ignore rules and dependency
+  //    links all go, confirmed before anything is written back. `prepare` rebuilds the links, so the tree
+  //    the runner executes in is provisioned the same way whether fresh or left by a crash.
+  // The freeze check's BASE run — the comparison turning "the gate is red" into "YOUR files made it red".
+  // It runs in the one window where the tree holds none of the candidates: after the reset and `prepare`,
+  // before a captured byte returns. Any earlier it judges the child's leftover writes, not the base.
+  // A gate red at base is the mainline's own red — never attributed, never blocking (`verify`'s baseline
+  // probe owns that); one that could not run is disclosed either way.
   let baseCheck: FreezeCheck | undefined;
   let baseCheckRan = false;
   // What the preparation's submodule pass could not supply. The reset above and the
@@ -336,12 +296,9 @@ export async function runTestPipeline(
     }
     writeCaptured(wt, captured);
   } catch (err) {
-    // A handback this window already named keeps its own words. The submodule pass raises
-    // `SpecifyInfraError` naming the command and git's reason for refusing it, and re-wrapping
-    // that here as "could not rewrite the captured tests" would attribute a transport failure
-    // to the file write that ran after it — the operator would repair the wrong thing. Only an
-    // error this window genuinely owns (a write that failed, a freeze check that could not run)
-    // is wrapped.
+    // A handback this window already named keeps its own words: re-wrapping the submodule pass's error as
+    // "could not rewrite the captured tests" blames the file write that ran after it. Only an error this
+    // window owns is wrapped.
     if (err instanceof SpecifyInfraError) throw err;
     if (err instanceof SpecifyResetError) throw new SpecifyInfraError(err.message);
     throw new SpecifyInfraError(
@@ -349,9 +306,8 @@ export async function runTestPipeline(
     );
   }
 
-  // 5. Prove red on exactly these bytes, per file, against `headBefore`. A green
-  //    or unclear file is dropped and DELETED from the tree; only a runner that
-  //    could not be started (or was killed) is infrastructure.
+  // 5. Prove red on exactly these bytes, per file, against `headBefore`. A green or unclear file is dropped
+  //    and DELETED from the tree; only an unrunnable runner is infrastructure.
   let red: DeclaredPath[] = [];
   for (const cand of candidates) {
     if (!captured.has(cand.path)) continue; // dropped at capture — never run
@@ -370,17 +326,13 @@ export async function runTestPipeline(
     const why = removeRejected(wt, cand.path);
     if (why !== undefined) notes.push(why);
   }
-  // 5b. THE FREEZE CHECK. A candidate that trips a gate the project runs over
-  //     test-file CONTENT must never join the contract: `build` may not edit a
-  //     frozen file, so the run would have no round left that could make the gate
-  //     green. A gate that was green at base and is red with the candidates drops
-  //     the candidates its own output named — or all of them, when it named none,
-  //     since a gate that failed over this tree failed because of what is in it.
+  // 5b. THE FREEZE CHECK. A candidate that trips a gate the project runs over test-file CONTENT never joins
+  //     the contract: `build` may not edit a frozen file, so the run would have no round left that could
+  //     make the gate green. A gate green at base and red with the candidates drops those its own output
+  //     named — or all of them, when it named none.
   //
-  //     Runs BEFORE the evidence clause is assembled: a drop is a `dropped N (…)`
-  //     row like any other, and the coverage rules below quote that clause, so a
-  //     check appended afterwards would leave the refusal it causes unattributed
-  //     in the very field the retry's prompt is built from.
+  //     Runs BEFORE the evidence clause is assembled: the coverage rules quote it, so a check appended after
+  //     would leave the refusal it causes unattributed in the retry's prompt.
   let checkNote = "";
   if (args.freezeCheck !== undefined && red.length > 0) {
     const paths = [...new Set(red.map((r) => r.path))];
@@ -405,16 +357,14 @@ export async function runTestPipeline(
       dropped.push(...droppedByCheck);
       red = red.filter((r) => !gone.has(r.path));
     } else {
-      // Green at base too, or a gate that could not answer: nothing is blocked
-      // either way, but a check that never answered is disclosed, not silenced.
+      // Green at base too, or a gate that could not answer: nothing is blocked either way, but a
+      // check that never answered is disclosed, not silenced.
       checkNote = freezeCheckNote(args.freezeCheck, baseCheckRan, withCandidates);
     }
   }
 
-  // A gap is `criterion <id> has no red test`, and under `"all-criteria"` it is the FIRST clause of
-  // every rule, in both fields: those notes are the detail and never the headline. A rule whose
-  // per-file notes were in FRONT could be rendered without ever naming the criterion it is refusing
-  // for, so `evidence` is appended after the fixed prefix.
+  // A gap is `criterion <id> has no red test`, and under `"all-criteria"` the FIRST clause of every rule in
+  // both fields: a rule whose per-file notes came first could render without naming the criterion it refuses.
   const droppedNote = noteClause("dropped", notes);
   const evidence = [droppedNote, dropNote(dropped)].filter((s) => s !== "").join(" ");
   const gapFor = (ids: string[], withEvidence: boolean): string[] =>
@@ -423,9 +373,8 @@ export async function runTestPipeline(
         `criterion ${id} has no red test${skippedNote}${withEvidence && evidence !== "" ? `; ${evidence}` : ""}`,
     );
   if (red.length === 0) {
-    // Nothing survived the proof, so there is no coverage to report: the reason states the verdict,
-    // then every criterion the run still owes (only meaningful under `"all-criteria"`), then the
-    // per-file evidence.
+    // Nothing survived the proof, so there is no coverage to report: verdict, then every criterion the run
+    // still owes, then the per-file evidence.
     const lead = (args.coverage === "all-criteria" ? args.wanted : [])
       .map((id) => `criterion ${id} has no red test`)
       .join("; ");
@@ -434,11 +383,9 @@ export async function runTestPipeline(
       reason: [
         `no submitted test was red against ${headBefore}${skippedNote}`,
         lead,
-        // #2319 Resolution 4: every kind's reason carries the tree's caveat, and `empty` is the
-        // kind that needs it most. Its own reset is where an unseeded gitlink is discovered, and
-        // this is the record the operator reads to find out why nothing was frozen: a submitted
-        // test that died on a missing vendored import reads exactly like an adversary that wrote
-        // nothing red, unless the reason says the submodule was never populated.
+        // Every kind's reason carries the tree's caveat, and `empty` needs it most: a submitted test
+        // that died on a missing vendored import reads exactly like an adversary that wrote nothing
+        // red, unless the reason says the submodule was never populated.
         treeProblem ?? "",
         [evidence, checkNote].filter((s) => s !== "").join(" "),
       ]
@@ -447,11 +394,8 @@ export async function runTestPipeline(
     };
   }
 
-  // `4. REWRITE the captured bytes` is documented above the reset; the step
-  // numbering is kept in one place rather than restated here.
-
-  // 6. Coverage. ONLY `"all-criteria"` refuses a gap: `specify` requires a red for every test
-  //    criterion, while `challenge` keeps whatever red it earned.
+  // 6. Coverage. ONLY `"all-criteria"` refuses a gap: `specify` needs a red for every test criterion, while
+  //    `challenge` keeps whatever red it earned.
   if (args.coverage === "all-criteria") {
     const missing = args.wanted.filter((id) => !red.some((r) => r.criterionId === id));
     if (missing.length > 0) {
@@ -475,8 +419,8 @@ export async function runTestPipeline(
     throw new SpecifyInfraError(`could not commit the acceptance tests: ${(err as Error).message}`);
   }
 
-  // 8. HASH the COMMITTED blobs, not the working files: what the rest of the run compares against
-  //    has to describe the commit, not whatever was on disk when the step looked.
+  // 8. HASH the COMMITTED blobs, not the working files: what the rest of the run compares against must
+  //    describe the commit, not whatever was on disk when the step looked.
   const frozen: Record<string, string> = {};
   const tests: Record<string, string[]> = {};
   for (const { criterionId, path: rel } of red) {
