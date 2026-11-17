@@ -41,10 +41,12 @@ export const FENCE_RE = /^ {0,3}(```|~~~)/;
  *  `\**`. Two asterisks are what reviewers write (`**VERDICT:**`); three or more
  *  (`***VERDICT:***`, `***### VERDICT***`) are decoration rather than emphasis
  *  immediately touching the token, and a line no markdown renders as a marker
- *  signs nothing (#2322). ONE fragment for both forms, because a cap edited into
- *  one and not the other is how they drifted apart; the fragments are used from
- *  `headingRe_` and `inlinePrefix_` below, which are the only two readers of a
- *  verdict line's decorations. */
+ *  signs nothing (#2322). ONE fragment for the three readers of a verdict line's
+ *  decorations — `headingRe_`, `inlinePrefix_` and `bareValueRe_` below — because
+ *  a cap edited into one and not the others is how they drifted apart once
+ *  already: the token line was capped while a heading's value line kept the
+ *  uncapped run, so `***APPROVED***` under a column-0 `### VERDICT` out-ranked a
+ *  real signature above it (#2322 round 2). */
 const EMPHASIS = String.raw`\*{0,2}`;
 
 /** One asterisk of markdown emphasis — the piece a reviewer puts *after* the
@@ -164,6 +166,12 @@ function inlinePrefix_(): RegExp {
  *  heading whose value line is prose (`APPROVED, because the gate covers it`)
  *  states no verdict; the inline form is the one that tolerates trailing text.
  *
+ *  The emphasis run it strips is `EMPHASIS`, the same cap the token line wears:
+ *  a value line is judged by the inline rules (#2322), so the number of asterisks
+ *  it tolerates has to be the same number — otherwise `### VERDICT` over
+ *  `***APPROVED***` signs while `***VERDICT:*** APPROVED` is refused, and the
+ *  decoration that fails closed on one line would open the other.
+ *
  *  Both this and the inline value below are built lazily because
  *  `VERDICT_STATUSES` lives in `adversarial-verdict.ts`, which imports the reader
  *  that imports this module: built at module load they would read the const before
@@ -173,7 +181,10 @@ function inlinePrefix_(): RegExp {
 let bareValueRe: RegExp | undefined;
 function bareValueRe_(): RegExp {
   if (bareValueRe === undefined) {
-    bareValueRe = new RegExp(`^\\**\\s*(${statusAlt_()})\\s*\\**$`, "i");
+    bareValueRe = new RegExp(
+      `^(?:${EMPHASIS}[\\s]*)?(${statusAlt_()})(?:[\\s]*${EMPHASIS})?$`,
+      "i",
+    );
   }
   return bareValueRe;
 }
