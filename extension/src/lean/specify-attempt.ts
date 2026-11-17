@@ -1,13 +1,11 @@
 /**
- * lean/specify-attempt — one attempt of the `specify` step: one adversary
- * dispatch under the state's budget, then the shared test pipeline (extract,
- * validate, capture, reset to the base, rewrite, prove red, commit).
+ * lean/specify-attempt — one attempt of the `specify` step: one adversary dispatch under the
+ * state's budget, then the shared test pipeline (extract, validate, capture, reset, rewrite, prove,
+ * commit).
  *
- * `specify.ts` runs it once, and again on its one retry — with the previous
- * attempt's drop reasons, or with a fixed note when that attempt submitted nothing
- * at all. It returns the outcome reached, the drop labels the boundary made, and
- * whether the attempt was silent — no `submit_tests` call it could read and nothing
- * dropped — so the caller decides whether a retry is worth it. The pipeline is
+ * `specify.ts` runs it once, and again on its one retry — with the previous attempt's drop reasons, or
+ * with a fixed note when it submitted nothing at all. It returns the outcome, the boundary's drop labels,
+ * and whether the attempt was silent, so the caller decides whether a retry is worth it. The pipeline is
  * shared with `challenge` through `specify-run.ts`.
  */
 
@@ -44,11 +42,9 @@ import { extractSubmitTests } from "./submit-tests-extract.ts";
 import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
 
 /**
- * The size refusals — the sentences in `test-size.ts` that say a file is too
- * long, too big, or not a text file. A drop carrying one of these is the one
- * the child can fix by making the file smaller, so it is the one whose detail
- * the operator's decline needs; a quota or location drop says a file should not
- * have been written at all, and stays attributed in the reason alone.
+ * The size refusals — the sentences in `test-size.ts` that say a file is too long, too big, or not a
+ * text file. A drop carrying one is the one the child can fix by making the file smaller, so it is the
+ * one whose detail the operator's decline needs.
  */
 const SIZE_REFUSAL =
   / lines; an acceptance test is at most | bytes; an acceptance test is at most | is not a text file/;
@@ -61,9 +57,8 @@ interface SpecifyAttemptArgs {
   issue: number;
   spec: PiSpec;
   /**
-   * The issue body the step re-read before parsing `spec` — the SAME bytes,
-   * never a second fetch. Shown to the adversary as the task statement; absent
-   * renders no section (`lean/issue-prose.ts`).
+   * The issue body the step re-read before parsing `spec` — the SAME bytes, never a second fetch.
+   * Absent renders no section (`lean/issue-prose.ts`).
    */
   issueBody?: string;
   /** The worktree the attempt writes in, and the base sha and branch it resets to. */
@@ -87,26 +82,21 @@ interface SpecifyAttemptResult {
   /** The attributed drop labels the boundary made in this attempt. */
   refused: string[];
   /**
-   * Nothing reached the boundary at all: the child made no `submit_tests` call
-   * the step could read, and no row it did declare was dropped there. Only the
-   * no-candidate verdict can be silent; `ok`, `uncovered` and a budget stop all
-   * report `false`.
+   * Nothing reached the boundary at all: no `submit_tests` call the step could read, and no declared
+   * row dropped there. Only the no-candidate verdict can be silent.
    */
   silent: boolean;
   /**
    * What this attempt's dispatch cost, reported SEPARATELY from the outcome.
    *
-   * The caller owns the retry, and the retry owns the step's single outcome — if
-   * the rows lived only on the outcome, a second attempt would overwrite the
-   * first's and the run would report one child where it paid for two. The caller
-   * folds these; the outcome still carries its own rows, so a reader of the log
-   * alone sees the same truth as the fold.
+   * The caller owns the retry, and the retry owns the step's single outcome — rows that lived only on
+   * the outcome would let a second attempt overwrite the first's. The outcome still carries its own
+   * rows, so a reader of the log alone sees the same truth as the fold.
    */
   dispatched: DispatchUsageRow[];
   /**
-   * The endpoint killed this child BEFORE it did any work and the taxonomy calls
-   * that fault transient, so the caller may wait it out and re-prompt. Only on
-   * positive `didNoWork` evidence; every other dead child still throws.
+   * The endpoint killed this child BEFORE it did any work and the taxonomy calls that fault transient,
+   * so the caller may wait it out and re-prompt. Only on positive `didNoWork` evidence.
    */
   providerFault?: ProviderWaitClass;
 }
@@ -118,14 +108,11 @@ interface NoWorkProviderFault {
 }
 
 /**
- * The dispatch, with a non-OK child turned into the throw it deserves — except a
- * child the ENDPOINT killed before it did any work, which is a retry the run
- * already owns and comes back as a row carrying the classification.
+ * The dispatch, with a non-OK child turned into the throw it deserves — except a child the ENDPOINT
+ * killed before it did any work, which comes back as a row carrying the classification.
  *
- * The row this dispatch cost comes back on every path that RECEIVED a
- * `DispatchResult`: the ok path, the budget stop, the retryable provider fault,
- * and the `SpecifyInfraError` (which carries it on the error, because a throw
- * records no outcome and the child still spent tokens).
+ * The row this dispatch cost comes back on every path that RECEIVED a `DispatchResult`, including the
+ * `SpecifyInfraError` — a throw records no outcome and the child still spent tokens.
  */
 async function dispatchAdversary(
   deps: SpecifyDeps,
@@ -162,9 +149,8 @@ async function dispatchAdversary(
       writeFence: {
         root: opts.wt,
         repo: opts.repoRoot,
-        // `<repoRoot>/tmp/lean-<issue>`: the worktree's parent is `.worktrees`,
-        // so one `..` from it is the repo root — the scratch dir the scratch
-        // hygiene convention names, inside the run's own clone.
+        // `<repoRoot>/tmp/lean-<issue>`: the worktree's parent is `.worktrees`, so one `..` from it is
+        // the repo root — the scratch dir the hygiene convention names.
         scratch: path.join(path.dirname(opts.wt), "..", "tmp", `lean-${opts.issue}`),
       },
       extraArgs: ["--no-skills", "--extension", SUBMIT_TESTS_REPORTER_PATH],
@@ -172,12 +158,10 @@ async function dispatchAdversary(
     },
   );
   const row = dispatchUsageRow(result);
-  // BEFORE the infra throw: the step's own ceiling ending the child is a
-  // verdict about the round, not a fault in the harness.
+  // BEFORE the infra throw: the step's own ceiling ending the child is a verdict about the round.
   const fired = opts.budget.fired(result);
   if (fired !== undefined) return [budgetStop(fired), row];
-  // An endpoint-killed child that did nothing is a re-prompt, not a handed-back
-  // run; the shared ladder decides which deaths qualify.
+  // An endpoint-killed child that did nothing is a re-prompt, not a handed-back run.
   if (
     (result.ok === false || result.killCause !== undefined || result.errorStop !== undefined) &&
     didNoWork(result)
@@ -190,18 +174,15 @@ async function dispatchAdversary(
 }
 
 /**
- * Dispatch, extract, validate, CAPTURE, RESET to the base, REWRITE, prove every
- * kept file red ON THE BASE, and commit — once.
+ * Dispatch, extract, validate, CAPTURE, RESET to the base, REWRITE, prove every kept file red ON THE
+ * BASE, and commit — once.
  *
- * The ref is the base: `specify`'s claim is that it froze the tests ON the base, so
- * its `headBefore` IS the base and the child's work is undone back to the commit
- * `ready` resolved. A coverage gap is `no-red-test`, and there is no third verdict:
- * `uncovered` reports every criterion the run still owes, because `specify` required
- * all of them and the pipeline's partial-red case is a refusal here, not a partial
- * freeze.
+ * The ref is the base: `specify`'s claim is that it froze the tests ON the base, so the child's work is
+ * undone back to the commit `ready` resolved. A coverage gap is `no-red-test`, and there is no third
+ * verdict: the pipeline's partial-red case is a refusal here, not a partial freeze.
  *
- * Returns the boundary's drop reasons and whether the attempt submitted nothing at
- * all: the two refusals the caller retries on. THROWS on infrastructure.
+ * Returns the boundary's drop reasons and whether the attempt submitted nothing at all — the two
+ * refusals the caller retries on. THROWS on infrastructure.
  */
 export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<SpecifyAttemptResult> {
   const { deps, config, repoRoot, issue, spec, wt, base, branch, runnerTemplate } = args;
@@ -228,8 +209,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   // Every outcome this attempt returns carries the row: a dispatch that ended
   // the attempt is still a dispatch the run paid for.
   const rows = [row];
-  // The provider-faulted child never reaches the pipeline below: it left nothing
-  // to capture, validate, or prove red. The caller waits the fault out and re-prompts.
+  // The provider-faulted child left nothing to capture, validate, or prove red; the caller waits it out.
   if ("providerFault" in dispatchedChild)
     return {
       outcome: {
@@ -253,8 +233,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
     };
   const toolUses = dispatchedRead.result.toolUses ?? [];
   const refused: string[] = [];
-  // Read once: what this attempt's child declared, and how many of its calls
-  // were unreadable. Both feed the silence test below and the pipeline above.
+  // Read once: what the child declared, and how many calls were unreadable.
   const { rows: declaredRows, skipped } = extractSubmitTests(toolUses);
   /** The attributed drops whose reason is a size refusal — see `SIZE_REFUSAL`. */
   const sizeRefused: string[] = [];
@@ -267,9 +246,8 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       branch,
       headBefore: base,
       runnerTemplate,
-      // `specify`'s claim is that EVERY test criterion is falsifiable, so one
-      // uncovered criterion refuses the run — what `coverage: "all-criteria"`
-      // asks the shared pipeline for, where `challenge` wants a partial freeze.
+      // `specify`'s claim is that EVERY test criterion is falsifiable, so one uncovered criterion
+      // refuses the run — what `coverage: "all-criteria"` asks the shared pipeline for.
       coverage: "all-criteria",
       wanted: wanted.map((c) => c.id),
       extract: () => ({ rows: declaredRows, skipped }),
@@ -278,18 +256,15 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
           spec,
           exists: (rel) => existsSync(path.join(wt, rel)),
           fileProblem: (rel) => fileProblem(wt, rel),
-          // A test the child did not write is not an acceptance test: an
-          // existing tracked project test freezes as "red" without ever being
-          // run, and a child that overwrote one rewrites the contract. Both are
-          // refused against the run's BASE, which is the commit this step's
-          // whole claim is made on.
+          // A test the child did not write is not an acceptance test: an existing tracked project test
+          // freezes as "red" without ever being run, and a child that overwrote one rewrites the
+          // contract. Both are refused against the run's BASE.
           existsAtBase: (rel) => existsInCommit(deps.exec, repoRoot, base, rel),
           // The size/quota rules judge the file with the same code the capture
           // reads it with; `wt` is the tree these paths are relative to.
           wt,
-          // The quota is a RUN-level bound: on a re-run of the step (a resumed
-          // cycle whose log already carries a decided `specify:ok`) it is what
-          // stops a second round refilling every criterion to two files.
+          // The quota is a RUN-level bound: on a re-run of the step it is what stops a second round
+          // refilling every criterion to two files.
           frozenByCriterion,
           ...(testLocation === undefined ? {} : { testLocation }),
         });
@@ -345,26 +320,18 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       silent: false,
       dispatched: rows,
     };
-  // No kept candidate at all, and there are TWO reasons for that, which the
-  // operator needs told apart: a child that never called `submit_tests` at all
-  // (nothing reached the boundary — the adversary's turn ended, the environment
-  // is fine), and a child that submitted files which nothing proved red.
+  // No kept candidate at all, and there are TWO reasons the operator needs told apart: a child that
+  // never called `submit_tests`, and a child that submitted files which nothing proved red.
   //
-  // The never-submitted rule keeps the SAME invariant as the gap rule it
-  // replaces: the cause is the FIRST clause of every rule it appears in, so a
-  // caller that renders only `failedRules`, or only the first 200 characters of
-  // one, still reads WHY — and the drop notes the pipeline assembled follow it,
-  // never lead. The size drops still ride as their own rules: a decline that only
-  // ever says the generic line leaves the operator to work out how far past a cap
-  // the child wrote.
+  // The never-submitted rule keeps the gap rule's invariant: the cause is the FIRST clause of every
+  // rule it appears in, so a caller that renders only `failedRules` still reads WHY. The size drops
+  // still ride as their own rules.
   const silent = declaredRows.length === 0 && skipped === 0 && refused.length === 0;
   // The verdict's two gating values, reported before either is folded into the
   // outcome — see `SpecifyDeps.observeVerdict`.
   observeVerdict?.({ refused: [...refused], silent });
-  // The switch changes the WORDING of this one rule and nothing else: the silence
-  // predicate above and the single retry it gates both exist in the release the off
-  // arm restores, so `"0"` is that release's decline for the same run and the retry
-  // fires in both arms.
+  // The switch changes the WORDING of this one rule and nothing else: the silence predicate and the
+  // single retry it gates both exist in the release the off arm restores.
   const generic =
     silent && leanRunnerPreflightEnabled()
       ? ["the child never submitted a test: it ended without calling submit_tests"]
@@ -374,19 +341,16 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
     outcome: {
       kind: "no-red-test",
       failedRules: rules,
-      // `reason` opens with the GENERIC rules only, then the pipeline's own
-      // drop notes: `rules` is what `failedRules` carries, and a reason that
-      // repeated every size drop the notes already spell would say it twice.
+      // `reason` opens with the GENERIC rules only: `rules` is what `failedRules` carries, and a
+      // reason that repeated every size drop the notes already spell would say it twice.
       reason: [generic.join("; "), pipeline.reason].filter((s) => s !== "").join("; "),
       dispatches: rows,
     },
     refused,
-    // Silence is one specific state — computed above, from the same predicate —
-    // and it is the only state this rule names. A child whose calls were all
-    // malformed, or whose rows the boundary dropped, has something the retry can
-    // already name, so its prompt quotes those reasons rather than this nudge. A
-    // file the RED PROOF refused is not counted here: the proof judges bytes the step
-    // already holds, so being asked to submit again could not change its verdict.
+    // Silence is one specific state — computed above, from the same predicate — and the only state
+    // this rule names. A child whose calls were all malformed, or whose rows the boundary dropped, has
+    // reasons the retry can already name. A file the RED PROOF refused is not counted here: being asked
+    // to submit again could not change that verdict.
     silent,
     dispatched: rows,
   };
