@@ -70,13 +70,12 @@ const SIZE_REFUSAL =
 
 /**
  * The one remedy the retry states that the bullets do not: HOW to fix an
- * over-cap test. A bullet says "154 lines, cap 150" and stops there, and
+ * over-cap test. A bullet says the numbers and stops there, and
  * {@link TEST_SCOPE_CONTRACT} pushes the other way ("Prefer one focused file
  * per criterion"), so a child that obeyed it had no legal way down and overshot
- * again. `MAX_TEST_FILES_PER_CRITERION` already allows a split, so the remedy
- * names both numbers and says plainly which two sentences it overrides for this
- * attempt. It sits OUTSIDE the per-reason clip, because a remedy inside a bullet
- * is destroyed by the same 300 characters that hid the reason it explains.
+ * again. The remedy names both numbers and says plainly which two sentences it
+ * overrides for this attempt. It sits OUTSIDE the per-reason clip, because a remedy
+ * inside a bullet is destroyed by the same characters that hid the reason.
  */
 function splitInstruction(reasons: string[]): string {
   if (!reasons.some((reason) => SIZE_REFUSAL.test(reason))) return "";
@@ -86,10 +85,9 @@ function splitInstruction(reasons: string[]): string {
 /**
  * The section a retried adversary reads after the normal prompt: each drop the
  * boundary made on its last submission, attributed (`<criterionId> <path>: <reason>`,
- * see `droppedLabel`), one per line. The child never saw those reasons, so an
- * over-long test and a green test were both indistinguishable from "the step
- * found nothing" — naming them is the whole point of the retry. Identical lines
- * are shown once; past the cap the section says how many it left out.
+ * see `droppedLabel`), one per line. The child never saw those reasons, so naming
+ * them is the whole point of the retry. Identical lines are shown once; past the cap
+ * the section says how many it left out.
  */
 export function refusalFeedback(reasons: string[]): string {
   if (reasons.length === 0) return "";
@@ -134,12 +132,10 @@ export const RED_PROOF_CONTRACT =
  * reason as {@link RED_PROOF_CONTRACT}: one const, so a rewrite to one step's prompt
  * cannot quietly re-tell the other adversary a different rule.
  *
- * A lean trial's adversary wrote 540 lines to prove one parameter had been removed —
- * tests for hypothetical misuse and for the shape of the implementation rather than
- * the behaviour the criterion named. The contract bounds size by asking for the
- * smallest thing that proves the criterion, and states the three numbers the boundary
- * enforces (`MAX_TEST_LINES`, `MAX_TEST_BYTES`, `MAX_TEST_FILES_PER_CRITERION`, all
- * in `test-size.ts`) and where the bytes come from: the project's own test helpers. A
+ * The contract bounds size by asking for the smallest thing that proves the
+ * criterion, and states the three numbers the boundary enforces
+ * (`MAX_TEST_LINES`, `MAX_TEST_BYTES`, `MAX_TEST_FILES_PER_CRITERION`, all in
+ * `test-size.ts`) and where the bytes come from: the project's own test helpers. A
  * number alone is met by padding, so the rule is still the property.
  */
 export const TEST_SCOPE_CONTRACT = `**Write the smallest test that proves the criterion fails today and will pass when it is met.** Assert observable behaviour — what the entry point returns, throws, or writes — not the shape of the implementation. Do not test hypothetical misuse, or implementation details the criterion does not name: a criterion that says one parameter was removed is proved by one call and one assertion, not by a file of variants. Prefer one focused file per criterion. A kept test file is at most ${MAX_TEST_LINES} lines and ${MAX_TEST_BYTES} bytes, and a criterion gets at most ${MAX_TEST_FILES_PER_CRITERION} files, so reuse the project's existing test helpers in the test folder rather than rebuilding a harness — the parent drops a longer or larger file and the extra files it cannot use.`;
@@ -150,15 +146,14 @@ export const TEST_SCOPE_CONTRACT = `**Write the smallest test that proves the cr
  * criteria. One const, the reason the two above give: the kickoff, the refusal retry
  * and the resubmit retry must tell the child the same rule.
  *
- * The requirements lean's bench rejected missed were implied rather than unstated,
- * and each was findable in the repository — so the section demands a `path:line`
- * comment for what it keeps and drops anything it cannot ground. Extra CASES go inside
- * the criterion's own file and open no new one, since a file of its own would spend
- * the {@link TEST_SCOPE_CONTRACT} quota on an implied case.
+ * The requirements a bench rejected missed were implied rather than unstated, and
+ * each was findable in the repository — so the section demands a `path:line` comment
+ * for what it keeps and drops anything it cannot ground. Extra CASES go inside the
+ * criterion's own file and open no new one, since a file of its own would spend the
+ * {@link TEST_SCOPE_CONTRACT} quota on an implied case.
  *
- * The examples are deliberately generic: this section is measured on a bench whose
- * tasks have their own named defects, and an example naming one would hand the child
- * the answer it is supposed to find.
+ * The examples are deliberately generic: an example naming a bench defect would hand
+ * the child the answer it is supposed to find.
  */
 export const IMPLIED_REQUIREMENTS = `## Implied requirements
 

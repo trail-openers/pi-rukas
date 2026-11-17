@@ -348,27 +348,23 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   // No kept candidate at all, and there are TWO reasons for that, which the
   // operator needs told apart: a child that never called `submit_tests` at all
   // (nothing reached the boundary — the adversary's turn ended, the environment
-  // is fine), and a child that submitted files which nothing proved red. The
-  // bench showed the first reported as the second, which sent both to the same
-  // `criterion ACn has no red test` and blamed the issue for a child that wrote
-  // tests it never declared.
+  // is fine), and a child that submitted files which nothing proved red.
   //
   // The never-submitted rule keeps the SAME invariant as the gap rule it
   // replaces: the cause is the FIRST clause of every rule it appears in, so a
   // caller that renders only `failedRules`, or only the first 200 characters of
   // one, still reads WHY — and the drop notes the pipeline assembled follow it,
   // never lead. The size drops still ride as their own rules: a decline that only
-  // ever says the generic line leaves the operator to work out that the child
-  // wrote 154 lines against a cap of 150.
+  // ever says the generic line leaves the operator to work out how far past a cap
+  // the child wrote.
   const silent = declaredRows.length === 0 && skipped === 0 && refused.length === 0;
   // The verdict's two gating values, reported before either is folded into the
   // outcome — see `SpecifyDeps.observeVerdict`.
   observeVerdict?.({ refused: [...refused], silent });
   // The switch changes the WORDING of this one rule and nothing else: the silence
-  // predicate above and the single retry it gates both exist in v0.14.71, which
-  // reached this point with `silent` true and still printed the criterion rules.
-  // So `"0"` is v0.14.71's decline for the same run, and the retry fires in both
-  // arms.
+  // predicate above and the single retry it gates both exist in the release the off
+  // arm restores, so `"0"` is that release's decline for the same run and the retry
+  // fires in both arms.
   const generic =
     silent && leanRunnerPreflightEnabled()
       ? ["the child never submitted a test: it ended without calling submit_tests"]
@@ -386,14 +382,11 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
     },
     refused,
     // Silence is one specific state — computed above, from the same predicate —
-    // and it is the only state this rule names: the child made no `submit_tests`
-    // call the step could read (no row, no malformed call) and the boundary
-    // dropped none of its rows. A child whose calls were all malformed, or whose
-    // rows the boundary dropped, has something the retry can already name, so its
-    // prompt quotes those reasons rather than this nudge. A file the RED PROOF
-    // refused is not counted here: the proof judges bytes the step already holds,
-    // so being asked to submit again could not change its verdict, and the
-    // refusal retry already prints what it found.
+    // and it is the only state this rule names. A child whose calls were all
+    // malformed, or whose rows the boundary dropped, has something the retry can
+    // already name, so its prompt quotes those reasons rather than this nudge. A
+    // file the RED PROOF refused is not counted here: the proof judges bytes the step
+    // already holds, so being asked to submit again could not change its verdict.
     silent,
     dispatched: rows,
   };

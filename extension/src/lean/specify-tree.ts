@@ -150,9 +150,9 @@ export async function assertSpecifyWorktreeOwned(
   const actual = (head?.stdout ?? "").trim();
   const want = opts.headMustBe ?? opts.baseSha;
   let aheadOk = false;
-  // The two failure messages name what was actually found: "detached at the
-  // base" and "on the run's branch but two commits ahead of it" are different
-  // diagnoses for whoever reads the handback, and both were the same lie before.
+  // The failure message names what was actually found: "detached at the base" and
+  // "on the run's branch but two commits ahead" are different diagnoses for whoever
+  // reads the handback.
   if (actual !== want) {
     aheadOk =
       opts.allowAheadOfBase === true && actual !== "" && (await headDescends(exec, opts.wt, want));
@@ -181,8 +181,7 @@ export async function assertSpecifyWorktreeOwned(
  * and the provisioning result that says which dependency links the tree has.
  *
  * Missing → created. Present → owned-checked, then reset to the base.
- */
-export async function ensureSpecifyWorktreeWithProvision(
+ */export async function ensureSpecifyWorktreeWithProvision(
   exec: ExecFn,
   opts: {
     repoRoot: string;
@@ -205,10 +204,8 @@ export async function ensureSpecifyWorktreeWithProvision(
     });
     // The reset cleans WITHOUT exemptions — `git clean -fdx` takes the
     // dependency links AND the submodule contents — and provisioning then builds
-    // the links again, which also re-writes the `info/exclude` entries. One code
-    // path for a created tree and a leftover one, so neither can keep a link the
-    // other did not — and the reset re-initialises the submodules the clean
-    // emptied itself, whether or not this reset moved anything.
+    // the links again. One code path for a created tree and a leftover one, so
+    // neither can keep a link the other did not.
     const notes = await resetWorktreeToBase(
       exec,
       wt,
@@ -267,10 +264,7 @@ async function headDescends(exec: ExecFn, wt: string, sha: string): Promise<bool
  *
  * Both notes share one field because they are the same kind of thing: a step that went
  * ahead on an incomplete tree, and said so. Provisioning's own wording stays verbatim in
- * front, since that is the sentence its gates and its tests quote. The trace line is the
- * durable record — this `problem` reaches a driver note and a trace, and nothing else;
- * the steps whose verdicts a missing submodule actually corrupts (`challenge`, `build`,
- * the review fix round) fold `submoduleNoteClause` into their own reasons instead.
+ * front, since that is the sentence its gates and its tests quote.
  */
 function problemOf(
   p: { problem?: string },
