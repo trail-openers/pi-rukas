@@ -33,6 +33,7 @@ import {
   reaskRoundVerdict,
 } from "./adversarial-verdict-reask.ts";
 import {
+  type LoopResultState,
   decideLoopAction,
   fixRefusedResult,
   fixThrewResult,
@@ -121,6 +122,15 @@ export async function runAdversarialLoop(
     note: withLedgerNote,
   });
 
+  // Both pre-round exits — the unrecognised report policy and the nothing-to-
+  // review case — report the tally as it stands when the result is built (#980),
+  // through the same shape the round results use.
+  const preRoundState = (): LoopResultState => ({
+    start,
+    usage,
+    lastTranscript: tally.lastTranscript,
+    lastModel: tally.lastModel,
+  });
   const reportTerminal = params.reportVerdict === "terminal";
 
   // #1978 — the cause THIS round's reviewer child died of, projected onto the
@@ -141,7 +151,10 @@ export async function runAdversarialLoop(
   // failure, never a verdict judged as a routed round.
   const policyError = reportPolicyError(params);
   if (policyError) {
-    return policyErrorResult(policyInfraFailureText(policyError));
+    return policyErrorResult({
+      ...preRoundState(),
+      text: policyInfraFailureText(policyError),
+    });
   }
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
@@ -161,18 +174,12 @@ export async function runAdversarialLoop(
   const commentsLineNow = () => formatReportLine(lastComments);
   // #980 — the result builders read the tally at CALL time, never at loop entry.
   const infraCtxNow = (): InfraCtx => ({
-    start,
-    usage,
-    lastTranscript: tally.lastTranscript,
-    lastModel: tally.lastModel,
+    ...preRoundState(),
     toRoundRecords,
   });
   /** The fix-phase failures' result state: the same tally at call time + rounds. */
   const roundStateNow = (completed: RoundRecord[]) => ({
-    start,
-    usage,
-    lastTranscript: tally.lastTranscript,
-    lastModel: tally.lastModel,
+    ...preRoundState(),
     rounds: completed,
   });
   // The diff source for rounds 2+: the caller's `getDiff`, replaced below by a
@@ -184,9 +191,8 @@ export async function runAdversarialLoop(
   // #1360 — the round's capture, bound to the ledger binding and the loop's one
   // git seam; the tool path is the only caller that runs it.
   const captureRound = makeRoundCapture(ledgerBinding, params.commentExecFn);
-  // Both pre-round exits go through the ledger writers above, so a cycle that
-  // never judged a diff still leaves a row.
-  const noDiffResult = preRoundNoDiff;
+  const noDiffResult = (text: string): DispatchResult =>
+    preRoundNoDiff({ ...preRoundState(), text });
   if (params.diff) {
     // A pasted diff wins outright, so a caller that sent both gets no range read
     // and no range in the reviewer's notice (the loop never diffed a range).
