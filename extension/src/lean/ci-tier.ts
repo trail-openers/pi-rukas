@@ -1,12 +1,11 @@
 /**
- * The `ci` step's two outside reads: the project's full verify tier, and the forge's
- * own answer about the PR/MR.
+ * The `ci` step's two outside reads: the project's full verify tier, and the forge's own answer about
+ * the PR/MR.
  *
- * Split out of `ci.ts` because the step grew a second question about a red tier — was
- * every test it named already red at the base commit — and the two questions have
- * different owners. This file runs the tier and turns a failed exec into an
- * infrastructure throw or a red reason; {@link fullTierExcuse} in `ci-excuse.ts` owns
- * the base-commit question, and `ci.ts` records the answer. The forge half is here so
+ * Split out of `ci.ts` because the step grew a second question about a red tier — was every test it
+ * named already red at the base commit — and the two questions have different owners. This file runs
+ * the tier and turns a failed exec into an infrastructure throw or a red reason;
+ * {@link fullTierExcuse} in `ci-excuse.ts` owns the base-commit question. The forge half is here so
  * `readForge` owns both forges' argv and row grading while `ci.ts` keeps the decision.
  */
 import { isFullCommitSha } from "../commit-sha.ts";
@@ -26,11 +25,9 @@ import { TIER_TAIL_LINES, tailLines } from "./verify-steps.ts";
 import { VerifyInfraError } from "./verify-types.ts";
 
 /**
- * The project config, read ONCE per step by `ciOutcome` and passed down.
- *
- * Three halves of this step want it — the configured full tier, the wait bound
- * and the tier's bound — and all three read it through this one call, so they
- * cannot disagree about which commit's `.pi/work.json` they obeyed.
+ * The project config, read ONCE per step by `ciOutcome` and passed down. Three halves of this step
+ * want it — the configured full tier, the wait bound and the tier's bound — and all three read it
+ * through this one call, so they cannot disagree about which commit's `.pi/work.json` they obeyed.
  */
 export async function ciConfig(deps: CiDeps, ctx: HandlerCtx): Promise<WorkConfig> {
   return await deps.loadConfig(ctx.repoRoot, ctx.run.baseSha).catch((err: unknown) => {
@@ -41,12 +38,11 @@ export async function ciConfig(deps: CiDeps, ctx: HandlerCtx): Promise<WorkConfi
 /**
  * Run the full tier in the worktree.
  *
- * `undefined` is a pass. A kill, a timeout or a command that never started is an
- * infrastructure fault — the tier never got to answer a question about the code, so the
- * run hands back rather than taking a build round. Anything else exiting non-zero is a
- * real red, returned with the reason a red step records, the combined stream the
- * baseline excuse parses test names from, and the executor's own result object
- * `ciTierObserved` decides admissibility from.
+ * `undefined` is a pass. A kill, a timeout or a command that never started is an infrastructure fault
+ * — the tier never got to answer a question about the code, so the run hands back rather than taking a
+ * build round. Anything else exiting non-zero is a real red, returned with the reason a red step
+ * records, the combined stream the baseline excuse parses test names from, and the executor's own
+ * result object `ciTierObserved` decides admissibility from.
  */
 export async function tierFailure(
   deps: CiDeps,
@@ -69,9 +65,9 @@ export async function tierFailure(
     throw new VerifyInfraError(
       `the ci full tier could not be started: ${cmd}: ${oneLine(out, 300)}`,
     );
-  // The tail and the bound are `verify`'s own, not a second copy of them: the step
-  // log is one JSON document and `build`'s re-entry pastes a red reason into a
-  // prompt, so one very long line must not carry a whole log into the record.
+  // The tail and the bound are `verify`'s own, not a second copy of them: the step log is one JSON
+  // document and `build`'s re-entry pastes a red reason into a prompt, so one very long line must not
+  // carry a whole log into the record.
   const tail = tailLines(out, TIER_TAIL_LINES);
   return {
     reason: clipReason(`the full verify tier exited ${String(e.code)}: ${cmd}\n${tail}`),
@@ -81,11 +77,9 @@ export async function tierFailure(
 }
 
 /**
- * `gh pr checks` exits **8** while checks are still pending. The shared executor
- * rejects on any non-zero exit, so without this the pending reply — the whole point of
- * the poll — would read as an infra throw. stdout still carries the JSON rows, so the
- * exit is tolerated precisely because it is a signal about WHERE the checks are, not
- * whether the read worked. A `gh` contract, so it stays on the gh path alone.
+ * `gh pr checks` exits **8** while checks are still pending. The shared executor rejects on any
+ * non-zero exit, so without this the pending reply — the whole point of the poll — would read as an
+ * infra throw. A `gh` contract, so it stays on the gh path alone.
  */
 const GH_CHECKS_PENDING_EXIT = 8;
 
@@ -93,8 +87,8 @@ const GH_CHECKS_PENDING_EXIT = 8;
  *  first, the raw check state only as the fallback. */
 const PENDING_ROWS = ["pending", "queued", "in_progress", "waiting"];
 const RED_ROWS = ["fail", "failure", "cancelled", "cancel", "timed_out", "error"];
-/** GitHub counts these as success and this step does not: a `paths-ignore:`
- *  gate then always reads green, which is a gate that cannot fail. */
+/** GitHub counts these as success and this step does not: a `paths-ignore:` gate then always reads
+ *  green, which is a gate that cannot fail. */
 const NOT_PASSING_ROWS = ["skipped", "skipping", "neutral"];
 /**
  * A row's grade, read the way the driver's merge gate reads one: gh's bucket
@@ -123,16 +117,15 @@ function gradeRow(
   row: { state?: unknown; bucket?: unknown; blocking?: unknown },
   gitlab: boolean,
 ): RowGrade | undefined {
-  // GitLab's job rows have no bucket and their `status` words are not gh's, so
-  // the shared table decides them — with the row's own `blocking` flag, the one
-  // field that tells a gate that ran from a gate that could not have failed.
+  // GitLab's job rows have no bucket and their `status` words are not gh's, so the shared table decides
+  // them — with the row's own `blocking` flag, the one field that tells a gate that ran from a gate that
+  // could not have failed.
   if (gitlab) return glRowGrade({ state: row.state, blocking: row.blocking });
   const v = String(row.bucket ?? row.state ?? "")
     .toLowerCase()
     .trim();
-  // "Nothing said" is not a pass: graded passing it would be waited on by nobody
-  // and the step would merge on it. Graded `unknown` it waits, and an expired wait
-  // hands the run back.
+  // "Nothing said" is not a pass: graded passing it would be waited on by nobody and the step would
+  // merge on it. Graded `unknown` it waits, and an expired wait hands the run back.
   if (v === "pass" || v === "success" || v === "none") return undefined;
   if (PENDING_ROWS.includes(v)) return "pending";
   if (RED_ROWS.includes(v)) return "red";
@@ -140,9 +133,9 @@ function gradeRow(
   return "unknown";
 }
 /**
- * The names shown to a human for rows graded in `want`. Both bounds exist
- * because these strings come from the forge: a handback line that quotes them
- * must not grow with however many rows (or however long a name) a repo runs.
+ * The names shown to a human for rows graded in `want`. Both bounds exist because these strings come
+ * from the forge: a handback line that quotes them must not grow with however many rows (or however
+ * long a name) a repo runs.
  */
 const HANDBACK_NAME_CHARS = 80;
 const HANDBACK_NAMES = 10;
@@ -173,9 +166,8 @@ async function cli(
       cwd: repoRoot,
       timeout: 60_000,
       maxBuffer: 512 * 1024,
-      // The driver's own forge read, so the host env: a project tier is scrubbed
-      // of driver knobs, but this `gh` is the driver's own host-channel call and
-      // keeps the one knob such a cycle reads (see `verifyHostEnv`).
+      // The driver's own forge read, so the host env: a project tier is scrubbed of driver knobs, but
+      // this `gh` is the driver's own host-channel call (see `verifyHostEnv`).
       env: verifyHostEnv(),
     })
     .then((r) => ({ err: undefined as unknown, out: r as { stdout?: string } | undefined }))
@@ -205,13 +197,11 @@ function json(text: string, why: string): unknown {
 /**
  * One read of the forge, from ONE moment: the verdict and the head it is about.
  *
- * GitHub: the verdict, the check rows and the head out of the same `gh pr view` — two
- * reads of a moving PR are two moments, and a green about another head is no evidence
- * about this one.
+ * GitHub: the verdict, the check rows and the head out of the same `gh pr view` — two reads of a moving
+ * PR are two moments, and a green about another head is no evidence about this one.
  *
- * GitLab: `mergeStateStatus` is composed from `detailed_merge_status` and its three
- * cross-checks, and the head is `diff_refs.head_sha` from the same reply
- * (`ci-forge-gl.ts`).
+ * GitLab: `mergeStateStatus` is composed from `detailed_merge_status` and its three cross-checks, and
+ * the head is `diff_refs.head_sha` from the same reply (`ci-forge-gl.ts`).
  */
 async function readForge(
   deps: CiDeps,
