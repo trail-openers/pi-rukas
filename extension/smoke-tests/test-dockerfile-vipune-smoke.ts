@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-/** vipune image smoke gate — #2330. Under a cgroup cpuset, onnxruntime pins its default thread pool to host CPUs the container may not use and
+/** vipune image smoke gate. Under a cgroup cpuset, onnxruntime pins its default thread pool to host CPUs the container may not use and
  * logs an error per thread on every vipune call. The image sets an explicit thread count and its smoke step fails the build on any vipune stderr.
- * The step is RUN, not read: its body runs under bash with a stub `vipune` first on PATH, so a step that ignores stderr or the search hit fails here. */
+ * The step is RUN, not read: its body runs under sh, as Docker runs it, with a stub `vipune` first on PATH, so a step that ignores stderr or the search hit fails here. */
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -14,10 +14,10 @@ const say = (ok: boolean, what: string) => {
   if (!ok) fails.push(what);
 };
 
-say(/^ENV ORT_INTRA_OP_NUM_THREADS=[1-9]\d*$/m.test(dockerfile), "Dockerfile sets ORT_INTRA_OP_NUM_THREADS to a positive integer");
-
 const lines = dockerfile.split("\n");
 const start = lines.findIndex((l) => l.startsWith("RUN ") && l.includes("VIPUNE_DATABASE_PATH"));
+const env = lines.findIndex((l) => /^ENV ORT_INTRA_OP_NUM_THREADS=[1-9]\d*$/.test(l));
+say(env >= 0 && env < start, "Dockerfile sets ORT_INTRA_OP_NUM_THREADS to a positive integer before the smoke step");
 const body: string[] = [];
 for (let i = start; start >= 0 && i < lines.length; i++) {
   body.push(lines[i]!.replace(/\\$/, ""));
@@ -30,7 +30,7 @@ const run = (stub: string): number => {
   writeFileSync(path.join(scratch, "vipune"), `#!/usr/bin/env bash\n${stub}\n`);
   chmodSync(path.join(scratch, "vipune"), 0o755);
   const script = body.join("\n").replace(/^RUN /, "");
-  const r = spawnSync("bash", ["-c", script], { env: { ...process.env, PATH: `${scratch}:${process.env.PATH}` }, timeout: 5000 });
+  const r = spawnSync("sh", ["-c", script], { env: { ...process.env, PATH: `${scratch}:${process.env.PATH}` }, timeout: 5000 });
   return r.status ?? -1;
 };
 const hit = `case "$1" in add) echo "Added memory: x" ;; search) echo '{"results":[{"content":"image smoke"}]}' ;; esac`;

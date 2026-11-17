@@ -1376,7 +1376,7 @@ PR: [#205](https://github.com/trail-openers/pi-rukas/pull/205)
 
 **Cause:** vipune sets no thread count, so onnxruntime sizes its pool to the host's physical cores and pins each thread to one. In a container limited by a cgroup cpuset most of those CPUs are not the container's, and each pin fails. A CPU quota alone (`docker run --cpus`) does not trigger it.
 
-**Fix:** The image sets `ORT_INTRA_OP_NUM_THREADS=1`, which onnxruntime reads itself; an explicit count sets no affinity. Its build smoke step fails on any vipune stderr. Outside the image, export the same variable. If you see it inside `pi-rukas`, your image predates this: `./install.sh` to refresh.
+**Fix:** The image sets `ORT_INTRA_OP_NUM_THREADS=1`, which onnxruntime reads itself; an explicit count sets no affinity. Its build smoke step fails on any vipune stderr. It applies to every onnxruntime program in the container, so product code that needs more threads sets its own count. Outside the image, including images that build vipune from their own recipe, export the same variable. If you see it inside `pi-rukas`, your image predates this: `./install.sh` to refresh.
 
 ### "fd not found. Downloading..." / "ripgrep not found. Downloading..." at startup
 
