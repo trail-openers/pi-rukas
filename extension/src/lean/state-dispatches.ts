@@ -2,27 +2,22 @@
  * lean/state-outcome — the per-child cost row, and the rules that let one into a
  * durable record.
  *
- * Split from `state-outcome.ts`, which had grown past the size cap, along the one
- * seam in that file with no dependency on the rest of it: these are the validators
- * for a single `dispatches` row. They read `DispatchUsageRow`'s shape and nothing
- * else, so they can be read — and reasoned about — without the outcome fold that
- * calls them. `state-outcome.ts` keeps `DISPATCH_STATES`, the ownership table, and
- * `outcomeProblem`; this file keeps what a row must look like.
+ * Split from `state-outcome.ts` along the one seam in that file with no dependency on the rest of it:
+ * these are the validators for a single `dispatches` row. They read `DispatchUsageRow`'s shape and
+ * nothing else. `state-outcome.ts` keeps `DISPATCH_STATES`, the ownership table, and `outcomeProblem`;
+ * this file keeps what a row must look like.
  *
- * What a row is: one child the step paid for. `usage.byRole` in the headless
- * result is the sum of these, so a row that cannot be attributed to a role, a
- * negative cost, or an `ok` that is not a boolean each quietly corrupts a
- * comparison the whole per-role study between the two engines rests on.
+ * What a row is: one child the step paid for. `usage.byRole` in the headless result is the sum of
+ * these, so a row that cannot be attributed to a role, a negative cost, or an `ok` that is not a
+ * boolean each quietly corrupts the per-role comparison between the two engines.
  */
 
 import { LANES_CAP, MAX_REASON_CHARS } from "./review-bound.ts";
 import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
-/// The two waves a bound record may name, and the shape one lane or its reason must
-/// hold: a value that would print as STRUCTURE in the PR comment or the handback is no
-/// disclosure anyone can read — a string, trimmed, printable, within `max`, the shape
-/// `isMeasure` and `isRunId` pin for a row field.
+/// The shape one lane or its reason must hold: a value that would print as STRUCTURE in the PR comment
+/// or the handback is no disclosure anyone can read — a string, trimmed, printable, within `max`.
 function isLine(value: unknown, max: number): boolean {
   return (
     max > 0 &&
@@ -34,11 +29,9 @@ function isLine(value: unknown, max: number): boolean {
   );
 }
 
-/// Why a `reviewBound` is not a record this run may hold, or `undefined`, and the
-/// same value rebuilt from the parts checked here — one pair, like every row rule
-/// above. The record is the only permanent account that a head reached `ci` with
-/// lanes nobody judged, so all three parts are checked: a record that merely existed
-/// would read as a disclosure while carrying nothing a reader could print.
+/// Why a `reviewBound` is not a record this run may hold, or `undefined`. The record is the only
+/// permanent account that a head reached `ci` with lanes nobody judged, so all three parts are checked:
+/// one that merely existed would read as a disclosure while carrying nothing printable.
 
 export function reviewBoundProblem(value: unknown): string | undefined {
   const rec = value as Record<string, unknown> | null;
@@ -72,9 +65,8 @@ const USAGE_COUNTERS = ["input", "output", "cacheRead", "cacheWrite", "turns"] a
 const TOOL_COUNTERS = ["toolCalls", "toolErrors"] as const;
 
 /**
- * How many dispatch rows one step may record. Exported because `specify` folds
- * two attempts into ONE outcome and clips its merge here rather than keeping a
- * second copy of the bound the validator enforces.
+ * How many dispatch rows one step may record. Exported because `specify` folds two attempts into ONE
+ * outcome and clips its merge here rather than keeping a second copy of the bound.
  */
 export const DISPATCHES_MAX_ROWS = 16;
 
@@ -84,42 +76,25 @@ export function isMeasure(value: unknown): boolean {
 }
 
 /**
- * The ONE grammar of a fixer row's `runId`, and the only fix-run-id regex in the
- * product source. Exported because a second copy is what broke this field: the
- * reader in `review-log.ts` carried its own permissive literal while this validator
- * carried a digits-only one, and since `validatedDispatches` `continue`s past a row
- * it refuses rather than rejecting the array, the disagreement silently DELETED the
- * fixer row from every review that fixed anything — under-billing the step's most
- * expensive child in `usage.byRole` — while `assertRun` THREW on the same value on
- * any path that persisted a raw row. A rule two files state is a rule one of them
- * will violate.
+ * The ONE grammar of a fixer row's `runId`, and the only fix-run-id regex in the product source —
+ * exported because a rule two files state is a rule one of them will violate: a reader with its own
+ * looser literal silently deleted the fixer row from every review that fixed anything.
  *
- * The shape: the epoch milliseconds `fixRunId` mints, then `-<arm>-<round>-<attempt>`
- * for the fix-tree creation that made this tree (`fixRound` mints the composite).
- * No sign, no fraction, no exponent. `Number.isNaN` is not the risk this guards — a
- * hand-edited record or a replayed child result carries `"1e12"`, `"-5"` and `"1.5"`
- * all of which `Number()` would accept and no tree name ever has.
+ * The shape: the epoch milliseconds `fixRunId` mints, then `-<arm>-<round>-<attempt>` for the
+ * fix-tree creation that made this tree. No sign, no fraction, no exponent — a hand-edited record
+ * carries `"1e12"`, `"-5"` and `"1.5"`, all of which `Number()` would accept and no tree name ever has.
  *
- * **Why the letters are admitted rather than the writer narrowed.** The suffix is
- * what keeps the two arms of one round apart: `fixTreeName` is
- * `lean-<issue>-fix-<arm>-<round>-<attempt>-<epoch>`, and a review round dispatches a
- * fixer on BOTH arms (the adversarial gate's pass-with-findings, and the six-lens
- * round's findings) at the SAME round and the SAME epoch, so a digits-only suffix
- * cannot separate them — and `worktree add --force` ADOPTS a live tree at a path it
- * is handed rather than refusing, which is the collision this suffix exists to close.
- * Narrowing the writer to digits would have traded a billing bug for a correctness
- * one. What the suffix must NOT be is a second free-floating grammar:
- * `[0-9a-z-]{1,24}` admits exactly the suffix form the writer produces (two
- * lowercase arm letters, two decimal counters) plus a bounded total length, and
- * refuses the shapes `Number()` would happily accept.
+ * **Why the letters are admitted rather than the writer narrowed.** The suffix is what keeps the two
+ * arms of one round apart: `fixTreeName` is `lean-<issue>-fix-<arm>-<round>-<attempt>-<epoch>`, and a
+ * round dispatches a fixer on BOTH arms at the same round and epoch, so a digits-only suffix cannot
+ * separate them — and `worktree add --force` ADOPTS a live tree at a path it is handed. The suffix
+ * must not be a second free-floating grammar either: `[0-9a-z-]{1,24}` admits exactly the form the
+ * writer produces, plus a bounded total length.
  */
 export const FIX_RUN_ID = /^[0-9]{13,17}(-[0-9a-z-]{1,24})?$/;
 
-/** Is this a fixer row's tree identity, in the shape `fixRunId` mints?
- *
- * Exported because the READER of the same field must ask the same question, and a reader
- * with its own looser check accepts what this validator refuses. One predicate, owned by
- * the module that owns the grammar.
+/** Is this a fixer row's tree identity, in the shape `fixRunId` mints? The READER of the same
+ * field must ask the same question, so the predicate is owned by the module that owns the grammar.
  */
 export function isRunId(value: unknown): boolean {
   return typeof value === "string" && FIX_RUN_ID.test(value);
@@ -129,19 +104,15 @@ export function isRunId(value: unknown): boolean {
 function isUsageRow(value: unknown): boolean {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const u = value as Record<string, unknown>;
-  // A count of tokens is never a fraction and never infinite: `1e400` arrives
-  // from JSON as `Infinity`, and an infinite total printed to a host is a
-  // record that reads as evidence and compares against nothing.
+  // A count of tokens is never a fraction and never infinite: `1e400` arrives from JSON as
+  // `Infinity`, and an infinite total is a record that reads as evidence and compares against nothing.
   if (!["input", "output", "cacheRead", "cacheWrite", "turns"].every((k) => isCount(u[k])))
     return false;
   // The tool counts are optional (a row written before they existed has none),
   // but a present one is a count like the others.
   if (!TOOL_COUNTERS.every((k) => u[k] === undefined || isCount(u[k]))) return false;
-  // `cost` is the one field that is NOT an integer count: `addUsage` in
-  // `pi-usage.ts` accumulates a currency total, so a real report carries
-  // fractions (0.00000625 for one small child) and refusing them would refuse
-  // every honest row. It is still a finite non-negative number — a negative
-  // cost would SUBTRACT from a host's total and an infinite one cannot print.
+  // `cost` is the one field that is NOT an integer count: `addUsage` in `pi-usage.ts` accumulates a
+  // currency total, so a real report carries fractions. It is still finite and non-negative.
   return isMeasure(u.cost);
 }
 
@@ -153,11 +124,9 @@ function isCount(value: unknown): boolean {
 /**
  * Why a `dispatches` array is not a cost record this run may report, or undefined.
  *
- * Each row is one child the step paid for, and the headless result sums these
- * into `usage.byRole`. A row with no role cannot be attributed to a role, a
- * negative cost would subtract from the total, and a row whose `ok` is not a
- * boolean leaves the reader unable to tell a stopped child from a finished one
- * — which is the distinction the whole per-role comparison between engines rests on.
+ * Each row is one child the step paid for, and the headless result sums these into `usage.byRole`. A
+ * row with no role cannot be attributed, a negative cost subtracts from the total, and an `ok` that is
+ * not a boolean leaves the reader unable to tell a stopped child from a finished one.
  */
 export function dispatchesProblem(value: unknown): string | undefined {
   if (!Array.isArray(value)) return "outcome dispatches must be an array";
@@ -174,10 +143,8 @@ export function dispatchesProblem(value: unknown): string | undefined {
       return `outcome dispatches[${String(i)}].ms must be a finite number >= 0`;
     if (!isUsageRow(row.usage))
       return `outcome dispatches[${String(i)}].usage must carry non-negative integer input, output, cacheRead, cacheWrite, cost and turns`;
-    // `runId` is optional, but when present it must be the shape `fixRunId`
-    // mints: the reader that puts a resumed attempt back onto the tree its
-    // crashed self left matches on this field, and a value that is merely
-    // *present* would name a directory the step then treats as its own.
+    // `runId` is optional, but when present it must be the shape `fixRunId` mints: the reader that
+    // puts a resumed attempt onto the tree its crashed self left matches on this field.
     if (row.runId !== undefined && !isRunId(row.runId))
       return `outcome dispatches[${String(i)}].runId must be a decimal epoch-millisecond string`;
   }
@@ -195,9 +162,8 @@ export function validatedDispatches(value: unknown): DispatchUsageRow[] {
     if (typeof row.ok !== "boolean" || !isMeasure(row.ms) || !isUsageRow(row.usage)) continue;
     if (row.runId !== undefined && !isRunId(row.runId)) continue;
     const u = row.usage as Record<string, unknown>;
-    // Each count is RE-DERIVED from the check rather than cast: `isUsageRow`
-    // already proved all six are non-negative safe integers, and reading them
-    // back through `unknown` keeps the rebuilt row a product of the validation.
+    // Each count is RE-DERIVED from the check rather than cast: `isUsageRow` already proved all six
+    // are non-negative safe integers.
     const count = (k: (typeof USAGE_COUNTERS)[number] | "cost"): number => u[k] as number;
     out.push({
       role: row.role,
