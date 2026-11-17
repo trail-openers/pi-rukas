@@ -14,25 +14,23 @@
 
 import { type PiSpec, parsePiSpec, readiness, renderPiSpec } from "./spec.ts";
 
-/**
- * The persisted derivation: the spec, the model that drafted it, and the epoch
- * ms at which the run derived it. The spec is the parsed-and-validated contract,
- * so what a later step reads is exactly what `ready` accepted.
- */
+/** The persisted derivation: the spec, the model that drafted it, and the epoch ms
+ * it was derived at. The spec is already validated, so a later step reads exactly
+ * what `ready` accepted. */
 export interface DerivedSpec {
   spec: PiSpec;
   model: string;
   at: number;
 }
 
-/**
- * Validate a candidate derived spec, returning the canonicalised form the run
- * should hold — or `undefined` with the reason.
- *
- * The canonicalisation matters as much as the check: what comes back is
- * `parsePiSpec`'s own object, not the caller's, so a field order or an omitted
- * optional in the file cannot leak into what the steps execute.
- */
+/** The least a renderer needs to read a contract: the run record, or just the one
+ * field the accessor consults. Renderers that thread a contract source declare this
+ * rather than restate it. */
+export type ContractSource = { derivedSpec?: DerivedSpec };
+
+/** A candidate derived spec, or `undefined` with the reason it is not one. The
+ * result is canonicalised — `parsePiSpec`'s own object, not the caller's — so a field
+ * order or an omitted optional in the file cannot leak into what the steps execute. */
 export function derivedSpecProblem(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value))
     return "derivedSpec must be an object";
@@ -71,9 +69,8 @@ export function assertDerivedSpec(value: unknown): DerivedSpec {
   const problem = derivedSpecProblem(value);
   if (problem !== undefined) throw new Error(problem);
   const d = value as { spec: PiSpec; model: string; at: number };
-  // Re-read through the contract's parser so the returned object is the reader's
-  // canonical shape rather than the file's — `derivedSpecProblem` has already
-  // proved this parse succeeds.
+  // Re-read through the contract's parser so the result is the reader's canonical
+  // shape rather than the file's; the problem check has proved this parse succeeds.
   const canonical = parsePiSpec(renderPiSpec(d.spec));
   if (!canonical.ok) throw new Error(derivedSpecProblem(value) ?? "derivedSpec is unusable");
   return { spec: canonical.spec, model: d.model, at: d.at };

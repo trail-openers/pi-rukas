@@ -14,8 +14,8 @@
  * reuses the contract it derived — nothing here re-derives.
  */
 
-import { type ParseResult, type PiSpec, parsePiSpec, unterminatedFenceLine } from "./spec.ts";
-import type { LeanRun } from "./state.ts";
+import { type PiSpec, parsePiSpec, unterminatedFenceLine } from "./spec.ts";
+import type { ContractSource } from "./state-derived-spec.ts";
 
 /** Where the contract this run is executing came from. */
 export type SpecSource = "issue" | "derived";
@@ -31,31 +31,26 @@ const NO_BLOCK = "no pi-spec v1 block";
 /** The reason a body cut off inside a fence is reported, in every mode. */
 const UNTERMINATED = "pi-spec v1 block is not valid JSON: the fence it sits in was never closed";
 
-/**
- * The body's block, or the run's derived one. Never a third thing, and never a
- * fresh model call.
- */
-export function specFor(body: string, run: LeanRun | Pick<LeanRun, "derivedSpec">): SpecFor {
+/** The body's block, or the run's derived one. Never a third thing, and never a
+ * fresh model call. */
+export function specFor(body: string, run: ContractSource): SpecFor {
   const parsed = parsePiSpec(body);
   if (parsed.ok) return { ok: true, spec: parsed.spec, source: "issue" };
   const held = run.derivedSpec;
   if (parsed.reason !== NO_BLOCK || held === undefined) return { ok: false, reason: parsed.reason };
-  // "No block" has two causes and only one of them is the record's to cover for: a
-  // body that never carried a contract, and a body TRUNCATED inside one. `fencedBlocks`
-  // refuses to call an unclosed fence a block, so the second reads as the first and the
-  // accessor would hand nine steps a machine-written contract over the author's clipped
-  // one. The line test is `parsePiSpec`'s own — the same predicate that turns that body
-  // into the fenced-JSON reason a few lines later — so both modes say the author's
-  // defect in the author's words.
+  // "No block" has two causes and only one is the record's to cover for: a body that
+  // never carried a contract, and a body TRUNCATED inside one. `fencedBlocks` refuses
+  // to call an unclosed fence a block, so the second reads as the first and the
+  // accessor would hand every step a machine-written contract over the author's
+  // clipped one. The line test is `parsePiSpec`'s own predicate, so both modes name
+  // the author's defect in the author's words.
   if (unterminatedFenceLine(body) !== undefined) return { ok: false, reason: UNTERMINATED };
   return { ok: true, spec: held.spec, source: "derived" };
 }
 
-/**
- * `"derived"` exactly when the record carries a derived spec — read off the record
- * rather than a closure, so a resumed run still says where its contract came from
- * and a `require` run can never print `spec: derived` on its PR.
- */
-export function specSource(run: Pick<LeanRun, "derivedSpec">): SpecSource {
+/** `"derived"` exactly when the record carries a derived spec — read off the record,
+ * not a closure, so a resumed run still says where its contract came from and a
+ * `require` run can never print `spec: derived` on its PR. */
+export function specSource(run: ContractSource): SpecSource {
   return run.derivedSpec === undefined ? "issue" : "derived";
 }

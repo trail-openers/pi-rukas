@@ -29,7 +29,7 @@ import type { ReviewDeps } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
 import { specFor } from "./spec-for.ts";
 import { gitQuiet } from "./specify-reset.ts";
-import type { DerivedSpec } from "./state-derived-spec.ts";
+import type { ContractSource } from "./state-derived-spec.ts";
 import type { Step } from "./state.ts";
 import { newestDecided } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
@@ -190,7 +190,7 @@ const DIVIDER = "| --- | --- | --- | --- | --- |";
 export function acceptanceSection(
   steps: Step[],
   issueBody: string | undefined,
-  run: { derivedSpec?: DerivedSpec } = {},
+  run: ContractSource = {},
 ): string | undefined {
   if (!leanReviewAcceptanceEnabled()) return undefined;
   if (issueBody === undefined || issueBody.trim() === "") return undefined;
@@ -225,7 +225,7 @@ export function acceptanceSection(
 export function renderAcceptanceSection(
   steps: Step[],
   issueBody: string | undefined,
-  run: { derivedSpec?: DerivedSpec } = {},
+  run: ContractSource = {},
 ): string {
   return acceptanceSection(steps, issueBody, run) ?? "";
 }

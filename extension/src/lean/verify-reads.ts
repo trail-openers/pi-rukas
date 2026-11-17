@@ -22,7 +22,7 @@ import { NO_BLOCK_RULE } from "./spec-intake.ts";
 import { readiness } from "./spec.ts";
 import type { Criterion } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
-import type { DerivedSpec } from "./state-derived-spec.ts";
+import type { ContractSource } from "./state-derived-spec.ts";
 import { oneLine } from "./text-fence.ts";
 import type { CommandCriteriaOutcome } from "./verify-commands.ts";
 import type { Executed } from "./verify-steps.ts";
@@ -105,7 +105,7 @@ export async function specCriteriaFor(
   deps: { fetchIssueBody: (repoRoot: string, issue: number) => Promise<string> },
   repoRoot: string,
   issue: number,
-  run: { derivedSpec?: DerivedSpec } = {},
+  run: ContractSource = {},
 ): Promise<Criterion[]> {
   const body = await deps.fetchIssueBody(repoRoot, issue).catch((err: unknown) => {
     throw new VerifyInfraError(

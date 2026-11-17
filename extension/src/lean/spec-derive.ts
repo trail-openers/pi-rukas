@@ -45,18 +45,13 @@ export const DERIVE_ROLE = "explore";
 // Re-exported from its leaf so the number is declared once for `config.ts` too.
 export { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
 
-/**
- * The most criteria the deriving child may return: {@link SIZE_MEDIUM_MAX}, the
- * count at which the mapper still calls the change `M`.
- *
- * This is NOT the mapper's embedding cap (12) and must not be raised to it.
- * `size` is the mapper's, counted from the ORIGINAL bullet list, and `readiness`
- * refuses an `L` — so a brief that invited twelve bullets would be inviting a
- * contract the run's own gate rejects, and every nine-criterion ticket would
- * decline. Asking for at most eight makes the brief and the gate agree; a child
- * that ignores the instruction still gets the honest outcome below (a size-`L`
- * refusal quoting the block), never a silently truncated list.
- */
+/** The most criteria the deriving child may return: the count at which the mapper
+ * still calls the change `M`. NOT the mapper's embedding cap (12) and not to be
+ * raised to it: `size` is counted from the ORIGINAL bullet list and `readiness`
+ * refuses an `L`, so a brief that invited twelve bullets would invite a contract the
+ * run's own gate rejects. At eight the brief and the gate agree, and a child that
+ * ignores the instruction still gets the honest size-`L` refusal quoting the block —
+ * never a silently truncated list. */
 export const DERIVE_MAX_CRITERIA = 8;
 
 /** How long a reply may be before it is refused unread — a fence flood is not a spec. */

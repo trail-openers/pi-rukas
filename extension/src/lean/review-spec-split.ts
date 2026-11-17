@@ -39,7 +39,7 @@ import { renderSpecCriteriaSection } from "./review-criteria.ts";
 import { leanReviewProblemEnabled } from "./review-problem-switch.ts";
 import { specFor } from "./spec-for.ts";
 import { normalizeProse, stripPiSpecBlocks } from "./spec.ts";
-import type { DerivedSpec } from "./state-derived-spec.ts";
+import type { ContractSource } from "./state-derived-spec.ts";
 
 /** Whether lean's review seats receive the split rendering. */
 export function leanReviewSpecSplitEnabled(): boolean {
@@ -82,7 +82,7 @@ const CRITERIA_CLAUSE =
 export function renderReviewIssueBlock(
   rawBody: string | undefined,
   rule: string,
-  run: { derivedSpec?: DerivedSpec } = {},
+  run: ContractSource = {},
 ): string {
   const prose = renderReviewProse(rawBody);
   if (prose === "") return "";
@@ -102,7 +102,7 @@ export function renderReviewIssueBlock(
 
 /** The parsed spec's `problem`, or `""` when the body carries no readable one —
  * the value the dedupe above compares the stripped prose against. */
-function specProblem(rawBody: string | undefined, run: { derivedSpec?: DerivedSpec }): string {
+function specProblem(rawBody: string | undefined, run: ContractSource): string {
   if (rawBody === undefined) return "";
   const read = specFor(rawBody, run);
   return read.ok ? read.spec.problem : "";
@@ -115,7 +115,7 @@ function specProblem(rawBody: string | undefined, run: { derivedSpec?: DerivedSp
  */
 export function reviewCriteriaSection(
   rawBody: string | undefined,
-  run: { derivedSpec?: DerivedSpec } = {},
+  run: ContractSource = {},
 ): {
   reviewCriteria?: string;
 } {
@@ -143,10 +143,15 @@ export function reviewCriteriaSection(
  */
 export function seatIssueBody(
   rawBody: string | undefined,
-  run: { derivedSpec?: DerivedSpec } = {},
+  run: ContractSource = {},
 ): string | undefined {
   if (!leanReviewSpecSplitEnabled()) return rawBody;
-  return renderSpecCriteriaSection(rawBody) === "" ? rawBody : stripPiSpecBlocks(rawBody ?? "");
+  // The same `run` the criteria section is rendered with: this value and that
+  // section are one pair (see the header), and rendering the criteria from the body
+  // alone would split the pair for exactly the runs that carry a derived contract.
+  return renderSpecCriteriaSection(rawBody, run) === ""
+    ? rawBody
+    : stripPiSpecBlocks(rawBody ?? "");
 }
 
 /**
@@ -158,7 +163,7 @@ export function seatIssueBody(
 export function reviewIssueBlock(
   rawBody: string | undefined,
   rule: string,
-  run: { derivedSpec?: DerivedSpec } = {},
+  run: ContractSource = {},
 ): string {
   return leanReviewSpecSplitEnabled()
     ? renderReviewIssueBlock(rawBody, rule, run)

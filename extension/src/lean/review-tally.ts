@@ -15,7 +15,6 @@
  * lose its verdict over how many rounds it ran. Read copies are clones, so a host
  * that mutates what it was given cannot reach the running tally.
  */
-
 import type { LensRound } from "./review-args.ts";
 import type { ReviewBoundRecord } from "./review-bound.ts";
 import {
@@ -27,21 +26,17 @@ import {
 import type { ReviewRecord } from "./state-outcome-gates.ts";
 import type { Outcome } from "./state.ts";
 
-/** What the step accumulates, and the three operations on it. */
+/** The step's fix-wave disclosure, if it has one — folded into the reason by
+ * `noteFixDisclosure`, which the step applies before handing the outcome here. */
 export interface ReviewTally {
   /** Fold one judged round's rows into the published tally, at the record's own cap. */
   noteRound: (round: LensRound) => void;
   /** Record the head the one fix wave pushed, at the record's own cap. */
   noteWave: (wave: "full" | "fix", pushed: string) => void;
-  /**
-   * Attach what the step judged to one exit's outcome.
-   *
-   * Every exit takes it — pass, wave, or stopped mid-wave — so a stopped arm still
-   * says what it judged rather than losing the rounds it paid for. With nothing
-   * judged the `review` key is absent rather than empty: a step that judged no round
-   * has no record to publish, and `{rounds:[],waves:[]}` would read as a review that
-   * ran and saw nothing.
-   */
+  /** Attach what the step judged to one exit's outcome. Every exit takes it — pass,
+   * wave, or stopped mid-wave — so a stopped arm still says what it judged rather than
+   * losing the rounds it paid for. With nothing judged the `review` key is absent
+   * rather than empty: an empty record would read as a review that ran and saw nothing. */
   attach: (pass: Outcome, extra?: { reviewBound?: ReviewBoundRecord }) => Outcome;
 }
 

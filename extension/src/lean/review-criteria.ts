@@ -27,7 +27,7 @@
 import { leanReviewProblemEnabled } from "./review-problem-switch.ts";
 import { criteriaBlock } from "./spec-blocks.ts";
 import { specFor } from "./spec-for.ts";
-import type { DerivedSpec } from "./state-derived-spec.ts";
+import type { ContractSource } from "./state-derived-spec.ts";
 import { fenceText } from "./text-fence.ts";
 
 /** The cap on the rendered criteria section — the bound the carried-findings block
@@ -91,7 +91,7 @@ function fenceCriteria(block: string): string {
  */
 export function renderSpecCriteriaSection(
   rawBody: string | undefined,
-  run: { derivedSpec?: DerivedSpec } = {},
+  run: ContractSource = {},
 ): string {
   if (rawBody === undefined || rawBody.trim() === "") return "";
   // The accessor, so the criteria a seat is judged against are the criteria the
