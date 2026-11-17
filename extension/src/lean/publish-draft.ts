@@ -1,16 +1,13 @@
 /*
  * lean/publish-draft — how a PR's DRAFT STATE gets into a publish record.
  *
- * `publish.ts` decides *whether* the head is pushed and the PR opened; this file answers
- * one question — "what does the record say about `draft`, and what may it not say". It
- * rests on one CLI fact: neither `gh pr list --json` nor `gh pr create --json` carries
- * `isDraft` — only `gh pr view --json …,isDraft,…` does. A step that never asked could
- * only guess, and a guessed `true` over a ready PR tells the host a mergeable PR stands
- * behind unverified bytes.
+ * `publish.ts` decides *whether* the head is pushed and the PR opened; this file answers one question —
+ * "what does the record say about `draft`, and what may it not say". It rests on one CLI fact: neither
+ * `gh pr list --json` nor `gh pr create --json` carries `isDraft` — only `gh pr view` does. A guessed
+ * `true` over a ready PR tells the host a mergeable PR stands behind unverified bytes.
  *
- * The record may carry what the FORGE was read to say, never what this run asked for;
- * nothing at all when nobody could tell; and a refusal, rather than either, when the run
- * still had a DECISION to make with the answer (see `reusePr`).
+ * The record may carry what the FORGE was read to say, never what this run asked for; nothing at all
+ * when nobody could tell; and a refusal when the run still had a DECISION to make with the answer.
  */
 import type { NormalizedPullRequest } from "../forge-types.ts";
 import type { PublishForge } from "./publish-deps.ts";
@@ -19,12 +16,10 @@ import { PublishInfraError } from "./publish-deps.ts";
 /**
  * The state of a PR this step has just CREATED, as the forge reports it.
  *
- * The create reply carries no `isDraft`, so the forge is asked through
- * `draftStateOf` — the same reader a reused PR's state goes through, so one rule
- * says how a draft is established. A forge that will not say is NOT
- * infrastructure here: the PR exists and the head is pushed, so the refusal is
- * swallowed and the outcome records no `draft` at all. What this run REQUESTED is
- * never recorded in its place.
+ * The create reply carries no `isDraft`, so the forge is asked through `draftStateOf` — the same reader
+ * a reused PR goes through, so one rule says how a draft is established. A forge that will not say is
+ * NOT infrastructure here: the PR exists and the head is pushed, so the refusal is swallowed and the
+ * outcome records no `draft`. What this run REQUESTED is never recorded in its place.
  */
 export async function createdDraftState(
   f: PublishForge,
@@ -36,49 +31,42 @@ export async function createdDraftState(
 /**
  * The state of a PR this step REUSED, carried out on every path the caller takes.
  *
- * The list row's `isDraft` is absent, so returning the row untouched would put
- * `undefined` in the record however hard the reads worked — and that field is a publish
- * step's only answer to "is this PR mergeable as it stands".
+ * The list row's `isDraft` is absent, so returning it untouched would put `undefined` in the record
+ * however hard the reads worked — and that field is the publish step's only answer to "is this PR
+ * mergeable as it stands".
  *
- * Whether a refusal to answer is fatal depends on what this run still has to DECIDE with
- * the answer, not on whether a commit went out. A not-green run must choose between
- * leaving a ready PR behind an unverified head and drafting one that was already a draft;
- * made blind, both are observations this step did not make, so it asks and refuses. A
- * run with nothing to decide may publish: the unread state costs the record its `draft`
- * field and not the run.
+ * Whether a refusal to answer is fatal depends on what this run still has to DECIDE with the answer. A
+ * not-green run must choose between leaving a ready PR behind an unverified head and drafting one that
+ * was already a draft; made blind, both are observations this step did not make, so it asks and refuses.
+ * A run with nothing to decide may publish: the unread state costs the record its `draft` field, not the
+ * run.
  *
- * A reused PR keeps whatever state the PREVIOUS run left it in — `prCreate`'s `draft`
- * applies only to a PR this step opens — so the not-green run that finds it ready puts it
- * back to draft, and a `prDraft` that fails is infrastructure, never a no-op.
+ * A reused PR keeps whatever state the PREVIOUS run left it in, so the not-green run that finds it ready
+ * puts it back to draft, and a `prDraft` that fails is infrastructure, never a no-op.
  */
 export async function reusedDraftState(
   f: PublishForge,
   found: NormalizedPullRequest,
   draft: boolean,
 ): Promise<NormalizedPullRequest> {
-  // ONE read, then branch on the answer. `draftStateOf` either returns a boolean
-  // or throws, so the `draft` branch lets that refusal stand — a not-green run
-  // has a decision to make with the answer and must not guess — while the
-  // not-green branch swallows it and records nothing.
+  // ONE read, then branch on the answer: the `draft` branch lets a refusal stand (the run has a
+  // decision to make and must not guess), the other swallows it and records nothing.
   const observed = draft
     ? await draftStateOf(f, found)
     : await draftStateOf(f, found).catch(() => undefined);
   if (!draft) return { ...found, isDraft: observed };
-  // Past the refusal above the answer is `true`: the PR is already a draft,
-  // there is nothing to put back, and the run publishes with the state it read.
+  // Past the refusal above the answer is `true`: already a draft, nothing to put back.
   if (observed === true) return { ...found, isDraft: observed };
   await f.prDraft(found.number).catch((err: unknown) => {
     throw new PublishInfraError(
       `could not put the reused PR #${found.number} back to draft: ${(err as Error)?.message ?? String(err)}`,
     );
   });
-  // A `prDraft` that returned without throwing is a CLAIM, not an observation:
-  // the head is already pushed at this point, so a forge that accepted the call
-  // and left the PR READY would hand back `ok` with a mergeable PR standing
-  // behind unverified bytes. Read it back; only `isDraft === true` is an answer
-  // that lets the run continue. The rejection message is kept for the same
-  // reason `draftStateOf` keeps its own: an operator has to be able to tell a
-  // forge that was unreachable from one that answered `ready`.
+  // A `prDraft` that returned without throwing is a CLAIM, not an observation: the head is already
+  // pushed, so a forge that accepted the call and left the PR READY would hand back `ok` with a
+  // mergeable PR standing behind unverified bytes. Read it back; only `isDraft === true` continues.
+  // The rejection message is kept: an operator has to tell a forge that was unreachable from one that
+  // answered `ready`.
   let why: string | undefined;
   const after = await f
     .prView(found.number)
@@ -95,19 +83,16 @@ export async function reusedDraftState(
 }
 
 /**
- * What the forge says about one PR's draft state, asked of `prView` when the reply
- * the step already holds did not carry the flag.
+ * What the forge says about one PR's draft state, asked of `prView` when the reply the step holds did
+ * not carry the flag.
  *
- * Throws when neither reply said. Deciding "already a draft" (or "already ready")
- * without evidence is what leaves an unverified PR mergeable, so a caller with a
- * decision to make lets the refusal stand; the callers that are merely recording
- * swallow it and record nothing.
+ * Throws when neither reply said. Deciding "already a draft" without evidence is what leaves an
+ * unverified PR mergeable, so a caller with a decision to make lets the refusal stand.
  */
 async function draftStateOf(f: PublishForge, pr: NormalizedPullRequest): Promise<boolean> {
   if (pr.isDraft !== undefined) return pr.isDraft;
-  // The rejection message is kept rather than swallowed: "could not tell" is
-  // true either way, but an operator reading the handoff has to be able to tell
-  // a forge that was unreachable from one that answered with neither field.
+  // The rejection message is kept rather than swallowed: an operator reading the handoff has to tell a
+  // forge that was unreachable from one that answered with neither field.
   let why: string | undefined;
   const viewed = await f
     .prView(pr.number)
