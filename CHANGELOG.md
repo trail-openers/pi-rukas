@@ -8,6 +8,16 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.87](https://github.com/trail-openers/pi-rukas/compare/v0.14.86...v0.14.87) (2026-11-17)
+
+
+### Bug Fixes
+
+* **adversarial:** read the verdict from candidate lines, not the last match ([#2320](https://github.com/trail-openers/pi-rukas/issues/2320)) ([0bcf5b8](https://github.com/trail-openers/pi-rukas/commit/0bcf5b893ba3bcce05be8d3c975263bf16002779))
+* **lean:** name the runner probe so pytest can collect it ([#2323](https://github.com/trail-openers/pi-rukas/issues/2323)) ([1b54521](https://github.com/trail-openers/pi-rukas/commit/1b54521f8193153035c3d6b3435faaa2019fcf6c))
+* **lean:** seed worktree submodules from the superproject, never the network ([#2324](https://github.com/trail-openers/pi-rukas/issues/2324)) ([a55551d](https://github.com/trail-openers/pi-rukas/commit/a55551dd1df71a438e45483a57528f06697cc7a8))
+* **model:** read Pi's agent dir as Pi does for per-run provider overrides ([#2314](https://github.com/trail-openers/pi-rukas/issues/2314)) ([cb8d0a1](https://github.com/trail-openers/pi-rukas/commit/cb8d0a15a3d33565ee4f29df29522b719a02c43b))
+
 ## [0.14.86](https://github.com/trail-openers/pi-rukas/compare/v0.14.85...v0.14.86) (2026-11-16)
 
 

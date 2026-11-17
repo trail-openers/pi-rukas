@@ -89,8 +89,8 @@ function newestWorkStep(steps: Step[]): Step | undefined {
 }
 
 /**
- * The newest WORK step's budget breach, and FIRST in {@link neededFromLog} after {@link blockedCause}: the
- * breach is why the run stopped, and it counts only when nothing that did work is newer.
+ * The newest WORK step's budget breach. The breach is why the run stopped, and it counts
+ * only when nothing that did work is newer.
  */
 function budgetCause(steps: Step[]): string | undefined {
   const step = newestWorkStep(steps);
@@ -104,9 +104,9 @@ function budgetCause(steps: Step[]): string | undefined {
 }
 
 /**
- * The build step's named unsatisfiable contract, and FIRST in {@link neededFromLog}: the builder's `blocked`
- * verdict is the one cause that names the files and the contradiction. Same positional test as
- * {@link budgetCause}.
+ * The build step's named unsatisfiable contract: the builder's `blocked` verdict is the one
+ * cause that names the files and the contradiction. Like {@link budgetCause}, it counts only at
+ * the newest WORK step.
  */
 function blockedCause(steps: Step[]): string | undefined {
   const step = newestWorkStep(steps);
@@ -125,8 +125,8 @@ function blockedCause(steps: Step[]): string | undefined {
 }
 
 /**
- * Why the run is ending, in the record's own words. The order is the order of USEFULNESS, not recency: what
- * the run's own gate complained about is what a developer can act on.
+ * Why the run is ending, in the record's own words. The order is the order of USEFULNESS, not
+ * recency: what the run's own gate complained about is what a developer can act on.
  */
 export function neededFromLog(steps: Step[]): string {
   const reason =

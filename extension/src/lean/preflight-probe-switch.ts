@@ -1,40 +1,30 @@
 /**
- * lean/preflight-probe-switch — the two switches on the runner probe's SHAPE,
- * kept apart from `runner-preflight-switch.ts` because they answer different
- * questions and must be able to move apart.
+ * lean/preflight-probe-switch — the two switches on the runner probe's SHAPE, kept apart from
+ * `runner-preflight-switch.ts` because they answer different questions and must move apart: that one decides
+ * whether the probe is RUN AT ALL (and with it the reset's submodule init); these two decide what the probe
+ * LOOKS LIKE and what one of its answers MEANS, so an operator who finds the new name or the exit-4 reading
+ * wrong can restore the old behaviour without losing the preflight.
  *
- * `runner-preflight-switch.ts` decides whether the probe is RUN AT ALL (and with
- * it the reset's submodule init). The two here decide what the probe LOOKS LIKE
- * and what one of its answers MEANS, so an operator who finds the new probe
- * name or the new exit-4 reading wrong can put the old behaviour back without
- * losing the preflight, the submodule init, or the golden v0.14.71 off arm.
+ *   - COLLECTABLE — for a project whose `verify.testGlob` names `.py` files the probe is a visible,
+ *     dot-free `_lean_runner_probe.py` inside the configured `verify.testDir`, and exit 4 reads as "the
+ *     runner rejected the probe file", not as a runner that cannot run tests. A hidden dotfile cannot be
+ *     IMPORTED, so pytest's default prepend import mode dies on the leading dot, and exit 4 is pytest's
+ *     "no such file / no collector" — a fact about the probe, not the bench. Off, the probe keeps its
+ *     hidden root-level name and every non-0/5 status hand-backs.
+ *   - CONTAIN — before the probe is written, its parent directory is resolved with `realpath` and must lie
+ *     inside `realpath(worktree)`: the config cannot be trusted to name a directory that is really one of
+ *     this checkout. Off, the path is used as the config and fallback rules say, with the write still
+ *     refusing a link or non-file at the name.
  *
- *   - COLLECTABLE — the probe for a project whose `verify.testGlob` names `.py`
- *     files is a visible, dot-free `_lean_runner_probe.py` inside the configured
- *     `verify.testDir`, and an exit 4 on the probe is read as "the runner
- *     rejected the probe file" rather than as a runner that cannot run tests.
- *     A hidden dotfile cannot be IMPORTED, so pytest's default prepend import
- *     mode died on the leading dot and every pytest repo was refused by the
- *     probe's own name; and an exit 4 is pytest's "no such file / no collector",
- *     which is a fact about the probe rather than about the bench.
- *     Off, the probe keeps its original hidden root-level name and every non-0/5
- *     status hand-backs, byte-identically to the shipped release.
- *   - CONTAIN — before the probe is written, its parent directory is resolved
- *     with `realpath` and must lie inside `realpath(worktree)`; the config
- *     cannot be trusted to name a directory that is really a directory of this
- *     checkout. Off, the path is used as the config and the fallback rule say,
- *     with the write itself still refusing a link or a non-file at the name.
- *
- * Only the literal `"0"` turns either off; unset and any other value leave it
- * on. Both are read at CALL time, not at module load: every lean smoke file runs
- * in one bun process and pins off/on arms with `withEnv`, so a load-time read
- * would let one file's pin silently disable the other file's probe.
+ * Only the literal `"0"` turns either off. Both are read at CALL time, not module load: every lean smoke
+ * file runs in one bun process and pins off/on arms with `withEnv`, so a load-time read would let one
+ * file's pin disable the other's.
  */
 
 /**
- * The switch's answer for one environment. A parameter rather than `process.env`
- * because a case that pins the ambient value leaks into whichever case runs after
- * it — the two files then disagree about the default depending on order.
+ * The switch's answer for one environment. A parameter rather than `process.env`: a case that pins the
+ * ambient value leaks into whichever case runs after it, so the two files would disagree about the default
+ * depending on order.
  */
 function enabled(env: Record<string, string | undefined>, key: string): boolean {
   return env[key] !== "0";
