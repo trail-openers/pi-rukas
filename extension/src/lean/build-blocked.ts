@@ -3,18 +3,18 @@
  * together" report.
  *
  * The child's report is narration, not executed evidence. A builder that could end a run by naming a conflict
- * would end runs whose contract it never read, or one that is satisfiable. So the driver honours the report
- * only when BOTH hold, and the second is its own command:
+ * would end runs whose contract it never read, or one that is satisfiable. The driver honours it only when
+ * BOTH hold:
  *
- *   1. **every named path is in the run's frozen map** — read off the same `frozenFromLog` every other
- *      reader of the contract uses;
+ *   1. **every named path is in the run's frozen map** — read off the same `frozenFromLog` every other reader
+ *      of the contract uses;
  *   2. **at least one named frozen test comes back red on the child's tree**, run with the project's own
- *      `verify.test` template through the same runner `verify` and `specify` use.
+ *      `verify.test` template through the runner `verify` and `specify` use.
  *
  * A runner that could not start or was killed is NOT a red — it observed nothing — and a green named test is
  * not a conflict either.
  *
- * The entry and reason bounds here are the DURABLE record's, so an entry that could not be persisted is refused
+ * The entry and reason bounds are the DURABLE record's, so an entry that could not be persisted is refused
  * before anything is spent running it.
  */
 
@@ -48,9 +48,9 @@ export const BLOCKED_MAX_REASON_CHARS = RECORD_REASON_MAX_CHARS;
 const BLOCKED_CAUSE_CAP = BLOCKED_PATH_CAP + BLOCKED_REASON_CAP + 44;
 
 /**
- * The child's reported conflicts, filtered to entries the record could hold, in the child's order — order is
- * load-bearing, because `blockedProved` runs them in it and stops at the first red. Illegal frozen keys are
- * dropped before any `git`/runner call.
+ * The child's conflicts, filtered to entries the record could hold, in the child's order — load-bearing,
+ * because `blockedProved` runs them in it and stops at the first red. Illegal frozen keys drop before any
+ * `git`/runner call.
  */
 function usableConflicts(rows: Array<{ path: string; reason: string }>): string[] {
   const seen = new Set<string>();
@@ -73,12 +73,12 @@ export type BlockedVerdict =
 /**
  * Did the driver itself prove the named tests disagree?
  *
- * `wt` is the child's tree, before any reset, so the red is a fact about the child's work. Each named file is
- * hashed before its runner starts: a builder that rewrote a frozen file into one that fails would otherwise
- * be handed a red the driver watched.
+ * `wt` is the child's tree before any reset, so the red is a fact about its work. Each named file is hashed
+ * before its runner starts: a builder that rewrote a frozen file into one that fails would otherwise be handed
+ * a red the driver watched.
  *
- * One wall clock bounds the WHOLE loop, not each runner — a report naming 32 files would otherwise cost 32
- * ceilings. A runner that could not start or was killed is skipped, not fatal.
+ * One wall clock bounds the WHOLE loop, not each runner — 32 named files would otherwise cost 32 ceilings. An
+ * un-startable or killed runner is skipped, not fatal.
  */
 export async function blockedProved(opts: {
   exec: BuildExec;
@@ -93,7 +93,7 @@ export async function blockedProved(opts: {
   // The list's ceiling is applied where it is built (`usableConflicts`).
   if (paths.length === 0) return { honoured: false, why: "the report named no usable path" };
   if (template === undefined || template.trim() === "") {
-    // No runner means no proof, so the report is ignored. The silence is named because `verify` calls
+    // No runner means no proof, so the report is ignored — and the silence is named, because `verify` calls
     // the same missing template an error.
     traceWarn(
       "lean build: no verify.test runner is configured, so a blocked report cannot be re-run — set verify.test to enable it",
@@ -112,17 +112,17 @@ export async function blockedProved(opts: {
   const ran: string[] = [];
   const skipped: string[] = [];
   for (const file of paths) {
-    // Only an ANSWERED file is evidence and only a `red` honours the report: `unclear` and abandoned SKIP.
+    // Only an ANSWERED file is evidence and only a `red` honours the report; `unclear` and abandoned SKIP.
     const proof = await runFrozen(exec, { wt, template, file }, deadline - Date.now());
     if (proof.kind === "infra" || proof.kind === "unclear") {
       trace(`lean build: blocked report skipped one file — ${file}: ${proof.detail}`);
       skipped.push(file);
       continue;
     }
-    // Every file the driver JUDGED reaches `ran`, greens included — the cause's map carries the whole set.
+    // Every file the driver JUDGED reaches `ran`, greens included — the cause's map holds the whole set.
     ran.push(file);
     if (proof.kind === "green") continue;
-    // A red counts only while the bytes behind its name are the bytes the freeze hashed. Refused by name.
+    // A red counts only while the bytes behind its name are those the freeze hashed. Refused by name.
     const bytes = await blobAt(exec, wt, "HEAD", file);
     if (bytes === undefined || bytes.length === 0 || sha256(bytes) !== frozen[file])
       return {
@@ -142,7 +142,7 @@ export async function blockedProved(opts: {
 
 /**
  * One frozen file's verdict under the loop's ONE remaining budget. A runner that swallows the SIGKILL, or one
- * a grandchild holds open, is ABANDONED at the deadline and counts `infra`, so the step refuses AT its bound.
+ * a grandchild holds open, is ABANDONED at the deadline and counts `infra` — the step refuses at its bound.
  */
 async function runFrozen(
   exec: BuildExec,
@@ -168,8 +168,8 @@ async function runFrozen(
 function abandoned(run: { template: string; file: string }, left: number): Proof {
   return {
     kind: "infra",
-    // `killed`, not `never-started`: the deadline took a started process, so a caller cannot blame the
-    // project's toolchain for a budget the driver ran out of.
+    // `killed`, not `never-started`: the deadline took a started process, so no one blames the project's
+    // toolchain for a budget the driver ran out of.
     infraShape: "killed",
     cmd: renderTestCommand(run.template, run.file),
     detail: `gave up at the ${String(left)}ms re-run budget`,
@@ -178,7 +178,7 @@ function abandoned(run: { template: string; file: string }, left: number): Proof
 
 /**
  * Fold a budget-stopped builder's work into its attempt's commit, then say what is still red on the tree that
- * commit made — one function because the probe must read the RESET tree the fold produced. Its sweep shares
+ * commit made — one function because the probe must read the RESET tree the fold produced. The sweep shares
  * {@link runFrozen}.
  */
 export async function foldStoppedBuild(opts: {
@@ -197,13 +197,13 @@ export async function foldStoppedBuild(opts: {
 }): Promise<{ kept: NormaliseReport; failing: string[] }> {
   const { exec, wt, frozen, template } = opts;
   const kept = await normaliseBuild({ ...opts, budget: new CaptureBudget(opts.ceiling) });
-  // Only a runner that ANSWERED counts, and only bytes the freeze hashed: the tree is whatever the killed
+  // Only a runner that ANSWERED counts, and only bytes the freeze hashed — the tree is whatever the killed
   // child left, so each file comes out of HEAD.
   const failing: string[] = [];
   const deadline = Date.now() + (opts.timeoutMs ?? TEST_TIMEOUT_MS);
   if (template?.trim())
     for (const file of Object.keys(frozen)) {
-      // ONE deadline for the sweep: once it is spent, no later file starts at all.
+      // ONE deadline for the sweep: once spent, no later file starts at all.
       const left = deadline - Date.now();
       if (left <= 0) break;
       const bytes = await blobAt(exec, wt, "HEAD", file);
