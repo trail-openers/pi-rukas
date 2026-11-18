@@ -4,13 +4,13 @@
  * (AGENTS.md §12), the same seam `work-driver-handoff-ops-label.ts` uses.
  *
  * These are the lines that tell an ops child HOW to wait for CI, and they are the
- * whole reason the brief exists: a blocking `gh run watch` / `gh pr checks
- * --watch` call is the shape in which a merge brief stopped mid-wait and the
- * merge never happened. The recipe here is the one the driver itself runs —
- * `ciWatch` (extension/src/forge-ci.ts) polls until a terminal status with an
- * injectable sleep, and `checksRedReason` (extension/src/lean/ci-tier.ts) sleeps
- * on `CI_POLL_MS` — so the child and the driver share one cadence and one cap
- * rather than the child inventing numbers the driver does not honour.
+ * whole reason the brief exists: #2333 was a child handed "watch CI then merge"
+ * that wrote its reply while the wait was still open, so the merge never happened.
+ * The recipe here is the one the driver itself runs — `ciWatch`
+ * (extension/src/forge-ci.ts) polls until a terminal status with an injectable
+ * sleep, and `checksRedReason` (extension/src/lean/ci-tier.ts) sleeps on
+ * `CI_POLL_MS` — so the child and the driver share one cadence and one cap rather
+ * than the child inventing numbers the driver does not honour.
  *
  * Two rules carry the fix and are pinned by
  * `extension/smoke-tests/test-ci-doctrine-poll.ts`:
@@ -18,7 +18,9 @@
  *   - **A pending check is never a reason to end the dispatch.** The child re-polls
  *     until terminal or the cap and only then writes its reply.
  *   - **The marker is the LAST act, after a terminal state, and never `pending`.**
- *     The driver routes an absent `ci-status` to failure and has no `pending` arm,
+ *     The router does have a `pending` arm (`routeCiTier` keeps the cycle at `ci`)
+ *     and nothing re-polls from the child's side, so a reply that lands on it parks
+ *     the cycle with nobody left waiting; an ABSENT `ci-status` routes to failure,
  *     so a marker emitted before the wait ends burns a ci-retry.
  *
  * The wording is data for the gate above, not for a reader: keep the numbers

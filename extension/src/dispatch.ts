@@ -231,9 +231,10 @@ export function dispatchCore(
         // Per-call override of the runaway backstop, for a dispatch whose work
         // is enumerable enough to bound. Two live callers, each with its
         // rationale at the definition: `ciWatchTimeoutMs`
-        // (work-driver-stepback-ci.ts — `gh run watch` blocks for a real CI
-        // run) and `handoffDispatchTimeoutMs` (work-driver-handoff.ts — a park
-        // comment is a few gh calls and a markdown render).
+        // (work-driver-stepback-ci.ts — the ci step's bounded poll waits CI out,
+        // so its dispatch needs the 30-minute bound) and
+        // `handoffDispatchTimeoutMs` (work-driver-handoff.ts — a park comment is
+        // a few gh calls and a markdown render).
         timeoutMs: opts.timeoutMs,
         childBoundMs: opts.childBoundMs,
         // Companion-extension plumbing (lens-reporter / policy-reporter /
