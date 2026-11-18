@@ -46,6 +46,8 @@ import { readMarker } from "../src/reply-markers.ts";
 import { isCiWatchCommand } from "../src/slow-notice-ci-wait.ts";
 import { CI_WAIT_STEPS } from "../src/work-driver-ci-wait-brief.ts";
 import { inlineCiPrompt } from "../src/work-driver-prompts-late.ts";
+import { ciSectionShapeCanaries } from "./lib/ci-doctrine-loop-shapes.ts";
+import { shippedRecipeCanaries } from "./lib/ci-doctrine-shipped-canaries.ts";
 import {
   CI_DOCTRINE_OBLIGATIONS,
   blockingWatchPrescribed,
@@ -160,8 +162,72 @@ function promptSources(role: string): { file: string; text: string }[] {
   );
   assert(/unbounded/i.test(composed), "ops: the FORBIDDEN list still bans an unbounded CI loop");
 
-  // The GitLab section's own rule survives: `glab ci status` is not
-  // non-interactive-safe, and the fix must not have "restored" it.
+  // The cap-is-failure rule over the COMPOSED ops prompt, not just the driver's
+  // brief. The rule was pinned only on `inlineCiPrompt`, and the composed prompt is
+  // the OTHER surface that hands a child the cap recipe — the role doc and the
+  // module each state it, and the driver routes on the LAST `ci-status` match of
+  // the reply (`work-driver-stepback-ci.ts`), so a cap arm reworded to "write
+  // `ci-status: pending` and end the turn" in either prose source is a routing
+  // change, not a reword. Mutating the whole prompt would not show it: the other,
+  // untouched arm keeps both rules true. So the mutants are built on the per-arm
+  // slices the rule itself finds (one per shipped arm), and the `>= 2` floor is
+  // what makes "one arm deleted" visible instead of silently narrowing the loop.
+  const capArms = [
+    ...composed.matchAll(/cap[\s\S]{0,160}?(report the wait as a failure|`?ci-status: failure)/gi),
+  ].map((m) => m[0]);
+  assert(
+    capArms.length >= 2,
+    `ops: the composed prompt carries its cap arm in more than one source (${capArms.length} found)`,
+  );
+  for (const arm of capArms) {
+    // Mutation 1: the outcome reworded to pending — the failure rule must go.
+    const toPending = arm.replace(
+      /report the wait as a failure|`?ci-status: failure/gi,
+      "write `ci-status: pending` and end the turn",
+    );
+    assert(
+      toPending !== arm &&
+        !/cap[\s\S]{0,160}?(report the wait as a failure|`?ci-status: failure)/i.test(toPending),
+      `ops cap arm mutated to a pending outcome loses the failure rule (${arm.slice(-40)})`,
+    );
+    // Mutation 2: the arm spells its own prohibition as the literal token — the
+    // way a reword writes it in practice, and the routing the shipped text avoids by
+    // never printing the token/value pair. The last-match reader the driver uses
+    // must then grade `pending`. Mutating the arm itself (rather than appending the
+    // marker) is what makes this a mutation of the judged text: an appended line
+    // would read `pending` whatever the arm said, and prove only the reader works.
+    const echoes = arm.replace(
+      /report the wait as a failure/gi,
+      "never write `ci-status: pending`",
+    );
+    assert(
+      echoes !== arm && readMarker(echoes, "ci-status", /(success|failure|pending)/) === "pending",
+      `ops cap arm quoting the pending token reads as a pending marker to the last-match reader (${arm.slice(-40)})`,
+    );
+    assert(
+      readMarker(arm, "ci-status", /(success|failure|pending)/) !== "pending",
+      `ops: the shipped cap arm does not read as a pending marker to the last-match reader (${arm.slice(-40)})`,
+    );
+  }
+  assert(
+    readMarker(composed, "ci-status", /(success|failure|pending)/) !== "pending",
+    "ops: nothing in the composed prompt ends on a pending ci-status marker",
+  );
+
+  // The two-call rule and its forbidden stand-ins, judged on the CI section the
+  // child reads. Scoped to that section because the rest of the manifest
+  // legitimately carries `$(whoami)` as a forbidden vipune example and `$(…)` as
+  // a forbidden chain shape — prose about what NOT to write is not the CI poll.
+  // Both surfaces of the rule are judged (the role doc's CI Monitoring prose and the
+  // module's poll bullet each state it), so deleting it from EITHER one reddens.
+  for (const rel of ["agents-base/ops.md", "modules/workflows/ci-monitoring.md"]) {
+    const text = readFileSync(path.join(ROOT, rel), "utf8");
+    assert(
+      /two separate tool calls[\s\S]{0,160}never[\s\S]{0,160}chained/i.test(text),
+      `${rel}: states the two-separate-calls / never-chain rule for a CI poll`,
+    );
+  }
+  ciSectionShapeCanaries(composed, assert);
   assert(
     !/^\s*glab ci status/m.test(composed),
     "ops: the doctrine runs no `glab ci status` command line",
@@ -345,25 +411,11 @@ for (const rel of ["agents-base/project-manager.md", "pi-prompts/do.md"]) {
   );
 
   // …and the same both-directions pair on the SHIPPED recipe lines, which live in
-  // a fenced code block and in bullets rather than in prose. An earlier classifier
-  // exempted non-prose lines and required `--watch` to sit in the same word group
-  // as `gh pr checks`, so R2's own forbidden shape — `gh pr checks <n> … --watch`
-  // — written back into the recipe was invisible to every gate while only
-  // `gh run watch` was actually policed. Sanctioned form reads clean; the watch
-  // form is reported, on text derived from the file the child is handed.
-  for (const rel of ["modules/workflows/ci-monitoring.md", "agents-base/ops.md"]) {
-    const shipped = readFileSync(path.join(ROOT, rel), "utf8");
-    const sanctioned = "gh pr checks <pr-number> --repo <owner/repo>";
-    assert(
-      shipped.includes(sanctioned) && blockingWatchPrescribed(shipped).length === 0,
-      `${rel}: the shipped recipe line is not itself flagged`,
-    );
-    const watchBack = shipped.replace(sanctioned, `${sanctioned} --watch`);
-    assert(
-      watchBack !== shipped && blockingWatchPrescribed(watchBack).length === 1,
-      `${rel}: the shipped recipe line with \`--watch\` restored IS flagged (${blockingWatchPrescribed(watchBack).length} hit(s))`,
-    );
-  }
+  // a fenced code block and in bullets rather than in prose, plus the QUOTED-argument
+  // forms that hole hid longest. Those mutants live in
+  // `lib/ci-doctrine-shipped-canaries.ts` (the 500-line seam); they run through the
+  // SAME classifier this file's fixtures do.
+  shippedRecipeCanaries(ROOT, assert);
 
   // Interval / cap drift must be caught, not just deletion: the substring form of
   // these assertions (`composed.includes("60")`) also matched `sleep 600`. The

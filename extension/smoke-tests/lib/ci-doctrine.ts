@@ -94,6 +94,102 @@ export function ciDoctrineNumberPatterns(pollSeconds: number, capMinutes: number
   };
 }
 
+/**
+ * The CI-section walker the #2333 gate uses to judge ONLY the CI recipe text of a
+ * composed prompt, and the ❌-prohibition filter its shell-loop / `$(…)` absence
+ * checks run through. Both live here, beside the watch classifier they mirror, so
+ * the red proof can run the same functions the shipped gate uses.
+ */
+
+/** A CI-monitoring heading and its level, or undefined. Matched on the heading's
+ * FULL name — `CI Monitoring`, `CI/CD Monitoring Protocol`, `CI Failure` — not the
+ * bare word `CI`: the assembled prompt mentions CI in unrelated headings and in
+ * prose, and judging one of those silently judges the wrong text. */
+function ciHeading(line: string): { level: number } | undefined {
+  const m = /^(#{1,6}) ([^#].*)$/.exec(line);
+  if (!m || !/CI\s*(?:\/\s*CD)?\s+(Monitoring|Failure|wait)/i.test(m[2])) return undefined;
+  return { level: m[1].length };
+}
+
+/**
+ * The text a shell-loop / `$(…)` absence check judges: lines the doctrine itself
+ * MARKS as refused are dropped, because a gate that judged them would go red the
+ * moment the doctrine named the shape it forbids — and a gate that reddens on
+ * correct doctrine gets widened until it passes. The marker is the doctrine's own
+ * word `❌`, which every refused-shape line in these sources carries: the FORBIDDEN
+ * bullet that quotes `while true; do … done`, the bullet that refuses "a shell loop,
+ * command substitution or chained command", and the vipune module's `$(whoami)`
+ * quoting example. A mutant that writes the shape as a PRESCRIPTION ("run the poll
+ * as `while true; do … done`") carries no marker and is judged — which is the
+ * measured mutant a presence-only gate let through. Same principle
+ * `blockingWatchPrescribed` applies to a watch governed by a negation.
+ */
+export function withoutProhibitionLines(prompt: string): string {
+  return prompt
+    .split("\n")
+    .filter((l) => !l.includes("❌"))
+    .join("\n");
+}
+
+/**
+ * The CI parts of a composed prompt: every block that opens at a CI-monitoring
+ * heading — the role doc's `## CI Monitoring` and the ci-monitoring module's
+ * `# CI/CD Monitoring Protocol` and its poll sections — up to the next heading of
+ * the SAME level or higher.
+ *
+ * Two scoping rules keep the block the thing the child is actually told to run:
+ *
+ * - a fenced code block never ends a section, and a `#` line inside one is never a
+ *   heading. Every recipe in these sections is written as a ```bash block whose
+ *   `# Step 1:` / `# Step 2:` comments parse as ATX headings, so a section walker
+ *   blind to fences ended at the first comment and never saw the command lines —
+ *   which is the text a `while … do … done` or a `$(…)` would be written into.
+ * - the sections are scoped to the CI recipe text, not the whole prompt: a role's
+ *   manifest also carries prose that quotes `$(whoami)` and `$(...)` precisely to
+ *   FORBID them, and judging that would judge what the doctrine refuses.
+ *
+ * A CI heading nested inside a CI section (the role doc's `## CI Monitoring` holds
+ * `### GitHub` / `### GitLab`) is part of its parent — a deeper heading never closes
+ * the block — while a heading at or ABOVE the opener's level ends it. A CI heading
+ * that opens inside an open block (`## CI Failure Protocol` under the module's `#
+ * CI/CD Monitoring Protocol`) therefore also ends it: it belongs to the module, not
+ * to the section that merely mentions CI, and letting it stay open would carry the
+ * judged text to the end of the prompt and sweep in the rest of the manifest.
+ */
+export function ciSectionOf(prompt: string): string {
+  const lines = prompt.split("\n");
+  const levelAt = new Map<number, number>();
+  const anyLevelAt = new Map<number, number>();
+  let fence = false;
+  for (const [i, line] of lines.entries()) {
+    if (/^\s*```/.test(line)) {
+      fence = !fence;
+      continue;
+    }
+    if (fence) continue;
+    const any = /^(#{1,6}) [^#]/.exec(line);
+    if (any?.[1]) anyLevelAt.set(i, any[1].length);
+    const lvl = ciHeading(line)?.level;
+    if (lvl !== undefined) levelAt.set(i, lvl);
+  }
+  const blocks: string[] = [];
+  let open: { start: number; level: number } | undefined;
+  const close = (end: number): void => {
+    if (open) blocks.push(lines.slice(open.start, end).join("\n"));
+    open = undefined;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const any = anyLevelAt.get(i);
+    if (any === undefined) continue;
+    const opener = levelAt.get(i);
+    if (open && any > open.level && opener === undefined) continue;
+    close(i);
+    if (opener !== undefined) open = { start: i, level: opener };
+  }
+  close(lines.length);
+  return blocks.join("\n");
+}
+
 /** Words that make a clause a prohibition rather than an instruction. */
 const WATCH_NEGATION =
   /\b(?:never|not|no|avoid|forbid|refrain|prohibit|skip|omit|replaced?|removed?)\b|❌|do\s+not|don'?t|must\s+not|instead\s+of|rather\s+than/i;
@@ -111,20 +207,33 @@ const CLAUSE_BREAK = /[.;:!?]|\bbut\b|\bhowever\b|\band\b|\bor\b|—|,/i;
  * `gh pr checks … --watch`.
  *
  * The `--watch` alternative is delimited so it cannot read two commands as one
- * prescription: the flag is reached only through same-line words that are
- * neither a quote nor a closer (`[^\s`"')\]`]*?` — lazy, so the match is the
- * SHORTEST run ending in a real `--watch`, never a run that jumps a backtick
- * into the next code span), and each intervening word is checked at its own
- * start, so the negative lookahead cannot let a second `--watch` hide behind a
- * word that merely begins with one. An earlier form used `(?:\s+\S)*\s+--watch`:
- * `\s` matches a newline and `\S` happily ate a backtick, so on the shipped
- * step-2 line it matched from the sanctioned `gh pr checks <n> …` all the way
- * down the paragraph to the doctrine's own "and not any `--watch` flag", and the
- * `never` three words earlier silenced the only hit the line had — which is how
- * a `--watch` written back into the shipped recipe was invisible to every gate.
+ * prescription: the flag is reached only through same-line ARGUMENTS of the
+ * command — a bare word that is neither a quote nor a closer, or a WHOLE quoted
+ * token (`--repo "o/r"`) — and the run never starts at a closer (`` ) ``, `]`),
+ * so the match always begins at a real `gh` rather than inside the punctuation
+ * of a preceding code span. Each arm is checked at its own start, so the
+ * negative lookahead cannot let a second `--watch` hide behind a word that
+ * merely begins with one, and the quoted arm cannot let a `--watch` inside a
+ * quoted ARGUMENT pass for the flag (`gh pr checks 12 "a --watch"` is a
+ * positional, not a flag).
+ *
+ * The quoted arm exists because a doctrine normally writes the repo with its
+ * placeholder quotes — `gh pr checks 12 --repo "o/r" --watch`. An earlier form
+ * admitted only unquoted words, so every quoted form of the blocking flag was
+ * invisible to the gate while the unquoted one was policed. Two earlier
+ * regressions are what the delimiters defend: `(?:\s+\S)*\s+--watch` let `\s`
+ * cross a newline and `\S` eat a backtick, so on the shipped step-2 line the
+ * match ran from the sanctioned `gh pr checks <n> …` down the paragraph to the
+ * doctrine's own "and not any `--watch` flag", and the `never` three words
+ * earlier silenced the only hit the line had — which is how a `--watch` written
+ * back into the shipped recipe was invisible to every gate.
  */
-const WATCH_SHAPE =
-  /gh\s+(?:run\s+watch|pr\s+checks(?:[ \t]+(?!--watch)[^\s`"')\]]*)*?[ \t]+--watch)/g;
+const WATCH_ARG =
+  "(?:[ \\t]+(?!--watch)[^\\s`\"')\\]]+|[ \\t]+(?!--watch)(?:\"[^\"`\\n]*\"|'[^'`\\n]*'))";
+const WATCH_SHAPE = new RegExp(
+  `gh\\s+(?:run\\s+watch|pr\\s+checks(?:${WATCH_ARG})*?[ \\t]+--watch)`,
+  "g",
+);
 
 /**
  * Blocking CI watches a piece of doctrine PRESCRIBES. A watch named only inside
