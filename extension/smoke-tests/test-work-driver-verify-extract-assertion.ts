@@ -71,11 +71,12 @@ FAILED: smoke-tests/test-repo-root-residue-poisoning.ts
 }
 
 // --- Case 3: tsc failure with no FAILED marker (chain-stage shape, attributed:false
-// fallback). Returns the compiler error line.
+// fallback). Returns the compiler error line — H4: the REAL tsc dialect prints
+// the location ON the error line, and that location buys the naming right.
 {
   const tail = TSC_CHAIN_STAGE_TAIL;
   const a = extractSpecificAssertion(tail);
-  assert(a === "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.", `case 3 (tsc): returns the compiler error (got: ${JSON.stringify(a)})`);
+  assert(a === "src/work-driver-foo.ts:42:10 - error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.", `case 3 (tsc): returns the located compiler error (got: ${JSON.stringify(a)})`);
 }
 
 // --- Case 4: biome failure with no FAILED marker (chain-stage shape). Returns
@@ -227,8 +228,8 @@ Authorization: Bearer sk-a]9f2k3j8f2j9f2j9f2j9f
   const tail = TSC_CHAIN_STAGE_TAIL;
   const a = extractSpecificAssertion(tail);
   assert(
-    a === "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
-    `case 16 (#827 tsc unchanged): chain-stage tsc failure still returns the compiler error (got: ${JSON.stringify(a)})`,
+    a === "src/work-driver-foo.ts:42:10 - error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
+    `case 16 (#827 tsc unchanged): chain-stage tsc failure still returns the located compiler error (got: ${JSON.stringify(a)})`,
   );
 }
 

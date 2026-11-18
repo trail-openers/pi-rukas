@@ -54,7 +54,11 @@ const { assert, failed } = makeAssert();
 const SHAPES: Array<[string, string, boolean]> = [
   ["FAILED: extension/smoke-tests/test-x.ts", "failed-marker", false],
   ["✗ expected 5 got 6", "assertion-mark", true],
-  ["error TS2345: Argument of type 'string' is not assignable", "diagnostic", true],
+  ["error TS2345: Argument of type 'string' is not assignable", "diagnostic-unlocated", false],
+  // #2341 fix wave 4 (H4) — the tsc dialect is under the SAME location rule
+  // (shared `DIAGNOSTIC_IDENTITY_SRC`): located keeps the naming right,
+  // location-less gets `diagnostic-unlocated`/false (see the TSC row below).
+  ["src/x.ts:42:10 - error TS2345: Argument of type 'string' is not assignable", "diagnostic", true],
   // #2341 F1 — a location-less, code-less prose `error:` line names no check:
   // the whole cargo `error:` dialect without a file location or an error code
   // is target-level, recognised but never quotable as "the assertion".
@@ -64,7 +68,7 @@ const SHAPES: Array<[string, string, boolean]> = [
   // names no check: it is byte-identical across compile failures in different
   // files, and quoted as "the assertion" it folds them together. The location
   // (in-line, as rustc itself prints it) buys the naming right.
-  ["error[E0308]: mismatched types", "diagnostic", false],
+  ["error[E0308]: mismatched types", "diagnostic-unlocated", false],
   ["error[E0308]: mismatched types --> src/a.rs:9:5", "diagnostic", true],
   ["scripts/pack_release_test.sh: failed checks (1)", "script-tally", true],
   ["scripts/test.sh: 3 failed", "named-file", true],

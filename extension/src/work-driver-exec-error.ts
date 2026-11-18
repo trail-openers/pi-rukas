@@ -150,8 +150,8 @@ function lastFailureIndex(text: string, maxLen: number): number | undefined {
     // unobserved verdict vetoes nothing — absence is not a verdict either way.
     if (
       kind.shape === "rust-panic" &&
-      (libtestVerdictForTest(tailFromAnchor(text, at, maxLen), rustPanicTestName(line)) ===
-        false || libtestVerdictForTest(text, rustPanicTestName(line)) === false)
+      (libtestVerdictForTest(tailFromAnchor(text, at, maxLen), rustPanicTestName(line)) === false ||
+        libtestVerdictForTest(text, rustPanicTestName(line)) === false)
     ) {
       continue;
     }

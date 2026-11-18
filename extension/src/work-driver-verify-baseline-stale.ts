@@ -33,7 +33,9 @@
  * to `trace` instead, which the operator's transcript carries and the handoff
  * does not.
  */
+import { redactSecrets } from "./secret-patterns.ts";
 import { trace } from "./trace.ts";
+import { detailLooksCredential } from "./work-driver-verify-credential-screen.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -148,4 +150,42 @@ export async function probeBaseBehindDefault(
     commitsBehind: commits.length,
     commits,
   };
+}
+
+/**
+ * #2341 / fix wave 4 — the `behind` arm's closing sentence for the
+ * `[baseline-red]` handoff, rendered where the fact and its vocabulary live.
+ * `branch` is `git symbolic-ref` output and the subjects are
+ * `git log --oneline` output from the OPERATOR's repository, and the sentence
+ * rides into a PUBLIC handoff (cap evidence, issue body), so every piece of
+ * it goes through the verify-evidence credential screen
+ * (`detailLooksCredential`, the one the verify record's channels and the
+ * header-detail harvest ask) and `redactSecrets`: a credential-shaped
+ * subject is dropped whole (the keyword-shaped `looksLikeCredential` alone
+ * has no arm for the unprefixed base64 blob an author who pasted a key
+ * actually prints), and a credential-shaped branch name is demoted to the
+ * fixed `the default branch` — the arm keeps its value, the divergence
+ * count being the actionable half. The ` (+N more)` disclosure counts
+ * against what was SHOWN, not the two slots, and a screen-dropped subject is
+ * disclosed as withheld.
+ */
+export function staleBaseClosing(
+  behind: Extract<BaseBehindDefaultBranch, { status: "behind" }>,
+): string {
+  const candidates = behind.commits.slice(0, 2);
+  const shown: string[] = [];
+  for (const c of candidates) {
+    if (detailLooksCredential(c)) continue;
+    shown.push(redactSecrets(c).text.slice(0, 60));
+  }
+  const withheld = candidates.length - shown.length;
+  const branchLabel = detailLooksCredential(behind.branch)
+    ? "the default branch"
+    : redactSecrets(behind.branch).text;
+  const more = behind.commits.length - shown.length;
+  return `${BASELINE_STALE_BASE_MARKER} the base trails ${branchLabel} by ${behind.commitsBehind} commits${
+    shown.length > 0 ? ` — ${shown.join("; ")}` : ""
+  }${more > 0 ? ` (+${more} more)` : ""}${
+    withheld > 0 ? ` (${withheld} subject${withheld > 1 ? "s" : ""} withheld)` : ""
+  }: the red may be ${branchLabel}'s, not the base's (divergence, not cause); re-run on a base that includes ${branchLabel}`;
 }

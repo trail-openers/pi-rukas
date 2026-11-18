@@ -285,6 +285,26 @@ export const RUSTC_DIAG_STREAM = [
 ].join("\n");
 
 /**
+ * #2341 fix wave 4 (H4) — two location-less `error TS2345:` tsc failures from
+ * DIFFERENT files. The location rule's identity test was keyed on the rustc
+ * bracket form alone (`RUSTC_ERROR_CODE_RE`), so the tsc dialect slipped
+ * through the rule that exists to refuse exactly this: the two lines are
+ * byte-identical (tsc prints the file on the line above, or the gate flattens
+ * it away), quoted as "the assertion" they fold, and `baselineExplainsChange`
+ * excuses the regression the fold hides.
+ */
+export const TSC_DIAG_NO_LOCATION =
+  "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.";
+export const TSC_DIAG_STREAM = [
+  TSC_DIAG_NO_LOCATION,
+  "  --> src/alpha.ts:3:1",
+  "  expected `u8`, found `i32`",
+  TSC_DIAG_NO_LOCATION,
+  "  --> src/beta.ts:9:9",
+  "  expected `String`, found `&str`",
+].join("\n");
+
+/**
  * #2341 round 2 — the smoke-loop and chain-stage tail shapes the extractor
  * suite asserts case by case, hosted here (AGENTS.md §12 file-size limit)
  * because the same tail is asserted from more than one case: the tsc and the
@@ -293,9 +313,13 @@ export const RUSTC_DIAG_STREAM = [
  * disagree.
  */
 
-/** The chain-stage tsc tail: no FAILED marker, the compiler error names the line. */
-export const TSC_CHAIN_STAGE_TAIL = `src/work-driver-foo.ts:42:10
-error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+/** The chain-stage tsc tail: no FAILED marker, the compiler error names the
+ * line. #2341 fix wave 4 (H4): the REAL tsc dialect carries the location on
+ * the error line itself (`file.ts:LINE:COL - error TSNNNN: …`) — that is what
+ * buys the naming right; a location-less `error TSNNNN:` line is the
+ * cross-file fold the `diagnostic-unlocated` arm refuses (see
+ * TSC_DIAG_NO_LOCATION). */
+export const TSC_CHAIN_STAGE_TAIL = `src/work-driver-foo.ts:42:10 - error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
   Type 'string' is not comparable to type 'number'.`;
 
 /** The chain-stage biome tail: no FAILED marker, the ✗ line names the rule. */

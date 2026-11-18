@@ -37,7 +37,7 @@ import {
   isCargoTargetSummaryLine,
   isHarnessWrapper,
   isLibtestVerdictLine,
-  isLocationlessRustcDiagnostic,
+  isLocationlessCodeDiagnostic,
   libtestVerdictForTest,
   rustPanicSamenessKey,
   rustPanicTestName,
@@ -204,6 +204,13 @@ const RUNNER_COMPLETION_TOKEN_RE = /^\s*(?:ok|FAILED|ignored|measured|passed|fai
 function joinedRustPanic(header: string, next: string | undefined): string {
   if (!header.endsWith(":")) return header;
   if (next === undefined) return header;
+  // The extractor's OWN elision marker: `extractAttributedTail` builds an
+  // over-long window as `anchorLine + "\n...\n" + tail`, so when the clip
+  // lands directly under a panic header, `...` is the line beneath it. It is
+  // a cut, not the panic's message — joining it produced
+  // `thread '…' panicked at …: ...` for a [baseline-red] reader to chase;
+  // the header alone is preferred (it still names test, file and line).
+  if (next === "..." || next === "\u2026") return header;
   // The `\S+::` arm is cargo's failing-test LIST: the block header `failures:`
   // and the test-name line printed beneath it. The caller hands lines in
   // trimmed, so the list item is matched in its bare `path::to::test` form —
@@ -341,17 +348,18 @@ export function extractSpecificAssertion(failureTail: string): string {
  * keeps the classic rule: exact containment, no normalisation — this gate
  * got tighter for #2341, and tightening it is the whole point of the fix.
  *
- * #2341 fix wave (H2) — and the location-less rustc-code dialect is refused
+ * #2341 fix wave (H2) — and the location-less identity-code dialect is refused
  * the same way the cargo target summaries are: two compile failures in
- * different files print the byte-identical `error[E0308]: …` line (cargo
- * puts the location on the following `-->` line), so containment on it
- * claims "the SAME assertion" between two genuinely different failures.
+ * different files print the byte-identical `error[E0308]: …` (cargo puts the
+ * location on the following `-->` line) or `error TS2345: …` line, so
+ * containment on it claims "the SAME assertion" between two genuinely
+ * different failures.
  */
 export function sharesAssertion(consolidated: string, per: string): boolean {
   if (
     per === NO_SPECIFIC_ASSERTION ||
     isCargoTargetSummaryLine(per) ||
-    isLocationlessRustcDiagnostic(per)
+    isLocationlessCodeDiagnostic(per)
   ) {
     return false;
   }

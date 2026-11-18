@@ -57,9 +57,14 @@ export function rustPanicTestName(header: string): string | undefined {
  * answer no sameness reader may turn into a "SAME assertion" claim — the
  * pre-fix fallback to the whole clipped string was the substring-containment
  * rule this ticket exists to remove, reachable again through the one dialect
- * that anchors sameness on a header. Any other assertion (every other shape,
- * and the pre-1.73 inline form whose token run does not end at a colon) is its
- * own key — exact containment is unchanged for it.
+ * that anchors sameness on a header. The fail-closed half is asked of
+ * anything that merely LOOKS like a header (`^thread '`), which includes the
+ * pre-1.73 inline form (`thread 'main' panicked at '…', src/main.rs:5:5`):
+ * its token run does not end at a colon, its identity is not what the key
+ * extracts, and a quote that only resembles a parseable header compares as
+ * nothing rather than reopening the containment rule. Any other assertion —
+ * every shape that does not open with the panic look — is its own key; exact
+ * containment is unchanged for it.
  */
 const RUST_PANIC_HEADER_FORM = /^(thread\s+'[^']+'\s+panicked\s+at\s+\S+:)(?:\s|$)/;
 const PANIC_HEADER_LOOK_RE = /^thread\s+'/;
@@ -181,20 +186,28 @@ export function libtestVerdictForTest(
  * stole the evidence anchor and became "the assertion at base", and how two
  * different Rust tests once compared as the SAME assertion.
  *
- * The two lookaheads are what keeps this from eating real evidence: a
- * compiler diagnostic carries its file (`src/a.rs:91:5`, `--> src/a.rs:9:5`,
- * `src/a.ts(9,5)`) or its identity code (`error[E0308]`, `error TS2345`), a
- * target summary carries only the target name. A line with a location or a
- * code therefore stays a `diagnostic` and keeps `namesTest: true`; a
- * location-less, code-less prose line names no check and does not earn the
- * quote — the handoff reports honest absence instead.
+ * The two lookaheads are what keeps this from eating real evidence, and they
+ * are NOT symmetric — the asymmetry is the rule: a file LOCATION is searched
+ * for anywhere on the line (`src/a.rs:91:5`, `--> src/a.rs:9:5`,
+ * `src/a.ts(9,5)`), because a diagnostic prints its location wherever the
+ * gate laid it out; an identity CODE is checked only at the position right
+ * after the opening `error:` token (`error[E0308]`, `error TS2345`), because
+ * that position is where the COMPILER dialects print their own verdict, while
+ * a code quoted later sits in cargo's target-level prose — which stays
+ * target-level. A line whose identity code leads therefore stays a
+ * `diagnostic` (or, location-less, `diagnostic-unlocated` — see the table);
+ * a location-less, code-leading-free prose line names no check and does not
+ * earn the quote — the handoff reports honest absence instead.
  *
- * #2341 fix wave (H2) and F1 — both alternatives are ONE string source each:
- * `FILE_LOCATION_SRC` is asked by this lookahead AND by the rustc-code test
- * below, `DIAGNOSTIC_IDENTITY_SRC` by this lookahead AND by the table's
- * `DIAGNOSTIC_RE`. Two regex literals spelling "has a file location" or
+ * #2341 fix wave (H2) and F1 / fix wave 4 (H4) — both alternatives are ONE
+ * string source each: `FILE_LOCATION_SRC` is asked by this lookahead AND by
+ * the location-less code-diagnostic test below, `DIAGNOSTIC_IDENTITY_SRC` by
+ * this lookahead, that same test, AND by the table's `DIAGNOSTIC_RE`.
+ * Two regex literals spelling "has a file location" or
  * "carries an identity code" differently is how the readers drift apart about
- * which lines name a check.
+ * which lines name a check — H4 was exactly that drift, a private
+ * `/error\[E\d+\]/` copy that let the tsc dialect through the rule built to
+ * refuse it.
  */
 const FILE_LOCATION_SRC = String.raw`\S+\.[A-Za-z]{1,6}:\d+|-->\s*\S+|\S+\([\d,]+\)`;
 const HAS_FILE_LOCATION_RE = new RegExp(FILE_LOCATION_SRC);
@@ -224,15 +237,21 @@ export function isCargoTargetSummaryLine(line: string): boolean {
 }
 
 /**
- * #2341 fix wave (H2) — rustc's error-code dialect WITHOUT a location. cargo
- * prints `error[E0308]: …` and the `--> file:line:col` on SEPARATE lines, so
- * the `error[…]` line alone is byte-identical across compile failures in
- * different files: quoted as "the assertion" it folds them together, and
- * `baselineExplainsChange` excuses the regression the fold hides. Asked by the
- * `diagnostic` table entries (a location-less line keeps the shape but not the
- * naming right) and by every sameness reader, so the two cannot disagree.
+ * #2341 fix wave (H2) / fix wave 4 (H4) — an identity-code diagnostic line
+ * (`error[E0308]: …`, `error TS2345: …`) WITHOUT a location. cargo prints the
+ * `--> file:line:col` on a SEPARATE following line, and a flattening gate can
+ * amputate tsc's prefix, so the bare line is byte-identical across failures
+ * in different files: quoted as "the assertion" it folds them together, and
+ * `baselineExplainsChange` excuses the regression the fold hides. The identity
+ * test is the SHARED `DIAGNOSTIC_IDENTITY_SRC` — the one source the table's
+ * `DIAGNOSTIC_RE` and the target-summary lookahead also ask — so every
+ * identity dialect (rustc bracket AND tsc `TS\d{4,}`) meets the same rule;
+ * the fix wave's defect was a private `/error\[E\d+\]/` that let the tsc
+ * dialect slip through the rule built to refuse exactly it. Asked by the
+ * table's location-split entries and by every sameness reader, so the two
+ * cannot disagree.
  */
-const RUSTC_ERROR_CODE_RE = /error\[E\d+\]/;
-export function isLocationlessRustcDiagnostic(line: string): boolean {
-  return RUSTC_ERROR_CODE_RE.test(line) && !HAS_FILE_LOCATION_RE.test(line);
+const DIAGNOSTIC_IDENTITY_RE = new RegExp(DIAGNOSTIC_IDENTITY_SRC);
+export function isLocationlessCodeDiagnostic(line: string): boolean {
+  return DIAGNOSTIC_IDENTITY_RE.test(line) && !HAS_FILE_LOCATION_RE.test(line);
 }

@@ -18,6 +18,7 @@ import {
   RUST_SHOULD_PANIC_TRAP_AFTER_STREAM,
   RUST_TRAP_PAIR,
   RUST_VERDICT_OUTSIDE_WINDOW_STREAM,
+  rustPanicHeader,
 } from "./lib/verify-failure-shapes-fixtures.ts";
 
 let exit = 0;
@@ -214,6 +215,29 @@ function assert(cond: boolean, msg: string) {
   assert(
     unobserved.attributed && unobserved.tail.startsWith("thread '"),
     "cargo anchor (#2341 H1/H2): an unobserved verdict vetoes nothing — the header still anchors when no verdict line exists",
+  );
+}
+
+// 3f. #2341 fix wave 4 (MEDIUM) — the extractor's OWN `...` elision marker
+// must never be joined as the panic message: `extractAttributedTail` builds
+// over-long windows as `anchorLine + "\n...\n" + tail`, so when the clip
+// lands directly under a panic header, `...` is the line beneath it and the
+// join site must refuse it and prefer the header (which still names test,
+// file and line).
+{
+  const pad = Array.from({ length: 60 }, (_, n) => `crate dep_${n} downloaded and compiled`).join("\n");
+  const stream =
+    `${pad}\ntest a::t ... FAILED\n${rustPanicHeader("a::t", "src/a.rs:7:5")}\n` +
+    Array.from({ length: 80 }, (_, n) => `warning: unused import ${n}`).join("\n") +
+    "\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out";
+  const { tail } = extractAttributedTail(stream, 1500);
+  assert(
+    tail.startsWith(rustPanicHeader("a::t", "src/a.rs:7:5")) && tail.includes("\n...\n"),
+    `elision join (#2341): the window really is the anchored cut with the marker beneath the header (got ${JSON.stringify(tail.slice(0, 60))})`,
+  );
+  assert(
+    extractSpecificAssertion(tail) === rustPanicHeader("a::t", "src/a.rs:7:5"),
+    `elision join (#2341): the '...' cut line is never joined as the panic message (got ${JSON.stringify(extractSpecificAssertion(tail))})`,
   );
 }
 

@@ -9,7 +9,8 @@
  * direction is one-way (classifier → shapes); nothing here calls back into the
  * classifier, which is what keeps the module graph a DAG. The Rust/cargo
  * READER dialect (the panic-header and libtest-verdict predicates, the sameness
- * key, the cargo target-summary and rustc-code location tests) is window-scanning
+ * key, the cargo target-summary and location-less code-diagnostic tests) is
+ * window-scanning
  * logic, not table data, and lives in `work-driver-verify-rust.ts` — this
  * module imports only its dialect regexes for the entries below.
  *
@@ -42,7 +43,7 @@ import {
   CARGO_TARGET_SUMMARY_RE,
   DIAGNOSTIC_IDENTITY_SRC,
   RUST_PANIC_RE,
-  isLocationlessRustcDiagnostic,
+  isLocationlessCodeDiagnostic,
 } from "./work-driver-verify-rust.ts";
 
 /**
@@ -245,20 +246,23 @@ export const SHAPES: ReadonlyArray<ShapeEntry> = [
   RUST_PANIC_SHAPE,
   CARGO_TARGET_SUMMARY_SHAPE,
   // The driver's own dialect: tsc, cargo rustc, and bare `error:`/`Error:` lines.
-  // #2341 fix wave (H2) — the dialect splits in two on the location: a rustc
-  // `error[E…]` line WITHOUT a `file:line[:col]` keeps the shape (it may
-  // anchor weak evidence) but not `namesTest`, because cargo prints the
-  // location on a SEPARATE following `-->` line and the location-less line is
-  // byte-identical across compile failures in different files — the same
-  // folding defect as the target summaries, in the rustc-code dialect.
+  // #2341 fix wave (H2) / fix wave 4 (H4) — the dialect splits in two on the
+  // location: a `error[E…]`/`error TSNNNN:` line WITHOUT a
+  // `file:line[:col]` keeps the shape (it may anchor weak evidence) but not
+  // `namesTest`, because cargo prints the location on a SEPARATE following
+  // `-->` line and the location-less line is byte-identical across failures
+  // in different files — the same folding defect as the target summaries, in
+  // the identity-code dialect. The two arms carry DIFFERENT shape names
+  // (`diagnostic` / `diagnostic-unlocated`): one shape, one `namesTest`
+  // answer, which is the contract {@link SHAPE_NAMES_A_CHECK} states.
   {
     shape: "diagnostic",
     namesTest: true,
     preVeto: false,
-    test: (line: string) => DIAGNOSTIC_RE.test(line) && !isLocationlessRustcDiagnostic(line),
+    test: (line: string) => DIAGNOSTIC_RE.test(line) && !isLocationlessCodeDiagnostic(line),
   },
   {
-    shape: "diagnostic",
+    shape: "diagnostic-unlocated",
     namesTest: false,
     preVeto: false,
     test: (line: string) => DIAGNOSTIC_RE.test(line),

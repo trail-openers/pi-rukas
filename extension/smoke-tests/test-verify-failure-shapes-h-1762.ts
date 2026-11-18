@@ -43,8 +43,10 @@ import {
   FAIL_HEADER_DETAILS,
   FAIL_HEADER_STREAM,
   PAYLOAD_MARKER,
+  RUSTC_DIAG_NO_LOCATION,
   TALLY_LINE,
   TALLY_NAMES,
+  TSC_DIAG_NO_LOCATION,
   WT,
   makeAssert,
   rustPanicHeader,
@@ -243,6 +245,12 @@ const { assert, failed } = makeAssert();
       "cargo-summary",
     ],
     ["error: aborting due to 1 previous error", "cargo-summary"],
+    // #2341 fix wave 4 — the location-less diagnostic arm carries its OWN
+    // shape name so the union and the rule map mean what they say: one shape,
+    // one namesTest answer. Both identity dialects (rustc bracket, tsc TS\d+),
+    // one answer: false.
+    [RUSTC_DIAG_NO_LOCATION, "diagnostic-unlocated"],
+    [TSC_DIAG_NO_LOCATION, "diagnostic-unlocated"],
   ];
   for (const [line, shape] of probes) {
     const got = classifyFailureLine(line);

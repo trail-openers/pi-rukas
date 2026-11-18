@@ -420,9 +420,7 @@ export async function compareWithBaseline(
     return undefined;
   }
   const runs = baseRunsProse(confirmation);
-  opts.failures.unshift(
-    baselineRedMessage(arm, { cmd, baseSha, timeoutMs, changeFailure, runs }),
-  );
+  opts.failures.unshift(baselineRedMessage(arm, { cmd, baseSha, timeoutMs, changeFailure, runs }));
   // #1765 — the verdict is RETURNED, not re-derived by the caller from the entry
   // this wrote: the `red-timed-out` arm leads its entry with `[verify-timeout]`,
   // so prose matching cannot tell a red base from a killed run. #1349's excuse is

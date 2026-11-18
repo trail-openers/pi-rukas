@@ -28,7 +28,11 @@ import {
   runGateFixture,
   type Outcome,
 } from "./lib/verify-baseline-red-harness.ts";
-import { RUST_CARGO_STREAM } from "./lib/verify-failure-shapes-fixtures.ts";
+import {
+  RUST_CARGO_STREAM,
+  TSC_DIAG_NO_LOCATION,
+  TSC_DIAG_STREAM,
+} from "./lib/verify-failure-shapes-fixtures.ts";
 import {
   assertDefaultVerifyBound,
   defaultBoundText,
@@ -394,6 +398,42 @@ await pinDefaultVerifyTimeout(async () => {
       [{ text: changeStream, timedOut: false }],
     ),
     "build fold: a base red on missing protoc does NOT explain a change red on missing protobuf headers",
+  );
+}
+
+// 7 — #2341 fix wave 4 (H4): the tsc dialect under the SAME location rule.
+// Two location-less `error TS2345:` failures from DIFFERENT files print the
+// byte-identical line (the file sits on another line, or a flattening gate
+// amputates it); while the location rule was keyed on the rustc bracket form
+// alone, the tsc one slipped through the rule built to refuse exactly this and
+// the fold excused a regression the change added. Neither may be quoted nor
+// share; the located tsc line still excuses its own base (the rule is not
+// simply off).
+{
+  assert(
+    TSC_DIAG_STREAM.split("\n").filter((l) => l === TSC_DIAG_NO_LOCATION).length === 2,
+    "tsc fold: the byte-identical line really is in the stream twice — the fold material is in the stream, not the fixture",
+  );
+  assert(
+    !sharesAssertion(TSC_DIAG_STREAM, TSC_DIAG_NO_LOCATION),
+    `tsc fold: two location-less error TS2345 failures in different files never share an assertion (${sharesAssertion(TSC_DIAG_STREAM, TSC_DIAG_NO_LOCATION)})`,
+  );
+  assert(
+    extractSpecificAssertion(TSC_DIAG_STREAM) === NO_SPECIFIC_ASSERTION,
+    `tsc fold: a location-less error TS2345 line is never the quoted assertion (got ${JSON.stringify(extractSpecificAssertion(TSC_DIAG_STREAM))})`,
+  );
+  assert(
+    !baselineExplainsChange(
+      {
+        status: "red",
+        rawStream: TSC_DIAG_STREAM,
+        probed: false,
+        exitCode: 2,
+        assertion: TSC_DIAG_NO_LOCATION,
+      },
+      [{ text: `tsc reported ${TSC_DIAG_NO_LOCATION} in a different file`, timedOut: false }],
+    ),
+    "tsc fold: a base red on one location-less TS2345 does not explain an unrelated change failure",
   );
 }
 

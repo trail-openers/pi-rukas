@@ -23,7 +23,6 @@
  * a red baseline: a wrong "the change is not implicated" is worse than none.
  */
 import { withVerifySlot } from "./host-resources.ts";
-import { redactSecrets } from "./secret-patterns.ts";
 import { trace } from "./trace.ts";
 import { CAP_EVIDENCE_PER_FAILURE_MAX } from "./work-develop-cap-evidence.ts";
 import {
@@ -31,12 +30,12 @@ import {
   extractSpecificAssertion,
   sharesAssertion,
 } from "./work-driver-consolidation-classify.ts";
-import { detailLooksCredential } from "./work-driver-verify-credential-screen.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import {
   BASELINE_STALE_BASE_MARKER,
   type BaseBehindDefaultBranch,
   probeBaseBehindDefault,
+  staleBaseClosing,
 } from "./work-driver-verify-baseline-stale.ts";
 import { TIER_KNOB, TIER_TIMEOUT_FILE, VERIFY_TIMEOUT_ENV } from "./work-driver-verify-budget.ts";
 import { verifyHostEnv } from "./work-driver-verify-cmd.ts";
@@ -388,48 +387,12 @@ export function baselineRedMessage(
   // as "mainline does not explain the red".
   const stale = verdict.staleBase;
   const behind = stale?.status === "behind" ? stale : undefined;
-  // #2341 fix wave (M2) / fix wave 4 — the subjects below come from
-  // `git log --oneline` on the operator's repository and ride into a PUBLIC
-  // handoff (cap evidence and the issue body). Each is run through
-  // `redactSecrets`, and a subject the VERIFY-EVIDENCE credential screen
-  // (`detailLooksCredential`, the same one the record's channels and the
-  // header-detail harvest ask) rejects is dropped whole. The screen used to be
-  // the keyword-shaped `looksLikeCredential` alone, which has no arm for an
-  // unprefixed base64 blob — the shape an author who pasted a key into a
-  // subject actually prints.
-  const subjectCandidates = behind ? behind.commits.slice(0, 2) : [];
-  const shownCommits: string[] = [];
-  for (const c of subjectCandidates) {
-    if (detailLooksCredential(c)) continue;
-    shownCommits.push(redactSecrets(c).text.slice(0, 60));
-  }
-  // The ` (+N more)` disclosure counts against what was SHOWN, not against
-  // the two slots — a screen-dropped subject is otherwise silently uncounted
-  // — and the drop itself is disclosed as withheld.
-  const withheldSubjects = subjectCandidates.length - shownCommits.length;
-  // #2341 fix wave 4 — the branch name is `git symbolic-ref` output from the
-  // operator's clone and reached the public handoff unscreened while its
-  // subjects were screened. Same screen; on a hit the arm keeps its value
-  // (the divergence count is the actionable half) under the fixed name.
-  const branchLabel =
-    behind === undefined
-      ? ""
-      : detailLooksCredential(behind.branch)
-        ? "the default branch"
-        : redactSecrets(behind.branch).text;
-  const shownMore = behind === undefined ? 0 : behind.commits.length - shownCommits.length;
   let middle =
     behind === undefined
       ? "The gate was red before this change was written, so no change can pass it; the failures below cannot be attributed to this diff until the base is green. "
       : "";
   const closing = behind
-    ? `${BASELINE_STALE_BASE_MARKER} the base trails ${branchLabel} by ${behind.commitsBehind} commits${
-        shownCommits.length > 0 ? ` — ${shownCommits.join("; ")}` : ""
-      }${shownMore > 0 ? ` (+${shownMore} more)` : ""}${
-        withheldSubjects > 0
-          ? ` (${withheldSubjects} subject${withheldSubjects > 1 ? "s" : ""} withheld)`
-          : ""
-      }: the red may be ${branchLabel}'s, not the base's (divergence, not cause); re-run on a base that includes ${branchLabel}`
+    ? staleBaseClosing(behind)
     : `Fix the gate at the base commit (or the host it runs on), then re-run${
         stale?.status === "unknown"
           ? ` (default-branch staleness could not be established: ${stale.reason})`

@@ -62,7 +62,16 @@ export type FailureShape =
   /** The Rust panic header (#2341): `thread 'x' panicked at FILE:LINE:`. */
   | "rust-panic"
   /** cargo's target-level test summary (#2341): names a target, never a check. */
-  | "cargo-summary";
+  | "cargo-summary"
+  /**
+   * A `diagnostic`-dialect line carrying an identity code but NO file
+   * location (#2341 fix wave 4): `error[E0308]: …` / `error TS2345: …` with
+   * the location on a separate line. Byte-identical across failures in
+   * different files, so it keeps the shape and not the naming right — its
+   * own name so the union and {@link SHAPE_NAMES_A_CHECK} carry ONE answer
+   * per shape.
+   */
+  | "diagnostic-unlocated";
 
 /**
  * ONE RULE PER SHAPE: whether a line carrying it may be the line the operator is
@@ -102,6 +111,11 @@ export const SHAPE_NAMES_A_CHECK: Record<FailureShape, boolean> = {
   // "the specific assertion", and no sameness rule may fire on it alone.
   "rust-panic": true,
   "cargo-summary": false,
+  // #2341 fix wave 4 — the location-less diagnostic arm of the dialect. It
+  // carries an identity code but no location, so it is byte-identical across
+  // failures in different files: recognised as evidence, never as "the
+  // specific assertion", and no sameness rule may fire on it alone.
+  "diagnostic-unlocated": false,
 };
 
 /** What `classifyFailureLine` decided about one line. */
@@ -135,7 +149,9 @@ export {
   scriptTallyCount,
 } from "./work-driver-verify-marker.ts";
 
-// #2341 — the cargo target-summary predicate, the rustc-code location test,
+// #2341 — the cargo target-summary predicate, the location-less
+// identity-code diagnostic test (rustc bracket and tsc `TS\d{4,}`, one shared
+// source),
 // the Rust panic sameness key and the libtest verdict vocabulary are
 // failure-line vocabulary: the table's own entries and every sameness/extractor
 // reader (`sharesAssertion`, `extractSpecificAssertion`) and the evidence-anchor
@@ -145,7 +161,7 @@ export {
 export {
   isCargoTargetSummaryLine,
   isLibtestVerdictLine,
-  isLocationlessRustcDiagnostic,
+  isLocationlessCodeDiagnostic,
   libtestVerdictForTest,
   rustPanicSamenessKey,
   rustPanicTestName,
