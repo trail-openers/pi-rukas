@@ -17,10 +17,12 @@ import type { DriverContext } from "../../src/work-driver-context.ts";
 import { runVerifyCommandGate } from "../../src/work-driver-verify-verify-cmd.ts";
 import { initialState } from "../../src/workflow-state.ts";
 import { commandOf } from "./argv-shell.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 const execFileP = promisify(execFile);
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
-const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd });
+const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
+const sh = (cwd: string, cmd: string) =>
+  execFileP("/bin/sh", ["-c", cmd], { cwd, env: gitTestEnv() });
 
 /** The verify command the stub answers, chosen per working directory. */
 export const CMD = "bash scripts/verify.sh";
@@ -52,7 +54,7 @@ export async function runGateFixture(
   const repo = path.join(root, name, "repo");
   mkdirSync(repo, { recursive: true });
   writeFileSync(path.join(repo, "tracked.txt"), "base\n");
-  await execFileP("git", ["init", "--initial-branch=main", repo]);
+  await execFileP("git", ["init", "--initial-branch=main", repo], { env: gitTestEnv() });
   await git(repo, ["config", "user.email", "t@example.com"]);
   await git(repo, ["config", "user.name", "T"]);
   await git(repo, ["add", "."]);
@@ -71,7 +73,9 @@ export async function runGateFixture(
     // N fix commits the base predates — the nessie 1415 shape where the red
     // was already fixed on the default branch.
     const origin = path.join(root, name, "origin.git");
-    await execFileP("git", ["init", "--bare", "--initial-branch=main", origin]);
+    await execFileP("git", ["init", "--bare", "--initial-branch=main", origin], {
+      env: gitTestEnv(),
+    });
     await git(repo, ["remote", "add", "origin", origin]);
     await git(repo, ["push", "-q", "origin", "main"]);
     await git(repo, ["remote", "set-head", "origin", "main"]);
