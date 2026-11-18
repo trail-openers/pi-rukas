@@ -287,6 +287,9 @@ async function runVerifyCommandGateBody(
     greensRefuted,
   });
   const perWorktreeVerifyFailures = perWorktreeRecords.map((r) => r.text);
+  // #2341 — index-aligned raw run outputs for the veto readers; `r.raw` is
+  // absent exactly where the run never produced one (the deps-missing arm).
+  const perWorktreeVerifyRaws = perWorktreeRecords.map((r) => r.raw);
   // #1005 — per-worktree failures are the verdict when the consolidated run
   // cannot run (no valid baseSha or nothing to combine); otherwise the
   // CONSOLIDATED tree is the verdict AND the per-worktree failures are kept
@@ -346,6 +349,7 @@ async function runVerifyCommandGateBody(
     ...(workstreamBaseShas !== undefined ? { workstreamBaseShas } : {}),
     ...(walkProcessTree !== undefined ? { walkProcessTree } : {}),
     perWorktreeVerifyFailures,
+    perWorktreeVerifyRaws,
     notes,
     ...(onVerifyFlakeRecovered !== undefined ? { onVerifyFlakeRecovered } : {}),
     reusedWholeGate,
@@ -380,6 +384,7 @@ async function runVerifyCommandGateBody(
     // #813 — declared paths let the conflict text say "likely coupled".
     workstreams: state.pipelineState.workstreams,
     perWorktreeFailuresByWs: consolidated.perWorktreeFailuresByWs,
+    perWorktreeStreamsByWs: consolidated.perWorktreeStreamsByWs,
     singlePerWs: consolidated.singlePerWs,
     singlePerAssertion: consolidated.singlePerAssertion,
     fenceViolations,

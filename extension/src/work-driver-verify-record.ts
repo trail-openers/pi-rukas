@@ -370,9 +370,18 @@ export function depsHintApplies(output: string): boolean {
  * unknown ALLOWS it (the pre-#826 behaviour for that case): absence on the
  * per-worktree side is not evidence the consolidated failure is an
  * independent defect.
+ *
+ * `stream` is the run's RAW output the record was cut from. The record is a
+ * formatted, elided tail — asking the `#[should_panic]` veto of the record
+ * alone decides it on bytes the clipping edited, which is how a passing
+ * test's captured panic became a "known" assertion to the flake gate. A
+ * caller that has only the record passes nothing and gets the honest floor.
  */
-export function gatePerAssertion(failureText: string | undefined): string | null {
+export function gatePerAssertion(
+  failureText: string | undefined,
+  stream?: string,
+): string | null {
   if (failureText === undefined) return null;
-  const extracted = extractSpecificAssertion(failureText, failureText);
+  const extracted = extractSpecificAssertion(failureText, stream ?? failureText);
   return extracted === NO_SPECIFIC_ASSERTION ? null : extracted;
 }

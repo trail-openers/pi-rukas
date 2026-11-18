@@ -63,6 +63,8 @@ export interface ConsolidatedVerifyReporting {
    */
   workstreams?: Record<string, { paths: string[] } | undefined>;
   perWorktreeFailuresByWs: Record<string, string>;
+  /** #2341 — the raw stream behind each record above, same keys. */
+  perWorktreeStreamsByWs?: Record<string, string>;
   singlePerWs: string | undefined;
   singlePerAssertion: string | null | undefined;
   /** The develop fence's records — #814 attributes a conflict to a sibling. */
@@ -112,6 +114,7 @@ export function reportConsolidatedVerifyOutcome(
     worktrees,
     workstreams,
     perWorktreeFailuresByWs,
+    perWorktreeStreamsByWs,
     singlePerWs,
     singlePerAssertion,
     fenceViolations,
@@ -256,6 +259,9 @@ export function reportConsolidatedVerifyOutcome(
       // #1064 — the unclipped stream, so a long FAILED summary whose head was elided
       // still yields its test names to `consolidatedFailureMessage`.
       rawFailure,
+      // #2341 — the raw stream behind each per-worktree record, so the
+      // per-failure extracts decide the veto on the run, not on the clipping.
+      perWorktreeStreamsByWs,
     );
     // #841 — the log path must land in `failures[]` (which the gate pushes
     // into `verifyEvidence.failures` and the handoff renders) — not only in

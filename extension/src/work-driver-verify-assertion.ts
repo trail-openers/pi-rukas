@@ -252,9 +252,11 @@ function joinedRustPanic(header: string, next: string | undefined): string {
  * `should_panic` veto is asked of IT, never of the window: the verdict line
  * that proves a panic print is a passing `#[should_panic]` capture is routinely
  * above the elision, so a caller that handed only a window could not answer the
- * question (#2341 fix wave 7). The parameter is therefore REQUIRED: a caller
- * whose input is already the whole stream (or a single line) passes that same
- * string twice, which is honest — the stream it was cut from is itself.
+ * question (#2341 fix wave 7). The parameter is therefore REQUIRED. Passing
+ * the same string twice is honest ONLY when the input really is the whole
+ * stream (or a single line) — a CLIPPED record passed as its own stream asks
+ * the veto on bytes the clipping edited, which is the wave-7 defect the
+ * record publishers now thread the run's raw output against.
  */
 export function extractSpecificAssertion(failureTail: string, stream: string): string {
   // `FAILED:` and its `FAILED: 1 test(s) — …` summary are ONE regex, and

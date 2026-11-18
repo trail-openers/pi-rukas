@@ -309,4 +309,49 @@ function windowAndStream(): { window: string; stream: string } {
   );
 }
 
+// ── 7. the record is not its own stream: publishers thread the raw run ──────
+{
+  // The per-worktree RECORD is a formatted, clipped tail; the `test a::t
+  // ... ok` line that proves the panic below it is a passing capture sits
+  // above the clip. Asked on the record alone the veto was UNDECIDABLE and
+  // the capture became a "known assertion" to the flake gate and a
+  // "per-workstream defect" to the classifier — a wrong verdict on bytes the
+  // clipping edited. Both readers now take the run's raw output alongside.
+  const stream = [
+    "running 3 tests",
+    `test ${PASSING} ... ok`,
+    pad(60, "rec"),
+    rustPanicHeader(PASSING, "src/a.rs:7:5"),
+    CAPTURE_MESSAGE,
+    "test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out",
+  ].join("\n");
+  const { tail } = extractAttributedTail(stream, 300);
+  assert(
+    tail.includes(rustPanicHeader(PASSING, "src/a.rs:7:5")) &&
+      !tail.includes(`test ${PASSING} ... ok`),
+    "record divergence: the clipped record really does carry the capture without its verdict",
+  );
+  const record = `verify command \`${CMD}\` failed in /wt: ${tail}`;
+  assert(
+    gatePerAssertion(record) !== null,
+    "record divergence: asked on the record alone the flake gate still quotes the capture (what the threading exists to fix)",
+  );
+  assert(
+    gatePerAssertion(record, stream) === null,
+    `record divergence: with the raw stream the capture is UNKNOWN to the gate, never a known assertion (got ${JSON.stringify(gatePerAssertion(record, stream))})`,
+  );
+  const withoutStreams = classifyConsolidatedVerifyFailure(2, ["a", "b"], record, { a: record }, stream);
+  const withStreams = classifyConsolidatedVerifyFailure(2, ["a", "b"], record, { a: record }, stream, {
+    a: stream,
+  });
+  assert(
+    withoutStreams.classification === "per-workstream-defect",
+    "record divergence: without the stream the classifier blames the workstream whose test PASSED (the pre-fix shape)",
+  );
+  assert(
+    withStreams.classification !== "per-workstream-defect",
+    `record divergence: with the raw stream the classifier never attributes a passing workstream's capture as its defect (got ${withStreams.classification})`,
+  );
+}
+
 process.exit(failed() ? 1 : 0);

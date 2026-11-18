@@ -186,6 +186,15 @@ export function classifyConsolidatedVerifyFailure(
   consolidatedFailure: string,
   perWorktreeFailuresByWs: Record<string, string>,
   fullFailure?: string,
+  /**
+   * #2341 — the RAW run output behind each per-worktree record, keyed by the
+   * same ws id. The per-failure extracts below decide the `#[should_panic]`
+   * veto and the classification on `perFailure` alone — a formatted, clipped
+   * tail — and the elision is exactly what hides the verdict line that makes
+   * the question decidable. Absent, each record is its own stream (the honest
+   * floor, unchanged behaviour).
+   */
+  perWorktreeStreamsByWs?: Record<string, string>,
 ): ConsolidationFailureVerdict {
   const assertion = extractSpecificAssertion(
     consolidatedFailure,
@@ -213,7 +222,10 @@ export function classifyConsolidatedVerifyFailure(
   // `consolidation-created` is never the answer for N=1 (resolved AC).
   if (workstreamCount <= 1) {
     const perFailure = Object.values(perWorktreeFailuresByWs)[0] ?? "";
-    const perAssertion = extractSpecificAssertion(perFailure, perFailure);
+    const perAssertion = extractSpecificAssertion(
+      perFailure,
+      Object.values(perWorktreeStreamsByWs ?? {})[0] ?? perFailure,
+    );
     // #1675 — the N=1 sentence names the verify command's own failing line. A
     // single-workstream cycle has no combination to blame, so no attribution
     // wording is offered for it.
@@ -247,7 +259,10 @@ export function classifyConsolidatedVerifyFailure(
   for (const wsId of workstreamIds) {
     const perFailure = perWorktreeFailuresByWs[wsId];
     if (!perFailure) continue;
-    const perAssertion = extractSpecificAssertion(perFailure, perFailure);
+    const perAssertion = extractSpecificAssertion(
+      perFailure,
+      perWorktreeStreamsByWs?.[wsId] ?? perFailure,
+    );
     if (perAssertion && sharesAssertion(consolidatedFailure, perAssertion)) {
       return {
         classification: "per-workstream-defect",
