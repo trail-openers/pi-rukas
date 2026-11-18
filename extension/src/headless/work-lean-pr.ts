@@ -164,16 +164,18 @@ const REVIEW_FIXED: OutcomeKind<"review"> = "fixed";
  * decides nothing (a push whose outcome nobody wrote cannot be shown to have moved nothing),
  * and a decided publish with no head, or none at all, cannot be shown to match either.
  *
- * **Where the record names no head of its own push, POSITION is the rule** — and that is
- * correct, because a head is only the step's to certify when its own `integrate` pushed it:
- * `waves` is consulted for `fixed` alone, the kind whose fix wave moved the branch. A plain
- * `done` ran no wave (`noteWave` is reached only after a fix advanced the branch — no writer
- * pairs `done` with waves), and a `fixed` step that resumed another attempt's wave
- * (`review.ts`'s `fixedFromLog` arm) names none in its own record. For every such record the
- * old order rule stands unchanged: any `publish` attempt at a higher index — decided or not —
- * answers `false`, because a step the machine did not route through a re-publish can only
- * have had its head moved by a later push, and log order is all the record has to say about
- * that.
+ * **Where the record names no head of its own push, POSITION is the rule** — a head is only
+ * the step's to certify when its own `integrate` pushed it, and the record that reaches the
+ * position rule is a plain `done`: it ran no wave, and the machine's table forbids the
+ * alternative of a `fixed` arriving name-less — `review` is routed only from `publish + ok`
+ * with `reviewDone` false and both returned kinds set it, so a decided `review` is never
+ * followed by a second one, and `resume.ts` re-derives its counters by replaying the log and
+ * checks them against the snapshot, so a resumed attempt cannot carry another attempt's wave
+ * either. A `done`'s `integrate` pushed nothing, so there is no head on its record to name
+ * and position is the only rule such a record can have: any `publish` attempt at a higher
+ * index — decided or not — answers `false`, because a step the machine did not route through a
+ * re-publish can only have had its head moved by a later push, and log order is all the record
+ * has to say about that.
  *
  * Then the newest `review` step itself answers in three ways:
  *
