@@ -192,7 +192,15 @@ async function allocatedBytes(target: string, stat: StatEntry): Promise<number> 
  * never following a link. `bound` names the ceiling that stopped the walk, or
  * `undefined` when the walk finished: a truncated walk is an UNDERESTIMATE, and
  * a line that printed the number without saying so is how a disclosure starts
- * reporting a confident wrong answer.
+ * reporting a confident wrong answer. The converse holds too — a bound on work
+ * the walk never had is a false statement about a total that is the true one, so
+ * the duration ceiling is guarded on a queue that still holds something: a walk
+ * that drained the queue completed, whatever its clock says, and the number it
+ * reports is not an underestimate. The ceiling is checked once per DIRECTORY (the
+ * entry ceiling is per entry), so one large directory listing can overrun the
+ * budget by that listing — the shipped granularity, and the reason the check does
+ * not sit in the per-entry loop where a `Date.now()` per entry would cost more on
+ * the child's critical path than the overrun it is worth.
  */
 /** The walk's stat seam: one entry's stats, or the error the filesystem returned. */
 type StatEntry = (target: string) => Promise<Stats>;
@@ -239,7 +247,17 @@ export async function tempAllocatedBytes(
       if (entry.isFile()) bytes += await allocatedBytes(target, stat);
     }
     if (stopped !== undefined) return { bytes, bound: stopped };
-    if (Date.now() - started > maxMs) return { bytes, bound: `duration bound ${maxMs}ms` };
+    // `>=`, not `>`: a budget the walk has exactly spent is spent, and a zero
+    // budget has to stop somewhere. With `>` the first check compares the elapsed
+    // 0 against 0, so on a warm filesystem a zero budget meant no budget at all
+    // and the caller got a completed total with nothing naming it as unbounded.
+    // `queue.length > 0` first, because the ceiling is a ceiling on WORK: this is
+    // the point at which the last listing drained the queue, so a walk that read
+    // the whole tree at exactly the budget would otherwise report a completed
+    // total — the true one — as `duration bound`, and the disclosure would print
+    // `partial after-walk` about a walk that left nothing unread.
+    if (queue.length > 0 && Date.now() - started >= maxMs)
+      return { bytes, bound: `duration bound ${maxMs}ms` };
   }
   return { bytes, bound: undefined };
 }

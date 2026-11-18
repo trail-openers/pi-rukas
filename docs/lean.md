@@ -475,7 +475,8 @@ With `features.workLeanResultSchema` in `--capabilities` (value `5`) that
 document is the **schema-5 result** — `schemaVersion` and `issues[]` with one
 entry, in the same field names `work` uses (`status`, `cap`, `failedStep`,
 `failure`, `branch`, `prUrl`, `usage`), so a host comparing the two engines
-reads one document. The one field `work` never writes is **`prState`**:
+reads one document. The fields `work` never writes are **`prState`**, the
+`reviewBound` line and `reviewComplete`:
 
 | `prState` | When |
 |---|---|
@@ -486,10 +487,33 @@ reads one document. The one field `work` never writes is **`prState`**:
 Both sides of that rule are typed records (`Outcome.publishedHead` is the full
 40-hex head the step pushed; `verifiedHead` is the green's subject) and neither
 is read out of prose. The rule is publish's own — it will not push at all over a
-green about a different commit — restated as a report. `ready` is also the only
-thing that earns the `awaiting-human-merge` cap, so **`awaiting-human-merge`
-means `ready`**; a draft, or a PR over a gate that did not clear its head, gets
-no cap and rides `failure` alone. A build without the feature writes lean's own
+green about a different commit — restated as a report. `ready` is the only thing
+that earns a handoff cap, and it does not earn it alone:
+**`awaiting-human-merge` means `ready` with every review lens judged, on the head the PR now
+stands on**, so a `ready` PR whose NEWEST `review` step recorded a stop at its own clock — any
+lane list, empty included — or ended by a throw that recorded no verdict at all, or sits BEHIND
+a `publish` that ran after it without covering the head the PR stands on (`machine.ts` re-runs
+`publish` after the review on TWO routes — a `fixed` review's own `→ verify → publish`
+re-attests the head its `integrate` pushed, and a CI-fix round publishes a fixer's newer one
+— so the check is head IDENTITY, not position: a returned review whose record names its fix
+wave's head is complete only when the newest decided `publish`'s head IS that wave's head,
+and a record naming no head of its own push (a plain `done` pushed nothing, or a `fixed`
+whose `waves` name nothing usable) must sit ahead of every `publish` attempt, decided or
+not), or whose log holds no `review` step at all (the machine
+sends `publish` → `review`, so a review the deadline stopped short of dispatching judged
+nothing) reports
+**`review-incomplete`** with `reviewComplete: false` instead (same exit 10,
+different cap), and `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0` puts the single
+`awaiting-human-merge` cap back and omits the field. `reviewComplete` is `true` only where
+the step's own record says the review finished on the head that shipped, and `false` is
+never a default: a review that died before pass 1 read no lens, a stop that named no lane is still
+a stop, and a log with no `review` step is a review that never ran — none of them report a
+finished review. Which reading decides — identity of the record's own wave head (behind a
+judged round), or log position for a record that names no head of its own push — is stated
+once in `reviewCompleteOf`'s jsdoc (`extension/src/headless/work-lean-pr.ts`). The key is written only beside the two caps above, so a merged run, a draft or
+a run that never reached `publish` carries neither cap nor field. A draft, or a PR over
+a gate that did not clear its head, gets no cap and rides `failure` alone. A
+build without the feature writes lean's own
 pre-#1920 document (`state`, `summary`, `steps`, `prUrl`) and has no `prState`:
 refuse the image rather than guess.
 

@@ -11,7 +11,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { buildCapabilities, HEADLESS_FEATURES } from "../src/headless/capabilities.ts";
+import { HEADLESS_FEATURES, buildCapabilities } from "../src/headless/capabilities.ts";
 import { HEADLESS_INPUTS } from "../src/headless/inputs.ts";
 import { GATE_SEVERITIES } from "../src/lean/gate-severities.ts";
 import { SEVERITIES } from "../src/review-threshold-types.ts";
@@ -31,6 +31,10 @@ const { assert, failures } = makeAssert();
   assert(
     names.includes("PI_ENSEMBLE_LEAN_RESULT_GATES"),
     "HEADLESS_INPUTS lists PI_ENSEMBLE_LEAN_RESULT_GATES",
+  );
+  assert(
+    names.includes("PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP"),
+    "HEADLESS_INPUTS lists PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP",
   );
   // The list's own order is the collation `test-headless-inputs.ts` enforces (the
   // `__`-to-space localeCompare that mostly ignores the separators), not ASCII order —
@@ -54,6 +58,10 @@ const { assert, failures } = makeAssert();
   assert(
     docText.includes("`PI_ENSEMBLE_LEAN_RESULT_GATES`"),
     "docs/configuration.md carries a row for the switch",
+  );
+  assert(
+    docText.includes("`PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP`"),
+    "docs/configuration.md carries a row for the review-incomplete cap switch",
   );
 }
 
@@ -79,6 +87,26 @@ const { assert, failures } = makeAssert();
   assert(
     host.includes("NULL rule") && host.includes("OMISSION rule"),
     "docs/headless.md states which gates fields follow the null rule and which the omission rule",
+  );
+  // The cap and the field are the host-facing half of the review-incomplete change: a host
+  // that merges on `cap` has to be able to read from the contract that a `ready` PR with
+  // unjudged lanes carries a DIFFERENT cap, and that `reviewComplete` is the field that
+  // says so. Neither is inferable from one run's JSON.
+  assert(
+    host.includes("`review-incomplete`") && host.includes("`issues[].reviewComplete`"),
+    "docs/headless.md names the review-incomplete cap and the issues[].reviewComplete field",
+  );
+  assert(
+    host.includes("awaiting-human-merge` means `ready`") && host.includes("with every lens judged"),
+    "docs/headless.md qualifies the awaiting-human-merge-means-ready claim with every lens judged",
+  );
+  // The row that makes that promise has to name BOTH answers the predicate reads, or it
+  // over-claims: a `review` step that threw without recording a bound judged nothing, and
+  // a row describing only the budget-stop arm would tell a host the cap proves lenses ran
+  // when the record said nothing either way.
+  assert(
+    host.includes("ended on a throw that recorded no verdict"),
+    "docs/headless.md names the review-died-without-a-record arm beside the stopped-with-lanes arm",
   );
 }
 

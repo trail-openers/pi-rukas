@@ -103,8 +103,27 @@ export const HEADLESS_FEATURES = {
    * #1920 slice B — `work-lean`'s success document is the SAME schema the
    * `work` verb writes: `schemaVersion: 5` and one `issues[]` entry with
    * `status`, `cap`, `failure`, `branch`, `prUrl`, `usage` (with `byRole`) and
-   * the lean-only typed `prState` (`ready` | `draft` | `none`), so a host needs
-   * no second reader to compare the two engines. A build without this feature
+   * the lean-only typed `prState` (`ready` | `draft` | `none`) and
+   * `reviewComplete`, so a host needs no second reader to compare the two
+   * engines. While `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP` is on (its shipped default),
+   * `awaiting-human-merge` means `ready` WITH EVERY REVIEW LENS JUDGED ON THE HEAD THE PR NOW
+   * STANDS ON: a `ready` PR whose newest `review` step recorded a stop (any lane list), ended
+   * on a throw that recorded no verdict at all, does not cover the head the PR now stands
+   * on (`machine.ts` re-runs `publish` after the review on TWO routes: a `fixed` review's own
+   * `→ verify → publish` re-attests the head its `integrate` pushed, and a CI-fix round
+   * publishes a fixer's newer one — so the rule is head IDENTITY, not position: a returned
+   * review whose record names its fix wave's head BEHIND a judged round (`rounds` non-empty —
+   * with no round on record, the wave names a head no lens is shown to have read) is complete
+   * only when the newest decided `publish`'s head IS that wave's head, and a record naming no
+   * head of its own push (a plain `done`, or a `fixed` whose `waves` name nothing usable) must
+   * sit ahead of every `publish` attempt), or whose
+   * log holds no `review` step at all (the machine sends `publish` → `review`, so that
+   * review was never dispatched) carries `review-incomplete` and
+   * `reviewComplete: false` instead — and the key appears on no document without one of those
+   * two caps. THAT is the arm the merge-safety property belongs to: with the switch at `0` the
+   * single `awaiting-human-merge` cap is back, `reviewComplete` is not written at all, and the
+   * cap says nothing about whether a lens read the head — a host must not read the property
+   * above into that build. A build without this feature
    * writes lean's own pre-#1920 document (`state`/`summary`/`steps`/`prUrl`)
    * and has no `prState` to switch on — refuse the image rather than guess.
    */

@@ -171,7 +171,9 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
       break;
 
     case "publish":
-      // The only way to reach publish twice is a CI fix round, whose re-verification is `ci`'s job.
+      // Publish is reached twice on two routes: `review + fixed` re-verifies and re-publishes the
+      // head the review's own integrate pushed, and a CI fix round publishes a fixer's newer head,
+      // whose re-verification is `ci`'s job.
       if (outcome.kind === "ok") return to(run, c.reviewDone ? "ci" : "review");
       break;
 

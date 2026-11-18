@@ -231,6 +231,8 @@
     "smoke-tests/test-headless-work-lean-result.ts",
     "smoke-tests/test-headless-work-lean-delivery.ts",
     "smoke-tests/lib/lean-result-fixture.ts",
+    "smoke-tests/test-headless-work-lean-review-incomplete-cap-switch.ts",
+    "smoke-tests/lib/lean-review-incomplete-cap-golden.ts",
     "smoke-tests/test-lean-work-config-committed.ts",
     "smoke-tests/lib/work-lean-verb-fixture.ts",
     "smoke-tests/test-lean-seed-base.ts",

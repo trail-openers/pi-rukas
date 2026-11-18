@@ -82,6 +82,25 @@ function isName(value: unknown, max: number): value is string {
   return typeof value === "string" && value !== "" && value.length <= max;
 }
 
+/** Why this ONE entry is not a round tally this run may print, or `undefined` when it
+ * is. The whole-record validator asks it of every entry, and so does any reader that
+ * holds a `rounds` array and cannot call the record validator — presence of an array is
+ * not presence of a judged round, and a second ad-hoc shape test beside this one is how
+ * the two drift apart. */
+export function reviewRoundProblem(round: unknown): string | undefined {
+  if (typeof round !== "object" || round === null || Array.isArray(round))
+    return "outcome review.rounds entry must be an object";
+  const keys = Object.keys(round);
+  if (keys.some((k) => !(ROUND_SEVERITIES as readonly string[]).includes(k)))
+    return `outcome review.rounds names a severity outside ${ROUND_SEVERITIES.join("/")}`;
+  if (keys.length !== ROUND_SEVERITIES.length)
+    return `outcome review.rounds entry must name exactly ${ROUND_SEVERITIES.join("/")}`;
+  const counts = round as Record<string, unknown>;
+  if (!ROUND_SEVERITIES.every((s) => isCount(counts[s])))
+    return "outcome review.rounds counts must be non-negative integers";
+  return undefined;
+}
+
 /** Why this is not a round tally this run may print, or `undefined` when it is. */
 export function reviewRecordProblem(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value))
@@ -91,15 +110,8 @@ export function reviewRecordProblem(value: unknown): string | undefined {
   if (rec.rounds.length > ROUNDS_MAX)
     return `outcome review.rounds holds more than ${String(ROUNDS_MAX)} rounds`;
   for (const round of rec.rounds) {
-    if (typeof round !== "object" || round === null || Array.isArray(round))
-      return "outcome review.rounds entry must be an object";
-    const keys = Object.keys(round);
-    if (keys.some((k) => !(ROUND_SEVERITIES as readonly string[]).includes(k)))
-      return `outcome review.rounds names a severity outside ${ROUND_SEVERITIES.join("/")}`;
-    if (keys.length !== ROUND_SEVERITIES.length)
-      return `outcome review.rounds entry must name exactly ${ROUND_SEVERITIES.join("/")}`;
-    if (!ROUND_SEVERITIES.every((s) => isCount(round[s])))
-      return "outcome review.rounds counts must be non-negative integers";
+    const problem = reviewRoundProblem(round);
+    if (problem !== undefined) return problem;
   }
   if (!Array.isArray(rec.waves)) return "outcome review.waves must be an array";
   if (rec.waves.length > WAVES_MAX)

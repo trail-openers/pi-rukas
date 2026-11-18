@@ -314,18 +314,59 @@ if (process.getuid !== undefined && process.getuid() !== 0) {
 {
   // The duration ceiling, tripped the same way: a ceiling the test passes.
   const root = walkRoot("duration");
+  // The expected total is what the filesystem ALLOCATED per file, not the size
+  // requested: the walk sums `st_blocks`, so pinning to the request would make the
+  // generous arm below an assertion about the allocator.
+  let allocated = 0;
   for (let i = 0; i < 20; i++) {
     mkdirSync(path.join(root, `d${i}`));
     // Real content rather than 1 byte, and far below the old 2 MB: the walk measures
     // ALLOCATED BLOCKS, so a duration ceiling needs something to sum — with nothing
     // allocated the bounded and unbounded walks agree and the assertion proves only
     // that a `bound` string came back. 32 KB x 20 is 640 KB, not 40 MB.
-    writeRealBytes(path.join(root, `d${i}`, "x.bin"), 32 * 1024);
+    allocated += writeRealBytes(path.join(root, `d${i}`, "x.bin"), 32 * 1024);
   }
   const bounded = await tempAllocatedBytes(root, 100_000, 0);
   assert(
     "bound" in bounded && /^duration bound 0ms$/.test(bounded.bound ?? ""),
     `temp-watch: the duration ceiling stops the walk and names itself (${JSON.stringify(bounded)})`,
+  );
+  // The other direction, so the ceiling cannot silently invert: a budget the walk
+  // can actually spend COMPLETES, and the total it reports is the true one with no
+  // bound. Without it, a walk that stopped on every entry would pass the arm above
+  // and disclose nothing.
+  const generous = await tempAllocatedBytes(root, 100_000, 60_000);
+  assert(
+    "bytes" in generous &&
+      generous.bound === undefined &&
+      generous.bytes === allocated &&
+      "bytes" in bounded &&
+      bounded.bytes < allocated,
+    `temp-watch: a generous duration budget completes and reports the true total with no bound, and the zero-budget walk stopped short of it (generous ${JSON.stringify(generous)}, bounded ${JSON.stringify(bounded)}, allocated ${allocated})`,
+  );
+  // A duration ceiling is a ceiling on WORK, so it cannot call a walk that already
+  // DRAINED the queue partial. Three files in the root and no subdirectory to queue
+  // means the one listing empties the queue: the walk read everything the root holds,
+  // so at exactly the budget it owes the operator the true total and nothing naming it
+  // as unbounded. Without the queue guard the `>=` above answered `duration bound 0ms`
+  // here, and `tempBytesLines` printed `partial after-walk:` about a complete read — a
+  // false statement about a real number, in the one channel that is disclosure only.
+  // The paired arm keeps the assertion non-vacuous: the SAME root still reports a bound
+  // when a ceiling has work left to bound, so the `undefined` above is the queue guard
+  // and not a walk that never checks its ceilings at all.
+  const flat = walkRoot("duration-drained");
+  let drainedTotal = 0;
+  for (const n of ["a", "b", "c"])
+    drainedTotal += writeRealBytes(path.join(flat, `${n}.bin`), 4096);
+  const drained = await tempAllocatedBytes(flat, 100_000, 0);
+  const drainedEntryBound = await tempAllocatedBytes(flat, 0, 60_000);
+  assert(
+    "bytes" in drained &&
+      drained.bound === undefined &&
+      drained.bytes === drainedTotal &&
+      "bytes" in drainedEntryBound &&
+      /^entry bound 0$/.test(drainedEntryBound.bound ?? ""),
+    `temp-watch: a walk that drained the queue reports the true total with no duration bound at a zero budget, and the same root still names its entry bound (drained ${JSON.stringify(drained)} vs total ${drainedTotal}, entry ${JSON.stringify(drainedEntryBound)})`,
   );
 }
 

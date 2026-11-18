@@ -35,6 +35,16 @@ import {
   stepWith,
   withReason,
 } from "./lib/lean-result-fixture.ts";
+import {
+  diedReviewStep,
+  erroredEmptyLaneReviewStep,
+  erroredMidWaveReviewStep,
+  judgedReviewStep,
+  pushedFixReviewStep,
+  unansweredReviewStep,
+  unjudgedReviewStep,
+  withReviews,
+} from "./lib/lean-review-incomplete-cap-golden.ts";
 import { REPO, fakeRun, verbRun } from "./lib/work-lean-verb-fixture.ts";
 
 const { assert, state } = makeAssert();
@@ -42,13 +52,19 @@ const { assert, state } = makeAssert();
 const drive = driveLean;
 const log = leanLog;
 
-// ── (1) a green run with a READY PR: publish said `draft: false`, verify green.
+/** A `ready` PR's log the way a real run leaves it: `machine.ts` sends `publish` → `review`,
+ * so a run whose PR is ready has a `review` step, and here it judged everything. A log
+ * without one is the `never-reviewed` arm below, not today's case. */
+const reviewed = (steps: Step[]): Step[] => withReviews(steps, [judgedReviewStep()]);
+
+// ── (1) a green run with a READY PR: publish said `draft: false`, verify green, and the
+// review that publish is always followed by judged every lens.
 // No `ci` step: lean has none built, so readiness must not require one.
 {
   const r = await drive(
     "handed-back",
     10,
-    log({ prUrl: URL, draft: false, dispatches: CHILDREN }),
+    reviewed(log({ prUrl: URL, draft: false, dispatches: CHILDREN })),
   );
   assert(r.violations.length === 0, `ready: output contract (${r.violations.join("; ")})`);
   assert(r.doc.schemaVersion === 5, `ready: schemaVersion 5 (got ${String(r.doc.schemaVersion)})`);
@@ -230,7 +246,7 @@ const log = leanLog;
 // no `ci` step built, so requiring a green one would read every real run as
 // `draft` — the rule rejects a DECIDED non-green `ci`, it never demands one.
 {
-  const r = await drive("handed-back", 10, log({ prUrl: URL, draft: false }));
+  const r = await drive("handed-back", 10, reviewed(log({ prUrl: URL, draft: false })));
   const i = r.issue ?? {};
   assert(
     i.prState === "ready",
@@ -284,6 +300,75 @@ const log = leanLog;
   assert(j.cap === undefined, `crashed-ci: no cap (got ${String(j.cap)})`);
 }
 
+// ── (2j) a READY PR whose review judged no further lens is not work waiting on a
+// person. The run reached publish, the gate cleared the head and the forge left the PR
+// ready — and the newest `review` step stopped with lanes that never ran. `prState` is
+// still `ready` (publish's own rule, unchanged), so the cap is the one field that can say
+// "nobody read this head", and it says it off the step's bound record, never off prose.
+{
+  const ready = log({ prUrl: URL, draft: false, dispatches: CHILDREN });
+  // AC1's red arms and AC2's ways of earning today's cap, as one table: the cap and the
+  // field are the two answers, and the table says which record produces which. A bound is
+  // read as PRESENT-or-absent, not as non-empty: a recorded stop judged nothing further,
+  // so `no-lane-named` sits with the incomplete arms (the one writer that can name no lane
+  // — `review.ts`'s clock read between pass 1 and the fix wave — throws, so no real record
+  // pairs an empty list with a returned step). Log position decides both which step is
+  // asked and whether the head it read is still the head the PR stands on: a stop a later
+  // fully judged review overtook sits with the judged arms, and a `publish` that postdates
+  // the newest review takes the verdict away again (pinned in the switch test's head-bound
+  // section). The step asked then answers in only TWO ways, and `error-silent`/`unanswered`
+  // are the second: a `review` step that threw without recording a bound read no lens at
+  // all, and one that never answered is the same silence — `never-reviewed` is that silence
+  // one level up (the engine sends `publish` → `review`, so an undispatched review judged
+  // nothing).
+  const arms: [string, Step[], "review-incomplete" | "awaiting-human-merge", boolean][] = [
+    ["deadline-stopped", [unjudgedReviewStep()], "review-incomplete", false],
+    ["pushed-fix", [pushedFixReviewStep()], "review-incomplete", false],
+    ["error-stopped", [erroredMidWaveReviewStep()], "review-incomplete", false],
+    ["error-silent", [diedReviewStep()], "review-incomplete", false],
+    ["error-empty-lanes", [erroredEmptyLaneReviewStep()], "review-incomplete", false],
+    ["unanswered", [unansweredReviewStep()], "review-incomplete", false],
+    ["superseded", [unjudgedReviewStep(0), judgedReviewStep(1)], "awaiting-human-merge", true],
+    [
+      "error-superseded",
+      [erroredMidWaveReviewStep(0), judgedReviewStep(1)],
+      "awaiting-human-merge",
+      true,
+    ],
+    ["no-lane-named", [unjudgedReviewStep(0, [])], "review-incomplete", false],
+    ["clean-review", [judgedReviewStep()], "awaiting-human-merge", true],
+    ["never-reviewed", [], "review-incomplete", false],
+  ];
+  for (const [label, reviews, cap, complete] of arms) {
+    const r = await drive("handed-back", 10, withReviews(ready, reviews));
+    const i = r.issue ?? {};
+    const marker = String((i.handoff as Record<string, unknown> | undefined)?.marker ?? "");
+    assert(
+      i.prState === "ready",
+      `${label}: prState is publish's answer, not the review's (got ${String(i.prState)})`,
+    );
+    assert(
+      i.cap === cap && i.reviewComplete === complete,
+      `${label}: cap ${cap} and reviewComplete ${String(complete)} (got ${String(i.cap)} / ${String(i.reviewComplete)})`,
+    );
+    assert(
+      i.exitCode === 10 && r.code === 10,
+      `${label}: the exit code does not move with the cap (${String(i.exitCode)} / ${String(r.code)})`,
+    );
+    assert(
+      marker.includes(`cap=${cap}`),
+      `${label}: the handoff marker follows the cap (got ${marker})`,
+    );
+  }
+  // And the bound line beside the new cap still names the lanes it named before.
+  const s =
+    (await drive("handed-back", 10, withReviews(ready, [unjudgedReviewStep()]))).issue ?? {};
+  assert(
+    String(s.reviewBound).includes("3 of 6 lenses unjudged"),
+    `unjudged: the bound line beside the cap still names the lanes (${String(s.reviewBound)})`,
+  );
+}
+
 // ── (3) NO PR: the run handed back before any publish step decided.
 {
   const r = await drive("handed-back", 10, log({ dispatches: CHILDREN, verify: "red" }));
@@ -309,7 +394,7 @@ const log = leanLog;
 {
   const seen = new Set<string>();
   for (const [label, steps] of [
-    ["ready", log({ prUrl: URL, draft: false })],
+    ["ready", reviewed(log({ prUrl: URL, draft: false }))],
     ["draft", log({ prUrl: URL, draft: true })],
     ["none", log({})],
   ] as const) {

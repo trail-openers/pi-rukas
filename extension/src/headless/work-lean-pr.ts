@@ -8,7 +8,10 @@
  * it. They are also the readers `headless/work-lean-gates.ts` borrows rather than
  * restating — the two head fields on `gates.handback` and `prState` are one answer read
  * through these functions, which is the only reason two surfaces cannot tell two stories
- * about the same commit.
+ * about the same commit. `reviewCompleteOf` sits here for the same reason: it is the same
+ * head question read from the other side — not "did the gate certify what shipped" but "did
+ * a LENS read what stands on the PR" — and its answer is the published head put against the
+ * head the review itself says it judged, a fact this module already owns.
  *
  * The load-bearing rule is in `gateClearedPublishedHead`: a green is worth nothing unless
  * it is about the head that shipped, and a newest step with no outcome is a crash, not a
@@ -17,8 +20,10 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
+import type { OutcomeKind } from "../lean/machine.ts";
+import { reviewRoundProblem } from "../lean/state-outcome-gates.ts";
 import { validPrUrl } from "../lean/state-outcome.ts";
-import type { Step } from "../lean/state.ts";
+import type { Outcome, Step } from "../lean/state.ts";
 import { newestDecided } from "../lean/state.ts";
 import type { IssueResult } from "./result.ts";
 
@@ -58,10 +63,17 @@ export function publishedHeadOf(publish: Step | undefined): string | undefined {
  * skip an outcome-less step and let an older verdict speak for a gate that died.
  */
 export function newestAttempt(steps: Step[], state: Step["state"]): Step | undefined {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    if (steps[i]?.state === state) return steps[i];
-  }
-  return undefined;
+  const at = lastAttempt(steps, state);
+  return at < 0 ? undefined : steps[at];
+}
+
+/** The same reading as a POSITION, which is what a question about ORDER needs, and -1 when
+ * the log holds no such step. Decided or not: a step that started and died is a step that
+ * happened, and a `publish` that died mid-push is exactly the case an answer must not gloss
+ * over. */
+function lastAttempt(steps: Step[], state: Step["state"]): number {
+  for (let i = steps.length - 1; i >= 0; i--) if (steps[i]?.state === state) return i;
+  return -1;
 }
 
 /**
@@ -122,4 +134,128 @@ export function prStateOf(steps: Step[], draftCounter: boolean): IssueResult["pr
   // merges, a host told `draft` goes and looks.
   if (publish.outcome?.draft !== false) return "draft";
   return gateClearedPublishedHead(steps, publishedHeadOf(publish)) ? "ready" : "draft";
+}
+
+/** The two `review` outcome kinds that say the step RETURNED — `machine.ts`'s
+ * `OUTCOME_KINDS.review`, exactly these two (`done` pushed nothing, `fixed` integrated
+ * commits `integrate` pushes). Declared against that vocabulary because `Outcome.kind` is a
+ * plain `string` and a bare literal here would let a typo compile into a silent third arm
+ * that reads forever as "the review did not return". */
+const REVIEW_DONE: OutcomeKind<"review"> = "done";
+const REVIEW_FIXED: OutcomeKind<"review"> = "fixed";
+
+/**
+ * Did this run's review judge every lens it was bought, ON THE HEAD THE PR NOW STANDS ON?
+ * Answered off the record, and only in the ways the record answers.
+ *
+ * **The head comes first, and it is read as an IDENTITY, not as a position.** `machine.ts`
+ * sends `publish` → `review`, and it routes `review + fixed` → `verify` → `publish`: a review
+ * that found findings and fixed them ALWAYS has a `publish` after it — the re-attestation of
+ * the head its own `integrate` pushed — and a CI-fix round runs `publish` again after that.
+ * Position alone called that whole legitimate class unfinished, which made the mergeable cap
+ * unreachable for every PR whose review found anything. So the question is whether the
+ * review's record COVERS the currently published head, in the one shape the record carries
+ * it: a `fixed` review that ran a wave names the full head it pushed in
+ * `outcome.review.waves[]` (the same field `gates.review.waves` publishes), and the newest
+ * decided `publish` names the head it shipped in `publishedHead`. Equal ⇒ every lens read
+ * what the PR stands on (`review-step.ts`'s `reviewedPass` refuses the wave until the
+ * re-review has ranged over the fix and the second adversarial pass has read it); different
+ * ⇒ a real move after the review — a genuine CI-fix round ships a commit no wave of the
+ * review named — and the answer is `false`. An undecided `publish` anywhere after the review
+ * decides nothing (a push whose outcome nobody wrote cannot be shown to have moved nothing),
+ * and a decided publish with no head, or none at all, cannot be shown to match either.
+ *
+ * **Where the record names no head of its own push, POSITION is the rule** — a head is only
+ * the step's to certify when its own `integrate` pushed it, and the records that reach the
+ * position rule are the ones that name none: a plain `done` — it ran no wave, and the
+ * machine's table forbids the alternative of a `fixed` arriving name-less from the step
+ * (`review` is routed only from `publish + ok` with `reviewDone` false and both returned
+ * kinds set it, so a decided `review` is never followed by a second one, and `resume.ts`
+ * re-derives its counters by replaying the log and checks them against the snapshot, so a
+ * resumed attempt cannot carry another attempt's wave either) — or a `fixed` whose record
+ * names no USABLE wave head: no `waves` array, an empty one, or a newest entry whose head
+ * is not an oid (`lastWaveHead`). Neither kind can certify from a head it does not name,
+ * and position is the only rule such a record can have: any `publish` attempt at a higher
+ * index — decided or not — answers `false`, because a step the machine did not route through a
+ * re-publish can only have had its head moved by a later push, and log order is all the record
+ * has to say about that.
+ *
+ * **Both readings are predicated on a judged round.** `review.ts` folds pass 1 into
+ * `outcome.review.rounds` with `noteRound` BEFORE either verdict is read, and its only
+ * `noteWave` sits below that fold — so in a record the step itself wrote, every wave stands
+ * behind a round that ran. The loader cannot close the gap the other way: it bounds `rounds`
+ * from above and never asks for one (`reviewRecordProblem` accepts an empty array), so a
+ * record that reaches this projection by any other route can name a wave's head with no
+ * round vouching for it. A record of either returned kind whose `rounds` is absent, empty,
+ * or holding an entry that is not a round tally by the record validator's own rule
+ * (`reviewRoundProblem` — the loader's per-round shape check, asked here rather than
+ * restated) therefore answers `false` BEFORE either reading is asked: a head no round is on
+ * record as judged is a head no lens read, whatever its waves name or its position says —
+ * and `[null]`, `["x"]`, `[7]` or a round missing three of the four severities is no more a
+ * judged round than no array at all.
+ *
+ * Then the newest `review` step itself answers in three ways:
+ *
+ *   - it carries a `reviewBound` — `false`, whatever its lane list and whatever its waves. A
+ *     bound is what a STOP writes (`review.ts`'s `noteStop`) and a stopped step left work
+ *     unbought: the two stops that let the step RETURN both sit after a fixer or a re-review
+ *     that went unjudged, and `unjudgedLenses(…, true)` names that re-review in both — so no
+ *     writer pairs a bound with a returned step whose lanes all came back, and the safe
+ *     reading of "a stop was recorded" is not "the review finished". Presence is the
+ *     predicate; the list and the waves do not outrank it;
+ *   - its kind is outside the two that say the step RETURNED (`done`/`fixed`) — `false`.
+ *     A step that ended on a THROW is not a finished pass: `errorOutcome` copies a bound onto
+ *     the outcome only when the thrown error carried one, and only the step-clock stop does,
+ *     so the other throw sites — a head that moved before pass 1 was bought, a child the
+ *     operator's budget stopped — land here having judged nothing. An absent outcome answers
+ *     the same way, as `work-lean-gates.ts`'s reader already refuses to let an undecided
+ *     review speak;
+ *   - the log holds NO `review` step — `false`, whatever else the record says. The machine
+ *     sends `publish` → `review`, so a `ready` PR with no review step is one the engine never
+ *     dispatched (the deadline is checked before the NEXT state, and `stopForDeadline` stamps
+ *     `handed-back` without it): the same silence one level up, and the arm this cap exists to
+ *     refuse.
+ *
+ * So `true` is never a default — only ever something a step's own record said, either the
+ * head it pushed matching the head that shipped, or (having named no head) its own position
+ * ahead of every push. Nothing here is read off a reason line.
+ */
+export function reviewCompleteOf(steps: Step[]): boolean {
+  const review = lastAttempt(steps, "review");
+  if (review < 0) return false;
+  const outcome = steps[review]?.outcome;
+  if (outcome?.reviewBound !== undefined) return false;
+  if (outcome?.kind !== REVIEW_DONE && outcome?.kind !== REVIEW_FIXED) return false;
+  // The precondition for BOTH readings, outranking each as the bound's presence does:
+  // no record the step's own writer can leave behind carries a returned kind without a
+  // judged round (see the jsdoc), so a record that names none — or names entries that are
+  // not rounds — is refused before position or wave identity can certify it. The shape
+  // rule is the loader's own, not a second opinion written here: an array of non-rounds
+  // is array-shaped non-evidence, and this precondition is the last line of defence.
+  const rounds = outcome?.review?.rounds;
+  if (!Array.isArray(rounds) || rounds.length === 0) return false;
+  // Match the loader's iteration, which yields holes as undefined.
+  for (const round of rounds) {
+    if (reviewRoundProblem(round) !== undefined) return false;
+  }
+  const wave = outcome?.kind === REVIEW_FIXED ? lastWaveHead(outcome) : undefined;
+  if (wave === undefined) return lastAttempt(steps, "publish") < review;
+  // Undecided-inclusive, as the position rule is: one publish attempt after the review that
+  // recorded nothing can have moved the head past the wave this record names.
+  for (let i = review + 1; i < steps.length; i++)
+    if (steps[i]?.state === "publish" && steps[i]?.outcome === undefined) return false;
+  return publishedHeadOf(newestDecided(steps, "publish")) === wave;
+}
+
+/** The full head the review's own record says its newest wave pushed, re-checked with the
+ * shape rule the loader enforces (this log need not have passed through it), or `undefined`
+ * when the record names none — no waves array, an empty one, or a newest entry whose head is
+ * not an oid. A record that cannot name its head cannot certify that the published head is
+ * it, and the caller falls back to the position rule, which is what such records had before
+ * their own heads were on the record at all. */
+function lastWaveHead(outcome: Outcome | undefined): string | undefined {
+  const waves = outcome?.review?.waves;
+  if (!Array.isArray(waves) || waves.length === 0) return undefined;
+  const head = waves[waves.length - 1]?.head;
+  return typeof head === "string" && isFullCommitSha(head) ? head : undefined;
 }

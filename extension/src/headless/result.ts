@@ -176,9 +176,31 @@ export interface IssueResult {
   prState?: "ready" | "draft" | "none";
   /** The lean `review` step stopped at its OWN time bound and judged no further lane:
    * one line for which lever closed, which wave it reached and which lanes went
-   * unreviewed. `work` writes none of it; a run with no bound stop omits it, so absence
-   * means "fully reviewed", never "unknown". */
+   * unreviewed. `work` writes none of it; a run whose `review` steps recorded no stop
+   * omits it, so absence means "no stop was recorded", never "the review said nothing" —
+   * an older stopped attempt is named even when a later judged review overtook it, which is
+   * what `reviewComplete` (reading the NEWEST step) answers separately. */
   reviewBound?: string;
+  /** Did the run's review judge every lens it was bought, ON THE HEAD THE PR NOW STANDS ON?
+   * `false` when the NEWEST `review` step recorded a `reviewBound` at all — a bound is what a
+   * STOP writes, whatever its lane list holds, and a stopped step left work unbought — when it
+   * never answered at all (a step that ended on a throw without recording a bound: only the
+   * step's own clock stop writes one, so a review that died before pass 1 read no lens and
+   * says nothing), when its verdict does not cover the head the PR now stands on, or when the
+   * log holds no `review` step at all (publish is followed by review, so a ready PR with none
+   * was never reviewed); `true` only where the step's own record says the review finished on
+   * the head that shipped. Which head-reading the record gets — identity of its own wave's
+   * head against the newest decided publish, or log position for a record that names no head
+   * of its own push — is `reviewCompleteOf`'s algorithm, stated once in its jsdoc
+   * (`work-lean-pr.ts`); this field documents the host contract, not a second rule.
+   * Lean-only, like the two fields above, and written on one switch and only on the two arms
+   * that carry a cap: absent on a build running `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0`, on
+   * one from before the field existed, and on any run whose document carries no cap (a merge,
+   * a draft, a run that never reached `publish`) — where there is no cap to pair it with,
+   * `prState` and `status` are the answer. Read it beside `cap`: `false` pairs with
+   * `review-incomplete` and `true` with `awaiting-human-merge`, and no other document carries
+   * the key. */
+  reviewComplete?: boolean;
   /**
    * The run's gate events, for a host that must not read `.pi/lean-state/<issue>.json`
    * (the driver's private persistence, no stability promise): the frozen files per

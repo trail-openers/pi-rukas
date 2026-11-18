@@ -11,23 +11,30 @@
  * supposed to be comparable against. This module is the projection that lets
  * it keep one: the same field names, the same meanings, exactly one issue.
  *
- * The one field with no counterpart in `work` is `prState`. Exit 10 covers every
- * lean run that reaches `publish` and does not merge, because the handback is one
- * exit code for many causes: a green PR waiting for a merge, a draft behind
- * unverified bytes, a gate that refused to certify the head, and a run that opened
- * nothing. `status`/`cap` alone cannot tell those apart, and the issue asks for a
- * typed answer, so `prState` is the third discriminator beside them.
+ * The fields with no counterpart in `work` are `prState`, `reviewBound` and
+ * `reviewComplete`. Exit 10 covers every lean run that reaches `publish` and does
+ * not merge, because the handback is one exit code for many causes: a green PR
+ * waiting for a merge, a ready PR whose review judged no further lens, a draft
+ * behind unverified bytes, a gate that refused to certify the head, and a run that
+ * opened nothing. `status`/`cap` alone cannot tell those apart, and the issue asks
+ * for a typed answer, so the three lean-only fields sit beside them.
  *
  * Why the caps are chosen the way they are. `work`'s cap vocabulary is a closed
  * union checked against the driver's `WorkCapLiteral`, and no entry there
  * describes a lean run's cause — a lean handback is a different machine's
  * verdict, and inventing a name would put a word in the host's `switch` that
- * `--capabilities` never published. So exactly ONE published cap is used, and
- * only where it says what a lean run did: `awaiting-human-merge` for a PR that
- * publish opened READY and the run's own gate cleared. Every other cause rides
- * `failure`, whose `kind` is an OPEN list built for this (`FAILURE_KINDS`, and
- * `test-headless-failure-usage.ts` asserts the published list equals the live
- * array).
+ * `--capabilities` never published. So exactly TWO published caps are used, both
+ * already in `FIXED_CAPS`, and only where each says what a lean run did:
+ * `awaiting-human-merge` for a PR that publish opened READY, whose own gate
+ * cleared AND whose newest `review` step accounted for every lens it was bought ON THE HEAD
+ * THE PR NOW STANDS ON;
+ * `review-incomplete` for that same ready PR whose review left a lane unjudged, died
+ * without recording a verdict, was never dispatched at all, or whose verdict does not cover
+ * the head the PR now stands on — the cap that keeps a
+ * host from merging a head no lens read. Both exit 10, and `leanCap` owns the rule that
+ * tells them apart. Every other cause rides `failure`, whose `kind` is an OPEN list built
+ * for this (`FAILURE_KINDS`, and `test-headless-failure-usage.ts` asserts the published
+ * list equals the live array).
  *
  * `lens-review-timeout` is deliberately NOT used, though it is the one published
  * name that sounds like a lean budget breach. It is not: it names the classic
@@ -39,6 +46,7 @@
 
 import { redactClip } from "../decision-log.ts";
 import { leanResultGatesEnabled } from "../lean/result-gates-switch.ts";
+import { leanReviewIncompleteCapEnabled } from "../lean/review-incomplete-cap-switch.ts";
 import { specifyBranch } from "../lean/specify-tree.ts";
 import { type LeanRun, type Outcome, REPORT_STATES, type Step } from "../lean/state.ts";
 import { budgetSentence, budgetTrio } from "../lean/step-budget.ts";
@@ -57,10 +65,19 @@ import {
 } from "./result.ts";
 import { leanGates, reviewBoundSentence } from "./work-lean-gates.ts";
 import { leanHandoff } from "./work-lean-handoff.ts";
-import { prStateOf, prUrlOf, publishedHeadOf } from "./work-lean-pr.ts";
+import { prStateOf, prUrlOf, publishedHeadOf, reviewCompleteOf } from "./work-lean-pr.ts";
 
 /** What `work` reports for a finished PR waiting on a person (#1675's vocabulary). */
 const AWAITING = "awaiting-human-merge";
+
+/**
+ * The published cap for a review that never judged every lane (`FIXED_CAPS`). A ready PR
+ * whose review step stopped — at its own budget or the cycle deadline — left lenses that
+ * returned no verdict, so the run is NOT work waiting on a person: nobody has read the
+ * head yet. `capStep()` names no step for it (the cap carries no `:`), so `failedStep`
+ * stays absent, and `capKind()` reads it as `process`: neither gate judged the code.
+ */
+const REVIEW_INCOMPLETE = "review-incomplete";
 
 /** A lean `failure.step` must be a `WorkStep`; `handback` has no counterpart. */
 const LEAN_FAILURE_STEP = "handoff" as const;
@@ -237,6 +254,13 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
  * The cap. `undefined` when no published cap name says what happened — the
  * cause is then on `failure` alone, which is the open list.
  *
+ * `review-incomplete` outranks `awaiting-human-merge` on a ready PR: the two are told
+ * apart by whether the run's own review read every lens OF THE HEAD THE PR NOW STANDS ON,
+ * and telling a host to merge over lanes that never ran — or over a head pushed after the
+ * review read it — is the failure this cap exists to prevent. `reviewComplete` is `true`
+ * when the switch is off (today's single cap) or when the record says the newest review step
+ * finished on the head that shipped; `reviewCompleteOf` owns those answers.
+ *
  * A PR URL is NOT enough for `awaiting-human-merge`: a run can push a branch,
  * open a PR, and then have its own gate call the work red, and that is a park,
  * not a hold. Nor is handing back with a PR enough — publish keeps a PR it opened
@@ -252,9 +276,10 @@ function leanCap(
   status: IssueResult["status"],
   prUrl: string | undefined,
   prState: IssueResult["prState"],
+  reviewComplete: boolean,
 ): HeadlessCap | undefined {
-  if (prUrl !== undefined && status === "handoff" && prState === "ready") return AWAITING;
-  return undefined;
+  if (prUrl === undefined || status !== "handoff" || prState !== "ready") return undefined;
+  return reviewComplete ? AWAITING : REVIEW_INCOMPLETE;
 }
 
 /**
@@ -319,7 +344,13 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
   const status = leanStatus(run, code);
   const failure = leanFailure(run);
   const prState = prStateOf(steps, run.counters.draft);
-  const cap = leanCap(status, prUrl, prState);
+  // The one read of the review record, feeding both the cap and the field: they cannot
+  // disagree because neither of them decides the question on its own. Under the off arm
+  // the cap sees a complete review (today's single name) and the field is not written,
+  // which is what leaves the off document byte-identical to the pre-cap build.
+  const reviewSwitch = leanReviewIncompleteCapEnabled();
+  const reviewComplete = reviewCompleteOf(steps);
+  const cap = leanCap(status, prUrl, prState, !reviewSwitch || reviewComplete);
   // The head this run's PR stands on, worked out ONCE here by the reader `prStateOf`
   // itself uses. `gates.handback.head` asks a different question — the head that actually
   // SHIPPED, which after a rewind is no longer this one — so it reads the handback step's
@@ -346,15 +377,24 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
   // nothing else in this projection says "some lanes were never judged" — and a host
   // deciding whether to merge reads this document, not stderr. Read off the step log
   // (the loader validated it, so it cannot disagree with what a resume reads); absent
-  // means "fully reviewed", the normal case. The sentence is built by the gates module's own
-  // reader so both surfaces that print these two child-authored strings redact them the same
-  // way — see `reviewBoundSentence`.
+  // means NO STOP WAS RECORDED, never that a review finished — an older attempt's stop
+  // stays named after a later judged review overtook it. The sentence is built by the gates
+  // module's own reader so both surfaces that print these two child-authored strings redact
+  // them the same way — see `reviewBoundSentence`.
   for (let i = steps.length - 1; i >= 0; i--) {
     const rec = steps[i]?.state === "review" ? steps[i]?.outcome?.reviewBound : undefined;
     if (rec === undefined) continue;
     result.reviewBound = reviewBoundSentence(rec, (s) => redactClip(s, TEXT_MAX));
     break;
   }
+  // Written on one switch, and ONLY on the arm that has a cap to pair with: the contract's
+  // promise is `reviewComplete: false` beside cap `review-incomplete` and `true` beside
+  // `awaiting-human-merge`, so the key goes on the document exactly where one of those caps is.
+  // A merged run, a draft, or one that never reached `publish` has no cap to pair with and gets
+  // no key — `prState`/`status` are its answer — and a key beside them would assert a review
+  // verdict this document does not make. Attached whole or not at all, so the off arm leaves no
+  // key holding `undefined` for a host that string-compares the file.
+  if (reviewSwitch && cap !== undefined) result.reviewComplete = reviewComplete;
   // `failedStep` is reported ONLY when the cap names it: `capStep()` is the
   // driver's own rule for a step-template cap, and lean's states are not
   // `WorkStep`s, so a guessed step would be a wrong answer rather than a
