@@ -90,24 +90,47 @@ const ASSERTION_MARK_SHAPE: ShapeEntry = reEntry("assertion-mark", true, /^\s*�
  * would veto the one line that names the defect — the #1762 symptom
  * arriving through the Rust dialect. The trade kept: a `#[should_panic]`
  * test run with `--nocapture` prints this shape on a GREEN run too, so the
- * shape classifies it as a failure line; the extractor that returns it as
- * "the assertion" only ever reads a stream whose run already exited non-zero.
+ * shape classifies it as a failure line and may anchor evidence. What it may
+ * NOT do is become "the specific assertion": {@link libtestWindowVerdict} is
+ * the veto the extractor asks, which refuses a panic header from a window
+ * whose libtest verdicts report no failing test at all — a captured
+ * `should_panic` print in a run that failed for another reason names a test
+ * that PASSED, and quoting it is the #746/#798 class (a confident wrong answer
+ * where an honest absence was the truth).
  */
 const RUST_PANIC_RE = /^thread\s+'[^']+'\s+panicked\s+at\s+\S/;
 const RUST_PANIC_SHAPE: ShapeEntry = reEntry("rust-panic", true, RUST_PANIC_RE, true);
 
 /**
- * #2341 — cargo's TRAILING target-level summary, the ONE line every failing
- * test in a cargo target prints byte-identically (`error: test failed, to
- * rerun pass \`--bin nessie\``). It names a TARGET, not a check, so it is
- * recognised (`namesTest: false` — the table still anchors on it) but can
- * never be "the specific assertion", and {@link isCargoTargetSummaryLine} is
- * the single predicate every sameness reader asks so a deliberately generic
- * assertion can never produce a "SAME assertion" claim.
+ * #2341 — cargo's TRAILING TARGET-LEVEL summaries: the lines cargo prints about
+ * a whole target or a whole test process, every one of them byte-identical
+ * across the different tests that failed inside it (`error: test failed, to
+ * rerun pass \`--bin nessie\``, `error: process didn't exit successfully:
+ * …(signal: 6, SIGABRT)`, `error: 1 target failed:`, `error: could not
+ * compile \`nessie\``). They name a TARGET or a PROCESS, never a check, so the
+ * rule is dialect-shaped rather than sentence-shaped: any line in cargo's
+ * `error:` dialect that carries NO file:line location is target-level. That is
+ * what the table's own `diagnostic` arm cannot decide on its own — that arm is
+ * one regex over four unrelated compiler dialects and treats every `error:`
+ * line as naming a check, which is how a target-level line below the last
+ * panic both stole the evidence anchor and became "the assertion at base", and
+ * how two different Rust tests once compared as the SAME assertion.
+ *
+ * The location test is what keeps this from eating real evidence: a compiler
+ * diagnostic carries its file (`src/a.rs:91:5`, `--> src/a.rs:9:5`,
+ * `src/a.ts(9,5)`), a target summary carries only the target name. A line with
+ * a location therefore stays a `diagnostic` and keeps `namesTest: true`.
  */
-const CARGO_TARGET_SUMMARY_RE = /^error:?\s+test failed, to rerun\b/;
+const CARGO_TARGET_SUMMARY_RE =
+  /^error:?\s+(?![^\r\n]*(?:\S+\.[A-Za-z]{1,6}:\d+|-->\s*\S+|\S+\([\d,]+\)))(?:test failed\b|process didn't exit successfully\b|\d+\s+targets?\s+failed\b|could not compile\b|could not find\b|no such subcommand\b|aborting due to\b)/;
 
-/** The ONE predicate for cargo's target-level test-failed summary (#2341). */
+/**
+ * The ONE predicate for cargo's target-level summaries (#2341) — asked by the
+ * table's shape entry AND by every sameness reader, so the two cannot disagree
+ * about which lines are too generic to buy a "SAME assertion" claim. Exported
+ * through `work-driver-verify-failures.ts` with the rest of the failure-line
+ * vocabulary.
+ */
 export function isCargoTargetSummaryLine(line: string): boolean {
   return CARGO_TARGET_SUMMARY_RE.test(line);
 }
@@ -125,12 +148,19 @@ const CARGO_TARGET_SUMMARY_SHAPE: ShapeEntry = reEntry(
  * failing tests in one target differ exactly in the header (test name,
  * file, line, column). So the header alone — the `thread '<name>' panicked
  * at <loc>:` token run up to its trailing colon, followed by whitespace or
- * end of string — is the identity the sameness comparison anchors on. A
- * deliberately clipped prose prefix can therefore never fold two failures
- * together: the clip falls in the message, which the key discards, or
- * leaves the header intact, which distinguishes the tests. Any other
- * assertion (every other shape, and the pre-1.73 inline form whose token
- * run does not end at a colon) is its own key — exact containment is
+ * end of string — is the identity the sameness comparison anchors on.
+ *
+ * What the key guarantees, stated exactly: a clip that falls in the MESSAGE
+ * cannot fold two failures, because the message is what the key discards. A
+ * clip that falls INSIDE the header can — a header clipped past its file:line
+ * no longer matches this form, and the key then falls back to the whole
+ * clipped string, which two tests sharing a long module path could still
+ * prefix-match. That case needs a test name deep enough that the header alone
+ * passes the store-site bound the assertion carries, which no libtest name in
+ * this project's fixtures reaches; it is a known residual, not a closed hole.
+ *
+ * Any other assertion (every other shape, and the pre-1.73 inline form whose
+ * token run does not end at a colon) is its own key — exact containment is
  * unchanged for it.
  */
 const RUST_PANIC_HEADER_FORM = /^(thread\s+'[^']+'\s+panicked\s+at\s+\S+:)(?:\s|$)/;
@@ -140,6 +170,53 @@ export function rustPanicSamenessKey(assertion: string): string {
   const m = RUST_PANIC_HEADER_FORM.exec(assertion);
   const header = m?.[1];
   return header !== undefined ? header : assertion;
+}
+
+/**
+ * #2341 round 1 — libtest's own per-test verdict lines, the two forms it
+ * prints: `test <name> ... ok` / `... FAILED` (and `ignored`, which is neither)
+ * and the per-target tally `test result: ok. N passed; M failed` /
+ * `test result: FAILED. …`. Asked ONLY to decide whether a `thread '…' panicked
+ * at …` line in a window reports the run's failing verdict or the CAPTURED
+ * STDOUT of a passing `#[should_panic]` test, which prints the identical shape
+ * on a GREEN run (see {@link RUST_PANIC_SHAPE}).
+ */
+const LIBTEST_VERDICT_RE = /^test\s+(?:\S+\s+\.\.\.\s+|result:\s*)(?:ok|FAILED)\b/;
+const LIBTEST_FAILING_VERDICT_RE =
+  /^test\s+(?:\S+\s+\.\.\.\s+|result:\s*)FAILED\b|\b[1-9]\d*\s+(?:failed|failures?)\b/;
+
+/**
+ * True when `line` is one of libtest's own verdict lines. Asked by the
+ * extractor so a verdict line is never JOINED into an assertion the way a
+ * panic MESSAGE is: a verdict the success veto has just cleared is invisible
+ * to `classifyFailureLine`, so the join guard cannot rely on the table alone.
+ */
+export function isLibtestVerdictLine(line: string): boolean {
+  return LIBTEST_VERDICT_RE.test(line);
+}
+
+/**
+ * The tri-state answer to "does this window show libtest FAILING a test?"
+ * (the #746/#798 doctrine: an absent observation is never a verdict).
+ *
+ *   - `true`  — the window carries a failing libtest verdict, so a panic header
+ *     in it is the run's own failing verdict.
+ *   - `false` — the window carries libtest verdicts and NONE of them failed: a
+ *     `#[should_panic]` test that passed prints its panic text with a passing
+ *     tally underneath, so that panic names a test that PASSED and must never
+ *     be quoted as the defect.
+ *   - `undefined` — the window carries no libtest verdict at all (a truncated
+ *     1500-char tail, a hand-built single-line fixture). Nothing was observed,
+ *     so nothing is vetoed; the header stands on its own.
+ */
+export function libtestWindowVerdict(lines: readonly string[]): boolean | undefined {
+  let seen = false;
+  for (const line of lines) {
+    if (!LIBTEST_VERDICT_RE.test(line)) continue;
+    seen = true;
+    if (LIBTEST_FAILING_VERDICT_RE.test(line)) return true;
+  }
+  return seen ? false : undefined;
 }
 
 /**

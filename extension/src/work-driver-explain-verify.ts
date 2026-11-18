@@ -224,8 +224,14 @@ export function explainVerifyFailed(cap: Cap, state: WorkState): string {
   const advice = failures.some((f) => f.startsWith(BASELINE_RED_MARKER))
     ? // #2341 — a recorded stale-base finding says the base trails the default
       // branch; "fix the gate there" is the advice that sent an operator to
-      // chase a base no change could ever turn green.
-      failures.some((f) => f.includes(BASELINE_STALE_BASE_MARKER))
+      // chase a base no change could ever turn green. BOTH markers are asked
+      // of the SAME entry: the stale marker rides inside the `[baseline-red]`
+      // finding, so an unrelated entry that merely contains the bracketed
+      // token must not flip the advice — the sibling marker is matched with
+      // `startsWith` for exactly that reason.
+      failures.some(
+        (f) => f.startsWith(BASELINE_RED_MARKER) && f.includes(BASELINE_STALE_BASE_MARKER),
+      )
       ? "The verify command already fails at the cycle's base commit, and the finding says the base trails the default branch — re-run against a base that includes the default branch before treating the base gate as broken."
       : "The verify command already fails at the cycle's base commit — fix the gate there (or the host it runs on) before inspecting the worktree(s), then re-run."
     : "Inspect the worktree(s), fix or re-dispatch, and re-run.";
@@ -287,7 +293,12 @@ export function explainNoVerdictCap(cap: Cap, state: WorkState): string | undefi
       // cannot be acted on (no change on that base makes it green), so this
       // route drops it and names the divergence instead. Without the marker
       // the classic advice is unchanged — an absent probe is never a claim.
-      const stale = failures.some((f) => f.includes(BASELINE_STALE_BASE_MARKER));
+      // Both markers are asked of the SAME entry (the stale one rides inside
+      // the [baseline-red] finding), so an unrelated entry that carries the
+      // bracketed token cannot flip the advice.
+      const stale = failures.some(
+        (f) => f.startsWith(BASELINE_RED_MARKER) && f.includes(BASELINE_STALE_BASE_MARKER),
+      );
       const advice = stale
         ? "The recorded finding says the base trails the default branch, which already carries commits this base predates — re-run the cycle against a base that includes the default branch; the base commit itself is not what to fix first."
         : "Fix the gate at the base commit (or the host it runs on) first, then re-run the cycle.";

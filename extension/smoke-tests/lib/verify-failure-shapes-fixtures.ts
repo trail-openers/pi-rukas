@@ -124,11 +124,33 @@ export function rustPanicHeader(test: string, at: string): string {
 /** cargo's trailing target-level summary (names the TARGET, never a check). */
 export const CARGO_TARGET_SUMMARY = "error: test failed, to rerun pass `--bin nessie`";
 
+/**
+ * #2341 round 1 — cargo's WHOLE target-level dialect, not just the one
+ * sentence. Every one of these is printed about the TARGET or the test
+ * PROCESS and is byte-identical across the different tests that failed inside
+ * it, so each must classify `cargo-summary` with `namesTest: false`: it may
+ * anchor evidence, it may never be "the assertion", and it may never buy a
+ * "SAME assertion" claim. The SIGABRT line is the one a real adversarial round
+ * reproduced the fold with, sitting BELOW the last panic and dragging the
+ * evidence anchor past the decisive pair.
+ */
+export const CARGO_SIGABRT_SUMMARY =
+  "error: process didn't exit successfully: `/home/ci/target/debug/deps/nessie-1a2b3c` (signal: 6, SIGABRT: process abort signal)";
+export const CARGO_TARGET_SUMMARIES: readonly string[] = [
+  CARGO_TARGET_SUMMARY,
+  CARGO_SIGABRT_SUMMARY,
+  "error: 1 target failed:",
+  "error: could not compile `nessie` (bin \"nessie\") due to 1 previous error",
+  "error: aborting due to 1 previous error",
+];
+
 /** The whole cargo/libtest stream for one panicking test, real dialect. */
 export function rustCargoStream(opts: {
   test: string;
   at: string;
   message: string;
+  /** cargo's trailing line; defaults to the test-failed summary. */
+  trailer?: string;
 }): string {
   return [
     "running 41 tests",
@@ -147,7 +169,7 @@ export function rustCargoStream(opts: {
     "",
     "test result: FAILED. 40 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
     "",
-    CARGO_TARGET_SUMMARY,
+    opts.trailer ?? CARGO_TARGET_SUMMARY,
   ].join("\n");
 }
 
@@ -160,6 +182,26 @@ export const RUST_CARGO_STREAM = rustCargoStream({
 
 /** The joined pair the extractor must return for that stream. */
 export const RUST_PANIC_ASSERTION = `${rustPanicHeader(NESSIE_TEST, RUST_PANIC_AT)} ${RUST_PANIC_MESSAGE}`;
+
+/**
+ * #2341 round 1 — the `#[should_panic]` trap. A Rust unit stage that PASSES
+ * prints the byte-identical panic header as the CAPTURED STDOUT of a test that
+ * passed, and the run still exits non-zero because a LATER stage failed on a
+ * dialect the table does not know (`make: *** …`). The stream therefore shows
+ * libtest reporting no failing test at all, and the extractor must report
+ * ABSENCE — naming `a::t` as the defect would send an operator (and the
+ * cycle's one corrective round) after a test that passed.
+ */
+export const RUST_SHOULD_PANIC_GREEN_STREAM = [
+  "running 3 tests",
+  "thread 'a::t' panicked at src/a.rs:7:5:",
+  "explicit panic",
+  "test a::t ... ok",
+  "test a::one ... ok",
+  "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+  "",
+  "make: *** [Makefile:12: e2e] Error 1",
+].join("\n");
 
 /** The assertion helper both suites print through. */
 export function makeAssert(): {

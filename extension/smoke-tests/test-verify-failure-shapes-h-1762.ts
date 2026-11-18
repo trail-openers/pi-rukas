@@ -34,6 +34,7 @@ import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
 import { consolidatedAssertionLines } from "../src/work-driver-verify-record.ts";
 import { harvestConsolidatedTallies } from "../src/work-driver-verify-tally.ts";
 import {
+  CARGO_SIGABRT_SUMMARY,
   CARGO_TARGET_SUMMARY,
   CHECKS_BLOCK,
   CMD,
@@ -228,6 +229,17 @@ const { assert, failed } = makeAssert();
     // the checked fact, not just their keys.
     [rustPanicHeader("a::tests::t", "src/a.rs:91:5"), "rust-panic"],
     [CARGO_TARGET_SUMMARY, "cargo-summary"],
+    // #2341 round 1 — the rest of cargo's target-level dialect: one sentence
+    // refused was the round-1 defect, since a neighbouring cargo `error:` line
+    // classified as a `diagnostic` that names a check and folded two different
+    // Rust tests into the same assertion.
+    [CARGO_SIGABRT_SUMMARY, "cargo-summary"],
+    ["error: 1 target failed:", "cargo-summary"],
+    [
+      "error: could not compile `nessie` (bin \"nessie\") due to 1 previous error",
+      "cargo-summary",
+    ],
+    ["error: aborting due to 1 previous error", "cargo-summary"],
   ];
   for (const [line, shape] of probes) {
     const got = classifyFailureLine(line);

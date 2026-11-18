@@ -36,6 +36,8 @@ import {
   isBareFailedMarker,
   isCargoTargetSummaryLine,
   isHarnessWrapper,
+  isLibtestVerdictLine,
+  libtestWindowVerdict,
   rustPanicSamenessKey,
 } from "./work-driver-verify-failures.ts";
 
@@ -181,6 +183,7 @@ function joinedRustPanic(header: string, next: string | undefined): string {
   if (!header.endsWith(":")) return header;
   if (next === undefined) return header;
   if (/^(note:|----|thread\s+')/.test(next)) return header;
+  if (isLibtestVerdictLine(next)) return header;
   if (isNonAssertionLine(next) || classifyFailureLine(next) !== undefined) return header;
   return `${header} ${next}`;
 }
@@ -248,8 +251,21 @@ export function extractSpecificAssertion(failureTail: string): string {
     if (isMarkerLine(candidate) && !isCountSummary(candidate)) continue;
     const kind = classifyFailureLine(candidate);
     if (kind?.namesTest !== true) continue;
-    if (kind.shape === "rust-panic")
+    if (kind.shape === "rust-panic") {
+      // #2341 round 1 — the `#[should_panic]` veto. A panic header is only
+      // evidence of a FAILING test when the window around it says a test
+      // failed: libtest prints a passing `#[should_panic]` test's captured
+      // stdout in the identical shape, so in a run that exited non-zero for
+      // some OTHER reason (a later `make` stage, a lint stage) this line names
+      // a test that PASSED. Quoting it as "the specific assertion" is the
+      // #746/#798 class the module's own doctrine forbids — a confident wrong
+      // answer where an honest absence was the truth — and a classified line
+      // can earn the cycle's one corrective round. `undefined` (no verdict
+      // observed at all — a truncated window, a single-line fixture) vetoes
+      // nothing: an absent observation is not a verdict either way.
+      if (libtestWindowVerdict(lines) === false) continue;
       return redactedAssertion(joinedRustPanic(candidate, lines[i + 1]));
+    }
     return redactedAssertion(candidate);
   }
   return NO_SPECIFIC_ASSERTION;
@@ -264,15 +280,18 @@ export function extractSpecificAssertion(failureTail: string): string {
  * sentinel never matches — absence on either side is not evidence of a
  * shared cause.
  *
- * #2341 — sameness FAILS CLOSED on a target-level cargo summary. Every
- * failing test in one cargo target prints the byte-identical
- * the line error: test failed, to rerun pass --bin X line, so substring
- * containment on that line claims "the SAME assertion" between two genuinely
- * different Rust test failures — and `baselineExplainsChange` excuses a
- * regression the change itself introduced. The extractor can no longer
- * produce such an assertion (the `cargo-summary` shape is `namesTest:
- * false`), but this reader is the sameness gate for hand-built values too,
- * so it refuses the summary wherever it arrives from.
+ * #2341 — sameness FAILS CLOSED on cargo's TARGET-LEVEL lines. Every failing
+ * test in one cargo target prints the byte-identical
+ * the line error: test failed, to rerun pass --bin X line, and cargo's other
+ * run-level summaries (`process didn't exit successfully`, `N target(s)
+ * failed`, `could not compile`) are equally identical across the different
+ * failures inside the target — so substring containment on any of them claims
+ * "the SAME assertion" between two genuinely different Rust test failures, and
+ * `baselineExplainsChange` excuses a regression the change itself introduced.
+ * The extractor can no longer produce such an assertion (the `cargo-summary`
+ * shape is `namesTest: false`), but this reader is the sameness gate for
+ * hand-built values too, so it refuses cargo's target-level dialect wherever it
+ * arrives from — the SAME predicate the table's entry asks, not a copy of it.
  *
  * #2341 — and a Rust panic compares on its IDENTITY, never on the joined
  * prose: `rustPanicSamenessKey` reduces the assertion to the

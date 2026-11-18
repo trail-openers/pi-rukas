@@ -12,11 +12,16 @@ import {
 } from "../src/work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
 import {
+  CARGO_SIGABRT_SUMMARY,
+  CARGO_TARGET_SUMMARIES,
   CARGO_TARGET_SUMMARY,
   NESSIE_TEST,
   RUST_CARGO_STREAM,
   RUST_PANIC_ASSERTION,
+  RUST_PANIC_AT,
+  RUST_PANIC_MESSAGE,
   rustCargoStream,
+  RUST_SHOULD_PANIC_GREEN_STREAM,
   rustPanicHeader,
 } from "./lib/verify-failure-shapes-fixtures.ts";
 
@@ -395,6 +400,96 @@ ${CARGO_TARGET_SUMMARY}`;
   assert(
     extractSpecificAssertion(green) === NO_SPECIFIC_ASSERTION,
     "case 23 (#2341 veto): passing tallies and the summary yield no assertion",
+  );
+}
+
+// --- Case 24 (#2341 round 1, the fail-open the review reproduced): cargo's
+// OTHER target-level `error:` lines. `error: process didn't exit successfully:
+// …(signal: 6, SIGABRT)` is byte-identical for every test that died in the
+// target, and it sits BELOW the last panic — so while it classified as a
+// `diagnostic` naming a check, `lastFailureIndex` anchored on it, the 1500-char
+// window sliced the decisive pair off, and both streams extracted THAT line:
+// two different Rust tests compared as the same assertion and
+// `baselineExplainsChange` excused a regression the change had just added. The
+// whole cargo target-level dialect must be `namesTest: false`, so the anchor
+// stays on the panic and the two streams extract apart.
+{
+  const otherTest = "session::fastpath_tests::slow_path_reports_progress";
+  const a = rustCargoStream({
+    test: NESSIE_TEST,
+    at: RUST_PANIC_AT,
+    message: RUST_PANIC_MESSAGE,
+    trailer: CARGO_SIGABRT_SUMMARY,
+  });
+  const b = rustCargoStream({
+    test: otherTest,
+    at: "src/session/fastpath_tests.rs:120:9",
+    message: "expected progress within 50 ms, got 133.7 ms",
+    trailer: CARGO_SIGABRT_SUMMARY,
+  });
+  const ea = extractSpecificAssertion(extractAttributedTail(a, 1500).tail);
+  const eb = extractSpecificAssertion(extractAttributedTail(b, 1500).tail);
+  assert(
+    ea.startsWith("thread '") && eb.startsWith("thread '"),
+    `case 24 (#2341 SIGABRT): the anchor stays on the panic, not the trailing cargo summary (a=${JSON.stringify(ea.slice(0, 30))})`,
+  );
+  assert(ea !== eb, `case 24 (#2341 SIGABRT): the two tests extract APART (${ea === eb})`);
+  assert(
+    !sharesAssertion(a, eb) && !sharesAssertion(b, ea),
+    "case 24 (#2341 SIGABRT): neither failure shares the other's assertion — the regression is not excused",
+  );
+  assert(
+    !ea.includes("process didn't exit successfully") && !eb.includes("didn't exit successfully"),
+    "case 24 (#2341 SIGABRT): the process-level line is never the assertion",
+  );
+  for (const line of CARGO_TARGET_SUMMARIES) {
+    assert(
+      !sharesAssertion(a, line) && !sharesAssertion(b, line),
+      `case 24 (#2341 SIGABRT): no cargo target-level line buys a SAME claim (got: ${JSON.stringify(line.slice(0, 40))})`,
+    );
+    assert(
+      extractSpecificAssertion(`${"noise from the run\n".repeat(2)}${line}`) ===
+        NO_SPECIFIC_ASSERTION,
+      `case 24 (#2341 SIGABRT): a stream whose only cargo line is that summary reports absence (got: ${JSON.stringify(line.slice(0, 40))})`,
+    );
+  }
+}
+
+// --- Case 25 (#2341 round 1, the #[should_panic] trap): a Rust unit stage
+// that PASSES prints the byte-identical panic header as the captured stdout of
+// a test that passed, and the run exits non-zero because a LATER stage failed
+// on a dialect the table does not know. The exit-code argument in the shape's
+// justification is satisfied and yet the panic names a test that PASSED —
+// before the veto it became "the specific assertion", converting an honest
+// absence into the #746/#798 class. With libtest verdicts in the window and no
+// failing one, the panic is refused; with no verdict in the window at all (the
+// truncated half-pair of case 22) nothing is observed and the header stands.
+{
+  const a = extractSpecificAssertion(RUST_SHOULD_PANIC_GREEN_STREAM);
+  assert(
+    a === NO_SPECIFIC_ASSERTION,
+    `case 25 (#2341 should_panic): a passing test's captured panic is never the assertion (got: ${JSON.stringify(a)})`,
+  );
+  assert(
+    extractSpecificAssertion(rustPanicHeader(NESSIE_TEST, RUST_PANIC_AT)) ===
+      rustPanicHeader(NESSIE_TEST, RUST_PANIC_AT),
+    "case 25 (#2341 should_panic): an unobserved verdict vetoes nothing — a truncated header still names the defect",
+  );
+  // And the veto is not simply "a panic is never an assertion": the same
+  // should_panic print with a failing libtest verdict in the window is read.
+  const red = `${RUST_SHOULD_PANIC_GREEN_STREAM.replace("test result: ok. 3 passed; 0 failed", "test result: FAILED. 2 passed; 1 failed")}`;
+  assert(
+    extractSpecificAssertion(red) ===
+      `${rustPanicHeader("a::t", "src/a.rs:7:5")} explicit panic`,
+    `case 25 (#2341 should_panic): a failing verdict in the window lets the panic be quoted (got: ${JSON.stringify(extractSpecificAssertion(red))})`,
+  );
+  // A libtest verdict is never JOINED into the pair the way a message is.
+  const joined = extractSpecificAssertion(
+    `${rustPanicHeader("a::t", "src/a.rs:7:5")}\ntest result: ok. 3 passed; 0 failed; 0 ignored`,
+  );
+  assert(
+    !joined.includes("test result:"),
+    `case 25 (#2341 should_panic): a verdict line is never joined into the assertion (got: ${JSON.stringify(joined)})`,
   );
 }
 

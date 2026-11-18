@@ -37,6 +37,7 @@ import {
 import { depsHintStartFor } from "../src/work-driver-verify-inner-line.ts";
 import { depsHintApplies } from "../src/work-driver-verify-record.ts";
 import {
+  CARGO_SIGABRT_SUMMARY,
   CARGO_TARGET_SUMMARY,
   CHECKS_BLOCK,
   CMD,
@@ -69,6 +70,20 @@ const SHAPES: Array<[string, string, boolean]> = [
   // a check — the line that must never become "the specific assertion".
   [rustPanicHeader("a::tests::t", "src/a.rs:91:5"), "rust-panic", true],
   [CARGO_TARGET_SUMMARY, "cargo-summary", false],
+  // #2341 round 1 — the whole cargo target-level dialect, not just the one
+  // sentence: each of these is byte-identical across the tests that failed in
+  // the target, so none may name a check. `error[E0308]` is the counter-arm —
+  // a compiler diagnostic with a code DOES name one, and the widened
+  // target-summary rule must not swallow it.
+  [CARGO_SIGABRT_SUMMARY, "cargo-summary", false],
+  ["error: 1 target failed:", "cargo-summary", false],
+  [
+    "error: could not compile `nessie` (bin \"nessie\") due to 1 previous error",
+    "cargo-summary",
+    false,
+  ],
+  ["error: aborting due to 1 previous error", "cargo-summary", false],
+  ["error[E0308]: mismatched types", "diagnostic", true],
 ];
 for (const [line, shape, names] of SHAPES) {
   const got = classifyFailureLine(line);

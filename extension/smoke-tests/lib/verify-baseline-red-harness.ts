@@ -91,8 +91,8 @@ export async function runGateFixture(
   const secondBaselineDir = path.join(repo, ".worktrees", "baseline-verify-9-base2");
   const verifyRuns: Array<"base" | "change"> = [];
   let baselineHadChange: boolean | undefined;
-  const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
-    cmd = commandOf(cmd, o);
+  const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (command, o) => {
+    const cmd = commandOf(command, o);
     if (cmd.startsWith("git ")) return { stdout: (await sh(o?.cwd ?? "", cmd)).stdout };
     const where = o?.cwd === baselineDir || o?.cwd === secondBaselineDir ? "base" : "change";
     if (where === "base") baselineHadChange = existsSync(path.join(baselineDir, "change.txt"));

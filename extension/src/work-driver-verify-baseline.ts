@@ -30,6 +30,11 @@ import {
   sharesAssertion,
 } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
+import {
+  BASELINE_STALE_BASE_MARKER,
+  type BaseBehindDefaultBranch,
+  probeBaseBehindDefault,
+} from "./work-driver-verify-baseline-stale.ts";
 import { TIER_KNOB, TIER_TIMEOUT_FILE, VERIFY_TIMEOUT_ENV } from "./work-driver-verify-budget.ts";
 import { verifyHostEnv } from "./work-driver-verify-cmd.ts";
 import { VERIFY_TIMEOUT_LABEL, boundText } from "./work-driver-verify-develop-helpers.ts";
@@ -44,34 +49,32 @@ import { type ExecFn, worktreePath } from "./worktree.ts";
 export const BASELINE_RED_MARKER = "[baseline-red]";
 
 /**
- * #2341 — rides mid-string on a `baselineRedMessage` whose red is plausibly
- * explained by commits the base predates on the default branch. The two
- * explainers (`explainNoVerdictCap`, `explainVerifyFailed`) key on it to drop
- * the "Fix the gate at the base commit" instruction, which is unactionable
- * advice when the base can never go green because mainline already moved on.
+ * #2341 — re-exported so every reader keeps importing the baseline-red failure
+ * vocabulary from ONE module (`explain-verify` and both smoke families import
+ * it from here); the predicate and the probe live in
+ * `work-driver-verify-baseline-stale.ts`, the §12 split of this file.
  */
-export const BASELINE_STALE_BASE_MARKER = "[baseline-behind-default-branch]";
+export { BASELINE_STALE_BASE_MARKER, type BaseBehindDefaultBranch };
 
 /**
- * #2341 — the tri-state answer of the stale-base probe, asked only after a
- * base run came back red. `behind` is the git fact the handoff may state
- * (base is a strict ancestor of the default-branch tip, N commits back);
- * `not-behind` is the answer that keeps the fix-the-base advice; `unknown` is
- * an unreadable probe — it never reads as "the red is not explained by
- * mainline commits" with confidence, so the handoff says it could not
- * establish the fact. Silence is never a pass in either direction.
+ * The cap-evidence bound a baseline-red failure string has to fit (the
+ * `CAP_EVIDENCE_PER_FAILURE_MAX` of `work-develop-cap-evidence.ts`, which
+ * keeps a failure's TAIL when no `FAILED:` marker anchors it — so a string
+ * that overflows loses the `[baseline-red]` marker the cap routes on AND the
+ * quoted command the #1765 attribution reads, which is the artefact the
+ * operator actually reads). The renderer below budgets against it instead of
+ * letting a long assertion push the message past it.
  */
-export type BaseBehindDefaultBranch =
-  | {
-      status: "behind";
-      /** The default branch name ("main"), without the remote prefix. */
-      branch: string;
-      commitsBehind: number;
-      /** `git log --oneline` subjects of the missing commits, newest first. */
-      commits: readonly string[];
-    }
-  | { status: "not-behind" }
-  | { status: "unknown"; reason: string };
+const CAP_EVIDENCE_BOUND = 800;
+
+/**
+ * The narrowest assertion the renderer will show before it drops the middle
+ * sentence to buy room. The sentence it drops ("The gate was red before this
+ * change was written …") restates the lead clause ("ALSO FAILS … WITHOUT this
+ * change") in prose the operator has already read; the assertion is the half
+ * they act on. The two explain routes still carry the full advice.
+ */
+const MIN_ASSERTION_CHARS = 120;
 
 /**
  * The ONE naming rule for a baseline probe's throwaway worktree. Exported
@@ -300,8 +303,9 @@ export async function probeBaselineVerify(
         // 400, not 200: the nessie 1415 panic pair is ~206 code points and the
         // AC1 clause the operator needs ("which is over the 100 ms bound")
         // sits at the END of it — a 200-code-point clip amputated exactly the
-        // decisive text. The cap stays well inside the 800-char evidence
-        // bound the failure string must fit.
+        // decisive text. This is the STORE bound; the width that reaches the
+        // operator is bounded again at render time against the 800-char
+        // cap-evidence window — see {@link CAP_EVIDENCE_BOUND}.
         assertion: assertion === NO_SPECIFIC_ASSERTION ? null : assertion.slice(0, 400),
         rawStream: raw,
         // #1404 — the gate judged itself. The loop's own SUMMARY line
@@ -323,90 +327,12 @@ export async function probeBaselineVerify(
 }
 
 /**
- * #2341 — is the red base simply BEHIND the default branch? Three local git
- * reads against the cycle's own checkout (the probe tree is detached and
- * carries no remote refs), and every one is TRI-STATE: a git call that could
- * not answer is `unknown`, never a silent "no" — the same rule
- * `work-driver-adversarial-fix-git.ts`'s `isAncestor` follows, including its
- * exit-code convention (`merge-base --is-ancestor` exits 1 for a definitive
- * non-ancestor; any other failure is an unreadable probe).
- *
- * Local reads only — no `gh`, no network — because this runs on the red
- * path inside the develop gate and a network probe there is a hang the gate
- * did not budget for. `origin/HEAD` is the primary resolution with `main`
- * and `master` as the two names every clone answers to; a clone whose
- * default branch is neither gets `unknown`, not a guess.
- *
- * `behind` requires BOTH halves of the git fact: the base is a strict
- * ancestor of the default-branch tip AND commits sit between them. A
- * diverged base (not an ancestor) is `not-behind`: the probe cannot claim
- * mainline moves the red for a base that carries its own commits.
- */
-async function probeBaseBehindDefault(
-  execFn: ExecFn,
-  opts: { repoRoot: string; baseSha: string; env?: NodeJS.ProcessEnv },
-): Promise<BaseBehindDefaultBranch> {
-  const git = async (
-    argv: string[],
-  ): Promise<{ ok: true; stdout: string } | { ok: false; code?: number; reason: string }> => {
-    try {
-      const { stdout } = await execFn("git", {
-        argv,
-        cwd: opts.repoRoot,
-        maxBuffer: 256 * 1024,
-        timeout: 30_000,
-        ...(opts.env === undefined ? {} : { env: opts.env }),
-      });
-      return { ok: true, stdout };
-    } catch (err) {
-      const e = err as Error & { code?: number | string };
-      const code = typeof e.code === "number" ? e.code : undefined;
-      return { ok: false, ...(code === undefined ? {} : { code }), reason: e.message ?? "" };
-    }
-  };
-  let ref = "";
-  const head = await git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
-  if (head.ok && head.stdout.trim() !== "") ref = head.stdout.trim();
-  else {
-    for (const candidate of ["origin/main", "origin/master"]) {
-      const r = await git(["rev-parse", "--verify", "--quiet", candidate]);
-      if (r.ok && r.stdout.trim() !== "") {
-        ref = candidate;
-        break;
-      }
-    }
-  }
-  if (ref === "")
-    return {
-      status: "unknown",
-      reason: "could not resolve origin/HEAD, origin/main or origin/master locally",
-    };
-  const ancestor = await git(["merge-base", "--is-ancestor", opts.baseSha, ref]);
-  if (!ancestor.ok) {
-    // Exit 1 is git's definitive NO; anything else never read as either answer.
-    if (ancestor.code === 1) return { status: "not-behind" };
-    return { status: "unknown", reason: `ancestry probe failed: ${ancestor.reason}` };
-  }
-  const log = await git(["log", "--oneline", "--no-decorate", `${opts.baseSha}..${ref}`]);
-  if (!log.ok) return { status: "unknown", reason: `divergence read failed: ${log.reason}` };
-  const commits = log.stdout
-    .split("\n")
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-  if (commits.length === 0) return { status: "not-behind" };
-  return {
-    status: "behind",
-    branch: ref.replace(/^origin\//, ""),
-    commitsBehind: commits.length,
-    commits,
-  };
-}
-
-/**
- * The failure string for a red baseline. Kept short: cap evidence keeps only
- * the last 800 chars of each failure (work-develop-cap-evidence.ts).
- * `changeFailure` is the text the change's own run failed with — the "same
- * assertion" claim is made only when the base assertion appears in it.
+ * The failure string for a red baseline, composed to FIT the 800-char
+ * cap-evidence bound (see {@link CAP_EVIDENCE_BOUND}) — `changeFailure` is the
+ * text the change's own run failed with, and the "same assertion" claim is
+ * made only when the base assertion appears in it. The stale-base probe that
+ * decides the closing advice lives in `work-driver-verify-baseline-stale.ts`
+ * (#2341) and is asked by `probeBaselineVerify`, on the freshly-red arm only.
  */
 export function baselineRedMessage(
   verdict: RedBaselineVerdict,
@@ -424,23 +350,20 @@ export function baselineRedMessage(
     verdict.assertion !== null && sharesAssertion(opts.changeFailure, verdict.assertion)
       ? " — the SAME assertion the change's run failed on"
       : "";
+  const assertionText = verdict.assertion ?? NO_SPECIFIC_ASSERTION;
   // #2341 — the closing advice, three-way. A base that trails the default
   // branch cannot be advised "fix the gate at the base commit": no change on
   // that base could ever make it green (nessie 1415 made an operator chase an
   // OOM that did not exist and an unfixable base for 58 minutes). The probe
   // states the git fact — the divergence and the commits — and explicitly
   // withholds causation, which only a reproduction on the base can establish.
-  // An `unknown` probe keeps the classic advice but SAYS it could not check,
-  // so an unreadable git call never reads as "mainline does not explain the
-  // red". The behind arm also drops the middle sentence: the finding already
-  // leads with "ALSO FAILS … without this change", and the stale clause
-  // repeats its point in the operator's terms — keeping both would push the
-  // string past the 800-char cap-evidence bound, whose fallback slices the
-  // TAIL and would amputate the marker and the quoted panic, the two parts
-  // the cap's routing and the operator's diagnosis read.
+  // An `unknown` probe keeps the classic advice but SAYS it could not check, in
+  // the module's FIXED VOCABULARY (never git's own error text, which can carry
+  // local paths into a public handoff), so an unreadable git call never reads
+  // as "mainline does not explain the red".
   const stale = verdict.staleBase;
   const behind = stale?.status === "behind" ? stale : undefined;
-  const middle =
+  let middle =
     behind === undefined
       ? "The gate was red before this change was written, so no change can pass it; the failures below cannot be attributed to this diff until the base is green. "
       : "";
@@ -453,10 +376,33 @@ export function baselineRedMessage(
         )}${behind.commits.length > 2 ? ` (+${behind.commits.length - 2} more)` : ""}: the red may be ${behind.branch}'s, not the base's (divergence, not cause); re-run on a base that includes ${behind.branch}`
     : `Fix the gate at the base commit (or the host it runs on), then re-run${
         stale?.status === "unknown"
-          ? ` (default-branch staleness could not be established: ${stale.reason.slice(0, 40)})`
+          ? ` (default-branch staleness could not be established: ${stale.reason})`
           : ""
       }`;
-  return `${BASELINE_RED_MARKER} verify command \`${opts.cmd}\` ALSO FAILS ${where} — assertion at base: ${verdict.assertion ?? NO_SPECIFIC_ASSERTION}${same}. ${middle}${closing}`;
+  // #2341 round 1 — the BOUND IS ENFORCED, not asserted. The stored assertion
+  // is bounded at 400 by the probe, but 400 was never the width that FITS: the
+  // whole message has to live inside the 800-char cap-evidence window, whose
+  // fallback (`extractAttributedTail` finding no marker in a single-line
+  // failure) amputates the TAIL — so a 361-char assertion pushed the
+  // `[baseline-red]` marker and the quoted command, the two parts the cap's
+  // routing and the operator's diagnosis read, out of the evidence artefact.
+  // So: buy room by dropping the middle sentence first (it restates the lead
+  // clause in prose the operator has just read, and both explain routes still
+  // carry the full advice), and clip the assertion's TAIL only when even that
+  // is not enough — its head is the half that names the test, the file and the
+  // line. Only an operator-authored verify command longer than the window can
+  // still overflow, and that string is quoted whole by design (#1765 routes
+  // the cap on the command named INSIDE the entry).
+  const lead = `${BASELINE_RED_MARKER} verify command \`${opts.cmd}\` ALSO FAILS ${where} — assertion at base: `;
+  const budgetFor = (mid: string): number =>
+    Math.max(0, CAP_EVIDENCE_BOUND - lead.length - `${same}. ${mid}${closing}`.length);
+  if (budgetFor(middle) < MIN_ASSERTION_CHARS) middle = "";
+  const budget = budgetFor(middle);
+  const shown =
+    assertionText.length <= budget
+      ? assertionText
+      : `${assertionText.slice(0, Math.max(0, budget - 1))}\u2026`;
+  return `${lead}${shown}${same}. ${middle}${closing}`;
 }
 
 /** One failure of the change's own verify run, for the baseline comparison. */ export interface ChangeFailure {

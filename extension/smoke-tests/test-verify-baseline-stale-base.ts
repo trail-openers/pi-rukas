@@ -12,17 +12,42 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { boundJoinFailures } from "../src/work-develop-cap-evidence.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import {
   BASELINE_RED_MARKER,
   BASELINE_STALE_BASE_MARKER,
+  type BaseBehindDefaultBranch,
+  type RedBaselineVerdict,
+  baselineRedMessage,
 } from "../src/work-driver-verify-baseline.ts";
 import { appendEvent } from "../src/workflow-state.ts";
 import {
+  CMD,
   runGateFixture,
   type Outcome,
 } from "./lib/verify-baseline-red-harness.ts";
-import { RUST_CARGO_STREAM } from "./lib/verify-failure-shapes-fixtures.ts";
+import {
+  NESSIE_TEST,
+  RUST_CARGO_STREAM,
+  RUST_PANIC_ASSERTION,
+  RUST_PANIC_AT,
+} from "./lib/verify-failure-shapes-fixtures.ts";
+
+/** A fully-evidenced `red` arm carrying the stale-base answer under test. */
+function redArm(
+  assertion: string,
+  staleBase?: BaseBehindDefaultBranch,
+): RedBaselineVerdict {
+  return {
+    status: "red",
+    assertion,
+    rawStream: RUST_CARGO_STREAM,
+    probed: true,
+    exitCode: 101,
+    ...(staleBase === undefined ? {} : { staleBase }),
+  };
+}
 
 const run = (
   name: string,
@@ -103,6 +128,92 @@ const CARGO = `${RUST_CARGO_STREAM}\n`;
   assert(
     explained.includes("default branch"),
     "stale base: the handoff names the default branch as what to re-run against",
+  );
+}
+
+// 7 — #2341 round 1: THE 800-CHAR CAP-EVIDENCE BOUND IS ENFORCED, not
+// asserted. The review measured the rendered message at 840–934 chars for a
+// 267–400-char assertion (the store-site clip is 400, and the bound was a
+// comment claiming it "stays well inside"), and `boundFailure`'s fallback for
+// an unattributable single-line failure is a blind `slice(-800)` — so the
+// `[baseline-red]` marker the cap routes on and the quoted command the #1765
+// attribution reads were the parts amputated. Every arm is now composed to fit,
+// at widths the 204-char nessie fixture never reaches, and the entry survives
+// the real cap-evidence join.
+{
+  const longAssertion = `thread '${NESSIE_TEST}' panicked at ${RUST_PANIC_AT}: ${"m".repeat(400)}`;
+  const arms: Array<[string, RedBaselineVerdict]> = [
+    ["absent", redArm(longAssertion)],
+    ["not-behind", redArm(longAssertion, { status: "not-behind" })],
+    [
+      "unknown",
+      redArm(longAssertion, {
+        status: "unknown",
+        reason: "the ancestry read did not answer",
+      }),
+    ],
+    [
+      "behind",
+      redArm(longAssertion, {
+        status: "behind",
+        branch: "main",
+        commitsBehind: 3,
+        commits: ["fix(a): 1", "fix(a): 2", "fix(a): 3"],
+      }),
+    ],
+  ];
+  for (const [arm, verdict] of arms) {
+    const msg = baselineRedMessage(verdict, {
+      cmd: CMD,
+      baseSha: "0123456789abcdef0123456789",
+      timeoutMs: 60_000,
+      changeFailure: longAssertion,
+    });
+    assert(
+      msg.length <= 800,
+      `bound ${arm} (#2341): the rendered finding fits the 800-char cap-evidence bound (${msg.length})`,
+    );
+    const joined = boundJoinFailures([msg]);
+    assert(
+      joined.includes(BASELINE_RED_MARKER) && joined.includes(CMD),
+      `bound ${arm} (#2341): the marker AND the quoted command survive the real cap-evidence join`,
+    );
+    assert(
+      msg.startsWith(BASELINE_RED_MARKER) &&
+        msg.includes("panicked at src/session/fastpath_tests.rs:91:5"),
+      `bound ${arm} (#2341): the marker leads and the kept assertion names the test, the file and the line`,
+    );
+  }
+  // The middle sentence is what buys the room, and it is the redundant half —
+  // it restates the lead clause. At an ordinary width it stays, so the classic
+  // handoff text is unchanged for the case the fixtures describe.
+  const short = baselineRedMessage(redArm(RUST_PANIC_ASSERTION), {
+    cmd: CMD,
+    baseSha: "0123456789abcdef0123456789",
+    timeoutMs: 60_000,
+    changeFailure: RUST_PANIC_ASSERTION,
+  });
+  assert(
+    short.includes("The gate was red before this change was written") &&
+      short.includes("Fix the gate at the base commit") &&
+      short.includes("which is over the 100 ms bound"),
+    `bound short (#2341): an ordinary-length assertion keeps the full classic text (${short.length})`,
+  );
+  // The unknown arm renders the probe's FIXED VOCABULARY, never git's own error
+  // text (the executor's message is `Command failed: git\n<stderr>`, which
+  // carries local paths into a published handoff), and never clips mid-word.
+  const unknownMsg = baselineRedMessage(
+    redArm(RUST_PANIC_ASSERTION, {
+      status: "unknown",
+      reason: "the divergence read did not answer",
+    }),
+    { cmd: CMD, baseSha: "0123456789abcdef0123456789", timeoutMs: 60_000, changeFailure: "" },
+  );
+  assert(
+    unknownMsg.includes(
+      "staleness could not be established: the divergence read did not answer",
+    ) && !unknownMsg.includes("Command failed"),
+    `bound unknown (#2341): the unknown arm names a fixed reason, not git's own text (got ${unknownMsg.slice(-170)})`,
   );
 }
 
