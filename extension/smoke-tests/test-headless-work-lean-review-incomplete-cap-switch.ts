@@ -33,9 +33,11 @@ import { URL, driveLean, leanLog } from "./lib/lean-result-fixture.ts";
 import {
   GOLDEN_GATES_OFF,
   GOLDEN_GATES_ON,
+  emptyRecordReviewStep,
   fixedWaveLog,
   goldenLog,
   judgedReviewStep,
+  passNoRecordReviewStep,
   republishedAfterReview,
   waveNoRoundReviewStep,
   withReviews,
@@ -269,6 +271,36 @@ for (const [value, want] of [
   assert(
     noRound.cap === "review-incomplete" && noRound.reviewComplete === false,
     `wave-no-round: waves naming the published head with no judged round certify nothing (got ${String(noRound.cap)} / ${String(noRound.reviewComplete)})`,
+  );
+  // The two position-arm siblings of `noRound`: a returned kind whose record vouches
+  // for nothing at all — `done` naming no `review`, and `fixed` naming an empty one
+  // (no round, no wave head), so POSITION is the only rule left that could certify
+  // them. Before the rounds precondition was hoisted above the position fallback both
+  // read `true`; no production writer leaves either behind (`review.ts` folds pass 1
+  // with `noteRound` before every return), so each pins a record that reaches the
+  // projection by another route — the loader validates a `review` present and never
+  // asks for one.
+  const ready = leanLog({ prUrl: URL, draft: false });
+  const noRecordPass =
+    (await driveLean("handed-back", 10, withReviews(ready, [passNoRecordReviewStep()]))).issue ??
+    {};
+  assert(
+    noRecordPass.prState === "ready",
+    `pass-no-record: publish's own rule still calls this PR ready — only the rounds precondition can refuse it (${String(noRecordPass.prState)})`,
+  );
+  assert(
+    noRecordPass.cap === "review-incomplete" && noRecordPass.reviewComplete === false,
+    `pass-no-record: a done review with no judged round on record certifies nothing (got ${String(noRecordPass.cap)} / ${String(noRecordPass.reviewComplete)})`,
+  );
+  const emptyRecordFixed =
+    (await driveLean("handed-back", 10, withReviews(ready, [emptyRecordReviewStep()]))).issue ?? {};
+  assert(
+    emptyRecordFixed.prState === "ready",
+    `fixed-empty-record: publish's own rule still calls this PR ready — only the rounds precondition can refuse it (${String(emptyRecordFixed.prState)})`,
+  );
+  assert(
+    emptyRecordFixed.cap === "review-incomplete" && emptyRecordFixed.reviewComplete === false,
+    `fixed-empty-record: a fixed review whose record names no round and no wave certifies nothing (got ${String(emptyRecordFixed.cap)} / ${String(emptyRecordFixed.reviewComplete)})`,
   );
 }
 
