@@ -40,6 +40,7 @@ import type { FailureLine, FailureShape } from "./work-driver-verify-failures.ts
 import { FAILED_MARKER_RE, payloadDetail } from "./work-driver-verify-marker.ts";
 import {
   CARGO_TARGET_SUMMARY_RE,
+  DIAGNOSTIC_IDENTITY_SRC,
   RUST_PANIC_RE,
   isLocationlessRustcDiagnostic,
 } from "./work-driver-verify-rust.ts";
@@ -110,8 +111,8 @@ const RUST_PANIC_SHAPE: ShapeEntry = reEntry("rust-panic", true, RUST_PANIC_RE, 
  * #2341 — cargo's trailing target-level summaries: every one of them is
  * byte-identical across the tests that failed inside the target, so the entry
  * is recognised but names no check (the dialect itself and the file-location
- * test that keeps a real `diagnostic` from being swallowed with it live in
- * `work-driver-verify-rust.ts`).
+ * and identity-code tests that keep a real `diagnostic` from being swallowed
+ * with it live in `work-driver-verify-rust.ts`).
  */
 const CARGO_TARGET_SUMMARY_SHAPE: ShapeEntry = reEntry(
   "cargo-summary",
@@ -129,8 +130,10 @@ const CARGO_TARGET_SUMMARY_SHAPE: ShapeEntry = reEntry(
 const FAILED_MARKER_SHAPE: ShapeEntry = reEntry("failed-marker", false, FAILED_MARKER_RE);
 
 /** The driver's own compiler/linter `error:` dialect, one literal for both
- * location-split entries below (two copies of the arm is how they drift). */
-const DIAGNOSTIC_RE = /^error:?\s|^Error:|error\[E\d+\]|\bTS\d{4,}\b/;
+ * location-split entries below (two copies of the arm is how they drift). The
+ * identity arms are the SAME source the target-summary lookahead asks
+ * (#2341 F1), so "carries an identity code" has one answer across the table. */
+const DIAGNOSTIC_RE = new RegExp(String.raw`^error:?\s|^Error:|${DIAGNOSTIC_IDENTITY_SRC}`);
 
 /**
  * The shape the pre-veto step answers for: the payload-bearing marker, the #1762

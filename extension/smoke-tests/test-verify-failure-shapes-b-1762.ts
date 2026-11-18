@@ -472,5 +472,28 @@ const LABEL = "[host-resource-exhaustion]";
   );
 }
 
+// ── 10. #2341 F1 — the whole location-less, code-less `error:` dialect is target-level ─
+// An `error:` line carrying neither a file location nor an identity code names
+// a TARGET or a PROCESS, never a check — it may never be quoted or buy SAME.
+{
+  for (const line of [
+    "error: failed to run custom build command for `nessie v0.1.0`",
+    "error: linking with `cc` failed: exit status: 1",
+    "error: build failed",
+    "error: multiple candidates for `--bin` found",
+  ]) {
+    const got = classifyFailureLine(line);
+    assert(
+      got !== undefined && got.shape === "cargo-summary" && got.namesTest === false,
+      `dialect: ${JSON.stringify(line.slice(0, 48))} is cargo-summary and names no check (got ${JSON.stringify(got)})`,
+    );
+    assert(
+      extractSpecificAssertion(`noise from the run\nnoise from the run\n${line}`) ===
+        NO_SPECIFIC_ASSERTION,
+      `dialect: a stream whose only error: line is ${JSON.stringify(line.slice(0, 48))} reports honest absence (got ${JSON.stringify(extractSpecificAssertion(`noise from the run\nnoise from the run\n${line}`))})`,
+    );
+  }
+}
+
 console.log(failed() ? "\nFAILED" : "\nAll #1762/#1770 stream-reader checks passed.");
 process.exit(failed() ? 1 : 0);

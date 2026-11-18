@@ -153,34 +153,50 @@ export function libtestVerdictForTest(
 }
 
 /**
- * #2341 — cargo's TRAILING TARGET-LEVEL summaries: the lines cargo prints about
- * a whole target or a whole test process, every one of them byte-identical
- * across the different tests that failed inside it (`error: test failed, to
- * rerun pass \`--bin nessie\``, `error: process didn't exit successfully:
- * …(signal: 6, SIGABRT)`, `error: 1 target failed:`, `error: could not
- * compile \`nessie\``). They name a TARGET or a PROCESS, never a check, so the
- * rule is dialect-shaped rather than sentence-shaped: any line in cargo's
- * `error:` dialect that carries NO file:line location is target-level. That is
- * what the table's own `diagnostic` arm cannot decide on its own — that arm is
- * one regex over four unrelated compiler dialects and treats every `error:`
- * line as naming a check, which is how a target-level line below the last
- * panic both stole the evidence anchor and became "the assertion at base", and
- * how two different Rust tests once compared as the SAME assertion.
+ * #2341 — cargo's TARGET-LEVEL `error:` lines: the lines cargo prints about a
+ * whole target or a whole test process, byte-identical across the different
+ * tests that failed inside it (`error: test failed, to rerun pass \`--bin
+ * nessie\``, `error: process didn't exit successfully: …(signal: 6, SIGABRT)`,
+ * `error: 1 target failed:`, `error: build failed`, `error: failed to run
+ * custom build command for \`nessie v0.1.0\``). They name a TARGET or a
+ * PROCESS, never a check, so the rule IS the dialect the sentence list only
+ * imitated: any line opening in cargo's `error:` dialect that carries NEITHER
+ * a file location NOR an identity code is target-level. That is what the
+ * table's own `diagnostic` arm cannot decide on its own — that arm is one
+ * regex over four unrelated compiler dialects and treats every `error:` line
+ * as naming a check, which is how a generic line below the last panic both
+ * stole the evidence anchor and became "the assertion at base", and how two
+ * different Rust tests once compared as the SAME assertion.
  *
- * The location test is what keeps this from eating real evidence: a compiler
- * diagnostic carries its file (`src/a.rs:91:5`, `--> src/a.rs:9:5`,
- * `src/a.ts(9,5)`), a target summary carries only the target name. A line with
- * a location therefore stays a `diagnostic` and keeps `namesTest: true`.
+ * The two lookaheads are what keeps this from eating real evidence: a
+ * compiler diagnostic carries its file (`src/a.rs:91:5`, `--> src/a.rs:9:5`,
+ * `src/a.ts(9,5)`) or its identity code (`error[E0308]`, `error TS2345`), a
+ * target summary carries only the target name. A line with a location or a
+ * code therefore stays a `diagnostic` and keeps `namesTest: true`; a
+ * location-less, code-less prose line names no check and does not earn the
+ * quote — the handoff reports honest absence instead.
  *
- * #2341 fix wave (H2) — the location alternatives are ONE string source, asked
- * by this lookahead AND by the rustc-code test below: two regex literals
- * spelling "has a file location" differently is how the two readers drift
- * apart about which lines name a check.
+ * #2341 fix wave (H2) and F1 — both alternatives are ONE string source each:
+ * `FILE_LOCATION_SRC` is asked by this lookahead AND by the rustc-code test
+ * below, `DIAGNOSTIC_IDENTITY_SRC` by this lookahead AND by the table's
+ * `DIAGNOSTIC_RE`. Two regex literals spelling "has a file location" or
+ * "carries an identity code" differently is how the readers drift apart about
+ * which lines name a check.
  */
 const FILE_LOCATION_SRC = String.raw`\S+\.[A-Za-z]{1,6}:\d+|-->\s*\S+|\S+\([\d,]+\)`;
 const HAS_FILE_LOCATION_RE = new RegExp(FILE_LOCATION_SRC);
+
+/**
+ * The identity arms of the driver's `diagnostic` dialect — rustc's error code
+ * and tsc's — as the ONE source asked by the table's `DIAGNOSTIC_RE`
+ * (`work-driver-verify-shapes.ts`) and by the target-summary lookahead above
+ * (#2341 F1): whether a line carries a code that identifies the failed check
+ * has exactly one answer across the table.
+ */
+export const DIAGNOSTIC_IDENTITY_SRC = String.raw`error\[E\d+\]|\bTS\d{4,}\b`;
+
 export const CARGO_TARGET_SUMMARY_RE = new RegExp(
-  String.raw`^error:?\s+(?![^\r\n]*(?:${FILE_LOCATION_SRC}))(?:test failed\b|process didn't exit successfully\b|\d+\s+targets?\s+failed\b|could not compile\b|could not find\b|no such subcommand\b|aborting due to\b)`,
+  String.raw`^error:?\s+(?![^\r\n]*(?:${FILE_LOCATION_SRC}))(?!(?:${DIAGNOSTIC_IDENTITY_SRC}))`,
 );
 
 /**

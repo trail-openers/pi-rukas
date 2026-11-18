@@ -55,7 +55,10 @@ const SHAPES: Array<[string, string, boolean]> = [
   ["FAILED: extension/smoke-tests/test-x.ts", "failed-marker", false],
   ["✗ expected 5 got 6", "assertion-mark", true],
   ["error TS2345: Argument of type 'string' is not assignable", "diagnostic", true],
-  ["error: cannot compile", "diagnostic", true],
+  // #2341 F1 — a location-less, code-less prose `error:` line names no check:
+  // the whole cargo `error:` dialect without a file location or an error code
+  // is target-level, recognised but never quotable as "the assertion".
+  ["error: cannot compile", "cargo-summary", false],
   // #2341 fix wave (H2) — cargo prints the rustc location on a SEPARATE
   // following `--> file:line:col` line, so a location-less `error[E…]` line
   // names no check: it is byte-identical across compile failures in different

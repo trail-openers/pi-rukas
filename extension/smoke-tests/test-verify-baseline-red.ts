@@ -15,7 +15,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { explainCap } from "../src/work-driver-explain.ts";
 import {
+  NO_SPECIFIC_ASSERTION,
+  extractSpecificAssertion,
+  sharesAssertion,
+} from "../src/work-driver-consolidation-classify.ts";
+import {
   BASELINE_RED_MARKER,
+  baselineExplainsChange,
 } from "../src/work-driver-verify-baseline.ts";
 import { appendEvent } from "../src/workflow-state.ts";
 import {
@@ -335,6 +341,59 @@ await pinDefaultVerifyTimeout(async () => {
   assert(
     explained.includes("Fix the gate at the base commit"),
     "handoff: a base with no establishable staleness still gets the fix-the-base advice",
+  );
+}
+
+// 6 — #2341 F1, the build-failure fold: the base is red on a missing `protoc`,
+// the change is red on missing protobuf headers — two different defects, and
+// cargo prints the SAME target-level summary for both. While a location-less,
+// code-less `error:` line was a quotable `diagnostic`, both streams extracted
+// that identical line, `sharesAssertion` folded them on containment, and
+// `baselineExplainsChange` excused the failure the change itself added. The
+// dialect rule takes the shared line's naming right, so each stream reports
+// honest absence and the excuse fails.
+{
+  const SHARED = "error: failed to run custom build command for `nessie-build v0.1.0`";
+  const buildFailure = (stderr: string) =>
+    [
+      "   Compiling nessie-build v0.1.0 (/repo)",
+      SHARED,
+      "  process exited with exit status: 1",
+      "  --- stderr",
+      stderr,
+      "error: build failed",
+    ].join("\n");
+  const baseStream = buildFailure("protoc: program not found");
+  const changeStream = buildFailure("google/protobuf/any.proto: File not found.");
+  assert(
+    baseStream.includes(SHARED) && changeStream.includes(SHARED),
+    "build fold: both streams really carry the byte-identical summary — the fold material is in the stream, not the fixture",
+  );
+  assert(
+    extractSpecificAssertion(baseStream) === NO_SPECIFIC_ASSERTION,
+    `build fold: the base stream (protoc) reports honest absence (got ${JSON.stringify(extractSpecificAssertion(baseStream))})`,
+  );
+  assert(
+    extractSpecificAssertion(changeStream) === NO_SPECIFIC_ASSERTION,
+    `build fold: the change stream (protobuf headers) reports honest absence (got ${JSON.stringify(extractSpecificAssertion(changeStream))})`,
+  );
+  assert(
+    !sharesAssertion(changeStream, SHARED) &&
+      !sharesAssertion(changeStream, "error: build failed"),
+    "build fold: the shared target-level line never buys a SAME-assertion claim",
+  );
+  assert(
+    !baselineExplainsChange(
+      {
+        status: "red",
+        rawStream: baseStream,
+        probed: false,
+        exitCode: 101,
+        assertion: extractSpecificAssertion(baseStream),
+      },
+      [{ text: changeStream, timedOut: false }],
+    ),
+    "build fold: a base red on missing protoc does NOT explain a change red on missing protobuf headers",
   );
 }
 

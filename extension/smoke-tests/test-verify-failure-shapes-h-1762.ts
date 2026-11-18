@@ -214,7 +214,10 @@ const { assert, failed } = makeAssert();
     ["FAILED: smoke-tests/test-x.ts", "failed-marker"],
     [PAYLOAD_MARKER, "failed-marker-payload"],
     ["✗ expected 5 got 6", "assertion-mark"],
-    ["error: cannot compile", "diagnostic"],
+    // #2341 F1 — the probe carries a LOCATION: a location-less prose `error:`
+    // line is the target-level dialect (namesTest false), so the `diagnostic`
+    // arm that still buys the naming right is probed with the located line.
+    ["error[E0308]: mismatched types --> src/a.rs:9:5", "diagnostic"],
     [CHECKS_BLOCK, "script-tally"],
     ["scripts/test.sh: 3 failed", "named-file"],
     // #1841 — the anchorless FAIL header, the shape whose absence parked a develop
