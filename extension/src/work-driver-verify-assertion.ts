@@ -173,7 +173,8 @@ function redactedAssertion(candidate: string): string {
  * problem while the decisive line sat in the same window. The message is
  * joined only when the header ends at its colon (the pre-1.73 single-line
  * form carries it inline) and the next line is still the message: a `note:`,
- * a `---- ` block separator, another classified failure line, or a
+ * a `---- ` block separator, cargo's failing-test list (`failures:` and the
+ * test-name line under it), another classified failure line, or a
  * marker/echo/secret-shaped line is NOT the message, and a half-pair is
  * returned as the header — it still names the test, file and line, which
  * beats reporting absence for a truncation the window caused. An empty
@@ -182,7 +183,12 @@ function redactedAssertion(candidate: string): string {
 function joinedRustPanic(header: string, next: string | undefined): string {
   if (!header.endsWith(":")) return header;
   if (next === undefined) return header;
-  if (/^(note:|----|thread\s+')/.test(next)) return header;
+  // The `\S+::` arm is cargo's failing-test LIST: the block header `failures:`
+  // and the test-name line printed beneath it. The caller hands lines in
+  // trimmed, so the list item is matched in its bare `path::to::test` form —
+  // the `\s*` prefix keeps the indented form refused too, wherever a caller
+  // stops trimming.
+  if (/^(note:|----|thread\s+'|failures:|\s*\S+::)/.test(next)) return header;
   if (isLibtestVerdictLine(next)) return header;
   if (isNonAssertionLine(next) || classifyFailureLine(next) !== undefined) return header;
   return `${header} ${next}`;
@@ -243,11 +249,12 @@ export function extractSpecificAssertion(failureTail: string): string {
     // a line that names a check may be the specific assertion, so a bare marker
     // stays refused however it classifies, and the count-summary exception above
     // stays the only marker-shaped line that survives. #2341 adds the same veto on
-    // shape: cargo's the line error: test failed, to rerun pass --bin X summary is
-    // recognised (`cargo-summary`) but names only the target, so a stream whose
-    // only recognised line is that summary now reports ABSENCE — the honest
-    // absence the #807 sentinel exists for — instead of quoting the least useful
-    // line in the run as "the assertion".
+    // shape: cargo's `error: test failed, to rerun pass --bin X` summary line is
+    // recognised (`cargo-summary`) but names only the build target, never a check,
+    // so a stream whose only recognised line is that summary reports ABSENCE — the
+    // honest absence the #807 sentinel exists for — instead of quoting the least
+    // useful line in the run as "the assertion". What this reader returns is
+    // either a line that names a check, or the sentinel.
     if (isMarkerLine(candidate) && !isCountSummary(candidate)) continue;
     const kind = classifyFailureLine(candidate);
     if (kind?.namesTest !== true) continue;
@@ -281,8 +288,8 @@ export function extractSpecificAssertion(failureTail: string): string {
  * shared cause.
  *
  * #2341 — sameness FAILS CLOSED on cargo's TARGET-LEVEL lines. Every failing
- * test in one cargo target prints the byte-identical
- * the line error: test failed, to rerun pass --bin X line, and cargo's other
+ * test in one cargo target prints the byte-identical `error: test failed, to
+ * rerun pass --bin X` line, and cargo's other
  * run-level summaries (`process didn't exit successfully`, `N target(s)
  * failed`, `could not compile`) are equally identical across the different
  * failures inside the target — so substring containment on any of them claims

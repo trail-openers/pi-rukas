@@ -203,6 +203,79 @@ export const RUST_SHOULD_PANIC_GREEN_STREAM = [
   "make: *** [Makefile:12: e2e] Error 1",
 ].join("\n");
 
+/**
+ * #2341 round 2 — the smoke-loop and chain-stage tail shapes the extractor
+ * suite asserts case by case, hosted here (AGENTS.md §12 file-size limit)
+ * because the same tail is asserted from more than one case: the tsc and the
+ * biome chain-stage tails are each quoted twice (the #807 case and its #827
+ * re-pin), and a tail duplicated across cases is two tails that can quietly
+ * disagree.
+ */
+
+/** The chain-stage tsc tail: no FAILED marker, the compiler error names the line. */
+export const TSC_CHAIN_STAGE_TAIL = `src/work-driver-foo.ts:42:10
+error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+  Type 'string' is not comparable to type 'number'.`;
+
+/** The chain-stage biome tail: no FAILED marker, the ✗ line names the rule. */
+export const BIOME_CHAIN_STAGE_TAIL = `Checked 239 files in 66ms.
+✗ use single quotes (style/useTemplate)
+    --> src/biome-test.ts:10:5`;
+
+/** The #804 multi-failure smoke tail: two markers, two ✗ lines, the count summary last. */
+export const SMOKE_MULTI_FAILURE_TAIL = `✓ 3 other checks
+FAILED: smoke-tests/test-alpha.ts
+✗ alpha assertion: expected 0 got 2
+FAILED: smoke-tests/test-beta.ts
+✗ beta assertion: expected 1 got 9
+FAILED: 2 test(s) — smoke-tests/test-alpha.ts, smoke-tests/test-beta.ts`;
+
+/** The exact #746 combined stream: echo, banner, echo, tsc error, marker, ✗. */
+export const EXACT_746_TAIL = `$ cd extension && bun run check
+Checked 276 files in 61ms. No fixes applied.
+$ cd extension && bunx tsc --noEmit
+error TS2552: Cannot find name 'foo'. Did you mean 'bar'?
+FAILED: smoke-tests/test-repo-root-residue-poisoning.ts
+✗ check on scaffolded file: exit 0 (got 1)`;
+
+/**
+ * The #827/#772 single-failure tail. The failing test's per-test output is
+ * emitted first, then (post-#827) the bounded `✗` lines are repeated after the
+ * final summary. The pre-fix defect: the `✗` lines sat thousands of chars
+ * BEFORE the summary, so the 800-char window was summary-only; post-fix they
+ * are repeated after it, inside the window.
+ */
+export const FILE_SIZE_LOOP_TAIL_827 = `FAILED: extension/smoke-tests/test-file-size-limit.ts
+✗ extension/smoke-tests/test-loop-detector.ts: 667 lines (exceeds 500-line hard limit)
+✗ extension/smoke-tests/test-dispatch-caps.ts: 528 lines (exceeds 500-line hard limit)
+FAILED: 1 test(s) — extension/smoke-tests/test-file-size-limit.ts
+✗ extension/smoke-tests/test-loop-detector.ts: 667 lines (exceeds 500-line hard limit)`;
+
+/** The #827 two-test tail: each failing test's bounded ✗ repeats under the summary. */
+export const ALPHA_BETA_TAIL_827 = `FAILED: extension/smoke-tests/test-alpha.ts
+✗ alpha assertion: expected 0 got 2
+FAILED: extension/smoke-tests/test-beta.ts
+✗ beta assertion: expected 1 got 9
+FAILED: 2 test(s) — extension/smoke-tests/test-alpha.ts, extension/smoke-tests/test-beta.ts
+✗ alpha assertion: expected 0 got 2
+✗ beta assertion: expected 1 got 9`;
+
+/** The #827 tail whose repeated ✗ line carries credential material. */
+export const SECRET_ASSERTION_TAIL_827 = `FAILED: extension/smoke-tests/test-auth.ts
+✗ response body: api_key = a9f2k3j8f2j9f2j9f2j9f2
+FAILED: 1 test(s) — extension/smoke-tests/test-auth.ts
+✗ response body: api_key = a9f2k3j8f2j9f2j9f2j9f2
+✗ auth check failed: expected 200 got 401`;
+
+/** A green libtest run closed by cargo's target summary — it names no assertion. */
+export const LIBTEST_GREEN_TALLY_STREAM = [
+  "running 3 tests",
+  "test a::tests::one ... ok",
+  "test a::tests::two ... ok",
+  "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+  CARGO_TARGET_SUMMARY,
+].join("\n");
+
 /** The assertion helper both suites print through. */
 export function makeAssert(): {
   assert: (cond: boolean, msg: string) => void;

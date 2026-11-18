@@ -12,9 +12,14 @@ import {
 } from "../src/work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
 import {
+  ALPHA_BETA_TAIL_827,
+  BIOME_CHAIN_STAGE_TAIL,
   CARGO_SIGABRT_SUMMARY,
   CARGO_TARGET_SUMMARIES,
   CARGO_TARGET_SUMMARY,
+  EXACT_746_TAIL,
+  FILE_SIZE_LOOP_TAIL_827,
+  LIBTEST_GREEN_TALLY_STREAM,
   NESSIE_TEST,
   RUST_CARGO_STREAM,
   RUST_PANIC_ASSERTION,
@@ -23,6 +28,9 @@ import {
   rustCargoStream,
   RUST_SHOULD_PANIC_GREEN_STREAM,
   rustPanicHeader,
+  SECRET_ASSERTION_TAIL_827,
+  SMOKE_MULTI_FAILURE_TAIL,
+  TSC_CHAIN_STAGE_TAIL,
 } from "./lib/verify-failure-shapes-fixtures.ts";
 
 let exit = 0;
@@ -61,9 +69,7 @@ FAILED: smoke-tests/test-repo-root-residue-poisoning.ts
 // --- Case 3: tsc failure with no FAILED marker (chain-stage shape, attributed:false
 // fallback). Returns the compiler error line.
 {
-  const tail = `src/work-driver-foo.ts:42:10
-error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
-  Type 'string' is not comparable to type 'number'.`;
+  const tail = TSC_CHAIN_STAGE_TAIL;
   const a = extractSpecificAssertion(tail);
   assert(a === "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.", `case 3 (tsc): returns the compiler error (got: ${JSON.stringify(a)})`);
 }
@@ -71,9 +77,7 @@ error TS2345: Argument of type 'string' is not assignable to parameter of type '
 // --- Case 4: biome failure with no FAILED marker (chain-stage shape). Returns
 // the ✗ assertion biome emits.
 {
-  const tail = `Checked 239 files in 66ms.
-✗ use single quotes (style/useTemplate)
-    --> src/biome-test.ts:10:5`;
+  const tail = BIOME_CHAIN_STAGE_TAIL;
   const a = extractSpecificAssertion(tail);
   assert(a === "✗ use single quotes (style/useTemplate)", `case 4 (biome): returns the ✗ assertion (got: ${JSON.stringify(a)})`);
 }
@@ -103,12 +107,7 @@ Checked 276 files in 61ms. No fixes applied.`;
 // is the summary marker's job (asserted: first-assertion wins, count NOT
 // duplicated into the extracted field).
 {
-  const tail = `✓ 3 other checks
-FAILED: smoke-tests/test-alpha.ts
-✗ alpha assertion: expected 0 got 2
-FAILED: smoke-tests/test-beta.ts
-✗ beta assertion: expected 1 got 9
-FAILED: 2 test(s) — smoke-tests/test-alpha.ts, smoke-tests/test-beta.ts`;
+  const tail = SMOKE_MULTI_FAILURE_TAIL;
   const a = extractSpecificAssertion(tail);
   assert(a === "✗ alpha assertion: expected 0 got 2", `case 7 (post-#804 multi-failure): the FIRST real assertion wins (got: ${JSON.stringify(a)})`);
   assert(!a.includes("2 test(s)"), "case 7 (post-#804 multi-failure): the summary count is NOT the assertion");
@@ -147,12 +146,7 @@ Authorization: Bearer sk-a]9f2k3j8f2j9f2j9f2j9f
 // --- Case 11: the exact #746 combined string (echo FIRST, then banner, then
 // marker, then the real assertion) — the dispatcher's required fixture.
 {
-  const tail = `$ cd extension && bun run check
-Checked 276 files in 61ms. No fixes applied.
-$ cd extension && bunx tsc --noEmit
-error TS2552: Cannot find name 'foo'. Did you mean 'bar'?
-FAILED: smoke-tests/test-repo-root-residue-poisoning.ts
-✗ check on scaffolded file: exit 0 (got 1)`;
+  const tail = EXACT_746_TAIL;
   const a = extractSpecificAssertion(tail);
   // The ✗ assertion is preferred over the tsc error (priority rule).
   assert(a === "✗ check on scaffolded file: exit 0 (got 1)", `case 11 (exact #746 shape): the ✗ assertion wins (got: ${JSON.stringify(a)})`);
@@ -177,17 +171,7 @@ FAILED: smoke-tests/test-repo-root-residue-poisoning.ts
 // 800-char window. The extractor must return the first real `✗` line, not the
 // summary, and the summary must still list the failing file.
 {
-  const summaryLine =
-    "FAILED: 1 test(s) — extension/smoke-tests/test-file-size-limit.ts";
-  // The #772 shape: the failing test's per-test output emitted first, then
-  // (post-fix) the repeated bounded `✗` lines, then the final summary last.
-  // The pre-fix defect: the `✗` lines were thousands of chars before the
-  // summary, so the 800-char tail was summary-only. Post-fix: the `✗` lines
-  // are repeated after the summary, inside the window.
-  const tail = `FAILED: extension/smoke-tests/test-file-size-limit.ts
-✗ extension/smoke-tests/test-loop-detector.ts: 667 lines (exceeds 500-line hard limit)
-✗ extension/smoke-tests/test-dispatch-caps.ts: 528 lines (exceeds 500-line hard limit)
-${summaryLine}\n✗ extension/smoke-tests/test-loop-detector.ts: 667 lines (exceeds 500-line hard limit)`;
+  const tail = FILE_SIZE_LOOP_TAIL_827;
   const a = extractSpecificAssertion(tail);
   assert(
     a === "✗ extension/smoke-tests/test-loop-detector.ts: 667 lines (exceeds 500-line hard limit)",
@@ -204,13 +188,7 @@ ${summaryLine}\n✗ extension/smoke-tests/test-loop-detector.ts: 667 lines (exce
 // bound is preserved: the repeated lines are bounded (first 3 per test) so
 // the tail + summary still fits.
 {
-  const summaryLine =
-    "FAILED: 2 test(s) — extension/smoke-tests/test-alpha.ts, extension/smoke-tests/test-beta.ts";
-  const tail = `FAILED: extension/smoke-tests/test-alpha.ts
-✗ alpha assertion: expected 0 got 2
-FAILED: extension/smoke-tests/test-beta.ts
-✗ beta assertion: expected 1 got 9
-${summaryLine}\n✗ alpha assertion: expected 0 got 2\n✗ beta assertion: expected 1 got 9`;
+  const tail = ALPHA_BETA_TAIL_827;
   const a = extractSpecificAssertion(tail);
   assert(
     a === "✗ alpha assertion: expected 0 got 2",
@@ -228,11 +206,7 @@ ${summaryLine}\n✗ alpha assertion: expected 0 got 2\n✗ beta assertion: expec
 // (LOOKS_LIKE_SECRET) matches `api_key`, `access_token`, `bearer`,
 // `password`, `passwd`, `secret_key` followed by `:`/`=` and 8+ chars.
 {
-  const summaryLine = "FAILED: 1 test(s) — extension/smoke-tests/test-auth.ts";
-  const secretLine = "✗ response body: api_key = a9f2k3j8f2j9f2j9f2j9f2";
-  const tail = `FAILED: extension/smoke-tests/test-auth.ts
-${secretLine}
-${summaryLine}\n${secretLine}\n✗ auth check failed: expected 200 got 401`;
+  const tail = SECRET_ASSERTION_TAIL_827;
   const a = extractSpecificAssertion(tail);
   assert(
     a === "✗ auth check failed: expected 200 got 401",
@@ -246,9 +220,7 @@ ${summaryLine}\n${secretLine}\n✗ auth check failed: expected 200 got 401`;
 // unchanged. The extractor still returns the compiler/linter error line;
 // the fix does not alter this path.
 {
-  const tail = `src/work-driver-foo.ts:42:10
-error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
-  Type 'string' is not comparable to type 'number'.`;
+  const tail = TSC_CHAIN_STAGE_TAIL;
   const a = extractSpecificAssertion(tail);
   assert(
     a === "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
@@ -260,9 +232,7 @@ error TS2345: Argument of type 'string' is not assignable to parameter of type '
 // marker): same as case 16 but for the biome shape. The fix does not alter
 // the no-marker path.
 {
-  const tail = `Checked 239 files in 66ms.
-✗ use single quotes (style/useTemplate)
-    --> src/biome-test.ts:10:5`;
+  const tail = BIOME_CHAIN_STAGE_TAIL;
   const a = extractSpecificAssertion(tail);
   assert(
     a === "✗ use single quotes (style/useTemplate)",
@@ -377,6 +347,21 @@ error TS2345: Argument of type 'string' is not assignable to parameter of type '
     extractSpecificAssertion(noteAfter) === halfPair,
     "case 22 (#2341 half-pair): cargo's note: boilerplate is never joined into the assertion",
   );
+  // #2341 round 2 — the same refusal on cargo's LIST boilerplate. When the
+  // window cut lands the `failures:` block header (or the test-name line
+  // printed under it) directly beneath a panic header, that line is cargo's
+  // scaffolding, not the panic message, and joining it puts boilerplate in
+  // front of the operator reading the handoff.
+  const listHeader = `${rustPanicHeader("a::t", "src/a.rs:1:5")}\nfailures:`;
+  assert(
+    extractSpecificAssertion(listHeader) === rustPanicHeader("a::t", "src/a.rs:1:5"),
+    `case 22 (#2341 list boilerplate): cargo's failures: header is never joined into the assertion (got: ${JSON.stringify(extractSpecificAssertion(listHeader))})`,
+  );
+  const listName = `${rustPanicHeader("a::t", "src/a.rs:1:5")}\n    a::t`;
+  assert(
+    extractSpecificAssertion(listName) === rustPanicHeader("a::t", "src/a.rs:1:5"),
+    `case 22 (#2341 list boilerplate): an indented test-name line is never joined into the assertion (got: ${JSON.stringify(extractSpecificAssertion(listName))})`,
+  );
 }
 
 // --- Case 23 (#2341, the success veto): a panic message quoting the counts
@@ -392,11 +377,7 @@ assertion failed: expected 0 failures, got 3`;
     a === `${rustPanicHeader("a::tests::t", "src/a.rs:1:1")} assertion failed: expected 0 failures, got 3`,
     `case 23 (#2341 veto): a zero-count tally inside a panic message does not veto the line (got: ${JSON.stringify(a)})`,
   );
-  const green = `running 3 tests
-test a::tests::one ... ok
-test a::tests::two ... ok
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-${CARGO_TARGET_SUMMARY}`;
+  const green = LIBTEST_GREEN_TALLY_STREAM;
   assert(
     extractSpecificAssertion(green) === NO_SPECIFIC_ASSERTION,
     "case 23 (#2341 veto): passing tallies and the summary yield no assertion",
