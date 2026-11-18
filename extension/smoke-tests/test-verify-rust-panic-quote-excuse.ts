@@ -1,21 +1,32 @@
 #!/usr/bin/env bun
 /**
- * #2341 fix wave — what a Rust panic may PUBLISH.
+ * #2341 fix wave — what a Rust panic may PUBLISH, and what may EXCUSE.
  *
  * The three files that used to own these pins are at the §12 line cap, so they
- * live here. `joinedRustPanic` is the one place the assertion reader publishes a
- * line it never judged: the continuation beneath a panic header goes into the
- * published pair, and from there into a corrective-round prompt, a handoff and a
- * forge comment. So it passes the screens the header itself passes — a
- * continuation the credential screen still reads as key material is refused, and
- * so is the extractor's own elision marker; the header alone stands (it still
- * names the test, file and line).
+ * live here:
  *
- * Falsifiable both ways: the ordinary nessie message still joins, so the screen
- * is the only new refusal and not a ban on continuation lines.
+ *   - the PAIR the extractor publishes. `joinedRustPanic` is the one place the
+ *     reader publishes a line it never judged: the continuation beneath a panic
+ *     header goes into the published pair, and from there into a corrective-round
+ *     prompt, a handoff and a forge comment. So it passes the screens the header
+ *     itself passes — a continuation the credential screen still reads as key
+ *     material is refused, and so is the extractor's own elision marker; the
+ *     header alone stands (it still names the test, file and line);
+ *   - ONE recognizer for both panic gates. The quote veto asked the table's
+ *     shape key and the excuse gate its own line-anchored look, so a header the
+ *     gate printed with a prefix (`error:`, `warning:`, a timestamp, `[INFO]`,
+ *     an ANSI colour) was neither vetoed nor gated: quotable AND excusing.
+ *
+ * Falsifiable both ways: every refusal is asserted beside its mirror — the same
+ * bytes with a genuinely failing verdict quote AND excuse — so a gate re-spelled
+ * away reddens one arm or the other, and an ordinary continuation still joins.
  */
 
-import { extractSpecificAssertion } from "../src/work-driver-verify-assertion.ts";
+import {
+  NO_SPECIFIC_ASSERTION,
+  extractSpecificAssertion,
+} from "../src/work-driver-verify-assertion.ts";
+import { baselineExplainsChange } from "../src/work-driver-verify-baseline.ts";
 import { makeAssert, rustPanicHeader } from "./lib/verify-failure-shapes-fixtures.ts";
 
 const { assert, failed } = makeAssert();
@@ -58,6 +69,47 @@ const { assert, failed } = makeAssert();
       `panic join: the elision marker ${JSON.stringify(elision)} is never joined (the header alone still names the test)`,
     );
   }
+}
+
+// ── 2. one recognizer for the quote and the excuse ──────────────────────────
+{
+  const prefixedQuote = "error: thread 'v::t' panicked at src/v.rs:1:1: captured print";
+  const passing = ["test v::t ... ok", prefixedQuote].join("\n");
+  assert(
+    extractSpecificAssertion(passing, passing) === NO_SPECIFIC_ASSERTION,
+    `prefixed panic: a header the gate prefixed is refused as a QUOTE when its own test passed (got ${JSON.stringify(extractSpecificAssertion(passing, passing))})`,
+  );
+  for (const prefix of ["", "warning: ", "2026-01-01T00:00:00.000Z ", "[INFO] ", "\u001b[31m"]) {
+    const line = `${prefix}thread 'v::t' panicked at src/v.rs:1:1:`;
+    assert(
+      baselineExplainsChange(
+        { status: "red", rawStream: passing, probed: true, exitCode: 101, assertion: line },
+        [{ text: line, timedOut: false }],
+      ) === false,
+      `prefixed panic (${JSON.stringify(prefix)}): and the same header never EXCUSES a change failure`,
+    );
+  }
+  // The recognizer is name-correlated, not a ban on prefixed panics: the same
+  // prefixed header whose own test the run reported FAILED quotes, and excuses.
+  const failingV = ["test v::t ... FAILED", prefixedQuote].join("\n");
+  const quoted = extractSpecificAssertion(failingV, failingV);
+  assert(
+    quoted === prefixedQuote,
+    `prefixed panic control: with its own FAILED verdict the prefixed header still quotes (got ${JSON.stringify(quoted)})`,
+  );
+  assert(
+    baselineExplainsChange(
+      {
+        status: "red",
+        rawStream: failingV,
+        probed: true,
+        exitCode: 101,
+        assertion: quoted,
+      },
+      [{ text: failingV, timedOut: false }],
+    ) === true,
+    "prefixed panic control: and it still excuses — the gate is evidence, not a prefix ban",
+  );
 }
 
 console.log(

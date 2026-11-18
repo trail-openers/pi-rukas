@@ -40,6 +40,7 @@ import {
   isLibtestVerdictLine,
   isLocationlessCodeDiagnostic,
   panicIsCapturedPrint,
+  rustPanicHeaderIn,
   rustPanicSamenessKey,
   rustPanicTestName,
 } from "./work-driver-verify-failures.ts";
@@ -320,7 +321,19 @@ export function extractSpecificAssertion(failureTail: string, stream: string): s
     if (isMarkerLine(candidate) && !isCountSummary(candidate)) continue;
     const kind = classifyFailureLine(candidate);
     if (kind?.namesTest !== true) continue;
-    if (kind.shape === "rust-panic") {
+    // #2341 fix wave (HIGH 2) — the QUOTE decision asks the SAME recognizer the
+    // excuse gate asks (`panicCanExcuseChange`, `work-driver-verify-rust.ts`),
+    // not the table's shape key. Two recognizers — the table's line-anchored
+    // `rust-panic` shape here, the excuse gate's own `^thread '` look there —
+    // both missed a header the gate printed with a prefix (`warning:`, a
+    // timestamp, `[INFO]`, an ANSI colour, or one lifted into a record line), so
+    // such a header was neither vetoed here nor gated there: quoted as captured
+    // output AND able to excuse a change-added failure. One recognizer, asked of
+    // the whole candidate, is the property; the name goes to
+    // `rustPanicTestName` as the CANONICAL header it returns (prefix stripped),
+    // never the caller's line.
+    const panicHeader = rustPanicHeaderIn(candidate);
+    if (panicHeader !== undefined) {
       // #2341 round 1 / fix wave 7 — the `#[should_panic]` veto, ONE question:
       // does the STREAM report this header's own test as passing
       // ({@link panicIsCapturedPrint})? A panic header is only evidence of a
@@ -335,7 +348,7 @@ export function extractSpecificAssertion(failureTail: string, stream: string): s
       // evidence-anchor walk asks the same one over the same stream
       // (`work-driver-exec-error.ts`), so the veto and the anchor cannot
       // disagree about which panic names a failing test.
-      const panicName = rustPanicTestName(candidate);
+      const panicName = rustPanicTestName(panicHeader);
       if (panicIsCapturedPrint(stream, panicName)) continue;
       return redactedAssertion(joinedRustPanic(candidate, lines[i + 1]));
     }

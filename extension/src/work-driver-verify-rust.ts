@@ -27,18 +27,67 @@
  */
 
 /**
- * The Rust panic header, anchored at line start so the word `panicked` inside
- * prose or a test's own output cannot classify. libtest prints the failing
- * verdict as TWO lines: this header (test name, file, line) with the message
- * on the NEXT line; the pairing is a stream concern and lives in
- * `extractSpecificAssertion`, not here.
+ * The Rust panic header's opening token run, spelled ONCE (#2341 fix wave H2).
+ * Every reader that recognises a panic header composes its regex from THIS
+ * source: the table's line-anchored shape, the name reader, and the
+ * anywhere-in-text recognizer both gates ask. Four literals spelling the same
+ * token run is four answers to "is this a panic header", and the drift between
+ * them is how a `warning:`-prefixed or record-lifted header ended up neither
+ * vetoed as a quote nor gated as an excuse — the same header token run, read two
+ * ways. The sameness key's `RUST_PANIC_HEADER_FORM` composes from here too (it
+ * additionally demands the identity's trailing colon); {@link PANIC_HEADER_LOOK_RE}
+ * stays its own looser literal on purpose — it asks "does this merely OPEN like a
+ * header", which is the fail-closed question, not the parse.
  */
-export const RUST_PANIC_RE = /^thread\s+'[^']+'\s+panicked\s+at\s+\S/;
+const RUST_PANIC_OPEN_SRC = String.raw`thread\s+'([^']+)'\s+panicked\s+at\s`;
+
+/** The header's location token — the separator-free run after `panicked at `. */
+const RUST_PANIC_LOC_SRC = String.raw`\S+`;
+
+/**
+ * The header anchored at line start — what the failure table's `rust-panic`
+ * shape entry asks, and what reads the test name out of a header the caller
+ * already holds. A gate's own prefix (`warning:`, a timestamp, `[INFO]`, an
+ * ANSI colour, the harness's record sentence) is NOT a panic header in this
+ * position; {@link rustPanicHeaderIn} is the arm that sees through one.
+ */
+export const RUST_PANIC_RE = new RegExp(String.raw`^${RUST_PANIC_OPEN_SRC}${RUST_PANIC_LOC_SRC}`);
+
+/**
+ * The same header, searched for anywhere in a text. `g` so ONE spelling serves
+ * both "the first header in this text" ({@link rustPanicHeaderIn}) and "every
+ * header this record carries" ({@link changePanicsAreBaseFailures}); both go
+ * through `matchAll`, which works on a CLONE of this regex, so the shared
+ * instance's `lastIndex` is never advanced by a reader.
+ */
+const RUST_PANIC_GLOBAL_RE = new RegExp(
+  String.raw`${RUST_PANIC_OPEN_SRC}${RUST_PANIC_LOC_SRC}`,
+  "g",
+);
 
 /** The test name a panic header carries, or `undefined` if it does not parse. */
-const RUST_PANIC_NAME_RE = /^thread\s+'([^']+)'\s+panicked\s+at\s/;
 export function rustPanicTestName(header: string): string | undefined {
-  return RUST_PANIC_NAME_RE.exec(header)?.[1];
+  return RUST_PANIC_RE.exec(header)?.[1];
+}
+
+/**
+ * The panic header carried ANYWHERE in `text`, prefix and all, or `undefined`.
+ * Returns the matched header token run — the text from `thread` through the
+ * `file:line:col` — so a caller can hand the answer straight back to
+ * {@link rustPanicTestName} and every other line-anchored header reader.
+ *
+ * THE ONE RECOGNIZER (#2341). The quote veto used to ask the table's shape key
+ * and the excuse gate its own line-anchored look; a header the gate printed with
+ * a prefix satisfied neither, so it could be quoted as captured output AND grant
+ * an excuse. Every panic decision asks THIS instead, through the one global
+ * spelling above, so they cannot drift apart again:
+ * `extractSpecificAssertion` (the quote), {@link panicCanExcuseChange} (the
+ * excuse) and {@link changePanicsAreBaseFailures} (the excuse, per failing test
+ * of the change's record). A text this answers `undefined` for is not a panic to
+ * any of them.
+ */
+export function rustPanicHeaderIn(text: string): string | undefined {
+  return text.matchAll(RUST_PANIC_GLOBAL_RE).next().value?.[0];
 }
 
 /**
@@ -67,7 +116,9 @@ export function rustPanicTestName(header: string): string | undefined {
  * every shape that does not open with the panic look — is its own key; exact
  * containment is unchanged for it.
  */
-const RUST_PANIC_HEADER_FORM = /^(thread\s+'[^']+'\s+panicked\s+at\s+\S+:)(?:\s|$)/;
+const RUST_PANIC_HEADER_FORM = new RegExp(
+  String.raw`^(${RUST_PANIC_OPEN_SRC}${RUST_PANIC_LOC_SRC}:)(?:\s|$)`,
+);
 const PANIC_HEADER_LOOK_RE = /^thread\s+'/;
 
 /**
@@ -213,9 +264,57 @@ export function panicIsCapturedPrint(stream: string, name: string | undefined): 
  * refuses to quote.
  */
 export function panicCanExcuseChange(stream: string, assertion: string): boolean {
-  if (!PANIC_HEADER_LOOK_RE.test(assertion)) return true;
-  const name = rustPanicTestName(assertion);
+  const header = rustPanicHeaderIn(assertion);
+  if (header === undefined) return true;
+  const name = rustPanicTestName(header);
   return name !== undefined && perTestVerdictFor(stream, name) === "FAILED";
+}
+
+/**
+ * #2341 fix wave (HIGH 3, and the SECURITY MEDIUM beside it) — the change side of
+ * the excuse, asked PER FAILING TEST.
+ *
+ * The defect. The develop gate hands `baselineExplainsChange` ONE entry whose text
+ * is the whole consolidated failure output, and `sharesAssertion` is substring
+ * containment over it: the base's single assertion matching anywhere in that blob
+ * excused EVERY failure inside it, including a different Rust panic the change
+ * introduced below it. The base side pays a real question
+ * ({@link panicCanExcuseChange} demands the base run's own per-test `FAILED` line)
+ * while the change side paid nothing but containment over its own UNTRUSTED text.
+ * So this asks the SAME predicate of BOTH runs, for EVERY header the record
+ * carries and not merely the first — a record may be one flattened line:
+ *
+ *   - the BASE run must have reported that test as `FAILED`, or the panic is
+ *     evidence about a failure only the change has;
+ *   - the CHANGE's own run must report that test as `FAILED` too, or nothing in
+ *     it says the panic is a failure of this run rather than text the record
+ *     quoted.
+ *
+ * `record` is the text being excused (where containment is asked) and
+ * `changeStream` the run's OWN output, which is the only text that can answer the
+ * second question: a per-worktree record is a clipped, formatted tail whose
+ * elision sits above the name's verdict line, and asking a clipped record to
+ * speak for its own stream judges bytes the clipping edited — the defect the
+ * record publishers already thread the raw run against.
+ *
+ * The direction is the loud one, and it is the accepted cost: a change run that
+ * reports no verdict for a name its record panics about loses the excuse and the
+ * cycle parks as an ordinary `verify-failed:develop`, which is one round.
+ */
+export function changePanicsAreBaseFailures(
+  record: string,
+  changeStream: string,
+  baseStream: string,
+): boolean {
+  const seen = new Set<string>();
+  for (const match of record.matchAll(RUST_PANIC_GLOBAL_RE)) {
+    const header = match[0];
+    if (seen.has(header)) continue;
+    seen.add(header);
+    if (!panicCanExcuseChange(baseStream, header)) return false;
+    if (!panicCanExcuseChange(changeStream, header)) return false;
+  }
+  return true;
 }
 
 /**

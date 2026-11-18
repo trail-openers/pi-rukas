@@ -159,13 +159,17 @@ export {
 // re-exported here from `work-driver-verify-rust.ts` like the marker vocabulary
 // above. The two name-correlated panic predicates travel together: one asks the
 // QUOTE, its mirror asks the EXCUSE, and the two may never disagree about what
-// the stream said about a name.
+// the stream said about a name. `rustPanicHeaderIn` is the ONE recognizer they
+// both ask, and `changePanicsAreBaseFailures` is that same excuse asked of every
+// failing test the change's own record reports, not of the record as a blob.
 export {
+  changePanicsAreBaseFailures,
   isCargoTargetSummaryLine,
   isLibtestVerdictLine,
   isLocationlessCodeDiagnostic,
   panicCanExcuseChange,
   panicIsCapturedPrint,
+  rustPanicHeaderIn,
   rustPanicSamenessKey,
   rustPanicTestName,
 } from "./work-driver-verify-rust.ts";
