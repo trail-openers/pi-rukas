@@ -29,8 +29,8 @@
  * cleared AND whose newest `review` step accounted for every lens it was bought ON THE HEAD
  * THE PR NOW STANDS ON;
  * `review-incomplete` for that same ready PR whose review left a lane unjudged, died
- * without recording a verdict, was never dispatched at all, or sits BEHIND a `publish` that
- * moved the head after it read it — the cap that keeps a
+ * without recording a verdict, was never dispatched at all, or whose verdict does not cover
+ * the head the PR now stands on — the cap that keeps a
  * host from merging a head no lens read. Both exit 10, and `leanCap` owns the rule that
  * tells them apart. Every other cause rides `failure`, whose `kind` is an OPEN list built
  * for this (`FAILURE_KINDS`, and `test-headless-failure-usage.ts` asserts the published
@@ -259,7 +259,7 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
  * and telling a host to merge over lanes that never ran — or over a head pushed after the
  * review read it — is the failure this cap exists to prevent. `reviewComplete` is `true`
  * when the switch is off (today's single cap) or when the record says the newest review step
- * finished and nothing published over it afterwards; `reviewCompleteOf` owns those answers.
+ * finished on the head that shipped; `reviewCompleteOf` owns those answers.
  *
  * A PR URL is NOT enough for `awaiting-human-merge`: a run can push a branch,
  * open a PR, and then have its own gate call the work red, and that is a park,

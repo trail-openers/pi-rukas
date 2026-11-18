@@ -32,6 +32,7 @@ import { URL, driveLean, leanLog } from "./lib/lean-result-fixture.ts";
 import {
   GOLDEN_GATES_OFF,
   GOLDEN_GATES_ON,
+  fixedWaveLog,
   goldenLog,
   judgedReviewStep,
   republishedAfterReview,
@@ -241,6 +242,35 @@ for (const [value, want] of [
   assert(
     crashed.cap === "review-incomplete" && crashed.reviewComplete === false,
     `republished-crashed: an outcome-less publish after the review is not evidence the head held (got ${String(crashed.cap)} / ${String(crashed.reviewComplete)})`,
+  );
+}
+
+// ─── (4) THE `fixed` REVIEW'S OWN PUBLISH IS NOT A MOVEMENT ─────────────────
+// `machine.ts` routes `review + fixed → verify → publish`, so a review that found and
+// fixed findings ALWAYS has a `publish` step after it — no CI-fix round involved. A
+// position-only head-binding called that whole legitimate class `review-incomplete`, which
+// makes `awaiting-human-merge` unreachable for every PR whose review found anything. The
+// record separates the two cases: the review's own wave names the full head its `integrate`
+// pushed, so equality with the published head says the verdict is about what stands on the
+// PR, and a genuine CI-fix round moves the head to a commit no wave of the review named.
+{
+  const fixedWave = (await driveLean("handed-back", 10, fixedWaveLog())).issue ?? {};
+  assert(
+    fixedWave.prState === "ready",
+    `fixed-wave: publish's own rule still calls this PR ready, so the cap is the only field at issue (${String(fixedWave.prState)})`,
+  );
+  assert(
+    fixedWave.cap === "awaiting-human-merge" && fixedWave.reviewComplete === true,
+    `fixed-wave: a returned review whose own fix wave pushed the very head the PR stands on is a finished review of it (got ${String(fixedWave.cap)} / ${String(fixedWave.reviewComplete)})`,
+  );
+  const ciFix = (await driveLean("handed-back", 10, fixedWaveLog(true))).issue ?? {};
+  assert(
+    ciFix.prState === "ready",
+    `ci-fix-round: the round's own green clears the head it shipped — only the review can refuse it (${String(ciFix.prState)})`,
+  );
+  assert(
+    ciFix.cap === "review-incomplete" && ciFix.reviewComplete === false,
+    `ci-fix-round: a published head no wave of the review named is a head no lens read (got ${String(ciFix.cap)} / ${String(ciFix.reviewComplete)})`,
   );
 }
 

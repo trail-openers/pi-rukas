@@ -43,7 +43,7 @@
 
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import { CLOCK } from "./lean-engine-fixtures.ts";
-import { HEAD, URL, stepWith } from "./lean-result-fixture.ts";
+import { HEAD, URL, leanLog, stepWith } from "./lean-result-fixture.ts";
 
 /** The frozen contract the golden's `specify` step recorded. */
 const FROZEN: Record<string, string> = {
@@ -57,8 +57,14 @@ const TESTS: Record<string, string[]> = {
   AC2: ["tests/AC2-backoff.test.sh"],
 };
 
+/** The full head the fixed-wave arm's review pushes with its own `integrate`. */
+export const FIX_HEAD = `${"b".repeat(39)}2`;
+/** The full head a genuine CI-fix round pushes AFTER the review — a commit that
+ * review never judged. Distinct from every head the review record can name. */
+export const CI_FIX_HEAD = `${"c".repeat(39)}3`;
+
 /** The one fix wave the golden's review ran, with the full head it pushed. */
-const WAVES = [{ wave: "fix" as const, head: `${"b".repeat(39)}2` }];
+const WAVES = [{ wave: "fix" as const, head: FIX_HEAD }];
 
 /** The stop the golden's review step recorded: a wave that never finished judging. */
 export const GOLDEN_REVIEW_BOUND = {
@@ -67,7 +73,15 @@ export const GOLDEN_REVIEW_BOUND = {
   reason: "review STEP stopped: minutes budget 20 exceeded (used 24)",
 };
 
-/** A `review` step whose OWN clock stopped it with lanes unjudged. */
+/** A `review` step whose OWN clock stopped it with lanes unjudged.
+ *
+ * SYNTHETIC PAIRING, stated so no reader takes it for a production shape: `kind:
+ * "done"` CARRIED WITH a `reviewBound` is written by no writer — `review.ts`'s two
+ * stops that let the step RETURN both hand back a `fixed` pass, and its only `done`
+ * return precedes any `noteStop`, so a returned `done` carries no bound and a bound
+ * reaches an outcome only beside `fixed` or `error`. The fixture is a worst-case
+ * probe of the predicate (does a bound outrank a lane-less verdict), not a record a
+ * run can leave behind. */
 export function unjudgedReviewStep(n = 0, lanes = GOLDEN_REVIEW_BOUND.unreviewedLanes): Step {
   return stepWith(
     "review",
@@ -83,6 +97,72 @@ export function unjudgedReviewStep(n = 0, lanes = GOLDEN_REVIEW_BOUND.unreviewed
 /** A `review` step that judged every lens it was bought and said so. */
 export function judgedReviewStep(n = 0): Step {
   return stepWith("review", { kind: "done", reason: "adversarial and six-lens review clean" }, n);
+}
+
+/** A `review` step that ran one fix wave, cleared it, and RETURNED `fixed` with no
+ * `reviewBound`: pass 1 judged the pre-fix head, the fixer's `integrate` pushed
+ * `FIX_HEAD`, and `reviewedPass` refused the wave until the re-review had
+ * `assertRangedOverTheFix` proof over it and the second adversarial pass had read the
+ * fix range. Its own record therefore names the full head it certified — the head its
+ * `integrate` pushed, which is the head `machine.ts` routes `review + fixed → verify
+ * → publish` back through. */
+export function fixedWaveReviewStep(n = 0): Step {
+  return stepWith(
+    "review",
+    {
+      kind: "fixed",
+      reason: "adversarial and six-lens review clean on the fix",
+      review: {
+        rounds: [
+          { CRITICAL: 1, HIGH: 2, MEDIUM: 0, LOW: 0 },
+          { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 },
+        ],
+        waves: [{ wave: "fix", head: FIX_HEAD }],
+      },
+    },
+    n,
+  );
+}
+
+/** The reviewer's reproduction, whole: a ready PR at `HEAD`, a `review` that returned
+ * a clean fix wave (no bound — nothing stopped it), and the re-`verify` and re-`publish`
+ * that `review + fixed → verify → publish` buys for it, ending `ci` green. With
+ * `ciFixRound` the pipeline goes red on the reviewed head instead and a genuine CI-fix
+ * round moves the PR to `CI_FIX_HEAD` — a commit the review never judged — before its
+ * own green `ci`. */
+export function fixedWaveLog(ciFixRound = false): Step[] {
+  const base = leanLog({ prUrl: URL, draft: false });
+  const handback = base[base.length - 1];
+  if (handback?.state !== "handback") {
+    throw new Error("fixedWaveLog: the fixture log must end at its `handback` step");
+  }
+  const republish = (head: string, n: number): Step =>
+    stepWith(
+      "publish",
+      {
+        kind: "ok",
+        prUrl: URL,
+        draft: false,
+        publishedHead: head,
+        reason: `re-published PR ${URL} at ${head.slice(0, 12)}`,
+      },
+      n,
+    );
+  const extra: Step[] = [
+    fixedWaveReviewStep(1),
+    stepWith("verify", { kind: "green", verifiedHead: FIX_HEAD }, 1),
+    republish(FIX_HEAD, 1),
+  ];
+  if (ciFixRound) {
+    extra.push(
+      stepWith("ci", { kind: "red", reason: "pipeline red on the reviewed head" }, 1),
+      stepWith("build", { kind: "ok" }, 1),
+      stepWith("verify", { kind: "green", verifiedHead: CI_FIX_HEAD }, 2),
+      republish(CI_FIX_HEAD, 2),
+    );
+  }
+  extra.push(stepWith("ci", { kind: "green" }, ciFixRound ? 2 : 1));
+  return [...base.slice(0, -1), ...extra, handback];
 }
 
 /** A `review` step that pushed a fix wave and then stopped before the re-review ran. */

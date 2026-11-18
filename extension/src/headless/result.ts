@@ -186,13 +186,16 @@ export interface IssueResult {
    * STOP writes, whatever its lane list holds, and a stopped step left work unbought — when it
    * never answered at all (a step that ended on a throw without recording a bound: only the
    * step's own clock stop writes one, so a review that died before pass 1 read no lens and
-   * says nothing), or when a `publish` step sits AFTER it. That last arm is the head binding:
-   * `machine.ts` re-runs `publish` after the review on a CI-fix round, so the newest `review`
-   * can predate the head the PR now stands on, and a verdict about the old one is not a verdict
-   * about this one. `false` also when the log holds no `review` step at all, since `publish` is
-   * followed by `review` and a ready PR with no such step is a review the engine never
-   * dispatched. `true` only where the record says the review finished: a returned `done`/
-   * `fixed` step with no bound on it, and nothing published over it afterwards. Lean-only,
+   * says nothing), or when its verdict does not cover the head the PR now stands on: the head
+   * binding, and `machine.ts` re-runs `publish` after the review on TWO routes (a `fixed`
+   * review's own `→ verify → publish` re-attests the head its `integrate` pushed; a CI-fix round
+   * publishes a fixer's newer one), so it is head IDENTITY, not position — a returned `fixed`
+   * step is complete only when the newest decided `publish`'s head IS its own last wave's head,
+   * and a record naming no head of its own push (a plain `done`) sits ahead of every `publish`
+   * attempt or is not complete. No `review` step at all is `false` too (publish is followed by
+   * review, so a ready PR with none was never reviewed); `true` only where the record says the
+   * review finished on the head that shipped — a returned `done`/`fixed` step with no bound whose
+   * own wave pushed that head, or, naming no wave, with no `publish` attempt after it. Lean-only,
    * like the two fields above, and written on one switch and only on the two arms that carry a
    * cap: absent on a build running `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0`, on one from
    * before the field existed, and on any run whose document carries no cap (a merge, a draft, a

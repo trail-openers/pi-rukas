@@ -108,8 +108,13 @@ export const HEADLESS_FEATURES = {
    * engines. While `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP` is on (its shipped default),
    * `awaiting-human-merge` means `ready` WITH EVERY REVIEW LENS JUDGED ON THE HEAD THE PR NOW
    * STANDS ON: a `ready` PR whose newest `review` step recorded a stop (any lane list), ended
-   * on a throw that recorded no verdict at all, sits BEHIND a later `publish` (a CI-fix round
-   * re-runs `publish` after the review, so the newest review can predate the head), or whose
+   * on a throw that recorded no verdict at all, does not cover the head the PR now stands
+   * on (`machine.ts` re-runs `publish` after the review on TWO routes: a `fixed` review's own
+   * `→ verify → publish` re-attests the head its `integrate` pushed, and a CI-fix round
+   * publishes a fixer's newer one — so the rule is head IDENTITY, not position: a returned
+   * review whose record names its fix wave's head is complete only when the newest decided
+   * `publish`'s head IS that wave's head, and a record naming no head (a plain `done` pushed
+   * nothing) must sit ahead of every `publish` attempt), or whose
    * log holds no `review` step at all (the machine sends `publish` → `review`, so that
    * review was never dispatched) carries `review-incomplete` and
    * `reviewComplete: false` instead — and the key appears on no document without one of those
