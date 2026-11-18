@@ -99,13 +99,13 @@ const ASSERTION_MARK_SHAPE: ShapeEntry = reEntry("assertion-mark", true, /^\s*�
  * kept: a `#[should_panic]` test run with `--nocapture` prints this shape on a
  * GREEN run too, so the shape classifies it as a failure line and may anchor
  * evidence. What it may NOT do is become "the specific assertion":
- * `libtestVerdictForTest` (`work-driver-verify-rust.ts`) is the veto the
- * extractor and the evidence anchor both ask — each handing it the window the
- * extractor is about to judge (one predicate, one line set, #2341 fix wave 4),
- * the walk additionally asking it of the whole stream — which refuses a panic
- * header whose OWN test any observed verdict reports as passing — a captured
- * `should_panic` print sits beside its own `... ok` verdict and names a test
- * that PASSED, and quoting it is the #746/#798 class (a confident wrong answer
+ * `panicIsCapturedPrint` (`work-driver-verify-rust.ts`) is the veto the
+ * extractor and the evidence anchor both ask — each asking it of the WHOLE
+ * stream, keyed to the header's own test name (one predicate, one question,
+ * #2341 fix wave 7) — which refuses a panic header whose OWN test any observed
+ * per-test verdict reports as passing: a captured `should_panic` print sits
+ * beside its own `... ok` verdict and names a test that PASSED, and quoting it
+ * is the #746/#798 class (a confident wrong answer
  * where an honest absence was the truth).
  */
 const RUST_PANIC_SHAPE: ShapeEntry = reEntry("rust-panic", true, RUST_PANIC_RE, true);

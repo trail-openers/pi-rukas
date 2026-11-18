@@ -162,10 +162,7 @@ export {
   isCargoTargetSummaryLine,
   isLibtestVerdictLine,
   isLocationlessCodeDiagnostic,
-  libtestVerdictForTest,
-  panicEvidenceRegion,
-  perTestVerdictLine,
-  perTestVerdictOnly,
+  panicIsCapturedPrint,
   rustPanicSamenessKey,
   rustPanicTestName,
 } from "./work-driver-verify-rust.ts";

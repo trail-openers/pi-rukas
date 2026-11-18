@@ -7,8 +7,8 @@
  * (AGENTS.md §12 file-size cap): that module's own header reserves it for the
  * TABLE DATA — the shape entries, their priority order, the pre-veto exemption
  * pair. The #2341 fix wave added the one predicate that has to SCAN a whole
- * window and decide, per test name, whether the run reported it as failing
- * ({@link libtestVerdictForTest}) — window-scanning LOGIC, which does not
+ * stream and decide, per test name, whether the run reported it as PASSING
+ * ({@link panicIsCapturedPrint}) — stream-scanning LOGIC, which does not
  * belong in the data module and which pushed it past the cap. The direction
  * stays one-way (shapes → here for the dialect regexes; failures → here for
  * the predicates; nothing here imports either), which is what keeps the module
@@ -82,16 +82,14 @@ export function rustPanicSamenessKey(assertion: string): string | null {
 }
 
 /**
- * #2341 round 1 — libtest's own per-test verdict lines, the two forms it
- * prints: `test <name> ... ok` / `... FAILED` and the per-target tally
- * `test result: ok. N passed; M failed` / `test result: FAILED. …`. Asked
- * ONLY to decide whether a `thread '…' panicked at …` line in a window
- * reports the run's failing verdict or the CAPTURED STDOUT of a passing
- * `#[should_panic]` test, which prints the identical shape on a GREEN run.
+ * #2341 round 1 — libtest's own verdict lines, the two forms it prints: the
+ * per-test `test <name> ... ok` / `... FAILED` and the per-target tally
+ * `test result: ok. N passed; M failed` / `test result: FAILED. …`. Asked ONLY
+ * by {@link isLibtestVerdictLine} as the join guard; the veto itself never asks
+ * it, because the tally has no authority over one header's test (see
+ * {@link panicIsCapturedPrint}).
  */
 const LIBTEST_VERDICT_RE = /^test\s+(?:\S+\s+\.\.\.\s+|result:\s*)(?:ok|FAILED)\b/;
-const LIBTEST_FAILING_VERDICT_RE =
-  /^test\s+(?:\S+\s+\.\.\.\s+|result:\s*)FAILED\b|\b[1-9]\d*\s+(?:failed|failures?)\b/;
 
 /**
  * True when `line` is one of libtest's own verdict lines. Asked by the
@@ -104,134 +102,61 @@ export function isLibtestVerdictLine(line: string): boolean {
 }
 
 /**
- * The tri-state answer to "does this window show libtest FAILING a test?"
- * (the #746/#798 doctrine: an absent observation is never a verdict). The
- * fallback of {@link libtestVerdictForTest} when the window holds no per-test
- * line for the header's name; internal to this module because every reader
- * asks the name-correlated question, which is the one that cannot be fooled
- * by a passing `#[should_panic]` print beside an unrelated failing verdict.
- *
- *   - `true`  — the window carries a failing libtest verdict.
- *   - `false` — the window carries libtest verdicts and NONE of them failed.
- *   - `undefined` — the window carries no libtest verdict at all (a truncated
- *     1500-char tail, a hand-built single-line fixture). Nothing was observed,
- *     so nothing is vetoed.
+ * libtest's per-test verdict line, with the test NAME and its verdict both
+ * captured. The `\S+` group is the whole name token and nothing else, which is
+ * what makes the veto's name comparison an exact one.
  */
-function libtestWindowVerdict(window: string): boolean | undefined {
-  let seen = false;
-  for (const raw of window.split("\n")) {
-    const line = raw.trim();
-    if (!LIBTEST_VERDICT_RE.test(line)) continue;
-    seen = true;
-    if (LIBTEST_FAILING_VERDICT_RE.test(line)) return true;
-  }
-  return seen ? false : undefined;
-}
-
-/** libtest's per-test verdict line, with the test name captured. */
 const LIBTEST_PER_TEST_VERDICT_RE = /^test\s+(\S+)\s+\.\.\.\s+(ok|FAILED)\b/;
 
 /**
- * The verdict LINE the stream prints for test `name` — the last one, since
- * libtest prints one per test it ran — or `undefined` when it prints none.
+ * The ONE question the `#[should_panic]` veto asks (#2341 fix wave 7): does
+ * this stream report test `name` as PASSING on its OWN per-test verdict line?
+ * `true` means a `thread '<name>' panicked at …` print in the same stream is
+ * the CAPTURED STDOUT of a test the run reported green — and quoting it is the
+ * #746/#798 class: a confident wrong answer where honest absence was the truth.
  *
- * NAME-CORRELATED ONLY, and that is the whole point (#2341 fix wave 5): this
- * never considers the target-level `test result: …` tally, which reports on a
- * whole TARGET. A `.pi/verify-cmd` chain whose earlier `cargo test` stage was
- * GREEN (`test result: ok. 3 passed; 0 failed`) and whose LATER stage's binary
- * died (`thread 'main' panicked at src/main.rs:12:5:`) has no verdict for
- * `main` at all, and an unobserved verdict is not a verdict AGAINST it — the
- * aggregate answer "this target passed" used to be read as that, which
- * restored #1762's unactionable generic handoff for the chain shape this
- * module's own header describes.
+ * One monotone scan over the WHOLE stream, and nothing else. Every alternative
+ * this predicate replaces failed in one of the two directions, and those
+ * directions are NOT symmetric: quoting a passing capture makes
+ * `baselineExplainsChange` excuse a failure the change added and spend the
+ * cycle's one corrective round on a test that passes (silent, unrecoverable),
+ * while `(no specific assertion could be extracted)` is loud, visible to the
+ * operator, and costs one round. So every ambiguity here resolves toward NOT
+ * quoting.
+ *
+ *   - NAME-CORRELATED, EXACT. Only a line whose name token equals `name`
+ *     byte-for-byte speaks: the `\S+` group captures the whole token and the
+ *     comparison is `===`, so `a::t` matches neither `a::t2` nor `a::t::nested`.
+ *   - NEVER the target-level tally. `test result: ok. 3 passed; 0 failed`
+ *     reports on a whole TARGET, so it has no authority over one header's test;
+ *     it is consulted neither here nor at the evidence-anchor walk. Every wave
+ *     that let it speak restored #1762's unactionable handoff in one direction
+ *     and the captured-print excuse in the other.
+ *   - NO REGION BOUNDARY. The search is the whole stream. One wave keyed the
+ *     search to the text BELOW the last completed-green target summary above the
+ *     header, and libtest prints a test's verdict ABOVE its own summary — so
+ *     that rule cut every header's own `... ok` and quoted a passing capture.
+ *     What could separate a sibling crate's verdict from the header's own is
+ *     cargo's per-target banner (`     Running unittests src/main.rs (…)`,
+ *     `   Doc-tests pkg`), which this module deliberately does not parse: until
+ *     a banner-based region exists (a separate issue), a workspace in which two
+ *     crates use the same test name DELIBERATELY OVER-REFUSES the second
+ *     crate's real panic.
+ *
+ * TIE-BREAK: the LAST per-test line for the exact name decides, so an earlier
+ * `ok` beside a later `FAILED` for the same name does NOT veto — the run's final
+ * word on that name is that it failed. An ABSENT per-test line never vetoes: a
+ * binary panic named `main` has no `test main ... ok` line, so it anchors and
+ * quotes, and an unobserved verdict is not a verdict either way (#746).
  */
-export function perTestVerdictLine(text: string, name: string | undefined): string | undefined {
-  if (name === undefined) return undefined;
-  let line: string | undefined;
-  for (const raw of text.split("\n")) {
-    const t = raw.trim();
-    const m = LIBTEST_PER_TEST_VERDICT_RE.exec(t);
-    if (m !== null && m[1] === name) line = t;
+export function panicIsCapturedPrint(stream: string, name: string | undefined): boolean {
+  if (name === undefined) return false;
+  let passed = false;
+  for (const raw of stream.split("\n")) {
+    const m = LIBTEST_PER_TEST_VERDICT_RE.exec(raw.trim());
+    if (m !== null && m[1] === name) passed = m[2] === "ok";
   }
-  return line;
-}
-
-/**
- * The name-correlated tri-state over `text`: `true` FAILED, `false` ok,
- * `undefined` when the text holds no per-test line for `name` — never the
- * aggregate ({@link perTestVerdictLine} for why that distinction is the rule).
- */
-export function perTestVerdictOnly(text: string, name: string | undefined): boolean | undefined {
-  const line = perTestVerdictLine(text, name);
-  return line === undefined ? undefined : LIBTEST_PER_TEST_VERDICT_RE.exec(line)?.[2] === "FAILED";
-}
-
-/** A target summary that closed its run GREEN (`test result: ok. …`). */
-const PASSING_TARGET_SUMMARY_RE = /^test\s+result:\s*ok\b/;
-
-/**
- * The text that may speak about the panic print `header`: `text` with every
- * COMPLETED GREEN TARGET dropped from its head. libtest closes a whole target
- * with `test result: ok. N passed; 0 failed`; every verdict line above that
- * line — including a name-correlated `test X ... ok` — is the verdict of the
- * binary that finished BEFORE this header, and libtest test names are
- * per-binary module paths, so a sibling crate of one `cargo test --workspace`
- * prints a byte-identical name for a DIFFERENT test. Asking the whole stream
- * imported that foreign verdict and refused a later target's real panic whose
- * own verdict never reached the stream (the binary aborted after the panic
- * print) — #2341 fix wave 6. A run that never printed its summary (it died)
- * drops nothing; an unobserved verdict still vetoes nothing.
- *
- * `header` absent from `text` (a hand-built tail, a caller quoting a line the
- * stream does not hold) asks the whole text — the pre-region behaviour, which
- * is the only honest reading when no position is known.
- */
-export function panicEvidenceRegion(text: string, header: string | undefined): string {
-  if (header === undefined) return text;
-  const at = text.lastIndexOf(header);
-  if (at === -1) return text;
-  let end = 0;
-  let offset = 0;
-  for (const line of text.slice(0, at).split("\n")) {
-    const t = line.trim();
-    if (PASSING_TARGET_SUMMARY_RE.test(t) && !LIBTEST_FAILING_VERDICT_RE.test(t)) {
-      end = offset + line.length + 1;
-    }
-    offset += line.length + 1;
-  }
-  return text.slice(end);
-}
-
-/**
- * The answer to "does the text `window` report test `<name>` as FAILED?" for
- * the WINDOW the extractor is about to be handed (#2341 fix wave H1) — the
- * predicate its `should_panic` veto asks, and the one the evidence-anchor walk
- * asks on the same bytes it publishes (`work-driver-exec-error.ts`), so the
- * veto and the anchor cannot disagree about which panic names a failing test.
- * A per-test verdict line for THIS name is decisive (libtest prints one per
- * test it ran, so a passing `#[should_panic]` test's captured print sits
- * beside its own `... ok`, whatever other test the window shows failing).
- * With no per-test line for the name the answer is the window's tri-state
- * ({@link libtestWindowVerdict}): a clipped window must not veto a header the
- * run really did fail on, and an unobserved verdict vetoes nothing.
- *
- * The aggregate fallback is WINDOW-scoped by contract, and that is what the
- * tail publisher is load-bearing for (#2341 fix wave 5, H1/H2): the window
- * `extractAttributedTail` publishes carries, for every panic header it shows,
- * the stream's own per-test verdict line for that header's name (see
- * `carryVerdicts` in `work-driver-exec-error.ts`), so the per-test arm below
- * answers whenever the stream holds a verdict at all. The fallback is then
- * what it should be — the verdict of the target the window shows — and the
- * whole-stream question is asked separately, name-correlated, by
- * {@link perTestVerdictOnly}. Asking the whole stream THROUGH this predicate
- * was the wave-4 defect: it let an earlier, greener stage's tally answer a
- * later stage's question.
- */
-export function libtestVerdictForTest(
-  window: string,
-  name: string | undefined,
-): boolean | undefined {
-  return perTestVerdictOnly(window, name) ?? libtestWindowVerdict(window);
+  return passed;
 }
 
 /**

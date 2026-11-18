@@ -66,6 +66,8 @@ import {
   FAILED_MARKER_RE,
   classifyFailureLine,
   isBareFailedMarker,
+  panicIsCapturedPrint,
+  rustPanicTestName,
 } from "./work-driver-verify-failures.ts";
 
 // The assertion-extraction seam lives in `work-driver-verify-assertion.ts` (the
@@ -173,7 +175,9 @@ function isSizeCapUnionShape(failureTail: string): boolean {
  * @param fullFailure — OPTIONAL #1064 recovery source: the UNBOUNDED failure text that
  *   the bounded `consolidatedFailure` window was cut from. When that window elided the
  *   `FAILED: <n> test(s) — …` summary and the `✗` lines, their names are recovered from
- *   here into `namedFailures`. Omit it (or pass the same clipped text) and behaviour is
+ *   here into `namedFailures`. It is ALSO the text the `#[should_panic]` veto is asked
+ *   of, because the assertion it decides is published to the operator and the developer
+ *   (#2341 fix wave 7). Omit it (or pass the same clipped text) and behaviour is
  *   exactly as before — the sentinel stands where nothing is named.
  */
 export function classifyConsolidatedVerifyFailure(
@@ -183,13 +187,23 @@ export function classifyConsolidatedVerifyFailure(
   perWorktreeFailuresByWs: Record<string, string>,
   fullFailure?: string,
 ): ConsolidationFailureVerdict {
-  const assertion = extractSpecificAssertion(consolidatedFailure);
+  const assertion = extractSpecificAssertion(
+    consolidatedFailure,
+    // #2341 fix wave 7 — `consolidatedFailure` is the bounded window, and the
+    // value below is PUBLISHED (`verdict.assertion` → `consolidatedFailureMessage`
+    // → `verifyEvidence.failures` → the handoff AND the corrective developer
+    // prompt), so the `#[should_panic]` veto must not be asked of the window:
+    // the unclipped stream the window was cut from answers it. Same #1064 value
+    // the name recovery reads; when a caller has none, the window is its own
+    // stream — the pre-wave behaviour, and the honest floor.
+    fullFailure ?? consolidatedFailure,
+  );
   // #1064 — recovered only when the window came up empty, and only from text wider than
   // the window. Re-reading the clipped tail here would be a second reader of the same
   // 800 chars and would recover nothing.
   const named =
     assertion === NO_SPECIFIC_ASSERTION && fullFailure !== undefined
-      ? namedFailureLines(fullFailure, isNamedFailureLine)
+      ? namedFailureLines(fullFailure, (line) => isNamedFailureLine(line, fullFailure))
       : [];
   const namedFailures = named.length > 0 ? named : undefined;
 
@@ -199,7 +213,7 @@ export function classifyConsolidatedVerifyFailure(
   // `consolidation-created` is never the answer for N=1 (resolved AC).
   if (workstreamCount <= 1) {
     const perFailure = Object.values(perWorktreeFailuresByWs)[0] ?? "";
-    const perAssertion = extractSpecificAssertion(perFailure);
+    const perAssertion = extractSpecificAssertion(perFailure, perFailure);
     // #1675 — the N=1 sentence names the verify command's own failing line. A
     // single-workstream cycle has no combination to blame, so no attribution
     // wording is offered for it.
@@ -233,7 +247,7 @@ export function classifyConsolidatedVerifyFailure(
   for (const wsId of workstreamIds) {
     const perFailure = perWorktreeFailuresByWs[wsId];
     if (!perFailure) continue;
-    const perAssertion = extractSpecificAssertion(perFailure);
+    const perAssertion = extractSpecificAssertion(perFailure, perFailure);
     if (perAssertion && sharesAssertion(consolidatedFailure, perAssertion)) {
       return {
         classification: "per-workstream-defect",
@@ -303,12 +317,23 @@ export function classifyConsolidatedVerifyFailure(
  * predicate wants (it classifies as a shape that NAMES a check); it now asks
  * `isBareFailedMarker`, so the only marker-shaped lines it can still drop are the
  * ones that name nothing. Same secret guard on both arms.
+ *
+ * `stream` is the unclipped text `line` was recovered from, and a Rust panic
+ * header asks it the ONE question the extractor asks (#2341 fix wave 7): this
+ * reader publishes into the SAME field — `consolidatedFailureMessage`'s
+ * "specific assertion", which reaches the handoff and the corrective developer
+ * prompt — so a captured `#[should_panic]` print the run reported as a PASSING
+ * test is refused here too. A recovery path with no veto is a second door to
+ * the same wrong verdict: the extractor refused the line, this reader handed it
+ * straight back.
  */
-function isNamedFailureLine(line: string): boolean {
+function isNamedFailureLine(line: string, stream: string): boolean {
   if (/^FAILED:\s*\d+\s+test\(s\)/.test(line))
     return FAILED_MARKER_RE.test(line) && !looksLikeCredential(line);
   if (isBareFailedMarker(line) || isNonAssertionLine(line)) return false;
-  return classifyFailureLine(line)?.namesTest === true;
+  const kind = classifyFailureLine(line);
+  if (kind?.namesTest !== true) return false;
+  return !(kind.shape === "rust-panic" && panicIsCapturedPrint(stream, rustPanicTestName(line)));
 }
 
 /**

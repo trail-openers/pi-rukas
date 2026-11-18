@@ -174,9 +174,15 @@ function guardedPush(
  * base64 blob — the very shape this channel is asked about, because an unindented
  * credential in a gate's output is as publishable as an indented one (#1841
  * round 4, c).
+ *
+ * `stream` is the text `line` was taken from, handed to the extractor so the
+ * `#[should_panic]` veto can ask its name-correlated question of the whole run
+ * rather than of the one line it is quoting (#2341 fix wave 7).
  */
-function notAnAssertion(line: string): boolean {
-  return extractSpecificAssertion(line) === NO_SPECIFIC_ASSERTION || detailLooksCredential(line);
+function notAnAssertion(line: string, stream: string): boolean {
+  return (
+    extractSpecificAssertion(line, stream) === NO_SPECIFIC_ASSERTION || detailLooksCredential(line)
+  );
 }
 
 interface AssertionLinesView {
@@ -204,7 +210,8 @@ export function assertionLines(text: string, opts: AssertionLinesOptions = {}): 
 function assertionLinesView(text: string, opts: AssertionLinesOptions): AssertionLinesView {
   const seen = new Set<string>();
   const out: string[] = [];
-  const push = (line: string): void => guardedPush(out, seen, line, notAnAssertion);
+  const push = (line: string, stream: string): void =>
+    guardedPush(out, seen, line, (l) => notAnAssertion(l, stream));
   for (const raw of splitLines(text)) {
     const line = raw.trim();
     if (line.length === 0) continue;
@@ -221,10 +228,10 @@ function assertionLinesView(text: string, opts: AssertionLinesOptions): Assertio
     // re-joining would put a gate line inside harness prose, which is the #798
     // defect through this door. Only the `formatExecError` wrapper is covered -
     // the smoke-tier wrapper is a different sentence, out of scope here.
-    if (!isHarnessWrapper(line)) push(line);
+    if (!isHarnessWrapper(line)) push(line, text);
     const inner = harnessInnerLine(line);
     if (inner === undefined) continue;
-    for (const raw2 of splitLines(inner)) push(raw2.trim());
+    for (const raw2 of splitLines(inner)) push(raw2.trim(), inner);
   }
   // The tally harvest is gathered HERE so it goes through the same `push` as every
   // other line: same dedupe (`seen`), same redact-then-bound, same `✗` preference.
@@ -266,7 +273,7 @@ function assertionLinesView(text: string, opts: AssertionLinesOptions): Assertio
     guardedPush(details, seen, detail, detailLooksCredential);
   }
   if (opts.harvestTallies === true) {
-    for (const joined of harvestConsolidatedTallies(view)) push(joined);
+    for (const joined of harvestConsolidatedTallies(view)) push(joined, view);
   }
   // A `✗` line is the assertion the operator named; when there is one, the
   // generic error lines around it are noise, not a second diagnosis. The withheld
@@ -366,6 +373,6 @@ export function depsHintApplies(output: string): boolean {
  */
 export function gatePerAssertion(failureText: string | undefined): string | null {
   if (failureText === undefined) return null;
-  const extracted = extractSpecificAssertion(failureText);
+  const extracted = extractSpecificAssertion(failureText, failureText);
   return extracted === NO_SPECIFIC_ASSERTION ? null : extracted;
 }

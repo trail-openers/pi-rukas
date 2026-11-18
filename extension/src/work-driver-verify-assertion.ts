@@ -38,9 +38,7 @@ import {
   isHarnessWrapper,
   isLibtestVerdictLine,
   isLocationlessCodeDiagnostic,
-  libtestVerdictForTest,
-  panicEvidenceRegion,
-  perTestVerdictOnly,
+  panicIsCapturedPrint,
   rustPanicSamenessKey,
   rustPanicTestName,
 } from "./work-driver-verify-failures.ts";
@@ -250,14 +248,15 @@ function joinedRustPanic(header: string, next: string | undefined): string {
  * assertion; the count is the summary marker's job, so it is not
  * duplicated into the extracted field.
  *
- * `stream` is the WHOLE combined output `failureTail` was cut from, when the
- * caller has it (#2341 fix wave 6): the name-correlated `should_panic` ask
- * needs the verdict line the window's elision cut away, and it is answered by
- * reading the stream — never by importing lines into the window. Without it
- * the ask degrades to the tail itself (every caller today hands either the
- * whole stream or a single line, except the baseline probe, which passes both).
+ * `stream` is the WHOLE combined output `failureTail` was cut from, and the
+ * `should_panic` veto is asked of IT, never of the window: the verdict line
+ * that proves a panic print is a passing `#[should_panic]` capture is routinely
+ * above the elision, so a caller that handed only a window could not answer the
+ * question (#2341 fix wave 7). The parameter is therefore REQUIRED: a caller
+ * whose input is already the whole stream (or a single line) passes that same
+ * string twice, which is honest — the stream it was cut from is itself.
  */
-export function extractSpecificAssertion(failureTail: string, stream?: string): string {
+export function extractSpecificAssertion(failureTail: string, stream: string): string {
   // `FAILED:` and its `FAILED: 1 test(s) — …` summary are ONE regex, and
   // `FAILED_MARKER_RE` demands a non-empty payload: an empty marker is not a
   // marker, it is an empty line, and it must not be kept as the count summary.
@@ -296,34 +295,22 @@ export function extractSpecificAssertion(failureTail: string, stream?: string): 
     const kind = classifyFailureLine(candidate);
     if (kind?.namesTest !== true) continue;
     if (kind.shape === "rust-panic") {
-      // #2341 round 1 — the `#[should_panic]` veto. A panic header is only
-      // evidence of a FAILING test when a verdict attributes a FAILING result
-      // to THAT test: libtest prints a passing `#[should_panic]` test's
-      // captured stdout in the identical shape, so in a run that exited
-      // non-zero for some OTHER reason this line names a test that PASSED —
-      // and quoting it is the #746/#798 class the module's own doctrine
-      // forbids. #2341 fix wave 6 asks the veto as TWO questions, because
-      // they are not the same question: NAME-CORRELATED on the stream's
-      // panic evidence region ({@link panicEvidenceRegion} — the text below
-      // the last completed-green target summary above the header, so a
-      // sibling crate's same-named `... ok` cannot veto a later binary's
-      // real panic, and a binary that died before printing its verdict reads
-      // as unobserved), and the tally fallback on the published WINDOW only
-      // (the text the caller was handed, asked the same region rule). ONE
-      // predicate with the evidence-anchor walk — it asks these two over the
-      // window it publishes; see `work-driver-exec-error.ts`. `undefined`
-      // (no verdict observed) vetoes nothing: an absent observation is not a
-      // verdict either way.
+      // #2341 round 1 / fix wave 7 — the `#[should_panic]` veto, ONE question:
+      // does the STREAM report this header's own test as passing
+      // ({@link panicIsCapturedPrint})? A panic header is only evidence of a
+      // FAILING test when a verdict attributes a FAILING result to THAT test:
+      // libtest prints a passing `#[should_panic]` test's captured stdout in
+      // the identical shape, so in a run that exited non-zero for some OTHER
+      // reason this line names a test that PASSED — and quoting it is the
+      // #746/#798 class the module's own doctrine forbids. The ask goes to the
+      // stream and not the window because the window is the bytes a human is
+      // quoted: it must never gain a line to make a question decidable, and its
+      // elision is exactly what hides the `... ok`. ONE predicate, and the
+      // evidence-anchor walk asks the same one over the same stream
+      // (`work-driver-exec-error.ts`), so the veto and the anchor cannot
+      // disagree about which panic names a failing test.
       const panicName = rustPanicTestName(candidate);
-      if (libtestVerdictForTest(panicEvidenceRegion(failureTail, candidate), panicName) === false) {
-        continue;
-      }
-      if (
-        perTestVerdictOnly(panicEvidenceRegion(stream ?? failureTail, candidate), panicName) ===
-        false
-      ) {
-        continue;
-      }
+      if (panicIsCapturedPrint(stream, panicName)) continue;
       return redactedAssertion(joinedRustPanic(candidate, lines[i + 1]));
     }
     return redactedAssertion(candidate);

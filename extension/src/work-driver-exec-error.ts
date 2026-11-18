@@ -47,9 +47,7 @@ import { readFileSync } from "node:fs";
 import {
   FAILED_MARKER_RE,
   classifyFailureLine,
-  libtestVerdictForTest,
-  panicEvidenceRegion,
-  perTestVerdictOnly,
+  panicIsCapturedPrint,
   rustPanicTestName,
 } from "./work-driver-verify-failures.ts";
 import { splitLinesWithOffsets } from "./work-driver-verify-support.ts";
@@ -95,46 +93,40 @@ export function extractAttributedTail(combined: string, maxLen: number): Attribu
 
 /**
  * The bytes {@link extractAttributedTail} publishes for the line beginning at
- * `anchorIndex`, together with the `should_panic` veto asked on exactly those
- * bytes.
+ * `anchorIndex`, together with the `should_panic` veto.
  *
  * ONE call produces the window and its verdict, and the caller receives this
- * value rather than re-cutting the stream (#2341 fix wave 5, H1/H2): the text
- * the veto reads and the text the extractor is handed are the same string, so
- * the property holds because there is only one cut to disagree about — not
- * because two readers remembered to ask the same question of the same lines.
- * The wave-4 defect was the other shape of this: the walk vetoed a candidate on
- * a window it then did not publish (the `FAILED:` marker wins the anchor and
- * publishes a region starting at ITSELF), so the published window — the one
- * whose elision had cut away the `... ok` proving the panic was a passing
- * `#[should_panic]` test's captured print — reached the extractor unanswered
- * and became "the assertion at base".
+ * value rather than re-cutting the stream (#2341 fix wave 5, H1/H2): the veto
+ * and the published bytes come from the same cut, so the extractor cannot be
+ * handed a window whose anchor the walk had already refused. The wave-4 defect
+ * was the other shape of this: the walk vetoed a candidate on a window it then
+ * did not publish (the `FAILED:` marker wins the anchor and publishes a region
+ * starting at ITSELF), so the published window — the one whose elision had cut
+ * away the `... ok` proving the panic was a passing `#[should_panic]` test's
+ * captured print — reached the extractor unanswered and became "the assertion
+ * at base".
+ *
+ * The veto is the ONE name-correlated question over the WHOLE `text` —
+ * {@link panicIsCapturedPrint} — and it is asked of the stream, never of the
+ * window. A window-scoped tally is what each earlier wave reopened: the window
+ * is the stream's OWN bytes (no line is ever materialised into it to make a
+ * question decidable, because the window is quoted to a human and an imported
+ * verdict line is a window that lies), so it cannot be trusted to hold the
+ * verdict it would have to be asked about.
  *
  * `panicName` is the candidate's own panic name, or `undefined` for any other
- * shape; with no name neither ask answers, and an unobserved verdict vetoes
- * nothing. The two questions are NOT the same question (#2341 fix wave 6):
- * the NAME-CORRELATED one is asked on the stream's {@link panicEvidenceRegion}
- * — the text after the last completed-green target summary above the header,
- * so a sibling crate's `test X ... ok` cannot answer for a later binary's
- * panic, and a binary that died without printing its verdict reads as
- * unobserved — and the tally fallback is asked on the published WINDOW only.
- * The window the walk hands over is the stream's OWN bytes: no line is ever
- * materialised into it to make a question decidable, because the window is
- * quoted to a human and an imported verdict line is a window that lies.
+ * shape; with no name the question does not arise, and an unobserved verdict
+ * vetoes nothing.
  */
 function publishedWindow(
   text: string,
   anchorIndex: number,
   maxLen: number,
   panicName: string | undefined,
-  panicHeader: string | undefined,
 ): { window: string; vetoed: boolean } {
-  const window = tailFromAnchor(text, anchorIndex, maxLen);
   return {
-    window,
-    vetoed:
-      libtestVerdictForTest(panicEvidenceRegion(window, panicHeader), panicName) === false ||
-      perTestVerdictOnly(panicEvidenceRegion(text, panicHeader), panicName) === false,
+    window: tailFromAnchor(text, anchorIndex, maxLen),
+    vetoed: panicIsCapturedPrint(text, panicName),
   };
 }
 
@@ -195,11 +187,11 @@ function lastFailureAnchor(
     const isMarker = FAILED_MARKER_RE.test(line);
     const kind = classifyFailureLine(line);
     if (!isMarker && kind === undefined) continue;
-    // #2341 fix wave (H1) / fix wave 5 (H1/H2) — the SAME name-correlated
-    // `should_panic` veto the extractor asks, asked on the window this
-    // candidate is about to PUBLISH (see {@link publishedWindow}: the veto and
-    // the published bytes are produced by one call). A panic header whose OWN
-    // test an observed verdict line reports as passing is not evidence — it
+    // #2341 fix wave (H1) / fix wave 7 — the SAME name-correlated
+    // `should_panic` veto the extractor asks, asked on the whole stream and
+    // keyed to this candidate's own test name (see {@link publishedWindow}:
+    // the veto and the published bytes are produced by one call). A panic
+    // header whose OWN test the run reported as passing is not evidence — it
     // names a test that passed — and is refused at BOTH tiers: not a named
     // anchor, and not the last-resort `lastAny` either (the anchor it would
     // earn could then be quoted as the assertion, the elision having cut away
@@ -210,7 +202,6 @@ function lastFailureAnchor(
       at,
       maxLen,
       kind?.shape === "rust-panic" ? rustPanicTestName(line) : undefined,
-      kind?.shape === "rust-panic" ? line : undefined,
     );
     if (isMarker) marker = published;
     if (kind === undefined) continue;
