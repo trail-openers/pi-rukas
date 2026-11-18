@@ -29,7 +29,13 @@
  * plan object, so the seam stays free of the permission module's types.
  */
 
+import { CHILD_ROLE_ENV, childRoleEnvEnabled, childRoleEnvValue } from "./child-role-env.ts";
 import { scrubGitLocation } from "./git-env.ts";
+import {
+  reviewerScratchHomeEnabled,
+  reviewerScratchHomeEnv,
+  reviewerWriteGuardEnabled,
+} from "./reviewer-scratch-home.ts";
 import {
   type ChildPermissionPlan,
   applyChildPermissionEnv,
@@ -49,7 +55,10 @@ import { CHILD_TMP_ENV } from "./write-fence-deletion.ts";
  * settled — `writeFence` is the dispatch's fence — absent for an unfenced
  * child, which keeps the fence off for it — and `childTmp` is the spawn's
  * per-spawn dir: the ONLY temp tree this child may delete into (#2200), so it
- * is named as its deletion root and, last, as its temp root (#2241).
+ * is named as its deletion root and, last, as its temp root (#2241). A
+ * read-only role's child also gets `PI_ENSEMBLE_ROLE` stamped here (#2352 R11)
+ * and, when the guard that makes it meaningful is on, a scratch `HOME`/XDG set
+ * derived from that same dir (#2352 R12).
  */
 export function buildChildEnv(
   role: string,
@@ -61,6 +70,20 @@ export function buildChildEnv(
   // strips a non-ops child's forge tokens, points its config roots at a fresh
   // empty dir, and names the parent's forge-read socket.
   const childEnv = childBaseEnv(role, plan.forge);
+  // #2352 R11 — the role is stamped HERE, the one env construction the spawn
+  // path calls. Every role-scoped child-side rule (`write-fence.ts`'s
+  // read-only dependency rule, `write-fence-deletion.ts`'s roots and its `ops`
+  // carve-out, `review-bash-timeout.ts`, the push ban, and this issue's
+  // reviewer guard) reads `PI_ENSEMBLE_ROLE` from the child's own env, so
+  // without this line all of them were inert for a spawned child: the only
+  // other stamper is `childEnvFor` (write-fence-contract.ts), which smoke
+  // tests call and production spawn does not.
+  // R11: the role is stamped HERE, and the value is the plan's string VERBATIM —
+  // `childRoleEnvValue` only trims, so `lens-fix` reaches the guards as `lens-fix`
+  // and not as some other role's spelling. Never an empty value: an unset role
+  // leaves the key absent, which is distinguishable from a role that judges nothing.
+  const stamped = childRoleEnvValue(role);
+  if (childRoleEnvEnabled() && stamped !== undefined) childEnv[CHILD_ROLE_ENV] = stamped;
   Object.assign(childEnv, vipuneChildEnv(), writeFenceChildEnv(writeFence));
   // #1571 — the child works in `cwd`; an inherited GIT_DIR & co. would point
   // its git at another tree (git-env.ts).
@@ -87,6 +110,18 @@ export function buildChildEnv(
   // `GIT_*` canary in test-subagent-git-guard.ts pins for its own assignments.
   if (childTmp !== undefined) {
     childEnv[CHILD_TMP_ENV] = childTmp;
+    // #2352 R12 — a read-only child's bash sees a scratch HOME and its own XDG
+    // roots, so a probe that writes through `$HOME` or `$XDG_STATE_HOME` lands
+    // under the per-spawn dir instead of the operator's live state. The scratch
+    // is created HERE (the spawn's own `finally` removes the parent, so there is
+    // no new allocation and no new cleanup site), and the value is derived from
+    // it. The stamp is gated on BOTH #2352 switches: the guard is the
+    // load-bearing half (R10 — a tool that resolves home through getpwuid
+    // ignores `HOME`), so the redirect alone would be an isolation nobody could
+    // rely on and a tree nobody asked for.
+    if (reviewerScratchHomeEnabled() && reviewerWriteGuardEnabled()) {
+      Object.assign(childEnv, reviewerScratchHomeEnv(role, childTmp));
+    }
     Object.assign(childEnv, childTempEnv(childTmp));
   }
   return childEnv;
