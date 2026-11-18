@@ -240,40 +240,19 @@ async function stampReachesTheChild() {
     "no role → the key is absent, not empty",
   );
 
-  // The recovery the companion uses: the role is read back out of the id the
-  // parent always sets, and never invented for a process with no id.
-  const { childIdRole, registerChildRoleEnv } = await import("../src/child-role-env-hook.ts");
-  assert.equal(childIdRole("42:adversarial-developer"), "adversarial-developer");
-  assert.equal(childIdRole("42:"), undefined, "an id with no role names none");
-  assert.equal(childIdRole(":x"), undefined, "an id with no pid names none");
-  assert.equal(childIdRole("42:a:b"), undefined, "an id shaped otherwise names none");
-  assert.equal(childIdRole(undefined), undefined);
-  const recovered: Record<string, string> = { PI_ENSEMBLE_CHILD_ID: "42:explore" };
-  assert.equal(registerChildRoleEnv(recovered), "explore", "the companion recovers the id's role");
-  assert.equal(recovered[CHILD_ROLE_ENV], "explore");
-  const kept: Record<string, string> = {
-    [CHILD_ROLE_ENV]: "code-review-specialist",
-    PI_ENSEMBLE_CHILD_ID: "42:explore",
-  };
+  // No recovery, and none was ever reachable: the companion used to read the role
+  // back out of `PI_ENSEMBLE_CHILD_ID`, a name the spawn never set, so the hook could
+  // only ever no-op while reading as a guard. The stamp above is the ONLY thing that
+  // gives a child a role, so an un-stamped child judges nothing — which is the honest
+  // shape: `PI_ENSEMBLE_CHILD_ROLE_ENV=0` is then the single switch for the whole set.
   assert.equal(
-    registerChildRoleEnv(kept),
-    "code-review-specialist",
-    "what the spawn stamped wins — the hook never overrides",
+    existsSync(path.join(SRC, "child-role-env-hook.ts")),
+    false,
+    "the unreachable recovery module is gone, not merely unused",
   );
-  const orphan: Record<string, string> = {};
-  assert.equal(
-    registerChildRoleEnv(orphan),
-    undefined,
-    "a process the harness did not stamp an id into gets no invented role",
-  );
-  assert.equal(CHILD_ROLE_ENV in orphan, false);
-  assert.equal(
-    registerChildRoleEnv({
-      PI_ENSEMBLE_CHILD_ID: "42:explore",
-      [ROLE_SWITCH]: "0",
-    }),
-    undefined,
-    "the switch off means the companion recovers nothing either",
+  assert.ok(
+    !(await read("child-guards.ts")).includes("registerChildRoleEnv"),
+    "the companion no longer wires a recovery that could never answer",
   );
 
   // The companion is installed by the real spawn path — proven by loading the

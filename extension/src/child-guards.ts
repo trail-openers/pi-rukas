@@ -45,7 +45,6 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { enableChildCodemode } from "./child-codemode.ts";
 import { enableChildForgeRead, registerChildForgeReadTool } from "./child-forge-read-activation.ts";
-import { registerChildRoleEnv } from "./child-role-env-hook.ts";
 import { registerProviderEnvOverrides } from "./provider-env.ts";
 import { registerModeIndependentGuards } from "./subagent-guard-guards.ts";
 import { trace } from "./trace.ts";
@@ -104,13 +103,6 @@ export function preflightChildGuards(): void {
  * exec chain twice per merge attempt.
  */
 export default function registerChildGuards(pi: ExtensionAPI): void {
-  // #2352 R11 — FIRST of everything: every role-scoped rule below reads
-  // `PI_ENSEMBLE_ROLE` at registration, and a child whose env the parent built
-  // already has it. This call is the recovery for the case the stamp cannot cover
-  // (a parent too old to stamp, or a hand-rolled `--extension`): it fills the key
-  // from the child id the spawn always sets, and refuses to invent a role for a
-  // process that has none. Inert with `PI_ENSEMBLE_CHILD_ROLE_ENV=0`.
-  registerChildRoleEnv();
   // #2200 — the deletion rule is registered FIRST and unconditionally: it has no
   // env switch, so a reviewer (no write root), a read-only role, and a child under
   // the developer's `PI_ENSEMBLE_WRITE_FENCE=0` hatch are all still judged. It sits

@@ -119,10 +119,6 @@ export const HEADLESS_INPUTS_A: readonly HostInput[] = [
   // #1560 — the per-child run bound: wrap-up steer at the bound, kill this long after.
   ms("CHILD_BOUND_GRACE_MS", 600_000),
   flag("CHILD_CODEMODE", true),
-  // The id the spawn gives each child (`<pid>:<role>`), and the name the companion
-  // reads the role back out of when the env carried no stamp. Set unconditionally,
-  // never by the operator — hence `internal`, like the spawn's own temp root.
-  str("CHILD_ID", null, "internal"),
   // #2352 R11 — the stamp of the dispatched role into the child's own env. The
   // switch gates the WHOLE set of role-scoped child guards (the #1879 read-only
   // dependency rule, the #2200 deletion rule's roots and `ops` carve-out, the

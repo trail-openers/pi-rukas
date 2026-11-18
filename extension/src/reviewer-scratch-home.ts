@@ -42,6 +42,12 @@
  * `PI_ENSEMBLE_WRITE_FENCE`, and each is off only on the literal `"0"`. This
  * module owns the redirect's switch and the role predicate the companion's guard
  * hook keys on, so the pair cannot disagree about which child is confined.
+ *
+ * One residual, stated here because this module creates it: `VIPUNE_DATABASE_PATH`
+ * is re-exported deliberately, so a reviewer keeps the memory it is meant to consult
+ * — and a `vipune` write is therefore not judged by the write guard (the guard reads
+ * command text, and vipune names no path). A confined child can
+ * still write its own memory row; that is the accepted cost of the re-export.
  */
 
 import { mkdirSync } from "node:fs";

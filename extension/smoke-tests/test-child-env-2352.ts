@@ -12,7 +12,7 @@
  */
 
 import assert from "node:assert";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { UNISOLATED_CHILD_ENV } from "../src/reviewer-tree.ts";
@@ -83,6 +83,18 @@ assert.equal(
   'the marker is off on anything but "1", the same convention every other switch uses',
 );
 
+console.log("── I3: the residual the redirect leaves, stated where a reader will find it ──");
+// `VIPUNE_DATABASE_PATH` is re-exported so reviewers keep their memory, which means a
+// `vipune` write goes to a store the bash guard does not aim. That is a known residual,
+// and the module that creates the hole is the module that has to say so.
+const src = path.resolve(import.meta.dirname, "..", "src");
+const scratchDoc = await Bun.file(path.join(src, "reviewer-scratch-home.ts")).text();
+assert.ok(
+  /vipune`? writes? (are|is|therefore) not|not judged by the write guard/i.test(scratchDoc) &&
+    /residual/i.test(scratchDoc) &&
+    /VIPUNE_DATABASE_PATH/.test(scratchDoc),
+  "the jsdoc states that vipune writes are not judged by the write guard, as a residual",
+);
 rmSync(childTmp, { recursive: true, force: true });
 rmSync(target, { recursive: true, force: true });
-console.log("\nchild env / fail-open stamp (#2352 C2): all groups passed");
+console.log("\nchild env / fail-open stamp (#2352 C2, I3): all groups passed");
