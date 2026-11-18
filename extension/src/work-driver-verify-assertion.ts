@@ -29,6 +29,7 @@
  */
 
 import { redactSecrets } from "./secret-patterns.ts";
+import { detailLooksCredential } from "./work-driver-verify-credential-screen.ts";
 import {
   FAILED_MARKER_RE,
   classifyFailureLine,
@@ -184,6 +185,14 @@ function redactedAssertion(candidate: string): string {
 const RUNNER_COMPLETION_TOKEN_RE = /^\s*(?:ok|FAILED|ignored|measured|passed|failed)\b\.?\s*$/i;
 
 /**
+ * The extractor's OWN elision marker ({@link extractAttributedTail} splices it
+ * between the anchor line and the tail), in either spelling, asked as a whole
+ * line. Anchored rather than compared for equality because the join guard, like
+ * the `\S+::` arm below, must hold wherever a caller stops trimming.
+ */
+const ELISION_MARKER_RE = /^\s*(?:\.{3}|\u2026)\s*$/;
+
+/**
  * #2341 — join a Rust panic header with its message line. libtest prints the
  * failing verdict as TWO lines — `thread 'NAME' panicked at FILE:LINE:` then
  * the message (`fast path took 101.409582ms, which is over the 100 ms bound`)
@@ -194,8 +203,10 @@ const RUNNER_COMPLETION_TOKEN_RE = /^\s*(?:ok|FAILED|ignored|measured|passed|fai
  * form carries it inline) and the next line is still the message: a `note:`,
  * a `---- ` block separator, cargo's failing-test list (`failures:` and the
  * test-name line under it), a bare runner completion token
- * ({@link RUNNER_COMPLETION_TOKEN_RE}), another classified failure line, or a
- * marker/echo/secret-shaped line is NOT the message, and a half-pair is
+ * ({@link RUNNER_COMPLETION_TOKEN_RE}), another classified failure line, a
+ * marker/echo/secret-shaped line, the extractor's own elision marker
+ * ({@link ELISION_MARKER_RE}), or a line the shared credential screen still
+ * reads as key material is NOT the message, and a half-pair is
  * returned as the header — it still names the test, file and line, which
  * beats reporting absence for a truncation the window caused. An empty
  * `lines[i + 1]` (the pair cut between the two lines) takes this same path.
@@ -210,7 +221,7 @@ function joinedRustPanic(header: string, next: string | undefined): string {
   // a cut, not the panic's message — joining it produced
   // `thread '…' panicked at …: ...` for a [baseline-red] reader to chase;
   // the header alone is preferred (it still names test, file and line).
-  if (next === "..." || next === "\u2026") return header;
+  if (ELISION_MARKER_RE.test(next)) return header;
   // The `\S+::` arm is cargo's failing-test LIST: the block header `failures:`
   // and the test-name line printed beneath it. The caller hands lines in
   // trimmed, so the list item is matched in its bare `path::to::test` form —
@@ -218,7 +229,20 @@ function joinedRustPanic(header: string, next: string | undefined): string {
   // stops trimming.
   if (/^(note:|----|thread\s+'|failures:|\s*\S+::)/.test(next)) return header;
   if (isLibtestVerdictLine(next) || RUNNER_COMPLETION_TOKEN_RE.test(next)) return header;
-  if (isNonAssertionLine(next) || classifyFailureLine(next) !== undefined) return header;
+  // The join is the ONE place this reader publishes a line it never judged on
+  // its own, so the continuation passes every screen the header itself passed —
+  // including the verify-evidence credential screen. `isNonAssertionLine`'s
+  // secret arm is keyword-shaped (`api_key = …`) and cannot name a bare token
+  // welded into prose, which is the shape a panic message prints when it echoes
+  // a value it compared; `detailLooksCredential` is the one screen the record's
+  // channels and the stale-base prose already ask, so a secret on the line
+  // beneath a panic header is refused here rather than published in the pair.
+  if (
+    isNonAssertionLine(next) ||
+    classifyFailureLine(next) !== undefined ||
+    detailLooksCredential(next)
+  )
+    return header;
   return `${header} ${next}`;
 }
 
