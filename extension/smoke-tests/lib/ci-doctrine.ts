@@ -17,9 +17,12 @@
  * The shipped CI brief is a numbered list whose step 2 is both the sanctioned
  * poll recipe AND the sentence that names the forbidden watch — so the
  * classifier has to see the prohibition, and still see a reword of that same
- * line back to a watch prescription. `lib/ci-doctrine-canary.ts` pins exactly
- * that line in both directions; a classifier change that loses either half
- * reds the gate instead of going unnoticed on the one line a child is handed.
+ * line back to a watch prescription. The canary block of
+ * `test-ci-doctrine-poll.ts` pins exactly that line in both directions, and
+ * pins the shipped recipe lines of `modules/workflows/ci-monitoring.md` and
+ * `agents-base/ops.md` against the `--watch` form; a classifier change that
+ * loses either half reds the gate instead of going unnoticed on the one line a
+ * child is handed.
  */
 
 /**
@@ -28,7 +31,10 @@
  * - `interval` / `cap` are pinned to the driver's own numbers by the gate
  *   (`CI_POLL_MS` in extension/src/lean/ci-poll.ts, `DEFAULT_TIMEOUT_MS` in
  *   extension/src/forge-ci.ts) — a doctrine interval the driver does not share
- *   is a second source of truth that drifts silently.
+ *   is a second source of truth that drifts silently. The gate asserts the
+ *   ANCHORED number (see `interval` / `cap` below) and that no other `sleep`
+ *   number appears; a substring test on the digits caught deletion only, so a
+ *   `sleep 600` reword left the child polling at a cadence the driver does not.
  * - `pendingContinues` is the rule whose absence was the bug: an ops child that
  *   ended its turn mid-wait left the merge undone.
  * - `exitCodeIsData` covers the `gh pr checks` exit-8-while-pending trap that
@@ -48,8 +54,15 @@ export interface CiDoctrineObligations {
 }
 
 export const CI_DOCTRINE_OBLIGATIONS: CiDoctrineObligations = {
-  interval: /sleep 60/,
-  cap: /30[- ]minute|30 minutes/,
+  // The shipped defaults, anchored with a trailing digit boundary and a leading
+  // word boundary: a doctrine reworded to `sleep 600` still CONTAINS `sleep 60`,
+  // and a cap reworded to `45 minutes` still contains the `30` of some other
+  // sentence. A substring test catches deletion only; the cadence and the cap the
+  // child runs are the thing the driver must share, so the gate builds the
+  // anchored patterns from the constants it reads (see `ciDoctrineNumberPatterns`)
+  // and the fallback literals here exist only for callers that pass no numbers.
+  interval: /\bsleep 60(?!\d)/,
+  cap: /\b30[- ]?minutes?\b/,
   terminal: /terminal/i,
   pendingContinues:
     /pending[\s\S]{0,90}never a reason to end|never a reason to end[\s\S]{0,90}pending/i,
@@ -61,6 +74,24 @@ export function missingCiDoctrine(text: string, want = CI_DOCTRINE_OBLIGATIONS):
   return Object.entries(want)
     .filter(([, re]) => !re.test(text))
     .map(([name]) => name);
+}
+
+/**
+ * The CI-wait surfaces that share ONE cadence and ONE cap. The gate reads the
+ * numbers out of `CI_POLL_MS` / `DEFAULT_TIMEOUT_MS`, builds these patterns from
+ * them, and demands that no surface states another sleep interval: the doctrine,
+ * the module and the brief are one recipe told four times, and a single drifted
+ * number is the second source of truth the pinning exists to prevent.
+ */
+export function ciDoctrineNumberPatterns(pollSeconds: number, capMinutes: number) {
+  return {
+    /** The sleep interval exactly — a trailing digit is a different number. */
+    interval: new RegExp(`\\bsleep ${pollSeconds}(?!\\d)`),
+    /** The cap exactly — `30` inside `300 minutes` is not the cap. */
+    cap: new RegExp(`\\b${capMinutes}[- ]?minutes?\\b`),
+    /** Any OTHER `sleep <n>` the doctrine improvised. */
+    straySleep: new RegExp(`\\bsleep (?!${pollSeconds}(?!\\d))\\d+`),
+  };
 }
 
 /** Words that make a clause a prohibition rather than an instruction. */
@@ -79,22 +110,30 @@ const CLAUSE_BREAK = /[.;:!?]|\bbut\b|\bhowever\b|\band\b|\bor\b|—|,/i;
  * The blocking CI-watch shapes a doctrine can prescribe: `gh run watch`, and
  * `gh pr checks … --watch`.
  *
- * Matches are kept inside one command word group (`(?:\s+\S)*\s+--watch`, not
- * `[^\n]*--watch`): the wider form matched from the sanctioned poll's
- * `gh pr checks <n>` all the way to a later sentence's `--watch`, reading two
- * commands as one prescription.
+ * The `--watch` alternative is delimited so it cannot read two commands as one
+ * prescription: the flag is reached only through same-line words that are
+ * neither a quote nor a closer (`[^\s`"')\]`]*?` — lazy, so the match is the
+ * SHORTEST run ending in a real `--watch`, never a run that jumps a backtick
+ * into the next code span), and each intervening word is checked at its own
+ * start, so the negative lookahead cannot let a second `--watch` hide behind a
+ * word that merely begins with one. An earlier form used `(?:\s+\S)*\s+--watch`:
+ * `\s` matches a newline and `\S` happily ate a backtick, so on the shipped
+ * step-2 line it matched from the sanctioned `gh pr checks <n> …` all the way
+ * down the paragraph to the doctrine's own "and not any `--watch` flag", and the
+ * `never` three words earlier silenced the only hit the line had — which is how
+ * a `--watch` written back into the shipped recipe was invisible to every gate.
  */
-const WATCH_SHAPE = /gh\s+(?:run\s+watch|pr\s+checks(?:\s+\S)*\s+--watch)/g;
-
-/** Lines on which a mention of a watch is the doctrine SHOWING the forbidden
- * form rather than prescribing it: a heading, a bullet, or a fenced code line. */
-const NON_PRESCRIPTIVE_LINE = /^\s*(?:#|[-*]|\d+\.|>|```)/;
+const WATCH_SHAPE =
+  /gh\s+(?:run\s+watch|pr\s+checks(?:[ \t]+(?!--watch)[^\s`"')\]]*)*?[ \t]+--watch)/g;
 
 /**
  * Blocking CI watches a piece of doctrine PRESCRIBES. A watch named only inside
- * a prohibition ("Never `gh run watch`", the doctrine's own ❌ bullet) or on a
- * heading/bullet/code line is not reported — the fix keeps the watch names in
- * the text on purpose, so a reader knows what to avoid.
+ * a prohibition ("Never `gh run watch`", the doctrine's own ❌ bullet) is not
+ * reported — the fix keeps the watch names in the text on purpose, so a reader
+ * knows what to avoid — but every line TYPE is judged: heading, bullet, fenced
+ * code and prose alike. An earlier exemption for non-prose lines was deleted
+ * because the shipped recipe lives in a fenced block and in bullets, so the
+ * exemption made a `--watch` written back into either invisible to the gate.
  */
 export function blockingWatchPrescribed(text: string): string[] {
   const hits: string[] = [];

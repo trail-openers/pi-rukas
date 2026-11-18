@@ -218,8 +218,12 @@ const scratchDir = "/tmp/pi-ensemble-issue-284";
     `#2333: CI brief offers no blocking watch and no chained shell loop${blockingWatchPrescribed(brief).length ? `: ${blockingWatchPrescribed(brief).join(" | ")}` : ""}`,
   );
   assert(
-    /never\s+`?ci-status:?\s*pending/i.test(brief),
-    "#2333: CI brief forbids the `ci-status: pending` marker the driver has no arm for",
+    /never[^.\n]{0,80}pending/i.test(brief),
+    "#2333: CI brief forbids a marker carrying the pending value the router parks on",
+  );
+  assert(
+    /cap[\s\S]{0,160}?(report the wait as a failure|`?ci-status: failure)/i.test(brief),
+    "#2333: CI brief binds the cap path to a failure report, not a pending one",
   );
 }
 

@@ -42,14 +42,16 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import {
-  blockingWatchPrescribed,
-  CI_DOCTRINE_OBLIGATIONS,
-  missingCiDoctrine,
-} from "./lib/ci-doctrine.ts";
+import { readMarker } from "../src/reply-markers.ts";
 import { isCiWatchCommand } from "../src/slow-notice-ci-wait.ts";
 import { CI_WAIT_STEPS } from "../src/work-driver-ci-wait-brief.ts";
 import { inlineCiPrompt } from "../src/work-driver-prompts-late.ts";
+import {
+  CI_DOCTRINE_OBLIGATIONS,
+  blockingWatchPrescribed,
+  ciDoctrineNumberPatterns,
+  missingCiDoctrine,
+} from "./lib/ci-doctrine.ts";
 
 const SELF = "test-ci-doctrine-poll.ts";
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
@@ -69,10 +71,12 @@ function assert(cond: boolean, msg: string): void {
 const POLL_MS_MATCH = readFileSync(path.join(ROOT, "extension/src/lean/ci-poll.ts"), "utf8").match(
   /CI_POLL_MS\s*=\s*([\d_]+)/,
 );
-const POLL_SECONDS = POLL_MS_MATCH ? Number(POLL_MS_MATCH[1].replace(/_/g, "")) / 1000 : NaN;
+const POLL_SECONDS = POLL_MS_MATCH ? Number(POLL_MS_MATCH[1].replace(/_/g, "")) / 1000 : Number.NaN;
+/** Declared at module scope (not inside the block below) so the numbered sections
+ * stay scoped blocks rather than lone block statements. */
 const CI_WATCH_SRC = readFileSync(path.join(ROOT, "extension/src/forge-ci.ts"), "utf8");
 const CAP_MINUTES = Number(
-  CI_WATCH_SRC.match(/DEFAULT_TIMEOUT_MS\s*=\s*(\d+)\s*\*\s*60\s*\*\s*1000/)?.[1] ?? NaN,
+  CI_WATCH_SRC.match(/DEFAULT_TIMEOUT_MS\s*=\s*(\d+)\s*\*\s*60\s*\*\s*1000/)?.[1] ?? Number.NaN,
 );
 assert(
   Number.isFinite(POLL_SECONDS) && POLL_SECONDS > 0,
@@ -82,6 +86,16 @@ assert(
   Number.isFinite(CAP_MINUTES) && CAP_MINUTES > 0,
   `the wait cap resolves from DEFAULT_TIMEOUT_MS in forge-ci.ts (got ${CAP_MINUTES}min)`,
 );
+
+/** Patterns built from the constants above: the doctrine must state THESE numbers
+ * and no others. Anchored, because `composed.includes("60")` is also true of
+ * `sleep 600` — a substring check catches deletion, never drift. */
+const NUM = ciDoctrineNumberPatterns(POLL_SECONDS, CAP_MINUTES);
+
+/** Every `sleep <n>` a surface states other than the driver's own interval. */
+function straySleepIntervals(text: string): string[] {
+  return [...text.matchAll(new RegExp(NUM.straySleep.source, "g"))].map((m) => m[0]);
+}
 
 /** The sources one role's prompt is assembled from: its role doc plus every module
  * its manifest lists, read from the manifest so the gate follows the composition
@@ -114,14 +128,20 @@ function promptSources(role: string): { file: string; text: string }[] {
     `ops: the assembled doctrine states every CI-wait obligation${missing.length ? ` (missing: ${missing.join(", ")})` : ""}`,
   );
 
-  // The interval and the cap are the driver's numbers, not invented prose.
+  // The interval and the cap are the driver's numbers, not invented prose — and
+  // no other sleep interval appears anywhere in what the child reads.
   assert(
-    CI_DOCTRINE_OBLIGATIONS.interval.test(composed) && composed.includes(`${POLL_SECONDS}`),
-    `ops: the poll names the driver's ${POLL_SECONDS}s interval (CI_POLL_MS)`,
+    NUM.interval.test(composed),
+    `ops: the poll names the driver's ${POLL_SECONDS}s interval and nothing else (CI_POLL_MS)`,
   );
   assert(
-    CI_DOCTRINE_OBLIGATIONS.cap.test(composed) && composed.includes(`${CAP_MINUTES}`),
-    `ops: the wait names the driver's ${CAP_MINUTES}-minute cap (forge-ci DEFAULT_TIMEOUT_MS)`,
+    NUM.cap.test(composed),
+    `ops: the wait names the driver's ${CAP_MINUTES}-minute cap and nothing else (forge-ci DEFAULT_TIMEOUT_MS)`,
+  );
+  const strays = sources.flatMap((s) => straySleepIntervals(s.text).map((m) => `${s.file}: ${m}`));
+  assert(
+    strays.length === 0,
+    `ops: no source improvises a sleep interval beside the driver's ${POLL_SECONDS}s${strays.length ? ` (${strays.join(", ")})` : ""}`,
   );
 
   const prescriptions = sources.flatMap((s) =>
@@ -138,10 +158,7 @@ function promptSources(role: string): { file: string; text: string }[] {
     !/Manual `sleep` \+ status check/i.test(composed),
     "ops: the FORBIDDEN list no longer bans the sleep + status poll",
   );
-  assert(
-    /unbounded/i.test(composed),
-    "ops: the FORBIDDEN list still bans an unbounded CI loop",
-  );
+  assert(/unbounded/i.test(composed), "ops: the FORBIDDEN list still bans an unbounded CI loop");
 
   // The GitLab section's own rule survives: `glab ci status` is not
   // non-interactive-safe, and the fix must not have "restored" it.
@@ -170,14 +187,30 @@ function promptSources(role: string): { file: string; text: string }[] {
     "inlineCiPrompt: the ci-status marker contract is intact",
   );
   // R1 — the marker discipline the driver grades on: exactly one marker, only
-  // after a terminal state, never the `pending` value the driver has no arm for.
+  // after a terminal state, and never the `pending` value. The brief is fed to the
+  // child verbatim and the driver reads the LAST `ci-status` match, so the
+  // prohibition is stated as "never a marker carrying the pending value" rather
+  // than as the literal token the child would echo.
   assert(
-    /never\s+`?ci-status:?\s*pending/i.test(brief),
-    "inlineCiPrompt: the brief forbids emitting `ci-status: pending`",
+    /never[^.\n]{0,80}pending/i.test(brief) &&
+      readMarker(brief, "ci-status", /(success|failure|pending)/) === "failure",
+    "inlineCiPrompt: the brief forbids the pending value AND its own last ci-status match is the failure form, not an echo of the prohibition",
   );
   assert(
     /unchained|two separate/i.test(brief) && !/while true|\$\(/.test(brief),
     "inlineCiPrompt: the poll is prescribed as separate unchained calls, not a shell loop",
+  );
+  // R1 — the cap path is bound to `ci-status: failure`. Without this a doctrine
+  // reword that hands the child "report the wait as pending at the cap" clears
+  // every other assertion, and `routeCiTier`'s `pending` arm parks the cycle at
+  // `ci` with nobody left waiting (an ABSENT marker at least burns a ci-retry).
+  assert(
+    /cap[\s\S]{0,160}?(report the wait as a failure|`?ci-status: failure)/i.test(brief),
+    "inlineCiPrompt: the cap path is bound to a failure report, not a pending one",
+  );
+  assert(
+    NUM.interval.test(brief) && NUM.cap.test(brief) && straySleepIntervals(brief).length === 0,
+    `inlineCiPrompt: the brief's numbers are the driver's (${POLL_SECONDS}s / ${CAP_MINUTES}min) and no other`,
   );
 }
 
@@ -202,7 +235,8 @@ for (const rel of ["agents-base/project-manager.md", "pi-prompts/do.md"]) {
   // stop EVERY role's 10-minute `sleep` from counting toward the notice. This
   // assertion is that trade-off written down: register the poll as a span and
   // this fails, so the argument happens in the PR rather than by assumption.
-  for (const cmd of ["sleep 60", "gh pr checks 12 --repo o/r", "gh run view 1 --json status"]) {
+  const pollCalls = ["sleep 60", "gh pr checks 12 --repo o/r", "gh run view 1 --json status"];
+  for (const cmd of pollCalls) {
     assert(
       isCiWatchCommand(cmd) === false,
       `the poll's calls stay OUT of the CI-watch span set: ${JSON.stringify(cmd)}`,
@@ -210,7 +244,8 @@ for (const rel of ["agents-base/project-manager.md", "pi-prompts/do.md"]) {
   }
   // And the four real watch shapes still classify — the exclusion was not
   // quietly narrowed when the doctrine stopped recommending them.
-  for (const cmd of ["gh pr checks 12 --watch", "gh run watch 12", "glab ci view"]) {
+  const watchCalls = ["gh pr checks 12 --watch", "gh run watch 12", "glab ci view"];
+  for (const cmd of watchCalls) {
     assert(
       isCiWatchCommand(cmd) === true,
       `the watch shapes still classify: ${JSON.stringify(cmd)}`,
@@ -257,9 +292,12 @@ for (const rel of ["agents-base/project-manager.md", "pi-prompts/do.md"]) {
     "canary: dropping the wait cap IS reported",
   );
   assert(
-    missingCiDoctrine(good.split("\n").filter((l) => !l.includes("non-zero")).join("\n")).includes(
-      "exitCodeIsData",
-    ),
+    missingCiDoctrine(
+      good
+        .split("\n")
+        .filter((l) => !l.includes("non-zero"))
+        .join("\n"),
+    ).includes("exitCodeIsData"),
     "canary: dropping the exit-code-is-data sentence IS reported",
   );
 
@@ -293,7 +331,7 @@ for (const rel of ["agents-base/project-manager.md", "pi-prompts/do.md"]) {
     "canary: the shipped step-2 recipe line is not itself flagged as a prescription",
   );
   const step2WatchBack = step2.replace(
-    /wait with the bounded sleep-poll — NOT `gh run watch`[^.]*/, 
+    /wait with the bounded sleep-poll — NOT `gh run watch`[^.]*/,
     "wait with `gh run watch`",
   );
   assert(
@@ -304,6 +342,92 @@ for (const rel of ["agents-base/project-manager.md", "pi-prompts/do.md"]) {
   assert(
     step2NotDropped !== step2 && blockingWatchPrescribed(step2NotDropped).length === 1,
     `canary: the step-2 line with only its \`NOT\` dropped IS flagged (${blockingWatchPrescribed(step2NotDropped).length} hit(s))`,
+  );
+
+  // …and the same both-directions pair on the SHIPPED recipe lines, which live in
+  // a fenced code block and in bullets rather than in prose. An earlier classifier
+  // exempted non-prose lines and required `--watch` to sit in the same word group
+  // as `gh pr checks`, so R2's own forbidden shape — `gh pr checks <n> … --watch`
+  // — written back into the recipe was invisible to every gate while only
+  // `gh run watch` was actually policed. Sanctioned form reads clean; the watch
+  // form is reported, on text derived from the file the child is handed.
+  for (const rel of ["modules/workflows/ci-monitoring.md", "agents-base/ops.md"]) {
+    const shipped = readFileSync(path.join(ROOT, rel), "utf8");
+    const sanctioned = "gh pr checks <pr-number> --repo <owner/repo>";
+    assert(
+      shipped.includes(sanctioned) && blockingWatchPrescribed(shipped).length === 0,
+      `${rel}: the shipped recipe line is not itself flagged`,
+    );
+    const watchBack = shipped.replace(sanctioned, `${sanctioned} --watch`);
+    assert(
+      watchBack !== shipped && blockingWatchPrescribed(watchBack).length === 1,
+      `${rel}: the shipped recipe line with \`--watch\` restored IS flagged (${blockingWatchPrescribed(watchBack).length} hit(s))`,
+    );
+  }
+
+  // Interval / cap drift must be caught, not just deletion: the substring form of
+  // these assertions (`composed.includes("60")`) also matched `sleep 600`. The
+  // mutants are built on a single-line fixture that states the same rules, because
+  // a substring replace over the whole brief would mutate a sentence that is not
+  // the one under test and report a passing mutant for the wrong reason.
+  const capLine =
+    'At the 30-minute cap with nothing terminal, report the wait as a failure with the reason "CI still pending at the cap".';
+  const rulesFixture = [
+    "Poll with `sleep 60`, then one read, until terminal or 30 minutes of waiting.",
+    "A pending check is never a reason to end the turn.",
+    "Stop at a terminal status.",
+    "A non-zero exit is data; the read exits 8 while pending.",
+    capLine,
+  ].join("\n");
+  assert(
+    NUM.interval.test(rulesFixture) &&
+      !NUM.straySleep.test(rulesFixture) &&
+      NUM.cap.test(rulesFixture),
+    "canary: the fixture's anchored numbers resolve from the driver's constants",
+  );
+  assert(
+    !NUM.interval.test(rulesFixture.replace("sleep 60", "sleep 600")),
+    "canary: an inflated `sleep 600` is NOT accepted as the 60s interval",
+  );
+  assert(
+    NUM.straySleep.test(rulesFixture.replace("then one read", "then `sleep 30`, then one read")),
+    "canary: a second, improvised `sleep 30` beside the sanctioned one IS reported",
+  );
+  assert(
+    !NUM.cap.test(
+      rulesFixture.replaceAll("30 minute", "45 minute").replace("30-minute", "45-minute"),
+    ),
+    "canary: a cap reworded to 45 minutes is NOT accepted as the 30-minute cap",
+  );
+
+  // R1's cap arm must name a failure, on the SHIPPED cap line. Two ways that rule
+  // can be lost, both mutated on the single shipped string so nothing else can
+  // satisfy the assertion: the outcome reworded to pending, and the token quoted
+  // with the pending value (which the last-match reader would then grade).
+  const capArm = CI_WAIT_STEPS[3];
+  const capToPending = capArm.replace("a failure with the reason", "pending with the reason");
+  assert(
+    capToPending !== capArm &&
+      !/cap[\s\S]{0,160}?(report the wait as a failure|`?ci-status: failure)/i.test(capToPending),
+    "canary: a cap arm reworded to report `pending` fails the cap-is-failure assertion",
+  );
+
+  // …and the echo direction of the same line: had the cap arm spelled its
+  // prohibition as the literal token (`never ci-status: pending`), the brief the
+  // child is handed would itself carry a trailing `pending` match, and a child
+  // that paraphrases that rule and stops early would park the cycle at `ci`.
+  const capEchoesPending = capArm.replace(
+    "never write a marker carrying the pending value at all",
+    "never `ci-status: pending`",
+  );
+  assert(
+    capEchoesPending !== capArm &&
+      readMarker(capEchoesPending, "ci-status", /(success|failure|pending)/) === "pending",
+    "canary: a cap arm that quotes the token with the pending value DOES read as a pending marker (why the shipped line avoids the literal)",
+  );
+  assert(
+    readMarker(capArm, "ci-status", /(success|failure|pending)/) !== "pending",
+    "canary: the shipped cap arm does not read as a pending marker to the last-match reader",
   );
 }
 

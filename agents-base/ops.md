@@ -348,9 +348,8 @@ Or use the `pr` tool:
 - Merge: `pr` tool (command: merge, args: ["{PR_NUMBER}", "--squash"])
 - Mark ready (remove draft): `pr` tool (command: ready, args: ["{PR_NUMBER}"])
 
-For CI monitoring:
-- `ci` tool (command: watch, args: ["{run_id}"])
-- `ci` tool (command: list, args: ["--branch", "main", "--limit", "3"])
+For CI monitoring: the bounded `sleep 60` + read poll of the CI Monitoring section
+above. There is no `ci` tool and no watch command to call.
 
 ### GitLab (`glab`)
 
