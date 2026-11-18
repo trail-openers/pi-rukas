@@ -313,6 +313,36 @@ npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.0.0
 
 PR: [#959](https://github.com/trail-openers/pi-rukas/issues/959)
 
+## A read-only child dies with `Unknown provider` (#2368)
+
+### Symptom
+
+Every **read-only** child — `explore`, `code-review-specialist`, `adversarial-developer`, and the `/plan` gap-gate investigators — dies roughly eight seconds after spawn and its report reads:
+
+```
+Error: Unknown provider "<your-provider-id>". Use --list-models to see available providers/models.
+```
+
+`developer` and `ops` children, and the parent session, are unaffected and run normally. Because the model name appears in the child's own result, it reads like a provider or `models.json` problem, and `pi --list-models` from the shell prints the provider happily.
+
+### Cause
+
+The child does not have your `models.json`, `auth.json` or `settings.json` — it is looking in the wrong directory. A read-only role's child runs with a scratch `HOME` of its own (`PI_ENSEMBLE_REVIEWER_SCRATCH_HOME`, `reviewer-scratch-home.ts`) so a probe that writes through `$HOME` or an XDG root lands in its own per-spawn dir rather than your live state. That env is the **child process** env, so it also moves where the child's own pi looks for its config: pi resolves that directory from `PI_CODING_AGENT_DIR` and falls back to `<HOME>/.pi/agent`. When the re-export list carried only pi-rukas's own `PI_AGENT_DIR` name and not the one pi reads, the confined child resolved `<scratch>/.pi/agent` — a directory with no model catalog and no credential — and model resolution failed before its first turn.
+
+The tell is the role split: a developer or ops child gets no scratch `HOME`, so it inherits your config dir and never sees this.
+
+### Fix
+
+Nothing to do — the re-export list now pins `PI_CODING_AGENT_DIR` to the value the **parent** resolves, exactly as it pins `VIPUNE_DATABASE_PATH`, so the redirect costs a confined child nothing it needs. Detected by `extension/smoke-tests/test-reviewer-scratch-home-live.ts` (offline half: `test-reviewer-scratch-home-coding-agent-dir.ts`).
+
+To confirm the diagnosis on your machine before concluding something else is wrong, run one confined child with your config dir explicitly exported — it runs, which is what the fix does unconditionally:
+
+```bash
+PI_CODING_AGENT_DIR="$HOME/.pi/agent" pi-rukas-headless --capabilities | head -1
+```
+
+If read-only children work with the variable exported and die without it, the defect is this one. Turning the redirect off (`PI_ENSEMBLE_REVIEWER_SCRATCH_HOME=0`) also restores them, and is the operator's escape hatch for the isolation itself — but it puts the child's bash back on your real `$HOME`, which is what the redirect exists to prevent, so prefer the fix.
+
 ## Subagent silently "finished" but the worktree wasn't touched
 
 ### Symptom
