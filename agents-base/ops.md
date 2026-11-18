@@ -19,7 +19,7 @@ YOU DO:
 - ✅ Create commits with atomic, logical groupings
 - ✅ Manage branches (create, switch, delete)
 - ✅ Create and manage PRs/MRs via your forge CLI (`gh` for GitHub, `glab` for GitLab)
-- ✅ Monitor CI/CD status (`gh run watch` on GitHub; 30s pipeline polling on GitLab)
+- ✅ Monitor CI/CD status (a bounded `sleep 60` + read poll on both forges; never a blocking `--watch`)
 - ✅ Push code to remote
 - ✅ Deploy applications using Kamal
 
@@ -188,29 +188,45 @@ You can deploy applications using Kamal (Docker-based deployment tool).
 
 ## CI Monitoring
 
-### GitHub (`gh`) — ALWAYS use `gh run watch`, NO polling
+The wait is the same bounded sleep-poll on both forges, and it is what the driver itself
+does: **`sleep 60`, then one read, repeated, until the status is terminal or 30 minutes
+of waiting have passed.** Each iteration is two separate tool calls — the `sleep` and the
+read are never chained (a while-loop, command substitution, `;`, `&&` and pipes are
+refused by the permission layer, so a chained poll silently never runs). **A pending
+check is never a reason to end your turn:** keep polling until terminal or the cap, and
+only then write your final message — a merge brief that stops mid-wait has not
+completed. A non-zero exit while rows still print is a pending signal (`gh pr checks`
+exits 8 while checks run), not a failed command. A slow-run notice during the wait is not
+a reason to stop.
 
-Two separate bare tool calls — no variable, no command substitution:
+### GitHub (`gh`) — bounded poll of the PR checks
 
 ```bash
-# Step 1: find the newest run on the current branch (note the run ID from the output)
-gh run list --limit 1 --branch main --json databaseId
+# Step 1: one read (note the check rows from the output)
+gh pr checks <pr-number> --repo <owner/repo>
 
-# Step 2: watch it (use the run ID from step 1)
-gh run watch <run-id>
+# Step 2: one wait — its own tool call, then repeat Step 1
+sleep 60
 ```
 
-### GitLab (`glab`) — 30s polling of the pipeline
+Terminal when every required row reads pass, or any row reads fail, cancel or
+timed_out. The states pending, queued, in_progress and waiting are not terminal.
 
-`glab ci status` is NOT safe in non-interactive contexts; do not use it. Poll the pipeline's REST endpoint every 30 seconds until its status is terminal — `success`, `failed`, `canceled`, `skipped`, or `manual` (`manual` is terminal: the pipeline is waiting for a human trigger, not a bot):
+### GitLab (`glab`) — bounded poll of the pipeline
+
+`glab ci status` is NOT safe in non-interactive contexts; do not use it. Poll the pipeline's REST endpoint once per `sleep 60` until its status is terminal — `success`, `failed`, `canceled`, `skipped`, or `manual` (`manual` is terminal: the pipeline is waiting for a human trigger, not a bot):
 
 ```bash
 # Step 1: find the newest pipeline (note the pipeline id from the output)
 glab api "/projects/:id/pipelines?per_page=1" --output json
 
-# Step 2: poll (use the pipeline id from step 1) until status is terminal
+# Step 2: poll (use the pipeline id from step 1; re-run after each `sleep 60`)
 glab api "/projects/:id/pipelines/<PIPELINE_ID>" --output json
 ```
+
+At the 30-minute cap with nothing terminal, report the wait as a failure with the reason
+"CI still pending at the cap" — never a bare pending report, and never `ci-status:`
+before a terminal status. A new push restarts the cap.
 
 ## Code Issue Delegation
 
