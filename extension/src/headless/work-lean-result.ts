@@ -11,23 +11,28 @@
  * supposed to be comparable against. This module is the projection that lets
  * it keep one: the same field names, the same meanings, exactly one issue.
  *
- * The one field with no counterpart in `work` is `prState`. Exit 10 covers every
- * lean run that reaches `publish` and does not merge, because the handback is one
- * exit code for many causes: a green PR waiting for a merge, a draft behind
- * unverified bytes, a gate that refused to certify the head, and a run that opened
- * nothing. `status`/`cap` alone cannot tell those apart, and the issue asks for a
- * typed answer, so `prState` is the third discriminator beside them.
+ * The fields with no counterpart in `work` are `prState`, `reviewBound` and
+ * `reviewComplete`. Exit 10 covers every lean run that reaches `publish` and does
+ * not merge, because the handback is one exit code for many causes: a green PR
+ * waiting for a merge, a ready PR whose review judged no further lens, a draft
+ * behind unverified bytes, a gate that refused to certify the head, and a run that
+ * opened nothing. `status`/`cap` alone cannot tell those apart, and the issue asks
+ * for a typed answer, so the three lean-only fields sit beside them.
  *
  * Why the caps are chosen the way they are. `work`'s cap vocabulary is a closed
  * union checked against the driver's `WorkCapLiteral`, and no entry there
  * describes a lean run's cause — a lean handback is a different machine's
  * verdict, and inventing a name would put a word in the host's `switch` that
- * `--capabilities` never published. So exactly ONE published cap is used, and
- * only where it says what a lean run did: `awaiting-human-merge` for a PR that
- * publish opened READY and the run's own gate cleared. Every other cause rides
- * `failure`, whose `kind` is an OPEN list built for this (`FAILURE_KINDS`, and
- * `test-headless-failure-usage.ts` asserts the published list equals the live
- * array).
+ * `--capabilities` never published. So exactly TWO published caps are used, both
+ * already in `FIXED_CAPS`, and only where each says what a lean run did:
+ * `awaiting-human-merge` for a PR that publish opened READY, whose own gate
+ * cleared AND whose newest `review` step accounted for every lens it was bought;
+ * `review-incomplete` for that same ready PR whose review left a lane unjudged or
+ * died without recording a verdict — the cap that keeps a host from merging a head
+ * no lens read. Both exit 10, and `leanCap` owns the rule that tells them apart.
+ * Every other cause rides `failure`, whose `kind` is an OPEN list built for this
+ * (`FAILURE_KINDS`, and `test-headless-failure-usage.ts` asserts the published
+ * list equals the live array).
  *
  * `lens-review-timeout` is deliberately NOT used, though it is the one published
  * name that sounds like a lean budget breach. It is not: it names the classic
