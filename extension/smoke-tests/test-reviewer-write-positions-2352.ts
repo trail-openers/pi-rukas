@@ -168,6 +168,30 @@ allowed("a read-only node -p", `node -p '1+1'`);
 allowed("a read-only bun --print", `bun --print '1+1'`);
 allowed("a read-only node --print of a file", `node --print 'require("fs").readFileSync("${outside}/index.ts","utf8")'`);
 
-assert.equal(groups.length, 6, "each group printed its own header");
+group("F2: a `find -exec` runs a command the guard must read");
+// The words after `-exec`/`-execdir`/`-ok`/`-okdir` (up to the terminating `;` or `+`)
+// are a command find will exec, so they are judged as a simple command of their own:
+// a guarded verb there gets its write positions read, and `{}` is a target the guard
+// cannot name (the matched paths are unknown) so it is refused at a write position.
+for (const action of ["-exec", "-execdir", "-ok", "-okdir"]) {
+  for (const [verb, operand] of [
+    ["cp", `{} ${outside}/x`],
+    ["touch", `${outside}/x`],
+    ["mv", `{} ${outside}/y`],
+    ["ln", `-s a ${outside}/l`],
+  ] as Array<[string, string]>) {
+    for (const term of ["\\;", "+"]) {
+      refused(`find ${action} ${verb} … ${term}`, `find . ${action} ${verb} ${operand} ${term}`);
+    }
+  }
+  refused(`find <outside> ${action} chmod … +`, `find ${outside} ${action} chmod 777 {} +`);
+}
+// A read-only exec still runs: the verb names no write position, whatever it prints.
+allowed("find -exec grep", `find . -name '*.ts' -exec grep -l foo {} +`);
+allowed("find -exec cat", `find . -exec cat {} \\;`);
+allowed("find -exec echo", `find . -exec echo {} \\;`);
+allowed("find -exec true", `find . -exec true \\;`);
+
+assert.equal(groups.length, 7, "each group printed its own header");
 rmSync(root, { recursive: true, force: true });
-console.log("\nreviewer write positions (#2352 C1, I1, B1, B2): all groups passed");
+console.log("\nreviewer write positions (#2352 C1, I1, B1, B2, F2): all groups passed");

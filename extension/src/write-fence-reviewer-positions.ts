@@ -37,6 +37,9 @@ import { GIT_CLEAN_LOG_TOKEN } from "./write-fence-deletion-tokens.ts";
 import { interpreterBody, interpreterFlags } from "./write-fence-interpreter-flags.ts";
 import { expandHome, safeResolve } from "./write-fence-path.ts";
 
+/** The `find` actions that run their words as a command, once per match. */
+const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+
 /** The commands whose DESTINATIONS the copy rules name (their sources stay reads). */
 export const COPY_LIKE = new Set(["cp", "mv", "install", "ln", "link"]);
 
@@ -191,6 +194,58 @@ function isPathWord(w: Word): boolean {
   return w.text !== "" && !w.text.startsWith("-");
 }
 
+/** The word `find` substitutes for each matched path. */
+const FIND_PLACEHOLDER = "{}";
+
+/** Whether one word is the `find` action that opens a command. */
+function opensExec(w: Word | undefined): boolean {
+  return w !== undefined && FIND_EXEC.has(w.text);
+}
+
+/**
+ * The commands a `find` will exec, one per `-exec`/`-execdir`/`-ok`/`-okdir`: the words
+ * between the action and its own `;` or `+` terminator. Scanning resumes past each
+ * terminator, so a chained clause is read too and nothing between two clauses is taken
+ * for a command.
+ */
+function execClauses(args: Word[]): Word[][] {
+  const clauses: Word[][] = [];
+  for (let at = 0; at < args.length; at++) {
+    if (!opensExec(args[at])) continue;
+    const body = args.slice(at + 1);
+    const end = body.findIndex((w) => w.text === ";" || w.text === "+");
+    clauses.push(end < 0 ? body : body.slice(0, end));
+    if (end >= 0) at += end + 1;
+  }
+  return clauses;
+}
+
+/**
+ * The guarded words one exec'd command writes: the same read a top-level segment gets
+ * (the writers table and the interpreter arm), so an `-exec` is judged by the rules of
+ * the verb it runs and not by a second table of `find` shapes.
+ */
+function execWrittenWords(command: Word[], cwd: string): WritePosition[] {
+  const stripped = stripPrefix(command).words;
+  const first = stripped[0];
+  if (first === undefined) return [];
+  const name = commandName(first.text);
+  if (!GUARDED_COMMANDS.has(name)) return [];
+  const args = stripped.slice(1);
+  // An option is not a program, so an `-exec -x rm …` / `-exec -- rm …` names a command
+  // this rule cannot read — the same fail-closed answer the deletion rule gives it.
+  if (first.text.startsWith("-")) {
+    return [{ path: undefined, reason: POSITION_UNJUDGED_REASON, token: "(reviewer write)" }];
+  }
+  const out = writtenWords(name, args)
+    .filter(isPathWord)
+    .map((w) => fromWord(w, cwd));
+  if (interpreterWriteIsOpaque(name, args)) {
+    out.push({ path: undefined, reason: POSITION_UNJUDGED_REASON, token: "(reviewer write)" });
+  }
+  return out;
+}
+
 /**
  * The words the table says one guarded command writes, moves or links: the copy
  * rules for the copy-like commands (destination, hard-link sources, link names) and
@@ -284,6 +339,15 @@ function fromWalk(t: BashTarget, cwd: string): WritePosition {
 function fromWord(w: Word, cwd: string): WritePosition {
   if (w.refusal !== undefined)
     return { path: undefined, reason: w.refusal, token: "(reviewer write)" };
+  // The matched name `find` substitutes for `{}` is not a path the guard can aim, so a
+  // write position holding it is refused rather than judged on the cwd it might land in.
+  if (w.text === FIND_PLACEHOLDER) {
+    return {
+      path: undefined,
+      reason: `its path is \`${FIND_PLACEHOLDER}\`, the name \`find\` substitutes for each match, so the target cannot be judged. Name each path literally, inside your own roots`,
+      token: "(reviewer write)",
+    };
+  }
   if (unresolvable(w)) {
     return { path: undefined, reason: POSITION_UNJUDGED_REASON, token: "(reviewer write)" };
   }
@@ -296,7 +360,8 @@ function fromWord(w: Word, cwd: string): WritePosition {
  * (1) the bash walk's targets — redirects for EVERY command (`printf … > <home>` is
  *     a write whatever ran), plus `cd`/`pushd`, wrappers and subshells;
  * (2) for each guarded simple command, the words the writers table names, plus its
- *     redirect words, plus the interpreter arm;
+ *     redirect words, plus the interpreter arm, plus each `find -exec` clause read as
+ *     the command `find` will run;
  * (3) the deletion rule's positions, so a line that both deletes and writes is
  *     judged as one command (that rule's hook still refuses them for every child).
  *
@@ -345,6 +410,14 @@ export function writePositions(command: string, cwd: string): WritePosition[] {
     if (!GUARDED_COMMANDS.has(seg.name)) continue;
     for (const w of [...writtenWords(seg.name, seg.args), ...seg.redirects]) {
       if (isPathWord(w)) out.push(fromWord(w, cwd));
+    }
+    // An `-exec` clause runs a command of its own once per match, and the words behind
+    // the action are the only place its destinations are named: `find . -exec cp {} <out>/x \;`
+    // writes nothing until find hands `cp` that argument, so the clause is judged as the
+    // simple command it is. A read-only clause (`-exec grep`, `-exec cat`) names no write
+    // position and runs.
+    for (const clause of execClauses(seg.args)) {
+      out.push(...execWrittenWords(clause, cwd));
     }
     if (interpreterWriteIsOpaque(seg.name, seg.args)) {
       out.push({ path: undefined, reason: POSITION_UNJUDGED_REASON, token: "(reviewer write)" });
