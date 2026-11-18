@@ -187,6 +187,51 @@ function perTestVerdictFor(stream: string, name: string): "ok" | "FAILED" | unde
   return verdict;
 }
 
+/** What the per-test verdict lines of one stream reported for ONE name. */
+export type PerTestVerdicts = { ok: boolean; failed: boolean };
+
+/**
+ * The NON-MONOTONE view of the same evidence: for every test name the stream's
+ * per-test verdict lines mention, whether an `ok` and/or a `FAILED` was seen —
+ * the SET of verdicts, one pass per stream, so a caller can ask whether a name
+ * was reported BOTH ways. {@link perTestVerdictFor} answers "which verdict wins"
+ * (any `ok` does); this answers "what was printed at all", which is the
+ * question a PERMISSIVE decision — one that drops evidence instead of refusing
+ * on it — must ask: any-`ok`-wins is sound when the cost of over-answering is a
+ * loud refusal, and inverted when the cost is silently excusing a real failure
+ * printed beside the ok (#2341 review wave HIGH: a change-added panic hidden by
+ * a same-named `ok` from a sibling crate or an earlier phase was skipped, never
+ * asked). Answers agree with the monotone probe at every name: `ok === ("ok" ===
+ * monotone)` and `failed && !ok === ("FAILED" === monotone)`.
+ *
+ * A `Map`, not an object literal: a test named `__proto__` or `constructor` is
+ * an ordinary key here, where on a plain object it would sit off the prototype
+ * chain and be invisible to the very gate reading it.
+ */
+function perTestVerdictIndex(stream: string): Map<string, PerTestVerdicts> {
+  const index = new Map<string, PerTestVerdicts>();
+  for (const raw of stream.split("\n")) {
+    const m = LIBTEST_PER_TEST_VERDICT_RE.exec(raw.trim());
+    if (m === null) continue;
+    const name = m[1];
+    if (name === undefined) continue;
+    const seen = index.get(name) ?? { ok: false, failed: false };
+    if (m[2] === "ok") seen.ok = true;
+    else seen.failed = true;
+    index.set(name, seen);
+  }
+  return index;
+}
+
+/**
+ * The non-monotone probe of one name in one stream — the exported form of the
+ * index above, for callers (and pins) that ask a single name rather than the
+ * whole stream. A name no verdict line mentions reports neither verdict.
+ */
+export function perTestVerdictsFor(stream: string, name: string): PerTestVerdicts {
+  return perTestVerdictIndex(stream).get(name) ?? { ok: false, failed: false };
+}
+
 /**
  * The ONE question the `#[should_panic]` QUOTE gate asks (#2341): does the
  * stream report this `thread '<name>' panicked at …` print's OWN test as
@@ -289,11 +334,20 @@ export function panicCanExcuseChange(stream: string, assertion: string): boolean
  *   - the CHANGE's own run must report that test as `FAILED` too, or nothing in
  *     it says the panic is a failure of this run rather than text the record
  *     quoted;
- *   - a header whose own test the CHANGE run reports `ok` is that test's
- *     `#[should_panic]` captured print and is SKIPPED, never asked: the base
- *     prints no verdict line for a test that passes there, so an asked capture
- *     answers "not a base failure" and refuses an excuse the flaky test earned.
- *     The skip is what makes the enumeration over the whole run safe.
+ *   - a header whose own test the CHANGE run reports `ok` and NEVER `FAILED` is
+ *     that test's `#[should_panic]` captured print and is SKIPPED, never asked:
+ *     the base prints no verdict line for a test that passes there, so an asked
+ *     capture answers "not a base failure" and refuses an excuse the flaky test
+ *     earned. The skip is what makes the enumeration over the whole run safe —
+ *     and it is NON-MONOTONE (#2341 review wave HIGH): a name the run reports
+ *     BOTH ways was not merely captured, it also failed, so the skip does not
+ *     apply and the asks below decide. Answering the skip with the monotone
+ *     any-`ok`-wins verdict silently excused a change-added panic whose name an
+ *     earlier phase or a sibling crate's passing test printed `ok` beside it.
+ *     The accepted cost: a flaky test whose retried phase prints `ok` AND
+ *     `FAILED` for its own name now falls through the skip into the asks, whose
+ *     monotone change-side question answers `ok` — it loses the excuse and
+ *     costs the loud round, never the silent one.
  *
  * `record` is the published text being excused and `changeStream` the run's OWN
  * output, which is the only text that can answer the second question: a
@@ -319,6 +373,13 @@ export function changePanicsAreBaseFailures(
   baseStream: string,
 ): boolean {
   const seen = new Set<string>();
+  // ONE pass per stream over the verdict lines; every per-header question below —
+  // the skip and both asks — is answered from these maps. The asks read
+  // `failed && !ok`, which is exactly what {@link panicCanExcuseChange}'s
+  // monotone `perTestVerdictFor(...) === "FAILED"` returns: the same evidence,
+  // indexed, never re-decided.
+  const changeVerdicts = perTestVerdictIndex(changeStream);
+  const baseVerdicts = perTestVerdictIndex(baseStream);
   // EVERY header either text raises: the record's, because a header it QUOTES that
   // the run never printed is the untrusted-text case this predicate exists for,
   // and the run's, because the record's clip drops headers entirely.
@@ -327,12 +388,16 @@ export function changePanicsAreBaseFailures(
       const header = match[0];
       if (seen.has(header)) continue;
       seen.add(header);
-      // The rule above: this run reports the header's own test `ok`, so the header
-      // is that test's `#[should_panic]` captured print and asks no question.
+      // The rule above: this run reports the header's own test `ok` and never
+      // `FAILED`, so the header is that test's `#[should_panic]` captured print
+      // and asks no question.
       const name = rustPanicTestName(header);
-      if (name !== undefined && perTestVerdictFor(changeStream, name) === "ok") continue;
-      if (!panicCanExcuseChange(baseStream, header)) return false;
-      if (!panicCanExcuseChange(changeStream, header)) return false;
+      if (name === undefined) return false; // an unnameable header fails both asks today
+      const change = changeVerdicts.get(name);
+      if (change?.ok === true && change.failed === false) continue;
+      const base = baseVerdicts.get(name);
+      if (!(base?.failed && !base.ok)) return false;
+      if (!(change?.failed && !change.ok)) return false;
     }
   }
   return true;

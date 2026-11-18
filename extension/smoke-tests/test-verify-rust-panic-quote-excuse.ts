@@ -38,6 +38,12 @@ import {
 } from "../src/work-driver-verify-assertion.ts";
 import { baselineExplainsChange } from "../src/work-driver-verify-baseline-compare.ts";
 import {
+  changePanicsAreBaseFailures,
+  panicCanExcuseChange,
+  panicIsCapturedPrint,
+  perTestVerdictsFor,
+} from "../src/work-driver-verify-rust.ts";
+import {
   CARGO_TARGET_SUMMARY,
   makeAssert,
   rustPanicHeader,
@@ -271,6 +277,143 @@ const { assert, failed } = makeAssert();
     ]) === true,
     "clipped enumeration control: the genuinely flaky test still excuses with a should_panic capture in the run — the ok-skip is load-bearing, not decoration",
   );
+}
+
+// ── 4. the ok-skip is NON-MONOTONE (#2341 review wave HIGH) ────────────────
+// The skip drops a header from the asks — a PERMISSIVE decision — so it may
+// not be answered by the monotone any-`ok`-wins verdict: a name the change run
+// reports BOTH ways also failed, and skipping it silently excuses a real
+// panic. Four lenses filed the same line independently; each pin below is a
+// refusal whose mirror (the same bytes minus the hiding `ok`) excuses, so a
+// reverted monotone skip reddens the refusal and deleting the skip reddens the
+// capture control.
+{
+  const flakyHeader = rustPanicHeader("fl::t", "src/f.rs:1:1");
+  const flakyBase = ["running 1 test", "test fl::t ... FAILED", flakyHeader].join("\n");
+  // The HIGH itself: `a::t` prints `ok` (a sibling crate, or an earlier passing
+  // phase) and `FAILED` (the change-added panic) in ONE run. The old monotone
+  // skip saw the `ok`, dropped the header, and excused the regression.
+  const siblingOk = [
+    "running 2 tests",
+    "test a::t ... ok",
+    "test a::t ... FAILED",
+    rustPanicHeader("a::t", "src/r.rs:9:9"),
+    "assertion failed: the check the change added",
+  ].join("\n");
+  assert(
+    changePanicsAreBaseFailures("", siblingOk, "test a::t ... FAILED") === false,
+    "ok-skip non-monotone: a change-added panic whose name a SIBLING CRATE reports ok beside the FAILED is refused, not skipped",
+  );
+  assert(
+    changePanicsAreBaseFailures("", siblingOk.replace("test a::t ... ok\n", ""), "test a::t ... FAILED") ===
+      true,
+    "ok-skip mirror: the same panic excuses once the hiding sibling `ok` is gone — the refusal is the ok-beside-FAILED, not the name",
+  );
+  // Order must not matter for the skip: both permutations refuse.
+  const okThenFailed = "test o::t ... ok\ntest o::t ... FAILED\n" + rustPanicHeader("o::t", "src/o.rs:1:1");
+  const failedThenOk = "test o::t ... FAILED\ntest o::t ... ok\n" + rustPanicHeader("o::t", "src/o.rs:1:1");
+  assert(
+    changePanicsAreBaseFailures("", okThenFailed, "test o::t ... FAILED") === false,
+    "ok-skip non-monotone (ok then FAILED): the later FAILED still bars the skip",
+  );
+  assert(
+    changePanicsAreBaseFailures("", failedThenOk, "test o::t ... FAILED") === false,
+    "ok-skip non-monotone (FAILED then ok): order-invariant — the ok never un-fails the name for the skip",
+  );
+  // The legitimate `#[should_panic]` capture still excuses: `cap` is reported
+  // `ok` and NEVER `FAILED`, so its header is skipped; the flaky `fl::t` is
+  // `FAILED` in both runs and excuses. Deleting the skip reddens this arm —
+  // asked, the capture has no base verdict and would refuse the flaky's excuse.
+  const captureRun = [
+    "running 2 tests",
+    "test cap::prints ... ok",
+    "test fl::t ... FAILED",
+    rustPanicHeader("cap::prints", "src/c.rs:3:3"),
+    "captured print of a passing should_panic test",
+    flakyHeader,
+    "assertion failed: already broken at base",
+  ].join("\n");
+  assert(
+    changePanicsAreBaseFailures(captureRun, captureRun, flakyBase) === true,
+    "ok-skip control: the genuine should_panic capture (ok, never FAILED) is still skipped and the flaky test still excuses",
+  );
+  // The retried-phase flaky: the SAME name prints `FAILED` and then an `ok`
+  // (a retried phase / second target). The non-monotone skip no longer applies,
+  // both asks run, and the monotone CHANGE-side ask answers `ok` — so this
+  // over-refuses. Named and pinned: the cost is one loud round for a test that
+  // genuinely failed here, never a silent excuse for one that did not.
+  const retried = [
+    "running 1 test",
+    "test fl::t ... FAILED",
+    "running 1 test",
+    "test fl::t ... ok",
+    flakyHeader,
+    "assertion failed: already broken at base",
+  ].join("\n");
+  assert(
+    changePanicsAreBaseFailures(retried, retried, flakyBase) === false,
+    "ok-skip accepted cost: a flaky whose retried phase prints ok AND FAILED for its own name now REFUSES (loud, one round) — the monotone change-side ask says ok; pinned deliberately",
+  );
+  assert(
+    changePanicsAreBaseFailures(
+      retried.replace("running 1 test\ntest fl::t ... ok\n", ""),
+      retried.replace("running 1 test\ntest fl::t ... ok\n", ""),
+      flakyBase,
+    ) === true,
+    "ok-skip accepted cost mirror: the single-phase flaky (FAILED only) still excuses — the refusal above is the retried ok, not the flaky",
+  );
+
+  // The non-monotone probe against the monotone observables, over the shape
+  // table: the indexed view must answer the SAME questions the per-scan
+  // predicates do (memoisation changes no answer), and a `Map` must make
+  // `__proto__`/`constructor` and regex-metacharacter names ordinary keys.
+  const shapes: Array<{ name: string; lines: string[]; ok: boolean; failed: boolean }> = [
+    { name: "s::ok", lines: ["test s::ok ... ok"], ok: true, failed: false },
+    { name: "s::failed", lines: ["test s::failed ... FAILED"], ok: false, failed: true },
+    {
+      name: "s::both-ok-first",
+      lines: ["test s::both-ok-first ... ok", "test s::both-ok-first ... FAILED"],
+      ok: true,
+      failed: true,
+    },
+    {
+      name: "s::both-failed-first",
+      lines: ["test s::both-failed-first ... FAILED", "test s::both-failed-first ... ok"],
+      ok: true,
+      failed: true,
+    },
+    { name: "s::unreported", lines: ["test someone-else ... ok"], ok: false, failed: false },
+    {
+      name: "__proto__",
+      lines: ["test __proto__ ... FAILED", "test __proto__ ... ok", "test constructor ... ok"],
+      ok: true,
+      failed: true,
+    },
+    {
+      name: "meta::weird(+)?[x.*]",
+      lines: ["test meta::weird(+)?[x.*] ... ok"],
+      ok: true,
+      failed: false,
+    },
+  ];
+  for (const shape of shapes) {
+    const stream = ["running 1 test", ...shape.lines, "test result: FAILED. 0 passed"].join("\n");
+    const verdicts = perTestVerdictsFor(stream, shape.name);
+    assert(
+      verdicts.ok === shape.ok && verdicts.failed === shape.failed,
+      `probe table ${JSON.stringify(shape.name)}: the non-monotone view reports exactly the verdicts printed (got ${JSON.stringify(verdicts)})`,
+    );
+    // Same evidence, same answers as the untouched monotone predicates.
+    assert(
+      panicIsCapturedPrint(stream, shape.name) === verdicts.ok,
+      `probe table ${JSON.stringify(shape.name)}: monotone quote veto === any-ok`,
+    );
+    assert(
+      panicCanExcuseChange(stream, rustPanicHeader(shape.name, "src/s.rs:1:1")) ===
+        (verdicts.failed && !verdicts.ok),
+      `probe table ${JSON.stringify(shape.name)}: monotone excuse ask === failed-and-never-ok`,
+    );
+  }
 }
 
 console.log(
