@@ -21,6 +21,7 @@
 
 import { leanResultDocument } from "../src/headless/work-lean-result.ts";
 import { leanReviewIncompleteCapEnabled } from "../src/lean/review-incomplete-cap-switch.ts";
+import { handoffMarker } from "../src/work-driver-handoff-channel.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { driveLean } from "./lib/lean-result-fixture.ts";
 import {
@@ -120,6 +121,18 @@ for (const [value, want] of [
   assert(
     GOLDEN_GATES_ON.includes("awaiting-human-merge") && !GOLDEN_GATES_ON.includes("reviewComplete"),
     "the pre-change document reports awaiting-human-merge for this record and no reviewComplete key — the bug, pinned",
+  );
+  // The ON arms are checked against the captured bytes with the cap RENAMED, a prediction
+  // that is byte-exact only while the handoff body is not clipped: `leanHandoff` sizes the
+  // reason to `TEXT_MAX - marker.length - gap`, and `review-incomplete` is three characters
+  // shorter than `awaiting-human-merge`, so a reason near the bound would legitimately gain
+  // those three and the rename would not predict them. One clip bound is therefore a
+  // precondition of the comparison below — pinned, not assumed. The OFF arm's marker is the
+  // LONGER of the two, so fitting it means neither arm clips.
+  const reason = String(goldenLog().at(-1)?.outcome?.reason ?? "");
+  assert(
+    reason.length <= 500 - handoffMarker(7, "awaiting-human-merge").length - "\n\n".length,
+    `the golden's handback reason fits the tighter clip, so the cap rename cannot move the body (${String(reason.length)} chars)`,
   );
 
   // The on arms: the new cap, the new key, and the same exit code.

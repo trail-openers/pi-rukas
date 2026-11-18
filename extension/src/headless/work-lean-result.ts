@@ -244,22 +244,36 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
 }
 
 /**
- * Did this run's review judge every lens it was bought? `false` when the NEWEST `review`
- * step in log order — whatever it decided (`done`, `fixed` or `error`) — carries the bound
- * its stop wrote with lanes in it; `true` otherwise, including a run that never reached
- * review and a stop that recorded no lane at all (a `noteStop` with an empty list is still
- * a review that ran out of nothing to judge). Log POSITION decides, exactly as it does for
- * `prState`'s gate readings: an older stopped attempt that a later, fully judged review
- * superseded is not this run's verdict.
+ * Did this run's review judge every lens it was bought? Answered OFF THE RECORD, and only
+ * in the two ways the record actually answers:
  *
- * Read off the record, never off prose: the same `reviewBound` the `gates` object publishes
- * and the loader validates is the only evidence consulted here.
+ *   - the NEWEST `review` step in log order carries the bound its stop wrote — `false` when
+ *     lanes are in it, `true` when the list is empty (a `noteStop` with no lane named is a
+ *     review that ran out of nothing to judge, not one that judged nothing);
+ *   - it carries no bound at all — `true` only for a step that RETURNED (`done`/`fixed`),
+ *     which is the engine's own way of saying the pass finished. A step that ended on a
+ *     THROW is not that: `errorOutcome` copies a bound onto the outcome only when the
+ *     thrown error carried one, and only the step-clock stop does, so the other throw
+ *     sites — a head that moved before pass 1 was bought, a child the operator's budget
+ *     stopped — reach here having judged nothing at all, and `true` about those would be
+ *     the ticket's own failure mode in its worst arm. An absent outcome or a kind outside
+ *     the vocabulary answers the same way, as `work-lean-gates.ts`'s reader already refuses
+ *     to let an undecided review answer for itself.
+ *
+ * Log POSITION decides which step is asked, exactly as it does for `prState`'s gate
+ * readings: an older stopped attempt that a later judged review superseded is not this
+ * run's verdict. `kind` never decides which step is asked.
+ *
+ * The same `reviewBound` the `gates` object publishes and the loader validates is the only
+ * prose-shaped evidence consulted here; nothing is read off a reason line.
  */
 function reviewCompleteOf(steps: Step[]): boolean {
   for (let i = steps.length - 1; i >= 0; i--) {
     if (steps[i]?.state !== "review") continue;
-    const lanes = steps[i]?.outcome?.reviewBound?.unreviewedLanes;
-    return lanes === undefined || lanes.length === 0;
+    const outcome = steps[i]?.outcome;
+    const lanes = outcome?.reviewBound?.unreviewedLanes;
+    if (lanes !== undefined) return lanes.length === 0;
+    return outcome?.kind === "done" || outcome?.kind === "fixed";
   }
   return true;
 }
@@ -271,8 +285,8 @@ function reviewCompleteOf(steps: Step[]): boolean {
  * `review-incomplete` outranks `awaiting-human-merge` on a ready PR: the two are told
  * apart by whether the run's own review read every lens, and telling a host to merge over
  * lanes that never ran is the failure this cap exists to prevent. `reviewComplete` is
- * `true` when the switch is off (today's single cap) or when the newest review step left
- * no lane unjudged.
+ * `true` when the switch is off (today's single cap) or when the record says the newest
+ * review step finished; `reviewCompleteOf` owns the two answers the record gives.
  *
  * A PR URL is NOT enough for `awaiting-human-merge`: a run can push a branch,
  * open a PR, and then have its own gate call the work red, and that is a park,

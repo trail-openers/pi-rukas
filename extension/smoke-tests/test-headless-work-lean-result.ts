@@ -36,7 +36,11 @@ import {
   withReason,
 } from "./lib/lean-result-fixture.ts";
 import {
+  diedReviewStep,
+  erroredMidWaveReviewStep,
   judgedReviewStep,
+  pushedFixReviewStep,
+  unansweredReviewStep,
   unjudgedReviewStep,
   withReviews,
 } from "./lib/lean-review-incomplete-cap-golden.ts";
@@ -296,41 +300,25 @@ const log = leanLog;
 // "nobody read this head", and it says it off the step's bound record, never off prose.
 {
   const ready = log({ prUrl: URL, draft: false, dispatches: CHILDREN });
-  const stoppedFix = stepWith("review", {
-    kind: "fixed",
-    reason: "fix wave pushed; the re-review never ran",
-    reviewBound: {
-      wave: "fix",
-      unreviewedLanes: ["adversarial re-review"],
-      reason: "review STEP stopped: minutes budget 20 exceeded (used 24)",
-    },
-  });
-  // The SAME shape with `kind: "error"`: the predicate reads the newest `review` step
-  // regardless of kind, so a reviewer that errored out mid-wave caps exactly like a
-  // budget stop does.
-  const stoppedError = stepWith("review", {
-    kind: "error",
-    reason: "reviewer child errored; the re-review never ran",
-    reviewBound: {
-      wave: "full",
-      unreviewedLanes: ["security lens", "performance lens"],
-      reason: "review STEP stopped: lens child errored",
-    },
-  });
-  // AC1's red arms (the `done`, `fixed` and `error` stops) and AC2's four ways of earning
-  // today's cap, as one table: the cap and the field are the two answers, and the table
-  // says which record produces which. `reviewBound` PRESENT is not the predicate — a
-  // non-empty lane list is — so `no-lane-named` sits with the judged arms, and a stop a
-  // later fully judged review overtook sits there too (both kinds): log position decides,
-  // `kind` never does.
+  // AC1's red arms and AC2's ways of earning today's cap, as one table: the cap and the
+  // field are the two answers, and the table says which record produces which. `reviewBound`
+  // PRESENT is not the predicate — a non-empty lane list is — so `no-lane-named` sits with
+  // the judged arms, and a stop a later fully judged review overtook sits there too (both
+  // kinds): log position decides which step is asked, `kind` never does. The step asked
+  // then answers in only TWO ways, and `error-silent`/`unanswered` are the second: a
+  // `review` step that threw without recording a bound read no lens at all (only the
+  // step-clock stop carries a bound on the error), and one that never answered is the same
+  // silence — neither may report a finished review.
   const arms: [string, Step[], "review-incomplete" | "awaiting-human-merge", boolean][] = [
     ["deadline-stopped", [unjudgedReviewStep()], "review-incomplete", false],
-    ["pushed-fix", [stoppedFix], "review-incomplete", false],
-    ["error-stopped", [stoppedError], "review-incomplete", false],
+    ["pushed-fix", [pushedFixReviewStep()], "review-incomplete", false],
+    ["error-stopped", [erroredMidWaveReviewStep()], "review-incomplete", false],
+    ["error-silent", [diedReviewStep()], "review-incomplete", false],
+    ["unanswered", [unansweredReviewStep()], "review-incomplete", false],
     ["superseded", [unjudgedReviewStep(0), judgedReviewStep(1)], "awaiting-human-merge", true],
     [
       "error-superseded",
-      [stoppedError, judgedReviewStep(1)],
+      [erroredMidWaveReviewStep(0), judgedReviewStep(1)],
       "awaiting-human-merge",
       true,
     ],

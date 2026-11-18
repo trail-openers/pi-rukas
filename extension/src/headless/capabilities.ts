@@ -106,7 +106,8 @@ export const HEADLESS_FEATURES = {
    * the lean-only typed `prState` (`ready` | `draft` | `none`) and
    * `reviewComplete`, so a host needs no second reader to compare the two
    * engines. `awaiting-human-merge` means `ready` WITH EVERY REVIEW LENS JUDGED:
-   * a `ready` PR whose newest `review` step stopped with lanes unjudged carries
+   * a `ready` PR whose newest `review` step left a lane unjudged — stopped by its
+   * own clock, or ended by a throw that recorded no verdict at all — carries
    * `review-incomplete` and `reviewComplete: false` instead, so the cap a host
    * would merge on is never a head nobody read. A build without this feature
    * writes lean's own pre-#1920 document (`state`/`summary`/`steps`/`prUrl`)

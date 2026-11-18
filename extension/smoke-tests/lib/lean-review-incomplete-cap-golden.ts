@@ -17,6 +17,12 @@
  * prints each constant's length and marker count, so the file cannot go vacuously green on
  * an empty constant.
  *
+ * The `*ReviewStep()` builders below are the review steps the CAP CASES share: each is one
+ * answer the newest `review` step can give (stopped with lanes, pushed a wave, errored with
+ * a bound, died without one, never answered, judged everything), and the result test's arms
+ * table drives them through the projection so the cap and `reviewComplete` are pinned per
+ * record rather than per prose.
+ *
  * The log is built here from `lib/lean-result-fixture.ts` rather than borrowed from
  * `lib/lean-result-gates-fixture.ts`: this module is inside the `tsconfig.smoke-tests.json`
  * ratchet, and that fixture is not — pulling it in would land its pre-existing type-error
@@ -65,6 +71,62 @@ export function unjudgedReviewStep(n = 0, lanes = GOLDEN_REVIEW_BOUND.unreviewed
 /** A `review` step that judged every lens it was bought and said so. */
 export function judgedReviewStep(n = 0): Step {
   return stepWith("review", { kind: "done", reason: "adversarial and six-lens review clean" }, n);
+}
+
+/** A `review` step that pushed a fix wave and then stopped before the re-review ran. */
+export function pushedFixReviewStep(n = 0): Step {
+  return stepWith(
+    "review",
+    {
+      kind: "fixed",
+      reason: "fix wave pushed; the re-review never ran",
+      reviewBound: {
+        wave: "fix",
+        unreviewedLanes: ["adversarial re-review"],
+        reason: "review STEP stopped: minutes budget 20 exceeded (used 24)",
+      },
+    },
+    n,
+  );
+}
+
+/** A `review` step that ERRORED mid-wave but still recorded its stop, so the lanes that
+ * never ran are named. The predicate reads the newest `review` step regardless of kind. */
+export function erroredMidWaveReviewStep(n = 0): Step {
+  return stepWith(
+    "review",
+    {
+      kind: "error",
+      reason: "reviewer child errored; the re-review never ran",
+      reviewBound: {
+        wave: "full",
+        unreviewedLanes: ["security lens", "performance lens"],
+        reason: "review STEP stopped: lens child errored",
+      },
+    },
+    n,
+  );
+}
+
+/** A `review` step that died by THROW having recorded nothing at all. Only ONE of the
+ * review step's exit routes — its own step clock — carries a bound on the error it throws
+ * (`review.ts`'s `stopped()`), so the rest (a head that moved before pass 1 was bought, a
+ * child the operator's budget stopped) land here: `kind: "error"` with no `reviewBound`.
+ * That silence is NOT "every lens judged", and the cap must not say it is. */
+export function diedReviewStep(n = 0): Step {
+  return stepWith("review", { kind: "error", message: "review child died: forge unreachable" }, n);
+}
+
+/** A `review` step the engine started and never got an answer from — no outcome at all, the
+ * same crash-mid-step shape the result fixture builds for `verify`/`ci`. An unanswered
+ * review is not an answered one. */
+export function unansweredReviewStep(n = 0): Step {
+  return {
+    key: `7:review:${String(n)}`,
+    state: "review",
+    startedAt: 1_000 + n,
+    endedAt: 2_000 + n,
+  };
 }
 
 /** The review steps of one run, inserted where the engine buys them: after publish,

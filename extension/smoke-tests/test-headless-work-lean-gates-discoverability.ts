@@ -100,6 +100,14 @@ const { assert, failures } = makeAssert();
     host.includes("awaiting-human-merge` means `ready`") && host.includes("with every lens judged"),
     "docs/headless.md qualifies the awaiting-human-merge-means-ready claim with every lens judged",
   );
+  // The row that makes that promise has to name BOTH answers the predicate reads, or it
+  // over-claims: a `review` step that threw without recording a bound judged nothing, and
+  // a row describing only the budget-stop arm would tell a host the cap proves lenses ran
+  // when the record said nothing either way.
+  assert(
+    host.includes("ended on a throw that recorded no verdict"),
+    "docs/headless.md names the review-died-without-a-record arm beside the stopped-with-lanes arm",
+  );
 }
 
 // The record's tally is keyed by the words the REVIEWING layer publishes, and the list

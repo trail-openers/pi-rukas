@@ -108,9 +108,10 @@ export interface GatesReview {
   /**
    * The step's own clock, published verbatim from the record beside these counts (G11).
    *
-   * The top-level `issues[].reviewBound` keeps its own rule — ABSENT means fully
-   * reviewed — and this is the one gate field that does not follow the null rule, because
-   * here absence is the answer: `prState`/`reviewBound` are governed by the omission rule
+   * The top-level `issues[].reviewBound` keeps its own rule — ABSENT means no `review`
+   * step in the log recorded a stop — and this is the one gate field that does not follow
+   * the null rule, because here absence is the answer: `prState`/`reviewBound` are
+   * governed by the omission rule
    * and everything else in `gates` by the null rule, which is what docs/headless.md
    * states, and what this comment exists to stop a reader guessing.
    */

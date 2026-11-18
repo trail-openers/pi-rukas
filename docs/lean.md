@@ -490,12 +490,16 @@ is read out of prose. The rule is publish's own — it will not push at all over
 green about a different commit — restated as a report. `ready` is the only thing
 that earns a handoff cap, and it does not earn it alone:
 **`awaiting-human-merge` means `ready` with every review lens judged**, so a
-`ready` PR whose NEWEST `review` step recorded unjudged lanes reports
+`ready` PR whose NEWEST `review` step left a lane unjudged — stopped by its own
+clock, or ended by a throw that recorded no verdict at all — reports
 **`review-incomplete`** with `reviewComplete: false` instead (same exit 10,
 different cap), and `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0` puts the single
-`awaiting-human-merge` cap back and omits the field. A draft, or a PR over a gate
-that did not clear its head, gets no cap and rides `failure` alone. A build
-without the feature writes lean's own
+`awaiting-human-merge` cap back and omits the field. `reviewComplete` answers
+only from the step's own record, and is `true` only where that record says the
+review finished (`done`/`fixed`, or a stop that named no lane): a review that
+died before pass 1 read no lens, and the cap now says so. A draft, or a PR over
+a gate that did not clear its head, gets no cap and rides `failure` alone. A
+build without the feature writes lean's own
 pre-#1920 document (`state`, `summary`, `steps`, `prUrl`) and has no `prState`:
 refuse the image rather than guess.
 

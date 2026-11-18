@@ -176,15 +176,21 @@ export interface IssueResult {
   prState?: "ready" | "draft" | "none";
   /** The lean `review` step stopped at its OWN time bound and judged no further lane:
    * one line for which lever closed, which wave it reached and which lanes went
-   * unreviewed. `work` writes none of it; a run with no bound stop omits it, so absence
-   * means "fully reviewed", never "unknown". */
+   * unreviewed. `work` writes none of it; a run whose `review` steps recorded no stop
+   * omits it, so absence means "no stop was recorded", never "the review said nothing" —
+   * an older stopped attempt is named even when a later judged review overtook it, which is
+   * what `reviewComplete` (reading the NEWEST step) answers separately. */
   reviewBound?: string;
   /** Did the run's review judge every lens it was bought? `false` when the NEWEST `review`
-   * step (whatever it decided) recorded a stop that left lanes unjudged; `true` otherwise,
-   * a run that never reached review included. Lean-only, like the two fields above, and
-   * written on one switch: absent on a build running `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0`
-   * or one from before the field existed. Read it beside `cap` — a `ready` PR with this
-   * `false` carries cap `review-incomplete`, not `awaiting-human-merge`. */
+   * step left a lane unjudged OR never answered at all — a step that recorded a stop with
+   * lanes in it, or one that ended on a throw without recording a bound (only the step's
+   * own clock stop writes one, so a review that died before pass 1 read no lens and says
+   * nothing). `true` only where the record says the review finished: a returned `done`/
+   * `fixed` step, an empty lane list, or no `review` step in the log at all. Lean-only,
+   * like the two fields above, and written on one switch: absent on a build running
+   * `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0` or one from before the field existed. Read
+   * it beside `cap` — a `ready` PR with this `false` carries cap `review-incomplete`, not
+   * `awaiting-human-merge`. */
   reviewComplete?: boolean;
   /**
    * The run's gate events, for a host that must not read `.pi/lean-state/<issue>.json`
