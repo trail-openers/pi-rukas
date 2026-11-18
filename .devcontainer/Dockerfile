@@ -240,7 +240,23 @@ RUN set -e; HF_HUB_DISABLE_XET=1 hf download \
     && test -s /home/vscode/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/onnx/model.onnx \
     && test -f /home/vscode/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/tokenizer.json \
     && test -s /home/vscode/.cache/huggingface/hub/models--BAAI--bge-small-en-v1.5/snapshots/5c38ec7c405ec4b44b94cc5a9bb96e735b38267a/tokenizer.json
-# No `if [ -d ]` guard: the step above guarantees the cache exists, so a missing
+# With no thread count set, onnxruntime pins one pool thread per host core. Under
+# a cgroup cpuset most of those CPUs are not the container's, and every vipune
+# call logs an error per thread to stderr, which agents read. onnxruntime reads
+# this variable itself and sets no affinity for an explicit count. One thread
+# also keeps concurrent vipune calls inside a container's CPU limit.
+ENV ORT_INTRA_OP_NUM_THREADS=1
+# Smoke: a vipune call writes only its own output. Any stderr fails the build.
+# `timeout` (coreutils, Essential on the Ubuntu base) bounds each call: a hung
+# vipune exits 124, which the `|| f=1` path reports like any other failure
+# instead of stalling the image build in silence.
+RUN d="$(mktemp -d)"; export VIPUNE_DATABASE_PATH="$d/smoke.db"; f=; \
+    timeout 60 vipune add "image smoke" >/dev/null 2>"$d/err" || f=1; \
+    timeout 60 vipune search "image smoke" --json >"$d/out" 2>>"$d/err" || f=1; \
+    if [ -s "$d/err" ] || [ -n "$f" ]; then cat "$d/err" >&2; echo "vipune smoke: failed or wrote stderr" >&2; exit 1; fi; \
+    grep -q '"image smoke"' "$d/out" || { echo "vipune smoke: search did not find the memory" >&2; exit 1; }; \
+    rm -rf "$d"
+# No `if [ -d ]` guard: the pre-fetch step guarantees the cache exists, so a missing
 # seed dir IS a broken image. `cp -a` keeps the modes the entrypoint's `cp -a`
 # later has to reproduce. The refs check is `test -f` as well as `test -s`: the
 # ref is a small text file and a directory satisfies `-s` alone.
