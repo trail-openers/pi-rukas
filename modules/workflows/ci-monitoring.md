@@ -12,6 +12,15 @@ status is terminal or 30 minutes of waiting have passed.**
 - Each iteration is **two separate tool calls** — `sleep 60`, then the read. Never
   combine them: no while-loop, no command substitution, no `;`, no `&&`, no pipes. A
   chained command is refused by the permission layer and never runs.
+- **Where the permission layer gates each part.** Under the default trust mode (how
+  `/work` children run) every call below runs unasked. Under the strict opt-in, or in
+  a headless cycle where an `ask` verdict is a hard deny, a command the role is not
+  allowlisted for is refused or stalls — and that refusal is not the CI failing and is
+  not a reason to end the turn. Reach instead for a read your role's grants do cover
+  (`gh run view <id> --json status,conclusion` and `gh run list` on GitHub, `glab
+  pipeline view` / `glab pipeline list` on GitLab) and keep the cadence with a bounded
+  wait you can run. Where every read is refused, report the refused commands — never a
+  CI verdict you did not read.
 - **A non-zero exit is data, not a failed command.** `gh pr checks` exits 8 while
   checks are pending; rows still print. Read the rows and poll again — do not abandon
   the wait because the exit code was non-zero.

@@ -2445,13 +2445,19 @@ Crossing an armed budget steers the child to wrap up, then kills it after `PI_EN
 
 ### `ci` step timeout — CI runs > 10 min (PR15)
 
-The `ci` step dispatches `ops` to run `gh run watch <id>`, which blocks until CI completes. Pre-PR15 this inherited ops' 10-min default, so any CI run exceeding 10 min SIGTERM'd mid-watch and routed through `step-failed:ci` handoff (3× this session on a measured cycle's ~15-min pipeline).
+The `ci` step dispatches `ops` to wait for CI with the bounded `sleep 60` + read poll
+that `inlineCiPrompt` prescribes — never a blocking `gh run watch` or `--watch` call,
+which is the shape in which a child ended its turn with checks still pending and the
+merge never happened. Pre-PR15 this inherited ops' 10-min default, so any CI run exceeding 10 min SIGTERM'd mid-wait and routed through `step-failed:ci` handoff (3× this session on a measured cycle's ~15-min pipeline).
 
 PR15 gives `ci` its own 30-min cap (30 × 60000 ms). Override via `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS` (milliseconds). The per-role ops default this sentence used to name no longer exists — every other `ops` dispatch is bounded only by the two mechanisms in the table above, except `handoff`, which has its own bound (next entry).
 
 If your project's CI genuinely takes longer than 30 min, either raise `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS` or accept the handoff — inspect the CI run in the browser, then fix the branch and push, or (once CI is green) re-run with `--merge` so the driver performs the merge — merging is the driver's step, not a human one.
 
-The `inlineCiPrompt` also carries a bounded poll-fallback recipe (`gh run view --json status`) so ops has something to reach for if `gh run watch` fails outright.
+The `inlineCiPrompt` prescribes the poll itself — `sleep 60`, then `gh run view <id>
+--json status,conclusion` as two separate unchained calls — and the cap it polls to is
+the same `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS` value as this entry's paragraph above, which
+is why one knob bounds both.
 
 ### A cycle died on `explore-bodies-empty` seconds after starting
 

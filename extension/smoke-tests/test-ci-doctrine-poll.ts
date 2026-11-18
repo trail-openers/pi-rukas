@@ -48,6 +48,7 @@ import {
   missingCiDoctrine,
 } from "./lib/ci-doctrine.ts";
 import { isCiWatchCommand } from "../src/slow-notice-ci-wait.ts";
+import { CI_WAIT_STEPS } from "../src/work-driver-ci-wait-brief.ts";
 import { inlineCiPrompt } from "../src/work-driver-prompts-late.ts";
 
 const SELF = "test-ci-doctrine-poll.ts";
@@ -277,6 +278,32 @@ for (const rel of ["agents-base/project-manager.md", "pi-prompts/do.md"]) {
   assert(
     blockingWatchPrescribed("- Skip the local gate; run `gh run watch` and report.").length === 1,
     "canary: an unnegated watch in the same breath as an unrelated rule IS flagged",
+  );
+
+  // The load-bearing pair: the brief's OWN step-2 line is both the sanctioned
+  // poll recipe and the sentence that names the forbidden watch. Its opening
+  // status clause carries an unrelated `not` ("If the run is not terminal
+  // yet") and its prohibition is set off by an em-dash, so a negation window
+  // that reaches past a clause break reports zero prescriptions for this line
+  // whatever the watch looks like — a reword back to `gh run watch` passes
+  // every gate. Both directions of THIS line are pinned, on the shipped text.
+  const step2 = CI_WAIT_STEPS[0];
+  assert(
+    step2.includes("NOT `gh run watch`") && blockingWatchPrescribed(step2).length === 0,
+    "canary: the shipped step-2 recipe line is not itself flagged as a prescription",
+  );
+  const step2WatchBack = step2.replace(
+    /wait with the bounded sleep-poll — NOT `gh run watch`[^.]*/, 
+    "wait with `gh run watch`",
+  );
+  assert(
+    step2WatchBack !== step2 && blockingWatchPrescribed(step2WatchBack).length === 1,
+    `canary: the step-2 line reworded back to a bare \`gh run watch\` prescription IS flagged (${blockingWatchPrescribed(step2WatchBack).length} hit(s))`,
+  );
+  const step2NotDropped = step2.replace("— NOT `gh run watch`", "— `gh run watch`");
+  assert(
+    step2NotDropped !== step2 && blockingWatchPrescribed(step2NotDropped).length === 1,
+    `canary: the step-2 line with only its \`NOT\` dropped IS flagged (${blockingWatchPrescribed(step2NotDropped).length} hit(s))`,
   );
 }
 

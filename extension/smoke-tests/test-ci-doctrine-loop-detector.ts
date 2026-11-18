@@ -15,17 +15,16 @@
  *
  *   1. A poll whose reads CHANGE (CI is moving: queued → in_progress → pass) never
  *      accumulates on the READ's fingerprint — a changed output deletes the entry.
- *   2. A fully stalled poll DOES cross the steer threshold on both fingerprints.
- *      That is the honest finding, reported rather than papered over by widening
- *      the classifier: crossing the threshold is a STEER (a status-report request),
- *      never a kill below `SUCCESS_KILL_AT`, and the doctrine's own sentence tells
- *      the child a notice during a CI wait is not a reason to stop.
- *   3. The counter is never ARMED for the role that runs this poll. ops children
- *      run with `capsOn === false` (spawn-caps.ts guards construction with
+ *   2. A fully stalled poll DOES cross BOTH thresholds on both fingerprints — the
+ *      steer at `SUCCESS_STEER_AT` and the kill at `SUCCESS_KILL_AT`. That is the
+ *      honest finding, reported rather than papered over by widening the
+ *      classifier: on its own a 30-minute wait would be killed, not advised.
+ *   3. Neither threshold is ever REACHED for the role that runs this poll. ops
+ *      children run with `capsOn === false` (spawn-caps.ts guards construction with
  *      `opts.role !== "ops"`), so no detector exists for an ops dispatch. That is
  *      the whole reason "keep polling" and the counter do not collide — and it is
- *      what a future change to that guard would silently break, so it is asserted
- *      rather than assumed.
+ *      what a future change to that guard would silently break (the kill, per (2),
+ *      not the steer), so it is asserted rather than assumed.
  *   4. Because (3) is role-scoped, the sleep-carrying recipe must not reach a
  *      detector-armed role that writes. Read from the manifests, not a list
  *      maintained here.
@@ -71,17 +70,20 @@ function drivePoll(readOutput: (iteration: number) => string) {
   let readSteered = false;
   let sleepSteered = false;
   let readKilled = false;
+  let sleepKilled = false;
   for (let i = 0; i < POLL_ITERATIONS; i++) {
     counters.observeResult(readFp, "bash", readOutput(i), false, () => {
       readKilled = true;
     });
-    counters.observeResult(sleepFp, "bash", "", false, () => {});
+    counters.observeResult(sleepFp, "bash", "", false, () => {
+      sleepKilled = true;
+    });
     for (const e of counters.entries()) {
       if (e.fingerprint === readFp && e.steered) readSteered = true;
       if (e.fingerprint === sleepFp && e.steered) sleepSteered = true;
     }
   }
-  return { readSteered, sleepSteered, readKilled };
+  return { readSteered, sleepSteered, readKilled, sleepKilled };
 }
 
 // 1. A poll over MOVING CI never counts the read as a repetition — the normal
@@ -96,18 +98,27 @@ function drivePoll(readOutput: (iteration: number) => string) {
   );
 }
 
-// 2. The honest finding, reported: a fully stalled poll crosses the steer
-// threshold on both fingerprints. Steer only — kill needs SUCCESS_KILL_AT, and
-// 30 identical rounds of a poll are the doctrine's normal shape, not a loop.
+// 2. The honest finding, reported: a fully stalled poll crosses BOTH thresholds
+// on both fingerprints — steer at `SUCCESS_STEER_AT` and kill at
+// `SUCCESS_KILL_AT`. That is what the ops exemption in section 3 protects: were
+// that exemption narrowed, a stalled 30-minute CI wait would be KILLED, not
+// merely steered, and this file would still pass on the steer half alone if the
+// kill were not named here too.
 {
-  const { sleepSteered, readSteered } = drivePoll(() => "checks ci: pending");
+  const { sleepSteered, readSteered, readKilled, sleepKilled } = drivePoll(
+    () => "checks ci: pending",
+  );
   assert(
     sleepSteered === true,
     `a stalled poll's \`sleep 60\` reaches SUCCESS_STEER_AT (${SUCCESS_STEER_AT}) on its own fingerprint — reported, not widened away`,
   );
   assert(
     readSteered === true,
-    "a stalled poll's identical read reaches the steer threshold too (a steer, not a kill)",
+    "a stalled poll's identical read reaches the steer threshold too",
+  );
+  assert(
+    readKilled === true && sleepKilled === true,
+    `a stalled poll reaches SUCCESS_KILL_AT (${SUCCESS_KILL_AT}) on BOTH fingerprints — the role exemption below, not the threshold margin, is what keeps a 30-minute CI wait from being killed`,
   );
 }
 

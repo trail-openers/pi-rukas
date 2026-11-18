@@ -13,6 +13,13 @@
  * strict about scope: a watch named in a clause that forbids it is not a
  * prescription, and the negation has to govern the watch's OWN clause — the
  * same rule shape `test-oo-prompt-hygiene.ts` uses.
+ *
+ * The shipped CI brief is a numbered list whose step 2 is both the sanctioned
+ * poll recipe AND the sentence that names the forbidden watch — so the
+ * classifier has to see the prohibition, and still see a reword of that same
+ * line back to a watch prescription. `lib/ci-doctrine-canary.ts` pins exactly
+ * that line in both directions; a classifier change that loses either half
+ * reds the gate instead of going unnoticed on the one line a child is handed.
  */
 
 /**
@@ -61,8 +68,12 @@ const WATCH_NEGATION =
   /\b(?:never|not|no|avoid|forbid|refrain|prohibit|skip|omit|replaced?|removed?)\b|❌|do\s+not|don'?t|must\s+not|instead\s+of|rather\s+than/i;
 
 /** Clause boundaries inside a line — a watch named in a new clause is judged on
- * that clause alone. */
-const CLAUSE_BREAK = /[.;:!?]|\bbut\b|\bhowever\b|\band\b|\bor\b/i;
+ * that clause alone. `—` is a boundary because the sanctioned recipe separates
+ * its prohibition with an em-dash ("the bounded sleep-poll — NOT `gh run
+ * watch`"), and `,` because the brief's step 2 opens with a status clause
+ * ("If the run is not terminal yet, …") that must not reach the watch clause
+ * and read the word `not` there as a prohibition on the watch. */
+const CLAUSE_BREAK = /[.;:!?]|\bbut\b|\bhowever\b|\band\b|\bor\b|—|,/i;
 
 /**
  * The blocking CI-watch shapes a doctrine can prescribe: `gh run watch`, and
@@ -90,11 +101,11 @@ export function blockingWatchPrescribed(text: string): string[] {
   text.split("\n").forEach((line, i) => {
     WATCH_SHAPE.lastIndex = 0;
     for (const m of line.matchAll(WATCH_SHAPE)) {
-      if (NON_PRESCRIPTIVE_LINE.test(line)) {
-        // A heading still prescribes when it RECOMMENDS the watch ("GitHub: `gh
-        // run watch` (ALWAYS — NO polling)"); the negation test below still
-        // governs, on the text before the watch name.
-      }
+      // The negation must govern the watch's OWN clause: the text from the last
+      // clause break up to the watch name, never everything before the match.
+      // The wider window read the `not` of an unrelated "is not terminal yet"
+      // as prohibiting a watch named later in the line, which made the brief's
+      // step-2 recipe line blind to any watch reword written into it.
       const clause = (line.slice(0, m.index).split(CLAUSE_BREAK).pop() ?? "").replace(
         /^[\s>#*`-]+/,
         "",
