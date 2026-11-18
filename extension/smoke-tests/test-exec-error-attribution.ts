@@ -13,7 +13,7 @@ import {
   extractSpecificAssertion,
 } from "../src/work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
-import { baselineExplainsChange } from "../src/work-driver-verify-baseline.ts";
+import { baselineExplainsChange } from "../src/work-driver-verify-baseline-compare.ts";
 import {
   RUST_CARGO_STREAM,
   RUST_SHOULD_PANIC_TRAP_AFTER_STREAM,

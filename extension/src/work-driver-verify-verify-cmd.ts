@@ -419,6 +419,9 @@ async function runVerifyCommandGateBody(
     suiteTimeoutMs,
     cons,
     perWorktreeVerifyFailures,
+    // #2341 — the same index-aligned pairing the classifier reads: the excuse
+    // asks the run, not its clipped record.
+    perWorktreeVerifyRaws,
     failures,
     notes,
     // #1765 — reuse the branch step's verdict for this key; see verify-baseline.

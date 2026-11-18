@@ -23,10 +23,8 @@ import {
   extractSpecificAssertion,
   sharesAssertion,
 } from "../src/work-driver-consolidation-classify.ts";
-import {
-  BASELINE_RED_MARKER,
-  baselineExplainsChange,
-} from "../src/work-driver-verify-baseline.ts";
+import { BASELINE_RED_MARKER } from "../src/work-driver-verify-baseline.ts";
+import { baselineExplainsChange } from "../src/work-driver-verify-baseline-compare.ts";
 import { appendEvent } from "../src/workflow-state.ts";
 import {
   runGateFixture,

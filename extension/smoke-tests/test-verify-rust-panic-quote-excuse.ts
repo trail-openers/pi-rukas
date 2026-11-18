@@ -15,18 +15,23 @@
  *   - ONE recognizer for both panic gates. The quote veto asked the table's
  *     shape key and the excuse gate its own line-anchored look, so a header the
  *     gate printed with a prefix (`error:`, `warning:`, a timestamp, `[INFO]`,
- *     an ANSI colour) was neither vetoed nor gated: quotable AND excusing.
+ *     an ANSI colour) was neither vetoed nor gated: quotable AND excusing;
+ *   - the excuse is decided PER FAILING TEST of the change's record, and the
+ *     change side pays the name-correlated question the base side already paid —
+ *     of the run, never of the clipped record.
  *
- * Falsifiable both ways: every refusal is asserted beside its mirror — the same
- * bytes with a genuinely failing verdict quote AND excuse — so a gate re-spelled
- * away reddens one arm or the other, and an ordinary continuation still joins.
+ * Falsifiability: every refusal here is a `=== false` / `=== NO_SPECIFIC_ASSERTION`
+ * claim whose mirror is asserted beside it (the same bytes with a genuinely
+ * failing verdict quote AND excuse), so a gate re-spelled away reddens one arm or
+ * the other. `panicCanExcuseChange` neutered reddens the excuse arms; the
+ * extractor's join arms redden on their own.
  */
 
 import {
   NO_SPECIFIC_ASSERTION,
   extractSpecificAssertion,
 } from "../src/work-driver-verify-assertion.ts";
-import { baselineExplainsChange } from "../src/work-driver-verify-baseline.ts";
+import { baselineExplainsChange } from "../src/work-driver-verify-baseline-compare.ts";
 import { makeAssert, rustPanicHeader } from "./lib/verify-failure-shapes-fixtures.ts";
 
 const { assert, failed } = makeAssert();
@@ -109,6 +114,73 @@ const { assert, failed } = makeAssert();
       [{ text: failingV, timedOut: false }],
     ) === true,
     "prefixed panic control: and it still excuses — the gate is evidence, not a prefix ban",
+  );
+}
+
+// ── 3. the excuse is per failing test, and the change side pays it ──────────
+{
+  const baseFlaky = "base::flaky";
+  const baseStream = [
+    "running 2 tests",
+    `test ${baseFlaky} ... FAILED`,
+    rustPanicHeader(baseFlaky, "src/f.rs:1:1"),
+    "assertion failed: already broken at base",
+    "test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured",
+  ].join("\n");
+  const baseAssertion = extractSpecificAssertion(baseStream, baseStream);
+  const verdict = {
+    status: "red" as const,
+    rawStream: baseStream,
+    probed: true,
+    exitCode: 101,
+    assertion: baseAssertion,
+  };
+  assert(
+    baseAssertion.startsWith("thread 'base::flaky' panicked at src/f.rs:1:1:"),
+    `aggregated record: the base's own panic is the assertion at base (${JSON.stringify(baseAssertion.slice(0, 48))})`,
+  );
+  const added = [
+    rustPanicHeader("new::regression", "src/r.rs:9:9"),
+    "assertion failed: the check the change added",
+    "test new::regression ... FAILED",
+  ].join("\n");
+  assert(
+    baselineExplainsChange(verdict, [{ text: baseStream, raw: baseStream, timedOut: false }]) ===
+      true,
+    "aggregated record control: a genuinely flaky test FAILED at base and again after the change still excuses",
+  );
+  assert(
+    baselineExplainsChange(verdict, [
+      { text: `${baseStream}\n${added}`, raw: `${baseStream}\n${added}`, timedOut: false },
+    ]) === false,
+    "aggregated record: the base's panic no longer excuses a DIFFERENT panic the change added to the same record",
+  );
+  // The change side pays the question the base side pays: a record that QUOTES
+  // the base-failing panic, from a run that never reported that name failing,
+  // is not evidence that the change's failures are the base's.
+  const quotedOnly = `verify command \`cargo test\` failed in /wt: ${baseAssertion}`;
+  assert(
+    baselineExplainsChange(verdict, [
+      {
+        text: quotedOnly,
+        raw: "running 0 tests\ntest result: ok. 0 passed; 0 failed",
+        timedOut: false,
+      },
+    ]) === false,
+    "change side pays: a record quoting a panic its own run never reported FAILED does not excuse",
+  );
+  // …and it is asked of the RUN, never of the clipped record: a record whose
+  // elision sits above the failing name's verdict line excuses only once the
+  // publishers thread that run alongside it.
+  const clippedRecord = `verify command \`cargo test\` failed in /wt: ${baseAssertion}`;
+  assert(
+    baselineExplainsChange(verdict, [{ text: clippedRecord, timedOut: false }]) === false,
+    "clipped record: asked to speak for its own stream, the clipped tail refuses (the loud direction)",
+  );
+  assert(
+    baselineExplainsChange(verdict, [{ text: clippedRecord, raw: baseStream, timedOut: false }]) ===
+      true,
+    "clipped record: with the run threaded, the same flaky test excuses again",
   );
 }
 

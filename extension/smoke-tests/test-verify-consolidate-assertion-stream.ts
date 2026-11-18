@@ -31,7 +31,7 @@ import {
   classifyConsolidatedVerifyFailure,
   consolidatedFailureMessage,
 } from "../src/work-driver-consolidation-classify.ts";
-import { baselineExplainsChange } from "../src/work-driver-verify-baseline.ts";
+import { baselineExplainsChange } from "../src/work-driver-verify-baseline-compare.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
 import {
   NO_SPECIFIC_ASSERTION,

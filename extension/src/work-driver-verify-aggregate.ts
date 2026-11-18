@@ -15,8 +15,8 @@
  * concurrency-sensitive and were not what overflowed the cap.
  *
  * Import chain: work-driver-verify-verify-cmd.ts → this file →
- * work-driver-verify-baseline.ts (acyclic; the caller already imports that
- * module for the same call, so no new dependency edge is introduced).
+ * work-driver-verify-baseline-compare.ts (acyclic; the caller already imports
+ * that module for the same call, so no new dependency edge is introduced).
  *
  * The base-health await: the branch step no longer waits for the base probe, so
  * when THIS seam is about to pay for a base run it first collects the background
@@ -37,8 +37,10 @@ import type {
   BaseHealthReport,
 } from "./work-driver-verify-base-health-channels.ts";
 import { baseHealthConsultedNote } from "./work-driver-verify-base-health-channels.ts";
-import { compareWithBaseline } from "./work-driver-verify-baseline-compare.ts";
-import { baselineExplainsChange } from "./work-driver-verify-baseline.ts";
+import {
+  baselineExplainsChange,
+  compareWithBaseline,
+} from "./work-driver-verify-baseline-compare.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 import { isValidSha, isVerifyTimeoutFailure } from "./work-driver-verify-develop-helpers.ts";
 import type { BaseHealthKey, BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
@@ -191,6 +193,13 @@ export async function aggregateVerifyOutcome(args: {
   cons: ConsolidatedVerifyResult;
   /** Failures the per-worktree leg recorded; kept as failures regardless. */
   perWorktreeVerifyFailures: string[];
+  /**
+   * #2341 — index-aligned with `perWorktreeVerifyFailures`: each record's
+   * UNCLIPPED run output, so the baseline excuse asks the change's own run
+   * whether it failed the test its record panics about, instead of asking a
+   * clipped tail whose elision sits above that verdict line.
+   */
+  perWorktreeVerifyRaws?: Array<string | undefined>;
   failures: string[];
   notes: string[];
   /** #1349 — the base run fails the way the change's run does (the excuse). */
@@ -231,6 +240,7 @@ export async function aggregateVerifyOutcome(args: {
     suiteTimeoutMs,
     cons,
     perWorktreeVerifyFailures,
+    perWorktreeVerifyRaws,
     failures,
     notes,
     onBaselineAttributed,
@@ -365,10 +375,14 @@ export async function aggregateVerifyOutcome(args: {
       ...(cons.status === "failed"
         ? [{ text: cons.rawFailure ?? "", timedOut: cons.timedOut === true }]
         : []),
-      ...perWorktreeVerifyFailures.map((f) => ({
-        text: f,
-        timedOut: isVerifyTimeoutFailure(f),
-      })),
+      ...perWorktreeVerifyFailures.map((f, i) => {
+        const raw = perWorktreeVerifyRaws?.[i];
+        return {
+          text: f,
+          timedOut: isVerifyTimeoutFailure(f),
+          ...(raw === undefined ? {} : { raw }),
+        };
+      }),
     ];
     const comparison = await compareWithBaseline(execFn, {
       repoRoot: ctx.repoRoot,
