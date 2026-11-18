@@ -119,6 +119,14 @@ export const HEADLESS_INPUTS_A: readonly HostInput[] = [
   // #1560 — the per-child run bound: wrap-up steer at the bound, kill this long after.
   ms("CHILD_BOUND_GRACE_MS", 600_000),
   flag("CHILD_CODEMODE", true),
+  // #2352 R11 — the stamp of the dispatched role into the child's own env. The
+  // switch gates the WHOLE set of role-scoped child guards (the #1879 read-only
+  // dependency rule, the #2200 deletion rule's roots and `ops` carve-out, the
+  // #2140 reviewer bash bound, the #1113 push ban, this issue's reviewer
+  // containment), because a child with no role to read judges nothing: `0` is the
+  // operator's escape hatch for all of them at once and restores the pre-#2352 env
+  // byte-for-byte, bug included. Reader: `childRoleEnvEnabled` (child-role-env.ts).
+  flag("CHILD_ROLE_ENV", true),
   // #2200 — the ONE temp directory a child may delete into: the spawn layer's own
   // per-child dir (`writeRolePromptFile`). The shared temp root is never a delete
   // target. Alongside it the deletion rule also allows the worktree and the cycle's

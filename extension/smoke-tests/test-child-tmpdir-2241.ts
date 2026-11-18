@@ -249,7 +249,9 @@ async function childEnvOf(tag: string, parentEnv: Record<string, string>): Promi
     "canary: the TMPDIR/TMP/TEMP assignments are the LAST writes to childEnv in the builder, so no inherited value wins",
   );
   assert(
-    /const childEnv = buildChildEnv\(spec\.role, permissions, opts\.writeFence, tmpDir\);/.test(src),
+    /const childEnv = buildChildEnv\(spec\.role, permissions, opts\.writeFence, tmpDir, spec\.failOpen\);/.test(
+      src,
+    ),
     "canary: spawn.ts builds the child env with the one builder, passing the per-spawn dir",
   );
   const buildIdx = src.indexOf("const childEnv = buildChildEnv(spec.role");

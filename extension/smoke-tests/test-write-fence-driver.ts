@@ -87,7 +87,9 @@ assert(
   const spawnEntry = readFileSync(path.join(SRC, "spawn.ts"), "utf8");
   assert(
     spawn.includes("writeFenceChildEnv(writeFence)") &&
-      spawnEntry.includes("buildChildEnv(spec.role, permissions, opts.writeFence, tmpDir)"),
+      spawnEntry.includes(
+        "buildChildEnv(spec.role, permissions, opts.writeFence, tmpDir, spec.failOpen)",
+      ),
     "A: spawn.ts builds the child env from the dispatch's writeFence",
   );
 }

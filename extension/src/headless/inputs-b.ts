@@ -30,6 +30,7 @@ import {
   ms,
   str,
 } from "./entry.ts";
+import { HEADLESS_INPUTS_C } from "./inputs-c.ts";
 
 export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // #1765 — 0 skips the branch step's pre-develop base-health probe (the
@@ -361,6 +362,7 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // detached worktree at the reviewed head. `0` is the operator's opt-out and
   // puts the child back in the reviewed tree itself.
   flag("REVIEWER_ISOLATION", true),
+  ...HEADLESS_INPUTS_C,
   str("ROLE", null, "internal"),
   dir("RUNS_DIR", "~/.pi/agent/ensemble-runs"),
   flag("SAFETY_NET_COMMIT", true),
@@ -424,9 +426,6 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   flag("UNFENCE_DOCS_TESTS", true),
   str("USER_EXTENSION", null),
   flag("VERIFY", true),
-  // #2283 — the classic /work command-criteria tier: the spec's verify:"command" criteria,
-  // run beside the ratchet and smoke gates and independently of the discovered verify
-  // command. 0 restores the pre-#2283 behaviour, where a /work cycle ran none of them.
   // #2283 — the classic /work command-criteria tier: the spec's verify:"command" criteria,
   // run beside the ratchet and smoke gates and independently of the discovered verify
   // command. 0 restores the pre-#2283 behaviour, where a /work cycle ran none of them.

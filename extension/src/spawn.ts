@@ -171,7 +171,7 @@ async function spawnSpecialistInner(
   // build would hand `spawn()` a different env than the one every other step
   // adjusted — and silently undo the forge strip. The canary in
   // test-child-forge-credentials.ts pins this call to exactly one occurrence.
-  const childEnv = buildChildEnv(spec.role, permissions, opts.writeFence, tmpDir);
+  const childEnv = buildChildEnv(spec.role, permissions, opts.writeFence, tmpDir, spec.failOpen);
 
   const leadsGroup = leadsProcessGroup(opts.processGroup);
   const child = spawn(invocation.command, invocation.args, {

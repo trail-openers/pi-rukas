@@ -3,9 +3,10 @@
  * (#2200 D7): the one-liner that deletes through a script the operand table cannot
  * see, because its path lives inside the body, not among the command's words.
  *
- * `bun -e`, `node -e`/`--eval`/`--print`, `python -c`, `python3 -c`, `perl -e` and
- * `ruby -e` are the forms read here. They are NOT added to the writers table:
- * that table is shared with the WRITE fence, and putting `bun`/`node`/`python`
+ * `bun -e`, `node -e`/`--eval`/`-p`/`--print`, `python -c`, `python3 -c`, `perl -e` and
+ * `ruby -e` are the forms read here, from the one flag table the reviewer write guard
+ * reads too (`write-fence-interpreter-flags.ts`). They are NOT added to the writers
+ * table: that table is shared with the WRITE fence, and putting `bun`/`node`/`python`
  * into its general write list would change what the write fence refuses for every
  * dispatch, which is not what this issue asks.
  *
@@ -16,21 +17,12 @@
 
 import path from "node:path";
 import type { Word } from "./write-fence-bash-lex.ts";
+import { interpreterBody, interpreterFlags } from "./write-fence-interpreter-flags.ts";
 import { expandHome } from "./write-fence-path.ts";
 
 /** Why an interpreter call whose target cannot be read is refused. */
 export const INTERPRETER_TARGET_REASON =
   "it deletes through an interpreter whose target cannot be read. Name the path literally, or report the need to the PM";
-
-/** The interpreter call forms whose body this rule reads (#2200 D7). */
-const INTERPRETERS: Record<string, readonly string[]> = {
-  bun: ["-e", "--eval", "--print"],
-  node: ["-e", "--eval", "--print"],
-  python: ["-c"],
-  python3: ["-c"],
-  perl: ["-e"],
-  ruby: ["-e"],
-};
 
 /**
  * The deletion calls an interpreter body may hold. Every spelling needs a call shape:
@@ -86,7 +78,7 @@ const TEMPLATE_WITH_SUBSTITUTION = /`[^`]*\$\{[^`]*`/;
 
 /** Is this command one whose words this rule reads at all? */
 export function isInterpreter(name: string): boolean {
-  return name in INTERPRETERS;
+  return interpreterFlags(name) !== undefined;
 }
 
 /** The call shape that makes this interpreter's body a deletion, per language. */
@@ -196,23 +188,6 @@ const DYNAMIC_TARGET =
   /(?:process\.env|os\.environ|sys\.argv|process\.argv|argv\[|\$[A-Za-z_|]|\+\s*[A-Za-z_$]|[A-Za-z_$][\w$]*\s*\+)/;
 
 /**
- * The body word of an interpreter call, or undefined when the call names none:
- * `-e`/`--eval`/`--print` for bun and node, `-c` for python, `-e` for perl and
- * ruby, `--flag=BODY` too.
- */
-function interpreterBody(args: Word[], flags: readonly string[]): Word | undefined {
-  for (let k = 0; k < args.length; k++) {
-    const a = args[k] as Word;
-    if (a.text === "--") return args[k + 1];
-    if (flags.includes(a.text)) return args[k + 1];
-    const inline = flags.find((f) => f.startsWith("--") && a.text.startsWith(`${f}=`));
-    if (inline !== undefined) return { text: a.text.slice(inline.length + 1), dyn: a.dyn };
-    if (!a.text.startsWith("-")) return undefined;
-  }
-  return undefined;
-}
-
-/**
  * A body word that names a shell module rather than a shell call: the module a JS body
  * requires and python's `subprocess`. `shellsOut` counts one only for a body that also shows
  * a delete, so a body that merely imports the module is not a deletion.
@@ -230,7 +205,7 @@ export function interpreterDeletions(
   args: Word[],
   dir: string,
 ): { path: string }[] | { reason: string } {
-  const flags = INTERPRETERS[name];
+  const flags = interpreterFlags(name);
   if (flags === undefined) return [];
   const body = interpreterBody(args, flags);
   if (body === undefined) return [];

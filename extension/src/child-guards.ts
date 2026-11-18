@@ -49,6 +49,7 @@ import { registerProviderEnvOverrides } from "./provider-env.ts";
 import { registerModeIndependentGuards } from "./subagent-guard-guards.ts";
 import { trace } from "./trace.ts";
 import { registerDeletionGuard } from "./write-fence-deletion.ts";
+import { registerReviewerWriteGuard } from "./write-fence-reviewer.ts";
 import { registerWriteFence } from "./write-fence.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -114,6 +115,15 @@ export default function registerChildGuards(pi: ExtensionAPI): void {
   // this companion is the only place it can run. It self-gates on
   // PI_ENSEMBLE_WRITE_ROOT, so a child the driver did not fence is untouched.
   registerWriteFence(failClosedPi(pi));
+  // #2352 — the read-only role's bash confinement, registered with the other two
+  // WHOLE-TREE rules and for the same reason: the full pi-rukas extension never
+  // registers it, so under PI_ENSEMBLE_SUBAGENT_MODE=1 this companion is its only
+  // site. It self-gates on its own switch and on the role — a child the spawn did
+  // not stamp a read-only role into (a developer, an ops child) registers nothing,
+  // so the count below moves only for a confined role. Its roots are the child's
+  // own cwd and `PI_ENSEMBLE_CHILD_TMP`, which is also where the scratch HOME
+  // (reviewer-scratch-home.ts) lives, so the guard and the redirect name one tree.
+  registerReviewerWriteGuard(failClosedPi(pi));
   // #2160 — the helper roles' only forge surface, registered by the companion
   // because a trust-mode child (the interactive default) loads no other
   // pi-rukas extension and its env carries no login to fall back on. Registered
