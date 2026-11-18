@@ -5,7 +5,8 @@
  * Split out of `work-driver-verify-baseline.ts` along the natural seam
  * (AGENTS.md §12: that module is the develop gate's baseline COMPARISON — the
  * probe that runs the command at base and the verdict it returns; this one is
- * the single git fact the handoff renders alongside it). The direction is
+ * the single git fact the handoff renders alongside it, plus the renderer of
+ * that fact's public sentence — {@link staleBaseClosing}). The direction is
  * one-way: baseline → stale, nothing here calls back.
  *
  * The defect this closes. A base that trails the default branch can be red
