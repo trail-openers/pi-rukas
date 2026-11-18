@@ -69,7 +69,7 @@ for (const maxLen of [800, 1500]) {
     `project-runner @${maxLen}: the anchor is the failed-checks block, got ${JSON.stringify(tail.slice(0, 60))}`,
   );
   assert(
-    extractSpecificAssertion(tail) === CHECKS_BLOCK,
+    extractSpecificAssertion(tail, `${PAD}\n${PROJECT_RUNNER}`) === CHECKS_BLOCK,
     `project-runner @${maxLen}: the specific assertion names the failing file`,
   );
   assert(
@@ -86,7 +86,7 @@ for (const maxLen of [800, 1500]) {
 {
   const passing = "pack_release_test.sh: 36 cases, 0 failed";
   assert(
-    extractSpecificAssertion(passing) === NO_SPECIFIC_ASSERTION,
+    extractSpecificAssertion(passing, passing) === NO_SPECIFIC_ASSERTION,
     "project-runner: a lone passing tally reports absence, never the tally itself",
   );
   assert(failureLines(passing).length === 0, "project-runner: a lone passing tally yields no failure line");
@@ -302,8 +302,8 @@ const LABEL = "[host-resource-exhaustion]";
     `padding: harnessInnerLine strips the leading separators (got ${JSON.stringify(harnessInnerLine(PADDED))})`,
   );
   assert(
-    extractSpecificAssertion(PADDED) === "a.ts: 3 failed",
-    `padding: extractSpecificAssertion returns the gate line, unpadded (got ${JSON.stringify(extractSpecificAssertion(PADDED))})`,
+    extractSpecificAssertion(PADDED, PADDED) === "a.ts: 3 failed",
+    `padding: extractSpecificAssertion returns the gate line, unpadded (got ${JSON.stringify(extractSpecificAssertion(PADDED, PADDED))})`,
   );
   {
     const gate: CorrectiveGateView = {
@@ -348,8 +348,8 @@ const LABEL = "[host-resource-exhaustion]";
       `hint prose (${shape}): the returned line is the gate's, with no hint text (got ${JSON.stringify(harnessInnerLine(line))})`,
     );
     assert(
-      extractSpecificAssertion(line) === GATE_LINE,
-      `hint prose (${shape}): the specific assertion names no hint prose (got ${JSON.stringify(extractSpecificAssertion(line))})`,
+      extractSpecificAssertion(line, line) === GATE_LINE,
+      `hint prose (${shape}): the specific assertion names no hint prose (got ${JSON.stringify(extractSpecificAssertion(line, line))})`,
     );
     assert(
       assertionLines(line).join("|") === GATE_LINE,
@@ -382,8 +382,8 @@ const LABEL = "[host-resource-exhaustion]";
       `inner secret: the guard drops only the secret line — the gate's failure is still offered (got ${JSON.stringify(offered)})`,
     );
     assert(
-      extractSpecificAssertion(leaked) === CHECKS_BLOCK,
-      `inner secret: the extractor agrees on the same stream (got ${JSON.stringify(extractSpecificAssertion(leaked))})`,
+      extractSpecificAssertion(leaked, leaked) === CHECKS_BLOCK,
+      `inner secret: the extractor agrees on the same stream (got ${JSON.stringify(extractSpecificAssertion(leaked, leaked))})`,
     );
     // An echoed command inside the wrapper is harness/CI echo, not an assertion
     // — the same guard, the same refusal the bare `$ …` line earns.
@@ -441,8 +441,8 @@ const LABEL = "[host-resource-exhaustion]";
     `verify command \`${CMD}\` failed in ${WT} — the \`.pi/worktree-setup\` hook failed ` +
     "during provisioning: node_modules is empty\nnothing to see here";
   assert(
-    extractSpecificAssertion(hintOnly) === NO_SPECIFIC_ASSERTION,
-    `hint prose: a hint with no gate failure still reports absence (got ${JSON.stringify(extractSpecificAssertion(hintOnly))})`,
+    extractSpecificAssertion(hintOnly, hintOnly) === NO_SPECIFIC_ASSERTION,
+    `hint prose: a hint with no gate failure still reports absence (got ${JSON.stringify(extractSpecificAssertion(hintOnly, hintOnly))})`,
   );
 }
 
@@ -457,7 +457,7 @@ const LABEL = "[host-resource-exhaustion]";
 {
   const header = rustPanicHeader("a::tests::t", "src/a.rs:7:5");
   for (const completion of ["ok", "FAILED", "ignored", "measured", "passed", "failed", "ok."]) {
-    const joined = extractSpecificAssertion(`${header}\n${completion}`);
+    const joined = extractSpecificAssertion(`${header}\n${completion}`, `${header}\n${completion}`);
     assert(
       joined === header,
       `nocapture: a bare \`${completion}\` under a panic header is never joined into the assertion (got ${JSON.stringify(joined)})`,
@@ -465,7 +465,7 @@ const LABEL = "[host-resource-exhaustion]";
   }
   // The refusal is of the completion token, not of the message line: a real
   // message still joins, which is the pair the nessie handoff needed.
-  const real = extractSpecificAssertion(`${header}\n${RUST_PANIC_MESSAGE}`);
+  const real = extractSpecificAssertion(`${header}\n${RUST_PANIC_MESSAGE}`, `${header}\n${RUST_PANIC_MESSAGE}`);
   assert(
     real === `${header} ${RUST_PANIC_MESSAGE}`,
     `nocapture: a real message line still joins (got ${JSON.stringify(real)})`,
@@ -488,9 +488,9 @@ const LABEL = "[host-resource-exhaustion]";
       `dialect: ${JSON.stringify(line.slice(0, 48))} is cargo-summary and names no check (got ${JSON.stringify(got)})`,
     );
     assert(
-      extractSpecificAssertion(`noise from the run\nnoise from the run\n${line}`) ===
+      extractSpecificAssertion(`noise from the run\nnoise from the run\n${line}`, `noise from the run\nnoise from the run\n${line}`) ===
         NO_SPECIFIC_ASSERTION,
-      `dialect: a stream whose only error: line is ${JSON.stringify(line.slice(0, 48))} reports honest absence (got ${JSON.stringify(extractSpecificAssertion(`noise from the run\nnoise from the run\n${line}`))})`,
+      `dialect: a stream whose only error: line is ${JSON.stringify(line.slice(0, 48))} reports honest absence (got ${JSON.stringify(extractSpecificAssertion(`noise from the run\nnoise from the run\n${line}`, `noise from the run\nnoise from the run\n${line}`))})`,
     );
   }
 }

@@ -142,11 +142,11 @@ function consolidatedGate(raw: string): CorrectiveGateView {
 // ── 2. the veto sites now ask "the bare marker shape", not "any FAILED:" ─────
 {
   assert(
-    extractSpecificAssertion(PAYLOAD_MARKER) === PAYLOAD_MARKER,
-    `extractor: a payload-bearing marker line IS the specific assertion (got ${JSON.stringify(extractSpecificAssertion(PAYLOAD_MARKER))})`,
+    extractSpecificAssertion(PAYLOAD_MARKER, PAYLOAD_MARKER) === PAYLOAD_MARKER,
+    `extractor: a payload-bearing marker line IS the specific assertion (got ${JSON.stringify(extractSpecificAssertion(PAYLOAD_MARKER, PAYLOAD_MARKER))})`,
   );
   assert(
-    extractSpecificAssertion("FAILED: smoke-tests/test-x.ts") !== PAYLOAD_MARKER,
+    extractSpecificAssertion("FAILED: smoke-tests/test-x.ts", "FAILED: smoke-tests/test-x.ts") !== PAYLOAD_MARKER,
     "extractor: a bare marker still reports absence (the #798 defect stays closed)",
   );
   assert(
@@ -165,12 +165,11 @@ function consolidatedGate(raw: string): CorrectiveGateView {
   const SUMMARY = "FAILED: 2 test(s) — a.ts, b.ts";
   const { NO_SPECIFIC_ASSERTION } = await import("../src/work-driver-verify-assertion.ts");
   assert(
-    extractSpecificAssertion(SUMMARY) === NO_SPECIFIC_ASSERTION,
-    `summary exemption unchanged: a count summary alone still reports absence (got ${JSON.stringify(extractSpecificAssertion(SUMMARY))})`,
+    extractSpecificAssertion(SUMMARY, SUMMARY) === NO_SPECIFIC_ASSERTION,
+    `summary exemption unchanged: a count summary alone still reports absence (got ${JSON.stringify(extractSpecificAssertion(SUMMARY, SUMMARY))})`,
   );
   assert(
-    extractSpecificAssertion(`${SUMMARY}\n\u2717 a.ts: expected 1, got 2`) ===
-      "\u2717 a.ts: expected 1, got 2",
+    extractSpecificAssertion(`${SUMMARY}\n\u2717 a.ts: expected 1, got 2`, `${SUMMARY}\n\u2717 a.ts: expected 1, got 2`) === "\u2717 a.ts: expected 1, got 2",
     "summary exemption unchanged: the summary never displaces the real assertion beside it",
   );
   const secretish = "FAILED: a_test.sh: expected api_key = zX9cVbNm0pQwErTy, got nothing";
@@ -386,7 +385,7 @@ function consolidatedGate(raw: string): CorrectiveGateView {
     PAYLOAD_MARKER,
   ].join("\n");
   assert(
-    extractSpecificAssertion("FAILED: 1 test(s) — test/z_test.sh") !== other,
+    extractSpecificAssertion("FAILED: 1 test(s) — test/z_test.sh", "FAILED: 1 test(s) — test/z_test.sh") !== other,
     "summary naming a different path never yields the other file's payload line",
   );
   assert(

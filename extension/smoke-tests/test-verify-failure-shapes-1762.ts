@@ -341,8 +341,8 @@ assert(
     "wrapped marker: the stream behind the harness still reports a failure, so the tail anchors",
   );
   assert(
-    extractSpecificAssertion(wrappedMarker) === NO_SPECIFIC_ASSERTION,
-    `wrapped marker: a wrapped FAILED: marker is never the specific assertion (got ${JSON.stringify(extractSpecificAssertion(wrappedMarker))})`,
+    extractSpecificAssertion(wrappedMarker, wrappedMarker) === NO_SPECIFIC_ASSERTION,
+    `wrapped marker: a wrapped FAILED: marker is never the specific assertion (got ${JSON.stringify(extractSpecificAssertion(wrappedMarker, wrappedMarker))})`,
   );
   {
     const text = wrappedMarker;
@@ -366,8 +366,8 @@ assert(
   // and the developer is given the ✗ line — not the harness sentence.
   const wrappedAssertion = `verify command \`${CMD}\` failed in ${WT}: FAILED: b.ts\n\u2717 b.ts: expected x`;
   assert(
-    extractSpecificAssertion(wrappedAssertion) === "\u2717 b.ts: expected x",
-    `wrapped marker: the ✗ line beneath the wrapped marker is the assertion (got ${JSON.stringify(extractSpecificAssertion(wrappedAssertion))})`,
+    extractSpecificAssertion(wrappedAssertion, wrappedAssertion) === "\u2717 b.ts: expected x",
+    `wrapped marker: the ✗ line beneath the wrapped marker is the assertion (got ${JSON.stringify(extractSpecificAssertion(wrappedAssertion, wrappedAssertion))})`,
   );
   {
     const text = wrappedAssertion;
@@ -460,7 +460,7 @@ assert(
   // it is `redactSecrets`, and it has to run on the value the extractor RETURNS.
   const inner = `✗ token mismatch got ${SECRET}`;
   const wrapped = `verify command \`${CMD}\` failed in ${WT}: ${inner}${filler}`;
-  const extracted = extractSpecificAssertion(wrapped);
+  const extracted = extractSpecificAssertion(wrapped, wrapped);
   assert(
     !isHarnessWrapper(extracted),
     `wrapper is never the assertion: the harness sentence is not returned (got ${JSON.stringify(extracted)})`,
@@ -476,7 +476,7 @@ assert(
   // The same line bare, and the verdict that prints the assertion in its `reason`
   // (the field the handoff shows): the return value is redacted wherever it came
   // from, not only on the wrapper path.
-  const bare = extractSpecificAssertion(`${inner}${filler}`);
+  const bare = extractSpecificAssertion(`${inner}${filler}`, `${inner}${filler}`);
   assert(
     !/ghp_[A-Za-z0-9]/.test(bare),
     `bare: no credential reaches the extracted assertion (got ${JSON.stringify(bare)})`,
@@ -491,8 +491,8 @@ assert(
   // this door.
   const unreadable = `verify command \`${CMD}\` failed in ${WT}:`;
   assert(
-    extractSpecificAssertion(unreadable) === NO_SPECIFIC_ASSERTION,
-    `empty wrapper: absence is reported, not the harness sentence (got ${JSON.stringify(extractSpecificAssertion(unreadable))})`,
+    extractSpecificAssertion(unreadable, unreadable) === NO_SPECIFIC_ASSERTION,
+    `empty wrapper: absence is reported, not the harness sentence (got ${JSON.stringify(extractSpecificAssertion(unreadable, unreadable))})`,
   );
 }
 

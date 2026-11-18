@@ -179,7 +179,7 @@ const { assert, failed } = makeAssert();
     got?.shape === "script-tally",
     `window: a failing gate line behind a >8 KiB wrapper prefix is still found (${JSON.stringify(got)})`,
   );
-  const asserted = extractSpecificAssertion(wrapped);
+  const asserted = extractSpecificAssertion(wrapped, wrapped);
   // The reader must be shown the GATE'S line alone. Handing back the wrapper is the
   // #798 defect through the window: an operator sent to the harness sentence, and the
   // cycle's one corrective round spent on text the harness wrote.
