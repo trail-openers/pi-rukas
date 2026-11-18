@@ -8,6 +8,15 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.90](https://github.com/trail-openers/pi-rukas/compare/v0.14.89...v0.14.90) (2026-11-18)
+
+
+### Bug Fixes
+
+* **forge:** build glab mr create from flags glab really has ([#2346](https://github.com/trail-openers/pi-rukas/issues/2346)) ([e1f252f](https://github.com/trail-openers/pi-rukas/commit/e1f252f387d789c51d8e63b557fb5873e8016fee))
+* **forge:** give the glab MR create the run's own credentials ([#2351](https://github.com/trail-openers/pi-rukas/issues/2351)) ([f135f92](https://github.com/trail-openers/pi-rukas/commit/f135f923085aad312c4a8c2d41807902b4955cb9))
+* **review:** re-ask a reviewer whose verdict line was fenced ([#2350](https://github.com/trail-openers/pi-rukas/issues/2350)) ([b9baa5f](https://github.com/trail-openers/pi-rukas/commit/b9baa5f5c76c048bd75bc97fdded4518bf482d10))
+
 ## [0.14.89](https://github.com/trail-openers/pi-rukas/compare/v0.14.88...v0.14.89) (2026-11-17)
 
 
