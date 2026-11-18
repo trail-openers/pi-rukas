@@ -16,7 +16,6 @@
  */
 
 import { SHUTDOWN_SETTLE_MS } from "../pending-jobs-signal.ts";
-import { HEADLESS_INPUTS_C } from "./inputs-c.ts";
 import {
   type HostInput,
   LENS_MEMBERS,
@@ -31,6 +30,7 @@ import {
   ms,
   str,
 } from "./entry.ts";
+import { HEADLESS_INPUTS_C } from "./inputs-c.ts";
 
 export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // #1765 — 0 skips the branch step's pre-develop base-health probe (the
