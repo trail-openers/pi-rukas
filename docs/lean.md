@@ -491,13 +491,17 @@ green about a different commit — restated as a report. `ready` is the only thi
 that earns a handoff cap, and it does not earn it alone:
 **`awaiting-human-merge` means `ready` with every review lens judged**, so a
 `ready` PR whose NEWEST `review` step left a lane unjudged — stopped by its own
-clock, or ended by a throw that recorded no verdict at all — reports
+clock, or ended by a throw that recorded no verdict at all — or whose log holds no
+`review` step at all (the machine sends `publish` → `review`, so a review the
+deadline stopped short of dispatching judged nothing) reports
 **`review-incomplete`** with `reviewComplete: false` instead (same exit 10,
 different cap), and `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0` puts the single
 `awaiting-human-merge` cap back and omits the field. `reviewComplete` answers
 only from the step's own record, and is `true` only where that record says the
-review finished (`done`/`fixed`, or a stop that named no lane): a review that
-died before pass 1 read no lens, and the cap now says so. A draft, or a PR over
+review finished (a `done`/`fixed` step, or one whose stop named no lane): a
+review that died before pass 1 read no lens, an empty lane list on a step that
+threw is still a throw, and a log with no `review` step is a review that never
+ran — none of them report a finished review. A draft, or a PR over
 a gate that did not clear its head, gets no cap and rides `failure` alone. A
 build without the feature writes lean's own
 pre-#1920 document (`state`, `summary`, `steps`, `prUrl`) and has no `prState`:

@@ -37,6 +37,7 @@ import {
 } from "./lib/lean-result-fixture.ts";
 import {
   diedReviewStep,
+  erroredEmptyLaneReviewStep,
   erroredMidWaveReviewStep,
   judgedReviewStep,
   pushedFixReviewStep,
@@ -51,13 +52,19 @@ const { assert, state } = makeAssert();
 const drive = driveLean;
 const log = leanLog;
 
-// ── (1) a green run with a READY PR: publish said `draft: false`, verify green.
+/** A `ready` PR's log the way a real run leaves it: `machine.ts` sends `publish` → `review`,
+ * so a run whose PR is ready has a `review` step, and here it judged everything. A log
+ * without one is the `never-reviewed` arm below, not today's case. */
+const reviewed = (steps: Step[]): Step[] => withReviews(steps, [judgedReviewStep()]);
+
+// ── (1) a green run with a READY PR: publish said `draft: false`, verify green, and the
+// review that publish is always followed by judged every lens.
 // No `ci` step: lean has none built, so readiness must not require one.
 {
   const r = await drive(
     "handed-back",
     10,
-    log({ prUrl: URL, draft: false, dispatches: CHILDREN }),
+    reviewed(log({ prUrl: URL, draft: false, dispatches: CHILDREN })),
   );
   assert(r.violations.length === 0, `ready: output contract (${r.violations.join("; ")})`);
   assert(r.doc.schemaVersion === 5, `ready: schemaVersion 5 (got ${String(r.doc.schemaVersion)})`);
@@ -239,7 +246,7 @@ const log = leanLog;
 // no `ci` step built, so requiring a green one would read every real run as
 // `draft` — the rule rejects a DECIDED non-green `ci`, it never demands one.
 {
-  const r = await drive("handed-back", 10, log({ prUrl: URL, draft: false }));
+  const r = await drive("handed-back", 10, reviewed(log({ prUrl: URL, draft: false })));
   const i = r.issue ?? {};
   assert(
     i.prState === "ready",
@@ -308,12 +315,16 @@ const log = leanLog;
   // then answers in only TWO ways, and `error-silent`/`unanswered` are the second: a
   // `review` step that threw without recording a bound read no lens at all (only the
   // step-clock stop carries a bound on the error), and one that never answered is the same
-  // silence — neither may report a finished review.
+  // silence — neither may report a finished review. `never-reviewed` is the same silence one
+  // level up (the engine sends `publish` → `review`, so a review that was never dispatched
+  // is a review that judged nothing) and `error-empty-lanes` is its mirror: an empty list in
+  // a bound never outranks the step's own verdict that it threw.
   const arms: [string, Step[], "review-incomplete" | "awaiting-human-merge", boolean][] = [
     ["deadline-stopped", [unjudgedReviewStep()], "review-incomplete", false],
     ["pushed-fix", [pushedFixReviewStep()], "review-incomplete", false],
     ["error-stopped", [erroredMidWaveReviewStep()], "review-incomplete", false],
     ["error-silent", [diedReviewStep()], "review-incomplete", false],
+    ["error-empty-lanes", [erroredEmptyLaneReviewStep()], "review-incomplete", false],
     ["unanswered", [unansweredReviewStep()], "review-incomplete", false],
     ["superseded", [unjudgedReviewStep(0), judgedReviewStep(1)], "awaiting-human-merge", true],
     [
@@ -324,7 +335,7 @@ const log = leanLog;
     ],
     ["no-lane-named", [unjudgedReviewStep(0, [])], "awaiting-human-merge", true],
     ["clean-review", [judgedReviewStep()], "awaiting-human-merge", true],
-    ["never-reviewed", [], "awaiting-human-merge", true],
+    ["never-reviewed", [], "review-incomplete", false],
   ];
   for (const [label, reviews, cap, complete] of arms) {
     const r = await drive("handed-back", 10, withReviews(ready, reviews));
@@ -381,7 +392,7 @@ const log = leanLog;
 {
   const seen = new Set<string>();
   for (const [label, steps] of [
-    ["ready", log({ prUrl: URL, draft: false })],
+    ["ready", reviewed(log({ prUrl: URL, draft: false }))],
     ["draft", log({ prUrl: URL, draft: true })],
     ["none", log({})],
   ] as const) {

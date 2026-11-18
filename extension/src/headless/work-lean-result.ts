@@ -27,11 +27,11 @@
  * already in `FIXED_CAPS`, and only where each says what a lean run did:
  * `awaiting-human-merge` for a PR that publish opened READY, whose own gate
  * cleared AND whose newest `review` step accounted for every lens it was bought;
- * `review-incomplete` for that same ready PR whose review left a lane unjudged or
- * died without recording a verdict — the cap that keeps a host from merging a head
- * no lens read. Both exit 10, and `leanCap` owns the rule that tells them apart.
- * Every other cause rides `failure`, whose `kind` is an OPEN list built for this
- * (`FAILURE_KINDS`, and `test-headless-failure-usage.ts` asserts the published
+ * `review-incomplete` for that same ready PR whose review left a lane unjudged, died
+ * without recording a verdict, or was never dispatched at all — the cap that keeps a
+ * host from merging a head no lens read. Both exit 10, and `leanCap` owns the rule that
+ * tells them apart. Every other cause rides `failure`, whose `kind` is an OPEN list built
+ * for this (`FAILURE_KINDS`, and `test-headless-failure-usage.ts` asserts the published
  * list equals the live array).
  *
  * `lens-review-timeout` is deliberately NOT used, though it is the one published
@@ -250,11 +250,13 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
 
 /**
  * Did this run's review judge every lens it was bought? Answered OFF THE RECORD, and only
- * in the two ways the record actually answers:
+ * in the three ways the record actually answers:
  *
  *   - the NEWEST `review` step in log order carries the bound its stop wrote — `false` when
- *     lanes are in it, `true` when the list is empty (a `noteStop` with no lane named is a
- *     review that ran out of nothing to judge, not one that judged nothing);
+ *     lanes are in it, `true` only when the list is empty AND the step itself RETURNED
+ *     (`done`/`fixed`): a `noteStop` that named no lane is a review that ran out of nothing
+ *     to judge, but the list never outranks the step's own verdict, so an empty list on a
+ *     step that THREW is still a review that did not finish;
  *   - it carries no bound at all — `true` only for a step that RETURNED (`done`/`fixed`),
  *     which is the engine's own way of saying the pass finished. A step that ended on a
  *     THROW is not that: `errorOutcome` copies a bound onto the outcome only when the
@@ -263,7 +265,16 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
  *     stopped — reach here having judged nothing at all, and `true` about those would be
  *     the ticket's own failure mode in its worst arm. An absent outcome or a kind outside
  *     the vocabulary answers the same way, as `work-lean-gates.ts`'s reader already refuses
- *     to let an undecided review answer for itself.
+ *     to let an undecided review answer for itself;
+ *   - the log holds NO `review` step — `false`, whatever else the record says. Where the cap
+ *     is decided this is the arm a host could merge on: `machine.ts` sends `publish` →
+ *     `review`, so a log whose PR is `ready` and whose review step is absent is one the
+ *     engine never dispatched (the cycle deadline is checked before the NEXT state is
+ *     dispatched, and `stopForDeadline` stamps `handed-back` without it). That is the same
+ *     silence as an unanswered step, one level up, and it is the arm this cap exists to
+ *     refuse: a host that merged on `true` here would merge bytes no lens read.
+ *
+ * So `true` is never a default — it is only ever something a step's own record said.
  *
  * Log POSITION decides which step is asked, exactly as it does for `prState`'s gate
  * readings: an older stopped attempt that a later judged review superseded is not this
@@ -276,11 +287,12 @@ function reviewCompleteOf(steps: Step[]): boolean {
   for (let i = steps.length - 1; i >= 0; i--) {
     if (steps[i]?.state !== "review") continue;
     const outcome = steps[i]?.outcome;
+    const returned = outcome?.kind === "done" || outcome?.kind === "fixed";
     const lanes = outcome?.reviewBound?.unreviewedLanes;
-    if (lanes !== undefined) return lanes.length === 0;
-    return outcome?.kind === "done" || outcome?.kind === "fixed";
+    if (lanes !== undefined) return lanes.length === 0 && returned;
+    return returned;
   }
-  return true;
+  return false;
 }
 
 /**
@@ -291,7 +303,7 @@ function reviewCompleteOf(steps: Step[]): boolean {
  * apart by whether the run's own review read every lens, and telling a host to merge over
  * lanes that never ran is the failure this cap exists to prevent. `reviewComplete` is
  * `true` when the switch is off (today's single cap) or when the record says the newest
- * review step finished; `reviewCompleteOf` owns the two answers the record gives.
+ * review step finished; `reviewCompleteOf` owns the three answers the record gives.
  *
  * A PR URL is NOT enough for `awaiting-human-merge`: a run can push a branch,
  * open a PR, and then have its own gate call the work red, and that is a park,
@@ -420,7 +432,8 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
   }
   // Written on one switch, and attached whole or not at all, so the off arm leaves no key
   // holding `undefined` behind for a host that string-compares the file. `true` is a real
-  // answer, not a default: it says the newest `review` step left no lane unjudged.
+  // answer, not a default: it says a `review` step of this log reported finishing. The
+  // absence of any such step is `false`, never a pass.
   if (reviewSwitch) result.reviewComplete = reviewComplete;
   // `failedStep` is reported ONLY when the cap names it: `capStep()` is the
   // driver's own rule for a step-template cap, and lean's states are not

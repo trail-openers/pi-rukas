@@ -17,11 +17,20 @@
  * prints each constant's length and marker count, so the file cannot go vacuously green on
  * an empty constant.
  *
+ * Provenance, stated because it bounds what the off-arm check proves: these bytes are only
+ * evidence while they come from the pre-cap build — capture them by printing
+ * `JSON.stringify(leanResultDocument(run, 10).doc)` for `goldenLog()`'s run under the commit
+ * before the cap landed, and NEVER re-capture them from the current off arm, which would
+ * make the off-arm comparison self-referential. The independent guard against drift is the
+ * ON-arm check in `test-headless-work-lean-review-incomplete-cap-switch.ts`, which requires
+ * the whole on-arm document to equal the golden with the cap renamed, so any change to a
+ * field the switches do not own fails there with both lengths in the message.
+ *
  * The `*ReviewStep()` builders below are the review steps the CAP CASES share: each is one
  * answer the newest `review` step can give (stopped with lanes, pushed a wave, errored with
- * a bound, died without one, never answered, judged everything), and the result test's arms
- * table drives them through the projection so the cap and `reviewComplete` are pinned per
- * record rather than per prose.
+ * a bound, errored with a bound naming no lane, died without one, never answered, judged
+ * everything), and the result test's arms table drives them through the projection so the
+ * cap and `reviewComplete` are pinned per record rather than per prose.
  *
  * The log is built here from `lib/lean-result-fixture.ts` rather than borrowed from
  * `lib/lean-result-gates-fixture.ts`: this module is inside the `tsconfig.smoke-tests.json`
@@ -101,6 +110,27 @@ export function erroredMidWaveReviewStep(n = 0): Step {
       reviewBound: {
         wave: "full",
         unreviewedLanes: ["security lens", "performance lens"],
+        reason: "review STEP stopped: lens child errored",
+      },
+    },
+    n,
+  );
+}
+
+/** A `review` step that ERRORED with a bound whose lane list is EMPTY — a record no writer
+ * produces (`unjudgedLenses` always names at least one lane) but one the loader accepts, an
+ * empty array being a legal list. So it reaches the projection only from a state file a
+ * person edited, and the question is whether an empty list outranks the step's own verdict:
+ * a throw is not a finished review, whatever its bound says. */
+export function erroredEmptyLaneReviewStep(n = 0): Step {
+  return stepWith(
+    "review",
+    {
+      kind: "error",
+      message: "review child errored before naming a lane",
+      reviewBound: {
+        wave: "full",
+        unreviewedLanes: [],
         reason: "review STEP stopped: lens child errored",
       },
     },

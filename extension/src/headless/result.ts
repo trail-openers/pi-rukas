@@ -185,8 +185,10 @@ export interface IssueResult {
    * step left a lane unjudged OR never answered at all — a step that recorded a stop with
    * lanes in it, or one that ended on a throw without recording a bound (only the step's
    * own clock stop writes one, so a review that died before pass 1 read no lens and says
-   * nothing). `true` only where the record says the review finished: a returned `done`/
-   * `fixed` step, an empty lane list, or no `review` step in the log at all. Lean-only,
+   * nothing) — and `false` when the log holds no `review` step at all, since `publish` is
+   * followed by `review` and a ready PR with no such step is a review the engine never
+   * dispatched. `true` only where the record says the review finished: a returned `done`/
+   * `fixed` step, or one whose stop recorded an empty lane list. Lean-only,
    * like the two fields above, and written on one switch: absent on a build running
    * `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0` or one from before the field existed. Read
    * it beside `cap` — a `ready` PR with this `false` carries cap `review-incomplete`, not
