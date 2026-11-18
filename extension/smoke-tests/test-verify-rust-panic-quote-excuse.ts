@@ -18,7 +18,11 @@
  *     an ANSI colour) was neither vetoed nor gated: quotable AND excusing;
  *   - the excuse is decided PER FAILING TEST of the change's record, and the
  *     change side pays the name-correlated question the base side already paid —
- *     of the run, never of the clipped record.
+ *     of the run, never of the clipped record. The headers it enumerates come from
+ *     the run too (#2370): the same clip that hides a verdict line hides a second
+ *     panic's HEADER, and a header nothing asked about excuses nothing — while a
+ *     header the run reports `ok` is a `#[should_panic]` capture and is skipped,
+ *     never asked.
  *
  * Falsifiability: every refusal here is a `=== false` / `=== NO_SPECIFIC_ASSERTION`
  * claim whose mirror is asserted beside it (the same bytes with a genuinely
@@ -27,12 +31,17 @@
  * extractor's join arms redden on their own.
  */
 
+import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
 import {
   NO_SPECIFIC_ASSERTION,
   extractSpecificAssertion,
 } from "../src/work-driver-verify-assertion.ts";
 import { baselineExplainsChange } from "../src/work-driver-verify-baseline-compare.ts";
-import { makeAssert, rustPanicHeader } from "./lib/verify-failure-shapes-fixtures.ts";
+import {
+  CARGO_TARGET_SUMMARY,
+  makeAssert,
+  rustPanicHeader,
+} from "./lib/verify-failure-shapes-fixtures.ts";
 
 const { assert, failed } = makeAssert();
 
@@ -181,6 +190,86 @@ const { assert, failed } = makeAssert();
     baselineExplainsChange(verdict, [{ text: clippedRecord, raw: baseStream, timedOut: false }]) ===
       true,
     "clipped record: with the run threaded, the same flaky test excuses again",
+  );
+
+  // #2370 scoped pass — the clipping that hides a name's VERDICT LINE hides a
+  // second panic's HEADER with it, and a header the record never carried was never
+  // asked: the change-added regression rode in on the known flaky's excuse. Built
+  // through the repo's OWN windower at the 800 chars `formatExecError` publishes —
+  // a hand-written short string would not exercise the elision, and the arm would
+  // be theatre.
+  const cap = "cap::prints";
+  const regressionHeader = rustPanicHeader("new::regression", "src/r.rs:9:9");
+  const flakyHeader = rustPanicHeader(baseFlaky, "src/f.rs:1:1");
+  const captureHeader = rustPanicHeader(cap, "src/c.rs:3:3");
+  const changeLines: string[] = ["running 63 tests", "test new::regression ... FAILED"];
+  for (let i = 0; i < 30; i++) changeLines.push(`test suite::pass_${i} ... ok`);
+  changeLines.push(`test ${cap} ... ok`);
+  for (let i = 30; i < 61; i++) changeLines.push(`test suite::pass_${i} ... ok`);
+  changeLines.push(`test ${baseFlaky} ... FAILED`, "", "failures:", "");
+  // The regression panics ABOVE the known flaky, so the windower's last-failure
+  // anchor sits on the flaky's header and everything above it is the elision's.
+  changeLines.push(
+    "---- new::regression stdout ----",
+    regressionHeader,
+    "assertion failed: the check this change added",
+    "",
+  );
+  // A `#[should_panic]` captured print: the header's byte-identical shape, from a
+  // test libtest reports `ok` — the enumeration over the whole run has to see it.
+  changeLines.push(
+    `---- ${cap} stdout ----`,
+    captureHeader,
+    "captured print of a passing should_panic test",
+    "",
+  );
+  changeLines.push(
+    `---- ${baseFlaky} stdout ----`,
+    flakyHeader,
+    "assertion failed: already broken at base",
+  );
+  // The long diff beneath the flaky's own assertion is what pushes the anchored
+  // region past the bound, i.e. what makes the published record a CLIP.
+  for (let i = 0; i < 22; i++) {
+    changeLines.push(`  left \`line ${i}: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\``);
+  }
+  changeLines.push(
+    "",
+    "failures:",
+    `    ${baseFlaky}`,
+    "    new::regression",
+    "",
+    "test result: FAILED. 61 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s",
+    "",
+    CARGO_TARGET_SUMMARY,
+  );
+  const changeRun = changeLines.join("\n");
+  const published = (run: string): string =>
+    `verify command \`cargo test\` failed in /wt/one: ${extractAttributedTail(run, 800).tail}`;
+  const record = published(changeRun);
+  assert(
+    record.includes(flakyHeader) &&
+      !record.includes(regressionHeader) &&
+      record.includes("\n...\n"),
+    `clipped enumeration fixture: the published record IS the windower's 800-char clip — flaky header kept, regression header elided, marker present (${record.length} chars)`,
+  );
+  assert(
+    baselineExplainsChange(verdict, [{ text: record, raw: changeRun, timedOut: false }]) === false,
+    "clipped enumeration: a change-added panic the record's elision hid does not excuse — the headers come from the run the verdict question already trusts",
+  );
+  // The mirror arm: the SAME flaky test, FAILED at base and again in this run, with
+  // the `should_panic` capture still in the run it is enumerated from. It excuses
+  // only because a header whose own test the change run reports `ok` is skipped
+  // (the base prints no verdict line for a test that passes there) — delete that
+  // skip and this arm reddens on the capture.
+  const flakyRun = changeLines
+    .filter((l) => !l.includes("new::regression") && !l.includes("src/r.rs:9:9"))
+    .join("\n");
+  assert(
+    baselineExplainsChange(verdict, [
+      { text: published(flakyRun), raw: flakyRun, timedOut: false },
+    ]) === true,
+    "clipped enumeration control: the genuinely flaky test still excuses with a should_panic capture in the run — the ok-skip is load-bearing, not decoration",
   );
 }
 

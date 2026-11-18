@@ -281,25 +281,37 @@ export function panicCanExcuseChange(stream: string, assertion: string): boolean
  * introduced below it. The base side pays a real question
  * ({@link panicCanExcuseChange} demands the base run's own per-test `FAILED` line)
  * while the change side paid nothing but containment over its own UNTRUSTED text.
- * So this asks the SAME predicate of BOTH runs, for EVERY header the record
- * carries and not merely the first — a record may be one flattened line:
+ * So this asks the SAME predicate of BOTH runs, for EVERY header the enumerated
+ * text carries and not merely the first — that text may be one flattened line:
  *
  *   - the BASE run must have reported that test as `FAILED`, or the panic is
  *     evidence about a failure only the change has;
  *   - the CHANGE's own run must report that test as `FAILED` too, or nothing in
  *     it says the panic is a failure of this run rather than text the record
- *     quoted.
+ *     quoted;
+ *   - a header whose own test the CHANGE run reports `ok` is that test's
+ *     `#[should_panic]` captured print and is SKIPPED, never asked: the base
+ *     prints no verdict line for a test that passes there, so an asked capture
+ *     answers "not a base failure" and refuses an excuse the flaky test earned.
+ *     The skip is what makes the enumeration over the whole run safe.
  *
- * `record` is the text being excused (where containment is asked) and
- * `changeStream` the run's OWN output, which is the only text that can answer the
- * second question: a per-worktree record is a clipped, formatted tail whose
- * elision sits above the name's verdict line, and asking a clipped record to
- * speak for its own stream judges bytes the clipping edited — the defect the
- * record publishers already thread the raw run against.
+ * `record` is the published text being excused and `changeStream` the run's OWN
+ * output, which is the only text that can answer the second question: a
+ * per-worktree record is a clipped, formatted tail whose elision sits above the
+ * name's verdict line, and asking a clipped record to speak for its own stream
+ * judges bytes the clipping edited — the defect the record publishers already
+ * thread the raw run against. The headers are therefore enumerated over BOTH: the
+ * record's, because a header it QUOTES that the run never printed is the
+ * untrusted-text case this predicate exists for, and the run's, because the
+ * identical clipping that hides the verdict line also hides a second panic's
+ * HEADER — a header the clip dropped was never asked, so the change-added
+ * regression read as no failure at all and the known flaky's excuse covered it.
+ * Enumerating the whole run is what makes a passing test's captured print have to
+ * be skipped below rather than left to the clip to hide.
  *
  * The direction is the loud one, and it is the accepted cost: a change run that
- * reports no verdict for a name its record panics about loses the excuse and the
- * cycle parks as an ordinary `verify-failed:develop`, which is one round.
+ * prints a panic header for a name it reports no verdict for loses the excuse and
+ * the cycle parks as an ordinary `verify-failed:develop`, which is one round.
  */
 export function changePanicsAreBaseFailures(
   record: string,
@@ -307,12 +319,21 @@ export function changePanicsAreBaseFailures(
   baseStream: string,
 ): boolean {
   const seen = new Set<string>();
-  for (const match of record.matchAll(RUST_PANIC_GLOBAL_RE)) {
-    const header = match[0];
-    if (seen.has(header)) continue;
-    seen.add(header);
-    if (!panicCanExcuseChange(baseStream, header)) return false;
-    if (!panicCanExcuseChange(changeStream, header)) return false;
+  // EVERY header either text raises: the record's, because a header it QUOTES that
+  // the run never printed is the untrusted-text case this predicate exists for,
+  // and the run's, because the record's clip drops headers entirely.
+  for (const text of [record, changeStream]) {
+    for (const match of text.matchAll(RUST_PANIC_GLOBAL_RE)) {
+      const header = match[0];
+      if (seen.has(header)) continue;
+      seen.add(header);
+      // The rule above: this run reports the header's own test `ok`, so the header
+      // is that test's `#[should_panic]` captured print and asks no question.
+      const name = rustPanicTestName(header);
+      if (name !== undefined && perTestVerdictFor(changeStream, name) === "ok") continue;
+      if (!panicCanExcuseChange(baseStream, header)) return false;
+      if (!panicCanExcuseChange(changeStream, header)) return false;
+    }
   }
   return true;
 }

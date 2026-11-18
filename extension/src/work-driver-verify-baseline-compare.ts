@@ -67,12 +67,14 @@ export interface ChangeFailure {
   text: string;
   timedOut: boolean;
   /**
-   * #2341 — the run's OWN unclipped output this record's tail was cut from.
-   * The excuse question the change side pays needs it: a per-worktree record is
-   * a clipped, formatted tail whose elision sits ABOVE the failing name's
-   * verdict line, so the record cannot say whether its own run failed that test
-   * (the same reason the record publishers thread the raw run to the
-   * `#[should_panic]` veto). Absent — the reader then asks the text it has.
+   * #2341 — the run's OWN unclipped output this record's tail was cut from. Both
+   * questions the change side pays need it, and neither can be answered of the
+   * record: a per-worktree record is a clipped, formatted tail whose elision sits
+   * ABOVE the failing name's verdict line, so the record cannot say whether its own
+   * run failed that test, and the same clipping drops a second panic's HEADER
+   * outright — an elided header is a failing test the excuse never asks (the same
+   * reason the record publishers thread the raw run to the `#[should_panic]` veto).
+   * Absent — the reader then asks the text it has.
    */
   raw?: string;
 }
@@ -89,12 +91,18 @@ export interface ChangeFailure {
  * consolidated failure output, so `sharesAssertion` — substring containment —
  * matched the base's assertion once and excused every OTHER failure inside that
  * blob, a second Rust panic the change introduced below it included. Both runs
- * now answer the same name-correlated question for every panic header the record
+ * now answer the same name-correlated question for every panic header the RUN
  * carries ({@link changePanicsAreBaseFailures}): the base run must have reported
- * that test `FAILED`, and the change's own run must report it `FAILED` too. A
- * change-added regression is therefore refused; the accepted, disclosed cost is
- * the loud direction — a run that reports no verdict for a name its record
- * panics about loses the excuse and parks as an ordinary `verify-failed:develop`.
+ * that test `FAILED`, and the change's own run must report it `FAILED` too. The
+ * headers are enumerated over the RUN as well as the record, because the elision
+ * that hides a name's verdict line hides a second panic's header with it: a header
+ * the clip dropped is a failing test that gets asked nothing, and the known flaky's
+ * excuse covered the regression. The record stays in the enumeration — a header it
+ * quotes that the run never printed is the untrusted-text case the question exists
+ * for. A change-added regression is therefore refused; the accepted, disclosed cost
+ * is the loud direction — a run that reports no verdict for a name it prints a
+ * panic header for loses the excuse and parks as an ordinary
+ * `verify-failed:develop`.
  */
 export function baselineExplainsChange(
   verdict: RedBaselineVerdict,
@@ -108,6 +116,10 @@ export function baselineExplainsChange(
     (f) =>
       !f.timedOut &&
       sharesAssertion(f.text, assertion) &&
+      // The headers are enumerated over BOTH texts inside the predicate: the run's
+      // own, because a clipped record cannot report a header its elision cut away,
+      // and the record's, because a header it QUOTES that the run never printed is
+      // the untrusted-text case this question exists for.
       changePanicsAreBaseFailures(f.text, f.raw ?? f.text, rawStream),
   );
 }
