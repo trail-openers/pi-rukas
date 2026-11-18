@@ -239,7 +239,11 @@ export async function tempAllocatedBytes(
       if (entry.isFile()) bytes += await allocatedBytes(target, stat);
     }
     if (stopped !== undefined) return { bytes, bound: stopped };
-    if (Date.now() - started > maxMs) return { bytes, bound: `duration bound ${maxMs}ms` };
+    // `>=`, not `>`: a budget the walk has exactly spent is spent, and a zero
+    // budget has to stop somewhere. With `>` the first check compares the elapsed
+    // 0 against 0, so on a warm filesystem a zero budget meant no budget at all
+    // and the caller got a completed total with nothing naming it as unbounded.
+    if (Date.now() - started >= maxMs) return { bytes, bound: `duration bound ${maxMs}ms` };
   }
   return { bytes, bound: undefined };
 }
