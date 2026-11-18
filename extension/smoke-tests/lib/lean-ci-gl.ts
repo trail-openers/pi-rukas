@@ -18,13 +18,16 @@ import { join } from "node:path";
 import { detectForge } from "../../src/forge-detect.ts";
 import type { Forge, ForgeExecFn } from "../../src/forge-types.ts";
 import { createForge } from "../../src/forge.ts";
-import { GL_MR, GL_MR_CHECKING, glDetection } from "../forge-fixtures.ts";
+import { GL_MR, glDetection } from "../forge-fixtures.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 
 /** What a GitLab case asks the forge to answer. */
 export interface GlCase {
-  /** The MR rows the readiness reads compose from, one per poll. */
-  mr?: Record<string, unknown>;
+  /** The MR rows the readiness reads compose from, one per poll. A function is
+   *  given the head this case's repo really holds, so a fixture helper can build
+   *  a row AT that commit rather than carrying a constant one the repo never
+   *  held (see the note above `GL_MR_PIPELINE`). */
+  mr?: Record<string, unknown> | ((head: string) => Record<string, unknown>);
   mrAtReads?: (head: string) => unknown[];
   /** The raw job rows, in GitLab's snake_case `status` shape. Read-only and
    *  serialized verbatim, never mutated — so a suite's `as const` job fixtures
@@ -131,6 +134,12 @@ export function writeSelfHosted(repoRoot: string, host: string): void {
   });
 }
 
+/** The MR row's own `diff_refs`, so stamping a head does not drop its base/start shas. */
+function headRefsOf(mr: Record<string, unknown>): Record<string, unknown> {
+  const refs = mr.diff_refs;
+  return refs !== null && typeof refs === "object" ? (refs as Record<string, unknown>) : {};
+}
+
 /** The MR row the Nth readiness read composes from. */
 function glMrRow(c: GlCase, head: string, n: number): Record<string, unknown> {
   if (c.mrAtReads !== undefined) {
@@ -138,7 +147,13 @@ function glMrRow(c: GlCase, head: string, n: number): Record<string, unknown> {
     const picked = seq[Math.min(n, seq.length - 1)];
     if (picked !== undefined) return withRowHead(picked as Record<string, unknown>);
   }
-  if (c.mr !== undefined) return withRowHead(c.mr);
+  const own = typeof c.mr === "function" ? c.mr(head) : c.mr;
+  if (own !== undefined)
+    return withRowHead(
+      c.mrHead === undefined
+        ? own
+        : { ...own, diff_refs: { ...headRefsOf(own), head_sha: c.mrHead } },
+    );
   // A case that says its MR names no pipeline gets one: the step must then read
   // neither the pipelines list nor any jobs page, and a default row that named a
   // pipeline would make that claim untestable.
@@ -157,10 +172,33 @@ function glMrRow(c: GlCase, head: string, n: number): Record<string, unknown> {
 
 /**
  * The MR row of a `checking` poll: the retryable status, everything else clean,
- * at the head the case's repo holds.
+ * at the head the case's repo holds. `status` overrides which retryable value the
+ * forge reports — the poll must treat each of them the way it treats `checking`.
  */
-export function glMrChecking(head: string): Record<string, unknown> {
-  return withRowHead({ ...GL_MR_CHECKING, diff_refs: { head_sha: head } });
+export function glMrChecking(head: string, status = "checking"): Record<string, unknown> {
+  return withRowHead({
+    ...GL_MR,
+    detailed_merge_status: status,
+    has_conflicts: false,
+    blocking_discussions_resolved: true,
+    approvals_left: 0,
+    diff_refs: { ...GL_MR.diff_refs, head_sha: head },
+  });
+}
+
+/**
+ * The MR row of a MR GitLab itself calls mergeable — the value a ready MR
+ * actually answers with, and the one the readiness table once failed to know.
+ */
+export function glMrMergeable(head?: string): Record<string, unknown> {
+  return withRowHead({
+    ...GL_MR,
+    detailed_merge_status: "mergeable",
+    // The head is stamped with the case's own head — the recorder passes it in.
+    // A constant sha here is a commit the case's repo never held, and the step's
+    // head pin would (correctly) refuse to grade a pipeline about it.
+    ...(head === undefined ? {} : { diff_refs: { ...GL_MR.diff_refs, head_sha: head } }),
+  });
 }
 
 /**

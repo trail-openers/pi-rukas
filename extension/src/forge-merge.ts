@@ -11,15 +11,28 @@
  * `detailed_merge_status` (a finite enum), `has_conflicts`,
  * `blocking_discussions_resolved`, and `approvals_left`:
  *
- *   - `can_be_merged`, `succeeding`        → CLEAN
- *   - `has_conflicts`, `blocked_by_*`      → DIRTY
- *   - `checking`                           → UNKNOWN (retryable, capped)
- *   - anything else                         → FAIL CLOSED (`ok: false`)
+ *   - `mergeable`                          → CLEAN
+ *   - `checking`, `unchecked`, `preparing`,
+ *     `approvals_syncing`, `ci_still_running` → UNKNOWN (retryable, capped)
+ *   - every other documented value          → DIRTY, naming the value
+ *   - anything outside the documented set   → FAIL CLOSED (`ok: false`)
  *
- * The ellipsis in the epic's mapping table is resolved here, with the
- * decision recorded per value (see the table below). `checking` is the
- * only retryable state; the retry loop lives in `forge.ts:watchMergeReadiness`
- * with a 5–10s cap, because the polling cadence is the caller's concern.
+ * The set is GitLab's own documented enum, taken as a whole. An earlier table
+ * was written in GitHub's vocabulary (`can_be_merged`, `blocked_by_*`) and
+ * matched nothing the API emits, which is how a ready MR came to fail closed.
+ * The retryable group is what "the forge has not finished deciding" means on
+ * GitLab, and it is the readiness value — not any one status word — that every
+ * caller keys its retry on. The cadence is the caller's own concern: lean's
+ * `ci` step polls on its `ci` budget (`lean/ci-tier.ts:checksRedReason`), and
+ * each caller bounds its own wait.
+ *
+ * Four of the DIRTY values name a cause a cross-check also reads — `conflict`,
+ * `discussions_not_resolved`, `draft_status`, `not_open` — and the two readings
+ * of such a row are answered differently, on purpose (see
+ * {@link composeGlReadiness}): a row whose field reports the SAME block composes
+ * DIRTY naming the value, while a field that reports a block outright (an
+ * unresolved discussion, a non-open state) is refused naming the FIELD. A
+ * fixture for one of these values therefore has to say which reading it is.
  *
  * FAIL CLOSED: any unreadable field, API error, or value outside the table
  * yields `{ ok: false }`. A readiness of UNKNOWN is NOT a failure — it is a
@@ -34,32 +47,63 @@ import { ForgeFieldError, mapGhChecks, mapGhPr } from "./forge-mapping.ts";
 import type { MergeReadiness, MergeReadinessResult, NormalizedCICheck } from "./forge-types.ts";
 
 /**
- * The `detailed_merge_status` → readiness mapping. Every GitLab value in
- * the documented set has an explicit entry; unmapped values fail closed
- * below (they would only appear after a GitLab server-side change, in
- * which case a guess is worse than a stop).
+ * The `detailed_merge_status` → readiness mapping. Exported for the suite that
+ * pins it value-by-value: a table nobody can enumerate is a table nobody can
+ * prove complete, and an incomplete table is the defect this one replaced.
+ *
+ * The keys are exactly the values GitLab documents for that field, so every
+ * reply the API can send has a verdict and none of them is a guess.
+ *
+ * The three groups:
+ *   - `mergeable` — the forge's own "yes", and the only CLEAN it can say;
+ *   - the five UNKNOWN values — the forge is still deciding (`checking`,
+ *     `unchecked`, `preparing`, `approvals_syncing`, `ci_still_running`). These
+ *     are retryable: a status that resolves on its own says nothing about this
+ *     MR, and a caller that reddens one spends a fix round on code nobody
+ *     changed. Every one of them is waited by every caller — the retry keys on
+ *     the readiness value, so widening this set cannot leave a value stranded;
+ *   - every other documented value — DIRTY, with the value named in the detail.
+ *     These are decisions the project's own rules made (approvals, rebase,
+ *     draft, security policy, title), and naming which one is the actionable
+ *     part of the handoff.
+ *
+ * Values outside the documented set fail closed below: they would only appear
+ * after a GitLab server-side change, and a guess about a merge is worse than a
+ * stop. Note that four of the DIRTY values name a field the cross-checks below
+ * also read (`conflict`/`has_conflicts`, `discussions_not_resolved`,
+ * `not_open`/`state`): such a reply is a REDUNDANT agreement and composes
+ * DIRTY, while a reply whose status and cross-check field DISAGREE is an
+ * inconsistent server answer and throws — see {@link composeGlReadiness}.
  */
-const GL_STATUS_TO_READINESS: Record<string, MergeReadiness> = {
-  can_be_merged: "CLEAN",
-  succeeding: "CLEAN",
-  has_conflicts: "DIRTY",
-  blocked_by_pipeline_status: "DIRTY",
-  blocked_by_discussions: "DIRTY",
-  blocked_by_approval_rules: "DIRTY",
-  blocked_by_missing_required_status_check: "DIRTY",
-  blocked_by_required_status_check: "DIRTY",
-  blocked_by_outdated_commit: "DIRTY",
-  blocked_by_single_approver_rule: "DIRTY",
-  blocked_by_two_factor_requirements: "DIRTY",
-  blocked_by_two_factor_requirements_for_commit: "DIRTY",
-  blocked_by_two_factor_requirements_for_merge_request: "DIRTY",
-  blocked_by_two_factor_requirements_for_merge_request_commit: "DIRTY",
-  blocked_by_two_factor_requirements_for_merge_request_commit_push: "DIRTY",
-  blocked_by_two_factor_requirements_for_merge_request_commit_push_and_pipeline: "DIRTY",
-  blocked_by_two_factor_requirements_for_merge_request_commit_push_and_pipeline_status: "DIRTY",
-  blocked_by_two_factor_requirements_for_merge_request_commit_push_and_pipeline_status_and_approval:
-    "DIRTY",
+export const GL_STATUS_TO_READINESS: Record<string, MergeReadiness> = {
+  // The forge's own "yes".
+  mergeable: "CLEAN",
+  // Still deciding: retried on the caller's bound, never graded red.
   checking: "UNKNOWN",
+  unchecked: "UNKNOWN",
+  preparing: "UNKNOWN",
+  approvals_syncing: "UNKNOWN",
+  ci_still_running: "UNKNOWN",
+  // The forge has decided and the answer is no — each names the rule of the
+  // project's that blocked it, which is what the operator reads in the handoff.
+  ci_must_pass: "DIRTY",
+  commits_status: "DIRTY",
+  conflict: "DIRTY",
+  discussions_not_resolved: "DIRTY",
+  draft_status: "DIRTY",
+  jira_association_missing: "DIRTY",
+  locked_lfs_files: "DIRTY",
+  locked_paths: "DIRTY",
+  merge_request_blocked: "DIRTY",
+  merge_time: "DIRTY",
+  need_rebase: "DIRTY",
+  not_approved: "DIRTY",
+  not_open: "DIRTY",
+  requested_changes: "DIRTY",
+  security_policy_pipeline_check: "DIRTY",
+  security_policy_violations: "DIRTY",
+  status_checks_must_pass: "DIRTY",
+  title_regex: "DIRTY",
 };
 
 export interface GlMrFields {
@@ -76,6 +120,30 @@ export interface GlMrFields {
  * Pure and total — the CLI is the caller's concern (forge.ts passes the
  * `glab api /projects/:id/merge_requests/:iid` row). Every input must be
  * present AND typed; a missing field is a failure, not an assumption.
+ *
+ * The status decides (`GL_STATUS_TO_READINESS`) and the three cross-checks can
+ * only ever make the answer more conservative or refuse it outright: a CLEAN
+ * that reports conflicts or outstanding approvals is a server contradicting
+ * itself, and unresolved discussions or a non-`opened` state block the merge
+ * whatever the status claims. A reply that AGREES with its own fields composes
+ * The four values whose cause a cross-check also reads — `conflict`,
+ * `discussions_not_resolved`, `draft_status`, `not_open` — are the ones a test
+ * must state carefully, because the same value arrives in two shapes and the two
+ * are answered differently, on purpose:
+ *
+ *   - a blocked status whose cross-check field reports no such block (`conflict`
+ *     with `has_conflicts: false`, `not_open` on a row still reporting
+ *     `state: opened`) composes DIRTY and names the status. The forge said this
+ *     MR cannot merge, and a cross-check is not allowed to overrule that and
+ *     grant a merge the status refused;
+ *   - a row whose field reports a block of its own is refused outright, naming
+ *     the FIELD rather than the status, because the field is the thing the reader
+ *     has to go and change. That is what GitLab sends for
+ *     `discussions_not_resolved` (`blocking_discussions_resolved: false`) and for
+ *     `not_open` (`state: closed`), and it is also how a `mergeable` that reports
+ *     conflicts or outstanding approvals is stopped — the one disagreement that
+ *     would otherwise be a false CLEAN, which is why it throws instead of
+ *     composing.
  */
 export function composeGlReadiness(mr: GlMrFields): { readiness: MergeReadiness; detail: string } {
   const status = mr.detailed_merge_status;
@@ -90,11 +158,15 @@ export function composeGlReadiness(mr: GlMrFields): { readiness: MergeReadiness;
 
   const parts: string[] = [`detailed_merge_status=${status}`];
 
-  // Cross-checks. Each is independent of the primary mapping: has_conflicts
-  // must agree with a DIRTY/CLEAN verdict, unresolved discussions must force
-  // DIRTY, and a pending approval count must force DIRTY. Any disagreement
-  // fails closed rather than picking a side — the fields come from the
-  // same API call, so disagreement means an inconsistent server response.
+  // Cross-checks, each independent of the primary mapping. They can only ever
+  // make the answer more conservative or refuse it, never grant a merge the
+  // status did not: a CLEAN that reports conflicts or outstanding approvals is
+  // the server contradicting itself, and an unresolved discussion or a non-open
+  // state blocks the merge whatever the status claims. Each refusal names the
+  // FIELD rather than the status, because the field is the thing the reader has
+  // to go and change. (The reverse — a blocked status on a row whose field
+  // reports no such block — is NOT a refusal: the forge said the MR cannot
+  // merge, and the cross-checks do not get to overrule that and green-light it.)
   if (typeof mr.has_conflicts === "boolean") {
     if (mr.has_conflicts && readiness === "CLEAN") {
       throw new Error(`forge mapping: has_conflicts=true contradicts ${status}`);

@@ -127,13 +127,13 @@ export interface MergeGateEnv {
   unsetForgeEnv?: boolean;
   /**
    * #2226 — the MR row the gatherer's GitLab arm reads, verbatim JSON. Absent,
-   * the stub answers a green MR (`can_be_merged`, no conflicts, discussions
+   * the stub answers a green MR (`mergeable`, no conflicts, discussions
    * resolved, no approvals outstanding) carrying the head the guard verified.
    */
   glMr?: string;
   /**
    * #2226 — the `detailed_merge_status` of that row, for an arm that varies the
-   * readiness rather than replacing the whole payload (`can_be_merged` when
+   * readiness rather than replacing the whole payload (`mergeable` when
    * unset).
    */
   glMrStatus?: string;

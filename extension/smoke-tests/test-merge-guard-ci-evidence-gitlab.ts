@@ -236,7 +236,7 @@ for (const status of ["skipped", "manual"]) {
 }
 
 // -------------------------------------------------- readiness is the verdict
-for (const status of ["has_conflicts", "checking"]) {
+for (const status of ["conflict", "checking"]) {
   const r = await hookDecision(MR_COMMAND, GOOD_ENTRIES, {
     target: GL_TARGET,
     glMrStatus: status,
@@ -245,7 +245,7 @@ for (const status of ["has_conflicts", "checking"]) {
     glJobs: jobs(job("build", "success")),
   });
   assert(r.block === true, `#2226: detailed_merge_status ${status} is refused (${r.reason})`);
-  const expected = status === "has_conflicts" ? "DIRTY" : "UNKNOWN";
+  const expected = status === "conflict" ? "DIRTY" : "UNKNOWN";
   assert(
     new RegExp(expected).test(r.reason ?? ""),
     `…naming the composed readiness ${expected} in the refusal (${r.reason})`,
@@ -264,7 +264,7 @@ for (const [label, mr] of [
     JSON.stringify({
       iid: 12,
       state: "opened",
-      detailed_merge_status: "can_be_merged",
+      detailed_merge_status: "mergeable",
       has_conflicts: false,
       blocking_discussions_resolved: true,
       approvals_left: 0,
@@ -350,7 +350,7 @@ for (const [label, mr] of [
     glMr: JSON.stringify({
       iid: 12,
       state: "opened",
-      detailed_merge_status: "can_be_merged",
+      detailed_merge_status: "mergeable",
       has_conflicts: false,
       blocking_discussions_resolved: true,
       approvals_left: 0,

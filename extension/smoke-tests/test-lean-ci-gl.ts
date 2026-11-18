@@ -27,6 +27,11 @@
  *        command issued: the GitHub path must not survive a failed detection by
  *        silently falling back to `gh`;
  *   (g4) readiness `checking` (UNKNOWN) -> waited like a pending row, then green;
+ *   (g4b) the value a real GitLab answers with for a ready MR, `mergeable`, -> the
+ *        step gets past `ci` GREEN with a passing pipeline, and every other UNKNOWN
+ *        value (`unchecked`, `preparing`, `approvals_syncing`, `ci_still_running`) is
+ *        waited the same way `checking` is — the composition table once carried only
+ *        names GitLab does not emit, so a green MR crashed the readiness read here;
  *   (g5) a failed job -> red naming it, tier never run;
  *   (g6) `skipped`/`manual` never read as green; `running` is waited and the
  *        expired wait hands back;
@@ -51,7 +56,13 @@
  */
 
 import { VerifyInfraError } from "../src/lean/verify-types.ts";
-import { cleanUp, glMrChecking, glMrHeadless, glMrShortHead, run } from "./lib/lean-ci-recorder.ts";
+import {
+  cleanUp,
+  glMrChecking,
+  glMrHeadless,
+  glMrShortHead,
+  run,
+} from "./lib/lean-ci-recorder.ts";
 
 /** The fixture MR's pipeline id, whose rows the recorder answers with. */
 const MR_PIPELINE_ID = 5001;
@@ -157,6 +168,16 @@ const jobsOf = (n: number, failAt = -1): Record<string, unknown>[] =>
     !r.cmds.some((c) => c.startsWith("gh ")),
     `(g4) and the whole wait stayed on glab (${JSON.stringify(r.cmds.filter((c) => c.startsWith("gh ")))})`,
   );
+}
+
+// ── (g4b) `mergeable` reaches the land state; every UNKNOWN value is waited ──
+// The readiness cases — the ready MR's value end to end, the retryable group on
+// the poll's bound, and a red row outranking an UNKNOWN readiness — live in
+// `lib/lean-ci-gl-readiness.ts` (§12 size cap), imported rather than run as its
+// own entry point so their failures join this suite's exit code.
+{
+  const readiness = await import("./lib/lean-ci-gl-readiness.ts");
+  if (await readiness.runReadinessCases(assert, run, glMrChecking, job)) exit = 1;
 }
 
 // ── (g5) a failed job -> red, tier never run ─────────────────────────────

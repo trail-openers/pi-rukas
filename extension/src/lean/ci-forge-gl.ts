@@ -41,6 +41,13 @@ export interface GlRead {
   prHead: string | undefined;
   /** The pipeline's job rows, or `undefined` when the reply was not a list. */
   rows: NormalizedCICheck[] | undefined;
+  /** The composition's words for its own verdict — every field it read, as the
+   *  composition spelled them. Carried so a refusal or an expired wait can name
+   *  what the forge said, rather than only the readiness it composed. */
+  detail: string | undefined;
+  /** The `detailed_merge_status` the composition read, verbatim — the value an
+   *  operator looks up. Undefined when the read gave none. */
+  status: string | undefined;
 }
 
 /**
@@ -53,9 +60,11 @@ export type GlForge = {
     ok: boolean;
     readiness?: MergeReadiness;
     reason?: string;
+    detail?: string;
   }>;
-  /** The MR reply the most recent `mergeReadiness` consumed, or `undefined` when this adapter never read
-   *  that number. */
+  /** The raw MR reply the most recent `mergeReadiness` consumed — the only place
+   *  the `detailed_merge_status` the composition read still exists — or
+   *  `undefined` when this adapter never read that number. */
   lastMrRow(number: number): unknown;
   /**
    * The GitLab job rows of one pipeline plus the commit the pipeline row itself reported — the head pin's
@@ -88,6 +97,18 @@ function headFromMr(mr: unknown): string | undefined {
     );
   }
   return sha;
+}
+
+/**
+ * The `detailed_merge_status` the readiness was composed from, read out of the
+ * SAME MR reply. The normalized verdict carries only the word it mapped that
+ * value to, so a refusal that wants to quote the forge's own word — the one an
+ * operator can look up — can only get it from here. `undefined` when the reply
+ * named none, which is the case the composition itself already refuses.
+ */
+function statusFromMr(mr: Record<string, unknown> | undefined): string | undefined {
+  const v = mr?.detailed_merge_status;
+  return typeof v === "string" && v !== "" ? v : undefined;
 }
 
 /**
@@ -161,16 +182,31 @@ export async function glRead(forge: GlForge, number: number): Promise<GlRead> {
     );
   const mr = forge.lastMrRow(number) as Record<string, unknown> | undefined;
   const head = headFromMr(mr);
+  // The value the composition read, taken from the reply it read it from — one
+  // moment, so a refusal cannot quote a status the verdict was not made of.
+  const status = statusFromMr(mr);
   const pipeline = mrPipelineRow(mr);
   // No head or no pipeline named means nothing to pin the rows to: the step reads NO jobs and `ci.ts`
   // refuses the absence as green.
   if (pipeline === undefined || typeof pipeline.id !== "number" || head === undefined)
-    return { mergeStateStatus: readiness.readiness, prHead: head, rows: [] };
+    return {
+      mergeStateStatus: readiness.readiness,
+      prHead: head,
+      rows: [],
+      detail: readiness.detail,
+      status,
+    };
   const jobs = await pipelineJobs(forge, pipeline.id);
   // The commit the pipeline says it built is asked for FIRST: rows nobody can attribute to this head are
   // not graded.
   if (jobs.pipelineSha === undefined)
-    return { mergeStateStatus: readiness.readiness, prHead: head, rows: [] };
+    return {
+      mergeStateStatus: readiness.readiness,
+      prHead: head,
+      rows: [],
+      detail: readiness.detail,
+      status,
+    };
   if (jobs.pipelineSha !== head)
     throw new VerifyInfraError(
       `the MR pipeline ${String(pipeline.id)} built ${jobs.pipelineSha.slice(0, 12)}, not the head ${head.slice(0, 12)} the readiness was read at: refusing to grade a pipeline about another commit`,
@@ -181,7 +217,13 @@ export async function glRead(forge: GlForge, number: number): Promise<GlRead> {
     throw new VerifyInfraError(
       `the MR pipeline ${String(pipeline.id)} has more jobs than one page of ${String(GL_JOBS_PAGE)}: its job list is truncated at the page boundary, so ci cannot read every job it ran and refuses to grade what it did not see`,
     );
-  return { mergeStateStatus: readiness.readiness, prHead: head, rows: jobs.rows };
+  return {
+    mergeStateStatus: readiness.readiness,
+    prHead: head,
+    rows: jobs.rows,
+    detail: readiness.detail,
+    status,
+  };
 }
 
 /** What to do with a row that is not a pass. `undefined` means the row passed. */

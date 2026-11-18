@@ -97,7 +97,8 @@ export interface CiCase {
   // `as const` job rows of a test case and a `Record<string, unknown>[]`
   // declaration do not agree, and only a typecheck of both files sees it.
   /** The MR row the recorder answers, in place of `GL_MR` (a poll passes a
-   *  sequence through `mrAtReads` instead). `diff_refs` is left as given here. */
+   *  sequence through `mrAtReads` instead). A function is given the head this
+   *  case's repo really holds. `diff_refs` is otherwise left exactly as given. */
   mr?: GlCase["mr"];
   /** The job rows the pipeline read answers (snake_case `status`, as GitLab
    *  sends them). Defaults to the two-success `GL_JOBS` fixture. */
@@ -248,6 +249,7 @@ function at<T>(seq: T[], n: number): T {
 export {
   glMrChecking,
   glMrHeadless,
+  glMrMergeable,
   glMrShortHead,
   SELF_HOST,
   glPrUrl,

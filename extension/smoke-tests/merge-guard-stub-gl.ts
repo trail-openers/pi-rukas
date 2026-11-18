@@ -43,7 +43,7 @@ function glMrRow(prNumber: number, oid: string, status: string | undefined) {
 	return {
 		iid: prNumber,
 		state: "opened",
-		detailed_merge_status: status ?? "can_be_merged",
+		detailed_merge_status: status ?? "mergeable",
 		has_conflicts: false,
 		blocking_discussions_resolved: true,
 		approvals_left: 0,

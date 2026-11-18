@@ -281,7 +281,7 @@ async function drive(
 		[mergeEvidenceGlMrCmd(42)]: JSON.stringify({
 			iid: 42,
 			state: "opened",
-			detailed_merge_status: "can_be_merged",
+			detailed_merge_status: "mergeable",
 			has_conflicts: false,
 			blocking_discussions_resolved: true,
 			approvals_left: 0,
