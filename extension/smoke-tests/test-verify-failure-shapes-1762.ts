@@ -56,7 +56,13 @@ const SHAPES: Array<[string, string, boolean]> = [
   ["✗ expected 5 got 6", "assertion-mark", true],
   ["error TS2345: Argument of type 'string' is not assignable", "diagnostic", true],
   ["error: cannot compile", "diagnostic", true],
-  ["error[E0308]: mismatched types", "diagnostic", true],
+  // #2341 fix wave (H2) — cargo prints the rustc location on a SEPARATE
+  // following `--> file:line:col` line, so a location-less `error[E…]` line
+  // names no check: it is byte-identical across compile failures in different
+  // files, and quoted as "the assertion" it folds them together. The location
+  // (in-line, as rustc itself prints it) buys the naming right.
+  ["error[E0308]: mismatched types", "diagnostic", false],
+  ["error[E0308]: mismatched types --> src/a.rs:9:5", "diagnostic", true],
   ["scripts/pack_release_test.sh: failed checks (1)", "script-tally", true],
   ["scripts/test.sh: 3 failed", "named-file", true],
   [FAIL_HEADER, "fail-header", true],
@@ -72,9 +78,10 @@ const SHAPES: Array<[string, string, boolean]> = [
   [CARGO_TARGET_SUMMARY, "cargo-summary", false],
   // #2341 round 1 — the whole cargo target-level dialect, not just the one
   // sentence: each of these is byte-identical across the tests that failed in
-  // the target, so none may name a check. `error[E0308]` is the counter-arm —
-  // a compiler diagnostic with a code DOES name one, and the widened
-  // target-summary rule must not swallow it.
+  // the target, so none may name a check. The located `error[E0308]` is the
+  // counter-arm — a compiler diagnostic that carries its location DOES name a
+  // check, and the widened target-summary rule must not swallow it; the
+  // location-less one (#2341 fix wave H2) names none.
   [CARGO_SIGABRT_SUMMARY, "cargo-summary", false],
   ["error: 1 target failed:", "cargo-summary", false],
   [
@@ -83,7 +90,7 @@ const SHAPES: Array<[string, string, boolean]> = [
     false,
   ],
   ["error: aborting due to 1 previous error", "cargo-summary", false],
-  ["error[E0308]: mismatched types", "diagnostic", true],
+  ["error[E0308]: mismatched types --> src/a.rs:9:5", "diagnostic", true],
 ];
 for (const [line, shape, names] of SHAPES) {
   const got = classifyFailureLine(line);

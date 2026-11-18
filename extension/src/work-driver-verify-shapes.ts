@@ -7,7 +7,11 @@
  * entry point every verify reader asks — and this one is the DATA it consults:
  * the shape entries, their priority order, and the passing-line veto. The
  * direction is one-way (classifier → shapes); nothing here calls back into the
- * classifier, which is what keeps the module graph a DAG.
+ * classifier, which is what keeps the module graph a DAG. The Rust/cargo
+ * READER dialect (the panic-header and libtest-verdict predicates, the sameness
+ * key, the cargo target-summary and rustc-code location tests) is window-scanning
+ * logic, not table data, and lives in `work-driver-verify-rust.ts` — this
+ * module imports only its dialect regexes for the entries below.
  *
  * THE ONE RULE THIS MODULE OWNS, and the one that was a real defect: a line that
  * reports SUCCESS is never a failure line. `pack_release_test.sh: 36 cases, 0
@@ -34,6 +38,11 @@
 
 import type { FailureLine, FailureShape } from "./work-driver-verify-failures.ts";
 import { FAILED_MARKER_RE, payloadDetail } from "./work-driver-verify-marker.ts";
+import {
+  CARGO_TARGET_SUMMARY_RE,
+  RUST_PANIC_RE,
+  isLocationlessRustcDiagnostic,
+} from "./work-driver-verify-rust.ts";
 
 /**
  * A table entry: a shape, whether it names a check, and how to recognise it.
@@ -80,144 +89,35 @@ function reEntry(shape: FailureShape, namesTest: boolean, re: RegExp, preVeto = 
 const ASSERTION_MARK_SHAPE: ShapeEntry = reEntry("assertion-mark", true, /^\s*✗\s/, true);
 
 /**
- * #2341 — the Rust panic header, anchored at line start so the word
- * `panicked` inside prose or a test's own output cannot classify. libtest
- * prints the failing verdict as TWO lines: this header (test name, file,
- * line) with the message on the NEXT line; the pairing is a stream concern
- * and lives in `extractSpecificAssertion`, not here. The entry is `preVeto`
- * because a panic message routinely quotes the counts it compared
- * (`expected 0 failures, got 3`), and `isSuccessLine`'s `0 failures` arm
- * would veto the one line that names the defect — the #1762 symptom
- * arriving through the Rust dialect. The trade kept: a `#[should_panic]`
- * test run with `--nocapture` prints this shape on a GREEN run too, so the
- * shape classifies it as a failure line and may anchor evidence. What it may
- * NOT do is become "the specific assertion": {@link libtestWindowVerdict} is
- * the veto the extractor asks, which refuses a panic header from a window
- * whose libtest verdicts report no failing test at all — a captured
- * `should_panic` print in a run that failed for another reason names a test
- * that PASSED, and quoting it is the #746/#798 class (a confident wrong answer
- * where an honest absence was the truth).
+ * #2341 — the Rust panic header (the dialect regex itself lives in
+ * `work-driver-verify-rust.ts`), a `preVeto` entry: a panic message routinely
+ * quotes the counts it compared (`expected 0 failures, got 3`), and
+ * `isSuccessLine`'s `0 failures` arm would veto the one line that names the
+ * defect — the #1762 symptom arriving through the Rust dialect. The trade
+ * kept: a `#[should_panic]` test run with `--nocapture` prints this shape on a
+ * GREEN run too, so the shape classifies it as a failure line and may anchor
+ * evidence. What it may NOT do is become "the specific assertion":
+ * `libtestVerdictForTest` (`work-driver-verify-rust.ts`) is the veto the
+ * extractor and the evidence anchor both ask, which refuses a panic header
+ * whose OWN test the window reports as passing — a captured `should_panic`
+ * print sits beside its own `... ok` verdict and names a test that PASSED,
+ * and quoting it is the #746/#798 class (a confident wrong answer where an
+ * honest absence was the truth).
  */
-const RUST_PANIC_RE = /^thread\s+'[^']+'\s+panicked\s+at\s+\S/;
 const RUST_PANIC_SHAPE: ShapeEntry = reEntry("rust-panic", true, RUST_PANIC_RE, true);
 
 /**
- * #2341 — cargo's TRAILING TARGET-LEVEL summaries: the lines cargo prints about
- * a whole target or a whole test process, every one of them byte-identical
- * across the different tests that failed inside it (`error: test failed, to
- * rerun pass \`--bin nessie\``, `error: process didn't exit successfully:
- * …(signal: 6, SIGABRT)`, `error: 1 target failed:`, `error: could not
- * compile \`nessie\``). They name a TARGET or a PROCESS, never a check, so the
- * rule is dialect-shaped rather than sentence-shaped: any line in cargo's
- * `error:` dialect that carries NO file:line location is target-level. That is
- * what the table's own `diagnostic` arm cannot decide on its own — that arm is
- * one regex over four unrelated compiler dialects and treats every `error:`
- * line as naming a check, which is how a target-level line below the last
- * panic both stole the evidence anchor and became "the assertion at base", and
- * how two different Rust tests once compared as the SAME assertion.
- *
- * The location test is what keeps this from eating real evidence: a compiler
- * diagnostic carries its file (`src/a.rs:91:5`, `--> src/a.rs:9:5`,
- * `src/a.ts(9,5)`), a target summary carries only the target name. A line with
- * a location therefore stays a `diagnostic` and keeps `namesTest: true`.
+ * #2341 — cargo's trailing target-level summaries: every one of them is
+ * byte-identical across the tests that failed inside the target, so the entry
+ * is recognised but names no check (the dialect itself and the file-location
+ * test that keeps a real `diagnostic` from being swallowed with it live in
+ * `work-driver-verify-rust.ts`).
  */
-const CARGO_TARGET_SUMMARY_RE =
-  /^error:?\s+(?![^\r\n]*(?:\S+\.[A-Za-z]{1,6}:\d+|-->\s*\S+|\S+\([\d,]+\)))(?:test failed\b|process didn't exit successfully\b|\d+\s+targets?\s+failed\b|could not compile\b|could not find\b|no such subcommand\b|aborting due to\b)/;
-
-/**
- * The ONE predicate for cargo's target-level summaries (#2341) — asked by the
- * table's shape entry AND by every sameness reader, so the two cannot disagree
- * about which lines are too generic to buy a "SAME assertion" claim. Exported
- * through `work-driver-verify-failures.ts` with the rest of the failure-line
- * vocabulary.
- */
-export function isCargoTargetSummaryLine(line: string): boolean {
-  return CARGO_TARGET_SUMMARY_RE.test(line);
-}
-
 const CARGO_TARGET_SUMMARY_SHAPE: ShapeEntry = reEntry(
   "cargo-summary",
   false,
   CARGO_TARGET_SUMMARY_RE,
 );
-
-/**
- * #2341 — the SAMENESS key of a Rust panic assertion. The extractor joins
- * the header and its message for the operator-facing value; two runs of the
- * SAME failing test print that pair byte-identically, and two DIFFERENT
- * failing tests in one target differ exactly in the header (test name,
- * file, line, column). So the header alone — the `thread '<name>' panicked
- * at <loc>:` token run up to its trailing colon, followed by whitespace or
- * end of string — is the identity the sameness comparison anchors on.
- *
- * What the key guarantees, stated exactly: a clip that falls in the MESSAGE
- * cannot fold two failures, because the message is what the key discards. A
- * clip that falls INSIDE the header can — a header clipped past its file:line
- * no longer matches this form, and the key then falls back to the whole
- * clipped string, which two tests sharing a long module path could still
- * prefix-match. That case needs a test name deep enough that the header alone
- * passes the store-site bound the assertion carries, which no libtest name in
- * this project's fixtures reaches; it is a known residual, not a closed hole.
- *
- * Any other assertion (every other shape, and the pre-1.73 inline form whose
- * token run does not end at a colon) is its own key — exact containment is
- * unchanged for it.
- */
-const RUST_PANIC_HEADER_FORM = /^(thread\s+'[^']+'\s+panicked\s+at\s+\S+:)(?:\s|$)/;
-
-/** The identity a Rust panic assertion compares on; other assertions are theirs. */
-export function rustPanicSamenessKey(assertion: string): string {
-  const m = RUST_PANIC_HEADER_FORM.exec(assertion);
-  const header = m?.[1];
-  return header !== undefined ? header : assertion;
-}
-
-/**
- * #2341 round 1 — libtest's own per-test verdict lines, the two forms it
- * prints: `test <name> ... ok` / `... FAILED` (and `ignored`, which is neither)
- * and the per-target tally `test result: ok. N passed; M failed` /
- * `test result: FAILED. …`. Asked ONLY to decide whether a `thread '…' panicked
- * at …` line in a window reports the run's failing verdict or the CAPTURED
- * STDOUT of a passing `#[should_panic]` test, which prints the identical shape
- * on a GREEN run (see {@link RUST_PANIC_SHAPE}).
- */
-const LIBTEST_VERDICT_RE = /^test\s+(?:\S+\s+\.\.\.\s+|result:\s*)(?:ok|FAILED)\b/;
-const LIBTEST_FAILING_VERDICT_RE =
-  /^test\s+(?:\S+\s+\.\.\.\s+|result:\s*)FAILED\b|\b[1-9]\d*\s+(?:failed|failures?)\b/;
-
-/**
- * True when `line` is one of libtest's own verdict lines. Asked by the
- * extractor so a verdict line is never JOINED into an assertion the way a
- * panic MESSAGE is: a verdict the success veto has just cleared is invisible
- * to `classifyFailureLine`, so the join guard cannot rely on the table alone.
- */
-export function isLibtestVerdictLine(line: string): boolean {
-  return LIBTEST_VERDICT_RE.test(line);
-}
-
-/**
- * The tri-state answer to "does this window show libtest FAILING a test?"
- * (the #746/#798 doctrine: an absent observation is never a verdict).
- *
- *   - `true`  — the window carries a failing libtest verdict, so a panic header
- *     in it is the run's own failing verdict.
- *   - `false` — the window carries libtest verdicts and NONE of them failed: a
- *     `#[should_panic]` test that passed prints its panic text with a passing
- *     tally underneath, so that panic names a test that PASSED and must never
- *     be quoted as the defect.
- *   - `undefined` — the window carries no libtest verdict at all (a truncated
- *     1500-char tail, a hand-built single-line fixture). Nothing was observed,
- *     so nothing is vetoed; the header stands on its own.
- */
-export function libtestWindowVerdict(lines: readonly string[]): boolean | undefined {
-  let seen = false;
-  for (const line of lines) {
-    if (!LIBTEST_VERDICT_RE.test(line)) continue;
-    seen = true;
-    if (LIBTEST_FAILING_VERDICT_RE.test(line)) return true;
-  }
-  return seen ? false : undefined;
-}
 
 /**
  * The `failed-marker` entry, hoisted so the ONE definition serves the table and,
@@ -227,6 +127,10 @@ export function libtestWindowVerdict(lines: readonly string[]): boolean | undefi
  * a payload marker either loses its shape or loses its exemption.
  */
 const FAILED_MARKER_SHAPE: ShapeEntry = reEntry("failed-marker", false, FAILED_MARKER_RE);
+
+/** The driver's own compiler/linter `error:` dialect, one literal for both
+ * location-split entries below (two copies of the arm is how they drift). */
+const DIAGNOSTIC_RE = /^error:?\s|^Error:|error\[E\d+\]|\bTS\d{4,}\b/;
 
 /**
  * The shape the pre-veto step answers for: the payload-bearing marker, the #1762
@@ -336,11 +240,23 @@ export const SHAPES: ReadonlyArray<ShapeEntry> = [
   RUST_PANIC_SHAPE,
   CARGO_TARGET_SUMMARY_SHAPE,
   // The driver's own dialect: tsc, cargo rustc, and bare `error:`/`Error:` lines.
+  // #2341 fix wave (H2) — the dialect splits in two on the location: a rustc
+  // `error[E…]` line WITHOUT a `file:line[:col]` keeps the shape (it may
+  // anchor weak evidence) but not `namesTest`, because cargo prints the
+  // location on a SEPARATE following `-->` line and the location-less line is
+  // byte-identical across compile failures in different files — the same
+  // folding defect as the target summaries, in the rustc-code dialect.
   {
     shape: "diagnostic",
     namesTest: true,
     preVeto: false,
-    test: (line: string) => /^error:?\s|^Error:|error\[E\d+\]|\bTS\d{4,}\b/.test(line),
+    test: (line: string) => DIAGNOSTIC_RE.test(line) && !isLocationlessRustcDiagnostic(line),
+  },
+  {
+    shape: "diagnostic",
+    namesTest: false,
+    preVeto: false,
+    test: (line: string) => DIAGNOSTIC_RE.test(line),
   },
   // The project-runner shape: a script's own summary block naming its failing checks.
   {

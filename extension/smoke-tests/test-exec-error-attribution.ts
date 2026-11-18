@@ -8,8 +8,13 @@
  * naive `.slice(-N)` window.
  */
 
+import { extractSpecificAssertion } from "../src/work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
-import { RUST_CARGO_STREAM } from "./lib/verify-failure-shapes-fixtures.ts";
+import {
+  RUST_CARGO_STREAM,
+  RUST_SHOULD_PANIC_TRAP_AFTER_STREAM,
+  RUST_TRAP_PAIR,
+} from "./lib/verify-failure-shapes-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -156,6 +161,25 @@ function assert(cond: boolean, msg: string) {
   assert(
     tail.startsWith("thread 'b::second_test'"),
     `cargo anchor (#2341): the LAST panic wins the anchor, not the summary (got: ${JSON.stringify(tail.slice(0, 40))})`,
+  );
+}
+
+// 3d. #2341 fix wave (H1) — the anchor walk asks the SAME name-correlated
+// should_panic veto the extractor asks: when the CAPTURED panic of a passing
+// `#[should_panic]` test sits LAST in the stream, anchoring on it (the old
+// last-named rule) sliced the genuinely-failing test's pair off before the
+// extractor ever saw it. The header whose own test the window reports as
+// `... ok` is not a named anchor; the window starts at the failing test's
+// panic and its pair survives end to end.
+{
+  const { tail } = extractAttributedTail(RUST_SHOULD_PANIC_TRAP_AFTER_STREAM, 1500);
+  assert(
+    tail.startsWith("thread 'b::slow_path"),
+    `cargo anchor (#2341 H1): the captured panic of a passing test does not own the anchor (got: ${JSON.stringify(tail.slice(0, 40))})`,
+  );
+  assert(
+    extractSpecificAssertion(tail) === RUST_TRAP_PAIR,
+    `cargo anchor (#2341 H1): the failing test's pair survives the window (got: ${JSON.stringify(extractSpecificAssertion(tail))})`,
   );
 }
 

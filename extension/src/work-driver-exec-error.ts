@@ -44,7 +44,12 @@
  */
 
 import { readFileSync } from "node:fs";
-import { FAILED_MARKER_RE, classifyFailureLine } from "./work-driver-verify-failures.ts";
+import {
+  FAILED_MARKER_RE,
+  classifyFailureLine,
+  libtestVerdictForTest,
+  rustPanicTestName,
+} from "./work-driver-verify-failures.ts";
 import { splitLinesWithOffsets } from "./work-driver-verify-support.ts";
 
 /** Result of tail extraction: the text, and whether it's anchored evidence. */
@@ -112,15 +117,33 @@ function lastFailureIndex(text: string): number | undefined {
   // Offsets come from the splitter, not from a `+1` the caller assumes: on a
   // `\r\n` stream a one-character advance drifts a character per line and the
   // tail would start inside the line ABOVE the failure. See
-  // {@link splitLinesWithOffsets}.
-  for (const { line: raw, offset } of splitLinesWithOffsets(text)) {
+  // {@link splitLinesWithOffsets}. The lines are materialised first because
+  // the panic-anchor veto below asks about the WHOLE window, not one line.
+  const entries = splitLinesWithOffsets(text);
+  const lines = entries.map((e) => e.line.trim());
+  for (const { line: raw, offset } of entries) {
     const line = raw.trim();
     const at = offset + (raw.length - raw.trimStart().length);
     if (FAILED_MARKER_RE.test(line)) marker = at;
     const kind = classifyFailureLine(line);
     if (kind !== undefined) {
       lastAny = at;
-      if (kind.namesTest) lastNamed = at;
+      // #2341 fix wave (H1) — the SAME name-correlated `should_panic` veto
+      // the extractor asks (`work-driver-verify-assertion.ts`), asked here
+      // too so the veto can see what the anchor cut away: a panic header
+      // whose OWN test the window reports as passing is not a NAMED anchor —
+      // it names a test that passed, and anchoring the window on it can
+      // slice the genuinely-failing test's pair off before the extractor
+      // ever sees it. It stays a last-resort `lastAny` anchor.
+      if (
+        kind.namesTest &&
+        !(
+          kind.shape === "rust-panic" &&
+          libtestVerdictForTest(lines, rustPanicTestName(line)) === false
+        )
+      ) {
+        lastNamed = at;
+      }
     }
   }
   return marker ?? lastNamed ?? lastAny;

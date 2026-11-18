@@ -25,6 +25,10 @@ import {
   RUST_PANIC_ASSERTION,
   RUST_PANIC_AT,
   RUST_PANIC_MESSAGE,
+  RUST_SHOULD_PANIC_TRAP_STREAM,
+  RUST_TRAP_PAIR,
+  RUSTC_DIAG_NO_LOCATION,
+  RUSTC_DIAG_STREAM,
   rustCargoStream,
   RUST_SHOULD_PANIC_GREEN_STREAM,
   rustPanicHeader,
@@ -457,8 +461,8 @@ assertion failed: expected 0 failures, got 3`;
     "case 25 (#2341 should_panic): an unobserved verdict vetoes nothing — a truncated header still names the defect",
   );
   // And the veto is not simply "a panic is never an assertion": the same
-  // should_panic print with a failing libtest verdict in the window is read.
-  const red = `${RUST_SHOULD_PANIC_GREEN_STREAM.replace("test result: ok. 3 passed; 0 failed", "test result: FAILED. 2 passed; 1 failed")}`;
+  // should_panic print with a failing verdict for THAT test is read.
+  const red = RUST_SHOULD_PANIC_GREEN_STREAM.replace("test a::t ... ok", "test a::t ... FAILED").replace("test result: ok. 3 passed; 0 failed", "test result: FAILED. 2 passed; 1 failed");
   assert(
     extractSpecificAssertion(red) ===
       `${rustPanicHeader("a::t", "src/a.rs:7:5")} explicit panic`,
@@ -472,6 +476,22 @@ assertion failed: expected 0 failures, got 3`;
     !joined.includes("test result:"),
     `case 25 (#2341 should_panic): a verdict line is never joined into the assertion (got: ${JSON.stringify(joined)})`,
   );
+}
+
+// --- Case 26 (#2341 fix wave — sameness and the veto FAIL CLOSED): the
+// should_panic veto is per-TEST, not per-window (H1 — the window's failing
+// verdict belongs to a DIFFERENT test, so the captured panic of the passing
+// test names nothing and is never quoted); a location-less `error[E…]` and a
+// panic header clipped mid-header never buy "SAME assertion" (H2, M1). The
+// windowed half of H1 (the anchor walk asking the same veto) is pinned in
+// test-exec-error-attribution.ts.
+{
+  const a = extractSpecificAssertion(RUST_SHOULD_PANIC_TRAP_STREAM);
+  assert(a === RUST_TRAP_PAIR, `case 26 (#2341 per-name veto): the genuinely-failing test wins, not the should_panic capture (got: ${JSON.stringify(a)})`);
+  assert(!sharesAssertion(RUSTC_DIAG_STREAM, RUSTC_DIAG_NO_LOCATION), "case 26 (#2341 H2): two location-less error[E\u2026] failures in different files never share an assertion");
+  assert(extractSpecificAssertion(RUSTC_DIAG_STREAM) === NO_SPECIFIC_ASSERTION, `case 26 (#2341 H2): a location-less error[E\u2026] is never the quoted assertion (got: ${JSON.stringify(extractSpecificAssertion(RUSTC_DIAG_STREAM))})`);
+  const clipped = rustPanicHeader(NESSIE_TEST, RUST_PANIC_AT).slice(0, -6);
+  assert(!sharesAssertion(RUST_CARGO_STREAM, clipped), `case 26 (#2341 M1): a panic header clipped past its identity compares as nothing (got: ${JSON.stringify(clipped)})`);
 }
 
 console.log(`\nexit ${exit}`);

@@ -217,5 +217,43 @@ const CARGO = `${RUST_CARGO_STREAM}\n`;
   );
 }
 
+// 8 — #2341 fix wave (M2): the `git log --oneline` subjects of the base's
+// missing commits ride into a PUBLIC handoff, so each one is run through
+// `redactSecrets` and a credential-shaped subject is DROPPED whole — the same
+// screen `isNamedFailureLine` applies to gate output. Before it, a subject
+// like `fix(auth): rotate leaked api_key = <secret>` was quoted verbatim into
+// the `[baseline-red]` finding, its cap evidence and the issue handoff.
+{
+  const msg = baselineRedMessage(
+    redArm(RUST_PANIC_ASSERTION, {
+      status: "behind",
+      branch: "main",
+      commitsBehind: 3,
+      commits: [
+        "fix(auth): rotate leaked api_key = SuperSecretValue99",
+        "chore: deploy with ghp_aB3dE5fG7hJ9kL1mN2pQ4rS6tU8v0wXy",
+        "fix(a): 3",
+      ],
+    }),
+    { cmd: CMD, baseSha: "0123456789abcdef0123456789", timeoutMs: 60_000, changeFailure: "" },
+  );
+  assert(
+    !msg.includes("SuperSecretValue99") && !msg.includes("ghp_"),
+    `commit subjects (#2341 M2): no credential reaches the rendered handoff (got ${msg.slice(0, 400)})`,
+  );
+  assert(
+    !msg.includes("rotate leaked api_key"),
+    `commit subjects (#2341 M2): the credential-shaped subject is dropped, not quoted (got ${msg.slice(0, 400)})`,
+  );
+  assert(
+    msg.includes("chore: deploy with [REDACTED]") && msg.includes("(+1 more)"),
+    `commit subjects (#2341 M2): the surviving subject renders REDACTED and the cap is disclosed (got ${msg.slice(0, 400)})`,
+  );
+  assert(
+    msg.length <= 800,
+    `commit subjects (#2341 M2): the finding still fits the cap-evidence bound (${msg.length})`,
+  );
+}
+
 rmSync(root, { recursive: true, force: true });
 process.exit(exit);

@@ -37,8 +37,10 @@ import {
   isCargoTargetSummaryLine,
   isHarnessWrapper,
   isLibtestVerdictLine,
-  libtestWindowVerdict,
+  isLocationlessRustcDiagnostic,
+  libtestVerdictForTest,
   rustPanicSamenessKey,
+  rustPanicTestName,
 } from "./work-driver-verify-failures.ts";
 
 /**
@@ -260,17 +262,22 @@ export function extractSpecificAssertion(failureTail: string): string {
     if (kind?.namesTest !== true) continue;
     if (kind.shape === "rust-panic") {
       // #2341 round 1 — the `#[should_panic]` veto. A panic header is only
-      // evidence of a FAILING test when the window around it says a test
-      // failed: libtest prints a passing `#[should_panic]` test's captured
-      // stdout in the identical shape, so in a run that exited non-zero for
-      // some OTHER reason (a later `make` stage, a lint stage) this line names
-      // a test that PASSED. Quoting it as "the specific assertion" is the
-      // #746/#798 class the module's own doctrine forbids — a confident wrong
-      // answer where an honest absence was the truth — and a classified line
-      // can earn the cycle's one corrective round. `undefined` (no verdict
-      // observed at all — a truncated window, a single-line fixture) vetoes
-      // nothing: an absent observation is not a verdict either way.
-      if (libtestWindowVerdict(lines) === false) continue;
+      // evidence of a FAILING test when the window attributes a FAILING
+      // verdict to THAT test: libtest prints a passing `#[should_panic]`
+      // test's captured stdout in the identical shape, so in a run that
+      // exited non-zero for some OTHER reason (a later `make` stage, a lint
+      // stage, or — #2341 fix wave H1 — a genuinely failing test whose
+      // verdict made the WINDOW look failing) this line names a test that
+      // PASSED. Quoting it as "the specific assertion" is the #746/#798 class
+      // the module's own doctrine forbids — a confident wrong answer where an
+      // honest absence was the truth — and a classified line can earn the
+      // cycle's one corrective round, while its header-as-sameness-key then
+      // excuses the change-added failure. `undefined` (no verdict observed at
+      // all — a truncated window, a single-line fixture) vetoes nothing: an
+      // absent observation is not a verdict either way. ONE predicate with the
+      // evidence-anchor walk, which asks the same veto before letting a header
+      // own the anchor — see `work-driver-exec-error.ts`.
+      if (libtestVerdictForTest(lines, rustPanicTestName(candidate)) === false) continue;
       return redactedAssertion(joinedRustPanic(candidate, lines[i + 1]));
     }
     return redactedAssertion(candidate);
@@ -305,11 +312,27 @@ export function extractSpecificAssertion(failureTail: string): string {
  * `thread '<test>' panicked at <file>:<line>:<col>:` header, which is the
  * part that distinguishes failing tests (the message carries the measured
  * value, which legitimately differs run to run, and a clip can amputate it —
- * sameness anchored on a clipped prose prefix folds). Every other shape
+ * sameness anchored on a clipped prose prefix folds). The key FAILS CLOSED
+ * (#2341 fix wave M1): a string that starts like a panic header but whose
+ * identity could not be extracted answers `null`, and `null` is no "SAME
+ * assertion" — it never reaches the containment test. Every other shape
  * keeps the classic rule: exact containment, no normalisation — this gate
  * got tighter for #2341, and tightening it is the whole point of the fix.
+ *
+ * #2341 fix wave (H2) — and the location-less rustc-code dialect is refused
+ * the same way the cargo target summaries are: two compile failures in
+ * different files print the byte-identical `error[E0308]: …` line (cargo
+ * puts the location on the following `-->` line), so containment on it
+ * claims "the SAME assertion" between two genuinely different failures.
  */
 export function sharesAssertion(consolidated: string, per: string): boolean {
-  if (per === NO_SPECIFIC_ASSERTION || isCargoTargetSummaryLine(per)) return false;
-  return consolidated.includes(rustPanicSamenessKey(per));
+  if (
+    per === NO_SPECIFIC_ASSERTION ||
+    isCargoTargetSummaryLine(per) ||
+    isLocationlessRustcDiagnostic(per)
+  ) {
+    return false;
+  }
+  const key = rustPanicSamenessKey(per);
+  return key !== null && consolidated.includes(key);
 }

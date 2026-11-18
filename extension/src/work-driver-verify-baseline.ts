@@ -23,10 +23,13 @@
  * a red baseline: a wrong "the change is not implicated" is worse than none.
  */
 import { withVerifySlot } from "./host-resources.ts";
+import { redactSecrets } from "./secret-patterns.ts";
 import { trace } from "./trace.ts";
+import { CAP_EVIDENCE_PER_FAILURE_MAX } from "./work-develop-cap-evidence.ts";
 import {
   NO_SPECIFIC_ASSERTION,
   extractSpecificAssertion,
+  looksLikeCredential,
   sharesAssertion,
 } from "./work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
@@ -57,15 +60,17 @@ export const BASELINE_RED_MARKER = "[baseline-red]";
 export { BASELINE_STALE_BASE_MARKER, type BaseBehindDefaultBranch };
 
 /**
- * The cap-evidence bound a baseline-red failure string has to fit (the
- * `CAP_EVIDENCE_PER_FAILURE_MAX` of `work-develop-cap-evidence.ts`, which
- * keeps a failure's TAIL when no `FAILED:` marker anchors it — so a string
- * that overflows loses the `[baseline-red]` marker the cap routes on AND the
+ * The cap-evidence bound a baseline-red failure string has to fit — the ONE
+ * `CAP_EVIDENCE_PER_FAILURE_MAX` of `work-develop-cap-evidence.ts` that keeps
+ * a failure's TAIL when no `FAILED:` marker anchors it (so a string that
+ * overflows loses the `[baseline-red]` marker the cap routes on AND the
  * quoted command the #1765 attribution reads, which is the artefact the
  * operator actually reads). The renderer below budgets against it instead of
- * letting a long assertion push the message past it.
+ * letting a long assertion push the message past it. #2341 fix wave (T1): the
+ * number is IMPORTED, not restated — a third copy of it is a number that
+ * drifts.
  */
-const CAP_EVIDENCE_BOUND = 800;
+const CAP_EVIDENCE_BOUND = CAP_EVIDENCE_PER_FAILURE_MAX;
 
 /**
  * The narrowest assertion the renderer will show before it drops the middle
@@ -363,17 +368,27 @@ export function baselineRedMessage(
   // as "mainline does not explain the red".
   const stale = verdict.staleBase;
   const behind = stale?.status === "behind" ? stale : undefined;
+  // #2341 fix wave (M2) — the subjects below come from `git log --oneline` on
+  // the operator's repository and rode, verbatim until now, into a PUBLIC
+  // handoff (cap evidence and the issue body). Each is run through
+  // `redactSecrets`, and a subject `looksLikeCredential` rejects is dropped
+  // whole — the same screen `isNamedFailureLine` applies to gate output. An
+  // author who pasted a credential into a commit subject must not have it
+  // published again by the gate that reports their base.
+  const shownCommits = behind
+    ? behind.commits
+        .slice(0, 2)
+        .map((c) => (looksLikeCredential(c) ? undefined : redactSecrets(c).text.slice(0, 60)))
+        .filter((c): c is string => c !== undefined)
+    : [];
   let middle =
     behind === undefined
       ? "The gate was red before this change was written, so no change can pass it; the failures below cannot be attributed to this diff until the base is green. "
       : "";
   const closing = behind
-    ? `${BASELINE_STALE_BASE_MARKER} the base trails ${behind.branch} by ${behind.commitsBehind} commits — ${behind.commits
-        .slice(0, 2)
-        .map((c) => c.slice(0, 60))
-        .join(
-          "; ",
-        )}${behind.commits.length > 2 ? ` (+${behind.commits.length - 2} more)` : ""}: the red may be ${behind.branch}'s, not the base's (divergence, not cause); re-run on a base that includes ${behind.branch}`
+    ? `${BASELINE_STALE_BASE_MARKER} the base trails ${behind.branch} by ${behind.commitsBehind} commits${
+        shownCommits.length > 0 ? ` — ${shownCommits.join("; ")}` : ""
+      }${behind.commits.length > 2 ? ` (+${behind.commits.length - 2} more)` : ""}: the red may be ${behind.branch}'s, not the base's (divergence, not cause); re-run on a base that includes ${behind.branch}`
     : `Fix the gate at the base commit (or the host it runs on), then re-run${
         stale?.status === "unknown"
           ? ` (default-branch staleness could not be established: ${stale.reason})`

@@ -135,17 +135,21 @@ export {
   scriptTallyCount,
 } from "./work-driver-verify-marker.ts";
 
-// #2341 — the cargo target-summary predicate, the Rust panic sameness key and
-// the libtest window verdict are failure-line vocabulary: the table's own
-// entries and every sameness/extractor reader (`sharesAssertion`,
-// `extractSpecificAssertion`) must ask the SAME predicates, so they are
-// re-exported here like the marker vocabulary above.
+// #2341 — the cargo target-summary predicate, the rustc-code location test,
+// the Rust panic sameness key and the libtest verdict vocabulary are
+// failure-line vocabulary: the table's own entries and every sameness/extractor
+// reader (`sharesAssertion`, `extractSpecificAssertion`) and the evidence-anchor
+// walk (`work-driver-exec-error.ts`) must ask the SAME predicates, so they are
+// re-exported here from `work-driver-verify-rust.ts` like the marker vocabulary
+// above.
 export {
   isCargoTargetSummaryLine,
   isLibtestVerdictLine,
-  libtestWindowVerdict,
+  isLocationlessRustcDiagnostic,
+  libtestVerdictForTest,
   rustPanicSamenessKey,
-} from "./work-driver-verify-shapes.ts";
+  rustPanicTestName,
+} from "./work-driver-verify-rust.ts";
 
 import { FAILED_MARKER_RE, isBareFailedMarker } from "./work-driver-verify-marker.ts";
 import {

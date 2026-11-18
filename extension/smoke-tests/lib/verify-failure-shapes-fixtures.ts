@@ -204,6 +204,62 @@ export const RUST_SHOULD_PANIC_GREEN_STREAM = [
 ].join("\n");
 
 /**
+ * #2341 fix wave (H1) — the window-scoped `should_panic` veto defect. One cargo
+ * window carries BOTH a genuinely failing test and the CAPTURED panic print of
+ * a passing `#[should_panic]` test (`test a::t ... ok`). The window does report
+ * a failing libtest verdict — it belongs to a DIFFERENT test — so a veto that
+ * asks the WINDOW instead of the header's test name clears the capture, and a
+ * test that passed becomes "the assertion" (whose header, as the sameness key,
+ * then excuses the change-added failure). The capture-first stream exercises
+ * the extractor's first-candidate rule; the capture-last one exercises the
+ * anchor walk's last-named rule.
+ */
+export const RUST_TRAP_AT = "src/b.rs:3:1";
+export const RUST_TRAP_MESSAGE = "assertion failed: elapsed < 100ms";
+export const RUST_TRAP_PAIR = `${rustPanicHeader("b::slow_path", RUST_TRAP_AT)} ${RUST_TRAP_MESSAGE}`;
+
+function rustShouldPanicTrapStream(captureFirst: boolean): string {
+  const capture = [
+    "thread 'a::t' panicked at src/a.rs:7:5:",
+    "explicit panic",
+    "test a::t ... ok",
+  ];
+  const failing = [
+    "test b::slow_path ... FAILED",
+    rustPanicHeader("b::slow_path", RUST_TRAP_AT),
+    RUST_TRAP_MESSAGE,
+  ];
+  return [
+    "running 3 tests",
+    ...(captureFirst ? [...capture, ...failing] : [...failing, ...capture]),
+    "test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+    CARGO_TARGET_SUMMARY,
+  ].join("\n");
+}
+
+export const RUST_SHOULD_PANIC_TRAP_STREAM = rustShouldPanicTrapStream(true);
+export const RUST_SHOULD_PANIC_TRAP_AFTER_STREAM = rustShouldPanicTrapStream(false);
+
+/**
+ * #2341 fix wave (H2) — two location-less rustc `error[E…]` failures from
+ * DIFFERENT files. cargo prints the location on the SEPARATE following
+ * `--> file:line:col` line, so the two `error[…]` lines are byte-identical
+ * across the two compile failures: quoted as an assertion they fold together
+ * on substring containment — the same folding defect as the cargo target
+ * summaries, in the rustc-code dialect. A location-less `error[E…]` line
+ * therefore names no check.
+ */
+export const RUSTC_DIAG_NO_LOCATION = "error[E0308]: mismatched types";
+export const RUSTC_DIAG_STREAM = [
+  RUSTC_DIAG_NO_LOCATION,
+  " --> src/alpha.rs:3:1",
+  "  expected `u8`, found `i32`",
+  RUSTC_DIAG_NO_LOCATION,
+  " --> src/beta.rs:9:9",
+  "  expected `String`, found `&str`",
+].join("\n");
+
+/**
  * #2341 round 2 — the smoke-loop and chain-stage tail shapes the extractor
  * suite asserts case by case, hosted here (AGENTS.md §12 file-size limit)
  * because the same tail is asserted from more than one case: the tsc and the
