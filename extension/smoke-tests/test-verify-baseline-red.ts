@@ -380,12 +380,12 @@ await pinDefaultVerifyTimeout(async () => {
     "build fold: both streams really carry the byte-identical summary — the fold material is in the stream, not the fixture",
   );
   assert(
-    extractSpecificAssertion(baseStream) === NO_SPECIFIC_ASSERTION,
-    `build fold: the base stream (protoc) reports honest absence (got ${JSON.stringify(extractSpecificAssertion(baseStream))})`,
+    extractSpecificAssertion(baseStream, baseStream) === NO_SPECIFIC_ASSERTION,
+    `build fold: the base stream (protoc) reports honest absence (got ${JSON.stringify(extractSpecificAssertion(baseStream, baseStream))})`,
   );
   assert(
-    extractSpecificAssertion(changeStream) === NO_SPECIFIC_ASSERTION,
-    `build fold: the change stream (protobuf headers) reports honest absence (got ${JSON.stringify(extractSpecificAssertion(changeStream))})`,
+    extractSpecificAssertion(changeStream, changeStream) === NO_SPECIFIC_ASSERTION,
+    `build fold: the change stream (protobuf headers) reports honest absence (got ${JSON.stringify(extractSpecificAssertion(changeStream, changeStream))})`,
   );
   assert(
     !sharesAssertion(changeStream, SHARED) &&
@@ -399,7 +399,7 @@ await pinDefaultVerifyTimeout(async () => {
         rawStream: baseStream,
         probed: false,
         exitCode: 101,
-        assertion: extractSpecificAssertion(baseStream),
+        assertion: extractSpecificAssertion(baseStream, baseStream),
       },
       [{ text: changeStream, timedOut: false }],
     ),
@@ -425,8 +425,8 @@ await pinDefaultVerifyTimeout(async () => {
     `tsc fold: two location-less error TS2345 failures in different files never share an assertion (${sharesAssertion(TSC_DIAG_STREAM, TSC_DIAG_NO_LOCATION)})`,
   );
   assert(
-    extractSpecificAssertion(TSC_DIAG_STREAM) === NO_SPECIFIC_ASSERTION,
-    `tsc fold: a location-less error TS2345 line is never the quoted assertion (got ${JSON.stringify(extractSpecificAssertion(TSC_DIAG_STREAM))})`,
+    extractSpecificAssertion(TSC_DIAG_STREAM, TSC_DIAG_STREAM) === NO_SPECIFIC_ASSERTION,
+    `tsc fold: a location-less error TS2345 line is never the quoted assertion (got ${JSON.stringify(extractSpecificAssertion(TSC_DIAG_STREAM, TSC_DIAG_STREAM))})`,
   );
   assert(
     !baselineExplainsChange(
@@ -443,14 +443,13 @@ await pinDefaultVerifyTimeout(async () => {
   );
 }
 
-// The foreign-target workspace stream (#2341 fix wave 6, CRITICAL 1): two crates
-// of one `cargo test --workspace` print BYTE-IDENTICAL libtest names (they are
-// per-binary module paths). The failing target's own verdict never reaches the
-// stream — it aborted after the panic print — while an EARLIER, completed-green
-// target printed `test <name> ... ok` for a DIFFERENT test of that name. Wave 5
-// imported that `ok` line into the window, the window-scoped veto answered
-// "this test passed", and the real assertion was refused. The stream-scoped ask
-// reads the earlier target's `test result: ok` as a BOUNDARY, not a verdict.
+// The foreign-target workspace stream (#2341 fix wave 7): two crates of one
+// `cargo test --workspace` print BYTE-IDENTICAL libtest names, and the failing
+// target aborted before printing its own verdict. Separating the sibling's `ok`
+// from this header's own needs cargo's per-target banner, which the veto
+// deliberately does not parse — so this panic is DELIBERATELY OVER-REFUSED: a
+// loud absence costs one round; the silent under-refusal spends the corrective
+// round on a test that passes.
 {
   const targetA = [
     "running 1 test",
@@ -466,15 +465,16 @@ await pinDefaultVerifyTimeout(async () => {
     CARGO_SIGABRT_SUMMARY,
   ].join("\n");
   const raw = `${targetA}\n${targetB}`;
-  const { tail, attributed } = extractAttributedTail(raw, 1500);
+  const { tail } = extractAttributedTail(raw, 1500);
   assert(
-    attributed && tail.startsWith("thread 'pkg::tests::t_0'"),
-    `foreign target (wave 6): the aborting target's panic owns the anchor (got ${JSON.stringify(tail.slice(0, 40))})`,
+    extractSpecificAssertion(tail, raw) === NO_SPECIFIC_ASSERTION,
+    `foreign target (wave 7): a sibling crate's same-named ok OVER-REFUSES, by design (got ${JSON.stringify(extractSpecificAssertion(tail, raw).slice(0, 60))})`,
   );
+  const renamed = raw.replace("test pkg::tests::t_0 ... ok", "test pkg::other ... ok");
+  const renamedTail = extractAttributedTail(renamed, 1500).tail;
   assert(
-    extractSpecificAssertion(tail, raw) ===
-      `${rustPanicHeader("pkg::tests::t_0", "src/real_0.rs:1:5")} assertion failed: \`(left == right)\` the value the change broke`,
-    `foreign target (wave 6): the real assertion survives the sibling target's same-named ok (got ${JSON.stringify(extractSpecificAssertion(tail, raw).slice(0, 60))})`,
+    extractSpecificAssertion(renamedTail, renamed) !== NO_SPECIFIC_ASSERTION,
+    `foreign target (wave 7): the veto is exact-name, not a ban (got ${JSON.stringify(extractSpecificAssertion(renamedTail, renamed).slice(0, 60))})`,
   );
   assert(
     baselineExplainsChange(
@@ -492,7 +492,7 @@ await pinDefaultVerifyTimeout(async () => {
         },
       ],
     ) === false,
-    "foreign target (wave 6): the base's real assertion never excuses a DIFFERENT failure the change added",
+    "foreign target (wave 7): the base's assertion never excuses a DIFFERENT failure the change added",
   );
 }
 
