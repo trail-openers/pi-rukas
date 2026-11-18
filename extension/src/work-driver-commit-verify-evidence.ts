@@ -30,7 +30,11 @@
 
 import { redactThenBound } from "./text-flatten.ts";
 import { boundJoinFailures } from "./work-develop-cap-evidence.ts";
-import { classifyFailureLine } from "./work-driver-verify-failures.ts";
+import {
+  classifyFailureLine,
+  panicIsCapturedPrint,
+  rustPanicTestName,
+} from "./work-driver-verify-failures.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 
 /** The cap a terminal commit-pr park records — the cap union, not a free string. */
@@ -201,7 +205,14 @@ export function consolidatedVerifyCapFields(e: ConsolidatedVerifyEvidence): {
   evidence?: string;
   logPaths?: string[];
 } {
-  const named = (e.failures ?? []).flatMap((f) => namedFailureLines(f));
+  const named = (e.failures ?? []).flatMap((f) =>
+    // #2341 — the same `#[should_panic]` veto the extractor and the recovery
+    // reader ask: this site publishes into the same handoff, and a captured
+    // panic print of a PASSING test must not survive here as a "named
+    // failure" after every other reader refused it. `f` is the widest text
+    // this site carries — the run's record.
+    namedFailureLines(f, (line) => !panicIsCapturedPrint(f, rustPanicTestName(line))),
+  );
   // The reason leads (it is the classified message), redacted, and the named-failure lines
   // are appended so the test names survive even when the classifier's window clipped them.
   // Bounded through the same `boundJoinFailures` the develop caps use, then redacted again
