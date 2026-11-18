@@ -36,6 +36,7 @@ import {
   reviewerScratchHomeEnv,
   reviewerWriteGuardEnabled,
 } from "./reviewer-scratch-home.ts";
+import { UNISOLATED_CHILD_ENV } from "./reviewer-tree.ts";
 import {
   type ChildPermissionPlan,
   applyChildPermissionEnv,
@@ -58,13 +59,16 @@ import { CHILD_TMP_ENV } from "./write-fence-deletion.ts";
  * is named as its deletion root and, last, as its temp root (#2241). A
  * read-only role's child also gets `PI_ENSEMBLE_ROLE` stamped here (#2352 R11)
  * and, when the guard that makes it meaningful is on, a scratch `HOME`/XDG set
- * derived from that same dir (#2352 R12).
+ * derived from that same dir (#2352 R12). `failOpen` is the spec's mark that the
+ * reviewer-isolation choke point left this child in the reviewed tree, and it
+ * becomes the env name that rule reads (#2352 C2).
  */
 export function buildChildEnv(
   role: string,
   plan: ChildPermissionPlan,
   writeFence?: WriteFence,
   childTmp?: string,
+  failOpen?: boolean,
 ): Record<string, string> {
   // #2160 — the base env comes from the one helper both spawn paths call: it
   // strips a non-ops child's forge tokens, points its config roots at a fresh
@@ -84,6 +88,11 @@ export function buildChildEnv(
   // leaves the key absent, which is distinguishable from a role that judges nothing.
   const stamped = childRoleEnvValue(role);
   if (childRoleEnvEnabled() && stamped !== undefined) childEnv[CHILD_ROLE_ENV] = stamped;
+  // #2352 C2 — a reviewer the isolation choke point could NOT relocate is told so,
+  // and its guard drops the reviewed cwd from its roots accordingly: the tree it was
+  // pointed at is the one it was meant to be kept out of, so it is not a writable
+  // root. Absent unless the choke point marked this dispatch (see `DispatchSpec`).
+  if (failOpen === true) childEnv[UNISOLATED_CHILD_ENV] = "1";
   Object.assign(childEnv, vipuneChildEnv(), writeFenceChildEnv(writeFence));
   // #1571 — the child works in `cwd`; an inherited GIT_DIR & co. would point
   // its git at another tree (git-env.ts).

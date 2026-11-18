@@ -50,6 +50,15 @@ export interface DispatchSpec {
    * fan-out only. Selects the per-lens model tier in `resolveModel`.
    */
   lens?: string;
+  /**
+   * #2352 — set by the reviewer-isolation choke point (`spawn-reviewer-isolation.ts`)
+   * when it could NOT relocate this child, so the child is about to run in the
+   * reviewed tree instead of a throwaway one. `buildChildEnv` turns it into
+   * `PI_ENSEMBLE_REVIEWER_UNISOLATED` (the name the reviewer write guard reads to
+   * drop that cwd from its roots). Internal: the dispatch tools never set it, and
+   * `undefined` (absent) means the child was isolated or isolation never applied.
+   */
+  failOpen?: boolean;
 }
 
 export interface DispatchUsage {

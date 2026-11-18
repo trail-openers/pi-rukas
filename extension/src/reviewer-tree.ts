@@ -42,6 +42,16 @@ import { trace, traceWarn } from "./trace.ts";
 import { linkShareableDeps } from "./worktree-provision.ts";
 
 /**
+ * The env name that tells a reviewer's own guards it was left in the reviewed
+ * tree. Written by `buildChildEnv` from `DispatchSpec.failOpen`, read by
+ * `reviewerRootsFrom` (`write-fence-reviewer.ts`), which drops the cwd root when
+ * it is `"1"`: the reviewed tree is where the child was meant NOT to run, so on
+ * the fail-open it is not one of the child's writable roots (#2352 C2). Set by
+ * the harness alone, never by an operator.
+ */
+export const UNISOLATED_CHILD_ENV = "PI_ENSEMBLE_REVIEWER_UNISOLATED";
+
+/**
  * The executor seam: the same shape `worktree-provision.ts` takes, so a test
  * drives this module against real temp repos with no model and no Pi child.
  * `argv` is part of the contract (see that module's header) — every git call

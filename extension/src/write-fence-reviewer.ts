@@ -44,6 +44,7 @@ import { statSync } from "node:fs";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isConfinedRole } from "./reviewer-scratch-home.ts";
+import { UNISOLATED_CHILD_ENV } from "./reviewer-tree.ts";
 import { trace, traceWarn } from "./trace.ts";
 import { NOT_JUDGED_LOG_TOKEN } from "./write-fence-deletion-tokens.ts";
 import { CHILD_TMP_ENV } from "./write-fence-deletion.ts";
@@ -94,20 +95,33 @@ function usableRoot(raw: string | undefined): { label: string; real: string } | 
   return real === undefined ? undefined : { label: raw, real };
 }
 
+/** The env name that says this reviewer was left in the reviewed tree (#2352 C2). */
+export const REVIEWER_UNISOLATED_ENV = UNISOLATED_CHILD_ENV;
+
 /**
  * The roots a confined child may write into: its own cwd (the reviewer tree, or the
  * caller's cwd when isolation fell back) and its per-spawn dir, which holds the
  * scratch HOME. Both read from the RAW env and the child's own cwd, never
  * `loadFenceConfig` — a reviewer has no write root, and that absence is the case
  * this rule exists for.
+ *
+ * One exception, and it is the fail-open's: when the spawn marked this child
+ * `PI_ENSEMBLE_REVIEWER_UNISOLATED=1` it is telling the guard that the cwd it is
+ * about to hand the child is the REVIEWED tree, not a throwaway one — the tree the
+ * child was meant to be kept out of. Judging it as a writable root would give the
+ * unisolated reviewer exactly the access the isolated one has, which is the hole the
+ * field's four shapes walked through. So the cwd root is dropped and only the child's
+ * scratch (and the scratch HOME under it) stays writable. Nothing else in the spawn
+ * writes that name, so an isolated reviewer keeps its tree.
  */
 export function reviewerRootsFrom(
   env: NodeJS.ProcessEnv = process.env,
   cwd: string = process.cwd(),
 ): ReviewerRoots {
-  const usable = [usableRoot(cwd), usableRoot(env[CHILD_TMP_ENV])].filter(
-    (r): r is { label: string; real: string } => r !== undefined,
-  );
+  const dirs = env[UNISOLATED_CHILD_ENV] === "1" ? [env[CHILD_TMP_ENV]] : [cwd, env[CHILD_TMP_ENV]];
+  const usable = dirs
+    .map((raw) => usableRoot(raw))
+    .filter((r): r is { label: string; real: string } => r !== undefined);
   return { cwd, labels: usable.map((r) => r.label), allowed: usable.map((r) => r.real) };
 }
 

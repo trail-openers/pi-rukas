@@ -16,7 +16,7 @@
 import { execp } from "./exec.ts";
 import { isReviewerRole } from "./review-bounds.ts";
 import { resolveHeadShaOutcome } from "./review-head-sha.ts";
-import { codeIndexNote, openReviewerTree } from "./reviewer-tree.ts";
+import { UNISOLATED_CHILD_ENV, codeIndexNote, openReviewerTree } from "./reviewer-tree.ts";
 import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult, DispatchSpec } from "./types.ts";
 
@@ -30,6 +30,12 @@ import type { DispatchResult, DispatchSpec } from "./types.ts";
  * relocate), the operator's opt-out, an unresolvable HEAD, or a tree git refused
  * to make. Each of those traces rather than throws — a reviewer is a gate, and
  * gate plumbing that cannot start must not cost the gate its answer.
+ *
+ * A fail-open is also marked on the spec (`failOpen`), because the child is about
+ * to run in the tree it was meant to be kept out of: that cwd is one of the two
+ * roots the reviewer write guard allows (#2352), so a child that lost its isolation
+ * would keep the write access an isolated one has. `buildChildEnv` turns the mark
+ * into the env name the guard reads; only this function knows which case it is in.
  */
 export async function runWithReviewerTree(
   spec: DispatchSpec,
@@ -53,13 +59,13 @@ export async function runWithReviewerTree(
           : `HEAD does not resolve at ${reviewedCwd}`
       }`,
     );
-    return dispatch(spec);
+    return dispatch({ ...spec, failOpen: true });
   }
   const headSha = head.sha;
   const tree = await openReviewerTree(execp, reviewedCwd, headSha);
   if (tree.kind === "unisolated") {
     traceWarn(`reviewer-tree: ${spec.role} runs in the reviewed tree — ${tree.reason}`);
-    return dispatch(spec);
+    return dispatch({ ...spec, failOpen: true });
   }
   const treeCwd = tree.cwd;
   trace(`reviewer-tree: ${spec.role} runs in ${treeCwd} at ${headSha.slice(0, 12)}`);
