@@ -115,8 +115,9 @@ export function extractAttributedTail(combined: string, maxLen: number): Attribu
  * verdict it would have to be asked about.
  *
  * `panicName` is the candidate's own panic name, or `undefined` for any other
- * shape; with no name the question does not arise, and an unobserved verdict
- * vetoes nothing.
+ * shape; with no name the question does not arise. What the predicate answers
+ * for an observed or unobserved name is {@link panicIsCapturedPrint}'s
+ * contract, not restated here.
  */
 function publishedWindow(
   text: string,
@@ -190,13 +191,12 @@ function lastFailureAnchor(
     // #2341 fix wave (H1) / fix wave 7 — the SAME name-correlated
     // `should_panic` veto the extractor asks, asked on the whole stream and
     // keyed to this candidate's own test name (see {@link publishedWindow}:
-    // the veto and the published bytes are produced by one call). A panic
-    // header whose OWN test the run reported as passing is not evidence — it
-    // names a test that passed — and is refused at BOTH tiers: not a named
-    // anchor, and not the last-resort `lastAny` either (the anchor it would
-    // earn could then be quoted as the assertion, the elision having cut away
-    // the `... ok` that proves it did not). An unobserved verdict vetoes
-    // nothing — absence is not a verdict either way.
+    // the veto and the published bytes are produced by one call). A refused
+    // candidate is refused at BOTH tiers: not a named anchor, and not the
+    // last-resort `lastAny` either (the anchor it would earn could then be
+    // quoted as the assertion, the elision having cut away the evidence that
+    // it was not). The refusal classes are {@link panicIsCapturedPrint}'s
+    // contract, not restated here.
     const published = publishedWindow(
       text,
       at,

@@ -17,8 +17,10 @@
  *     is NEVER the published assertion — the veto is asked on the stream the
  *     window was cut from, which the caller threads as `fullFailure`;
  *   - the same bytes with a genuinely failing panic still name it;
- *   - the tie-break: the LAST per-test line for the exact name decides, so an
- *     earlier `ok` beside a later `FAILED` for that name does not veto;
+ *   - the MONOTONE ok rule: ANY per-test `ok` line for the exact name vetoes,
+ *     so an earlier `ok` beside a later `FAILED` for that name still vetoes —
+ *     two same-named crates printed both lines, and the later FAILED may not
+ *     unshield the passing crate's capture (the #746 fold);
  *   - the name match is EXACT — `a::t` is answered for by neither `a::t2` nor
  *     `a::t::nested`;
  *   - `gatePerAssertion`, which drives the flake re-run suppression, sees the
@@ -140,8 +142,16 @@ function windowAndStream(): { window: string; stream: string } {
   );
 }
 
-// ── 3. the tie-break: the LAST per-test line for the exact name decides ──────
+// ── 3. the MONOTONE ok rule: any ok for the exact name vetoes ────────────────
 {
+  // Two crates of one workspace run the SAME test name: the stream prints
+  // `ok` for one and `FAILED` for the other. The pre-fix last-word rule let
+  // the later FAILED speak for the name, which unshielded the PASSING
+  // crate's captured panic and quoted it — the #746 fold the whole ticket
+  // exists to kill (the capture prints byte-identically in both runs, so the
+  // base's captured assertion then excused the change's real failure). Any
+  // `ok` for the exact name vetoes, in any order; the veto only ever gains
+  // refusals, and a refusal is the loud direction.
   const name = "tb::t";
   const stream = [
     `test ${name} ... ok`,
@@ -152,14 +162,14 @@ function windowAndStream(): { window: string; stream: string } {
   ].join("\n");
   const { tail } = extractAttributedTail(stream, 1500);
   assert(
-    extractSpecificAssertion(tail, stream).startsWith(rustPanicHeader(name, "src/tb.rs:6:6")),
-    "tie-break: an earlier ok beside a later FAILED for the SAME name does not veto — the run's final word is FAILED",
+    extractSpecificAssertion(tail, stream) === NO_SPECIFIC_ASSERTION,
+    `monotone-ok: an earlier ok beside a later FAILED for the SAME name still vetoes — the passing crate's capture is never quoted (got ${JSON.stringify(extractSpecificAssertion(tail, stream).slice(0, 60))})`,
   );
   const stillGreen = stream.replace(`test ${name} ... FAILED`, `test tb::other ... FAILED`);
   assert(
     extractSpecificAssertion(extractAttributedTail(stillGreen, 1500).tail, stillGreen) ===
       NO_SPECIFIC_ASSERTION,
-    "tie-break: with the later FAILED moved to another name, this name's ok is the last word and it vetoes",
+    "monotone-ok: with the later FAILED moved to another name, this name's ok still vetoes",
   );
 }
 
@@ -207,6 +217,95 @@ function windowAndStream(): { window: string; stream: string } {
   assert(
     gatePerAssertion(failing)?.startsWith(rustPanicHeader("gf::t", "src/gf.rs:2:2")) === true,
     `gate: a genuinely failing panic is a KNOWN assertion to the flake gate (got ${JSON.stringify(gatePerAssertion(failing))})`,
+  );
+}
+
+// ── 6. the UNOBSERVED-NAME refusals (#2341 wave 9) and their counterweights ──
+{
+  // (a) A panic on a NON-TEST thread inside an otherwise green target: the
+  // run opened (`running N tests`), reported every test it ran, and closed
+  // `test result: ok. N passed; 0 failed` — so the panic print whose thread
+  // never appeared in any verdict is the run's own captured output, not a
+  // defect. Quoting it sent the corrective round after a green suite.
+  const worker = [
+    "FAILED: smoke-tests/test-e2e.ts",
+    "running 2 tests",
+    `test ${PASSING} ... ok`,
+    "thread 'worker-1' panicked at src/w.rs:3:1:",
+    "retry exhausted",
+    "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+    "make: *** [Makefile:12: e2e] Error 1",
+  ].join("\n");
+  assert(
+    extractSpecificAssertion(extractAttributedTail(worker, 1500).tail, worker) ===
+      NO_SPECIFIC_ASSERTION,
+    `unobserved green-run: a worker-thread panic in a zero-failure target is refused (got ${JSON.stringify(extractSpecificAssertion(extractAttributedTail(worker, 1500).tail, worker).slice(0, 60))})`,
+  );
+  // (b) A `#[should_panic]` DOCTEST: the verdict line carries the spaced
+  // path (`test src/lib.rs - name (line 3) ... ok`) the old `\S+` matcher
+  // could never equal, so the class was structurally unrefusable. Refused
+  // both with and without the `---- <path> stdout ----` capture label.
+  const doctestMsg = "explicit panic";
+  const doctestVerdict = "test src/lib.rs - parses (line 3) ... ok";
+  const doctestHeader = "thread 'main' panicked at src/lib.rs:5:5:";
+  const doctestRun = [
+    "running 1 test",
+    doctestVerdict,
+    doctestHeader,
+    doctestMsg,
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+    "make: *** [Makefile:3: doc] Error 1",
+  ].join("\n");
+  assert(
+    extractSpecificAssertion(doctestRun, doctestRun) === NO_SPECIFIC_ASSERTION,
+    "unobserved doctest: the should_panic doctest print inside its green run is refused",
+  );
+  const doctestBlock = [
+    "running 1 test",
+    doctestVerdict,
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+    "",
+    "failures:",
+    "",
+    "---- src/lib.rs - parses (line 3) stdout ----",
+    doctestHeader,
+    doctestMsg,
+    "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace",
+  ].join("\n");
+  assert(
+    extractSpecificAssertion(doctestBlock, doctestBlock) === NO_SPECIFIC_ASSERTION,
+    "unobserved doctest: the print under its capture block label, below the tally, is refused by the block arm",
+  );
+  // (c) THE COUNTERWEIGHT (#1762): a green STAGE followed by a later binary
+  // dying as `main` — no capture label, no run enclosing the print (the
+  // stage's tally sits ABOVE it and nothing closes below) — still anchors
+  // and quotes. The refusals above must not reopen this.
+  const chainStage = [
+    "running 3 tests",
+    "test m::a ... ok",
+    "test m::b ... ok",
+    "test m::c ... ok",
+    "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+  ].join("\n");
+  const chain = [
+    chainStage,
+    pad(30, "chain"),
+    "thread 'main' panicked at src/main.rs:12:5:",
+    "smoke check failed: expected 200 got 500",
+  ].join("\n");
+  assert(
+    extractSpecificAssertion(extractAttributedTail(chain, 1500).tail, chain).startsWith(
+      "thread 'main' panicked at src/main.rs:12:5:",
+    ),
+    "chain shape (#1762): the bare binary panic below a completed green stage still quotes",
+  );
+  // ...and its control: once `main` has an ok line of its own, the name arm
+  // vetoes — the refusals are name-correlated, not a ban on `main`.
+  const chainMainOk = chain.replace("running 3 tests", "running 3 tests\ntest main ... ok");
+  assert(
+    extractSpecificAssertion(extractAttributedTail(chainMainOk, 1500).tail, chainMainOk) ===
+      NO_SPECIFIC_ASSERTION,
+    "chain shape control: with `test main ... ok` present the veto still fires — the rule is name-correlated",
   );
 }
 
