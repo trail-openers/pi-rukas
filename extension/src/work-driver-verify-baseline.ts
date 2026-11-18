@@ -34,12 +34,12 @@ import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import {
   BASELINE_STALE_BASE_MARKER,
   type BaseBehindDefaultBranch,
+  CMD_FLOOR,
   probeBaseBehindDefault,
   staleBaseClosing,
+  timedOutRedEntry,
 } from "./work-driver-verify-baseline-stale.ts";
-import { TIER_KNOB, TIER_TIMEOUT_FILE, VERIFY_TIMEOUT_ENV } from "./work-driver-verify-budget.ts";
 import { verifyHostEnv } from "./work-driver-verify-cmd.ts";
-import { VERIFY_TIMEOUT_LABEL, boundText } from "./work-driver-verify-develop-helpers.ts";
 import { baseStreamIsHarnessOnly } from "./work-driver-verify-echo.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 import { summaryCount } from "./work-driver-verify-names.ts";
@@ -79,13 +79,6 @@ const CAP_EVIDENCE_BOUND = CAP_EVIDENCE_PER_FAILURE_MAX;
  * they act on. The two explain routes still carry the full advice.
  */
 const MIN_ASSERTION_CHARS = 120;
-
-/**
- * The recognition floor the cmd is clipped down to when the frame alone has
- * eaten the window (#2341 fix wave 4, H3) — long enough for the operator to
- * name the command back, short enough to buy the assertion its room.
- */
-const CMD_FLOOR = 12;
 
 /**
  * The ONE naming rule for a baseline probe's throwaway worktree. Exported
@@ -294,7 +287,9 @@ export async function probeBaselineVerify(
       // the commit-pr seam's per-test attribution needs the whole stream
       // (`failingTestNames` parses its `FAILED:` markers, and the 1500-char
       // assertion window would elide all but the last of them).
-      const assertion = extractSpecificAssertion(extractAttributedTail(raw, 1500).tail);
+      // #2341 fix wave 6 — the whole stream rides in as the veto's second
+      // question's text: the verdict the window elides is read from the stream.
+      const assertion = extractSpecificAssertion(extractAttributedTail(raw, 1500).tail, raw);
       // #2341 — a red base may be red only because it predates commits already
       // on the default branch (nessie 1415: the base predated the fix for the
       // very check that was red, so the handoff told the operator to fix a
@@ -364,11 +359,10 @@ export function baselineRedMessage(
   const where = `on a clean checkout of the cycle's base commit ${opts.baseSha.slice(0, 12)}, without this change`;
   const suffix = opts.runs === undefined || opts.runs === "" ? "" : ` — ${opts.runs}`;
   if (verdict.status === "red-timed-out") {
-    // #1509 — the knob named here is the one that governs the tier the probe
-    // ran (the suite tier: it re-runs `.pi/verify-cmd` at base), and the bound
-    // is the caller's `timeoutMs` threaded in rather than re-read, so the text
-    // can only ever describe the run that actually happened.
-    return `${BASELINE_RED_MARKER} ${VERIFY_TIMEOUT_LABEL} verify command \`${opts.cmd}\` exceeded its ${boundText(opts.timeoutMs)} timeout ${where} — the gate cannot finish inside its bound on this host whatever the diff contains. Raise ${TIER_KNOB.suite} (or .pi/${TIER_TIMEOUT_FILE.suite}, or ${VERIFY_TIMEOUT_ENV} in the environment) or make the gate faster; the failures below do not implicate this change${suffix}`;
+    // #1509 / #2341 fix wave 6 (ISSUES 1): rendered by the handoff-renderer
+    // half of the §12 split, under the same budget discipline as the red arm
+    // below — see {@link timedOutRedEntry}.
+    return timedOutRedEntry(BASELINE_RED_MARKER, opts.cmd, opts.timeoutMs, where, suffix);
   }
   const same =
     verdict.assertion !== null && sharesAssertion(opts.changeFailure, verdict.assertion)

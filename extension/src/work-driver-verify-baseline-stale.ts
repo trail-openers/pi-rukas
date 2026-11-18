@@ -36,7 +36,10 @@
  */
 import { redactSecrets } from "./secret-patterns.ts";
 import { trace } from "./trace.ts";
+import { CAP_EVIDENCE_PER_FAILURE_MAX } from "./work-develop-cap-evidence.ts";
+import { TIER_KNOB, TIER_TIMEOUT_FILE, VERIFY_TIMEOUT_ENV } from "./work-driver-verify-budget.ts";
 import { detailLooksCredential } from "./work-driver-verify-credential-screen.ts";
+import { VERIFY_TIMEOUT_LABEL, boundText } from "./work-driver-verify-develop-helpers.ts";
 import type { ExecFn } from "./worktree.ts";
 
 /**
@@ -200,4 +203,44 @@ export function staleBaseClosing(
   }${shown.length > 0 ? ` — ${shown.join("; ")}` : ""}${more > 0 ? ` (+${more} more)` : ""}${
     withheld > 0 ? ` (${withheld} subject${withheld > 1 ? "s" : ""} withheld)` : ""
   }: the red may be that branch's, not the base's (divergence, not cause); re-run on a base that includes it`;
+}
+
+/**
+ * The recognition floor the cmd is clipped down to when the frame alone has
+ * eaten the window (#2341 fix wave 4, H3) — long enough for the operator to
+ * name the command back, short enough to buy the assertion its room. Lives
+ * here with its other renderer (#2341 fix wave 6, ISSUES 1: moving the
+ * `red-timed-out` arm here brought the floor's home too); `baselineRedMessage`
+ * imports it for the red arm's own cmd clip.
+ */
+export const CMD_FLOOR = 12;
+
+/**
+ * The `red-timed-out` entry of `baselineRedMessage` (#1509), rendered by the
+ * handoff-renderer half of this split (#2341 fix wave 6, ISSUES 1) under the
+ * SAME budget discipline as the red arm: the unbounded operator-authored cmd
+ * used to be the one variable part nobody budgeted — a 400-char command
+ * published an entry past the cap-evidence bound, and the cap's own tail
+ * amputation then ate the LEADING `[baseline-red]` marker the entry exists to
+ * carry. The cmd is the only variable part of this entry, so the cmd pays:
+ * quoted whole whenever it fits, clipped with the renderer's own `\u2026`
+ * (the span `baselineRedForCommand` licenses) below that, floored at
+ * recognition — and the marker leads whatever survives. The knob named is the
+ * one that governs the tier the probe ran (the suite tier), and the bound is
+ * the caller's `timeoutMs` threaded in rather than re-read, so the text can
+ * only ever describe the run that actually happened.
+ */
+export function timedOutRedEntry(
+  marker: string,
+  cmd: string,
+  timeoutMs: number,
+  where: string,
+  suffix: string,
+): string {
+  const lead = `${marker} ${VERIFY_TIMEOUT_LABEL} verify command \``;
+  const rest = `\` exceeded its ${boundText(timeoutMs)} timeout ${where} — the gate cannot finish inside its bound on this host whatever the diff contains. Raise ${TIER_KNOB.suite} (or .pi/${TIER_TIMEOUT_FILE.suite}, or ${VERIFY_TIMEOUT_ENV} in the environment) or make the gate faster; the failures below do not implicate this change${suffix}`;
+  const over = lead.length + cmd.length + rest.length - CAP_EVIDENCE_PER_FAILURE_MAX;
+  const cmdText =
+    over > 0 ? `${cmd.slice(0, Math.max(CMD_FLOOR, cmd.length - over - 1))}\u2026` : cmd;
+  return `${lead}${cmdText}${rest}`;
 }
