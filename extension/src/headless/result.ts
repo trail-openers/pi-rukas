@@ -179,6 +179,13 @@ export interface IssueResult {
    * unreviewed. `work` writes none of it; a run with no bound stop omits it, so absence
    * means "fully reviewed", never "unknown". */
   reviewBound?: string;
+  /** Did the run's review judge every lens it was bought? `false` when the NEWEST `review`
+   * step (whatever it decided) recorded a stop that left lanes unjudged; `true` otherwise,
+   * a run that never reached review included. Lean-only, like the two fields above, and
+   * written on one switch: absent on a build running `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0`
+   * or one from before the field existed. Read it beside `cap` — a `ready` PR with this
+   * `false` carries cap `review-incomplete`, not `awaiting-human-merge`. */
+  reviewComplete?: boolean;
   /**
    * The run's gate events, for a host that must not read `.pi/lean-state/<issue>.json`
    * (the driver's private persistence, no stability promise): the frozen files per

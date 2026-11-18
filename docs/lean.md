@@ -486,9 +486,13 @@ reads one document. The one field `work` never writes is **`prState`**:
 Both sides of that rule are typed records (`Outcome.publishedHead` is the full
 40-hex head the step pushed; `verifiedHead` is the green's subject) and neither
 is read out of prose. The rule is publish's own — it will not push at all over a
-green about a different commit — restated as a report. `ready` is also the only
-thing that earns the `awaiting-human-merge` cap, so **`awaiting-human-merge`
-means `ready`**; a draft, or a PR over a gate that did not clear its head, gets
+green about a different commit — restated as a report. `ready` is the only thing
+that earns a handoff cap, and it does not earn it alone: **`awaiting-human-merge`
+means `ready` with every review lens judged**, so a `ready` PR whose NEWEST
+`review` step recorded unjudged lanes reports **`review-incomplete`** with
+`reviewComplete: false` instead (same exit 10, different cap), and `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0`
+puts the single `awaiting-human-merge` cap back and omits the field. A draft, or
+a PR over a gate that did not clear its head, gets
 no cap and rides `failure` alone. A build without the feature writes lean's own
 pre-#1920 document (`state`, `summary`, `steps`, `prUrl`) and has no `prState`:
 refuse the image rather than guess.

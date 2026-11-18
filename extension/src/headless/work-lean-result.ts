@@ -39,6 +39,7 @@
 
 import { redactClip } from "../decision-log.ts";
 import { leanResultGatesEnabled } from "../lean/result-gates-switch.ts";
+import { leanReviewIncompleteCapEnabled } from "../lean/review-incomplete-cap-switch.ts";
 import { specifyBranch } from "../lean/specify-tree.ts";
 import { type LeanRun, type Outcome, REPORT_STATES, type Step } from "../lean/state.ts";
 import { budgetSentence, budgetTrio } from "../lean/step-budget.ts";
@@ -61,6 +62,15 @@ import { prStateOf, prUrlOf, publishedHeadOf } from "./work-lean-pr.ts";
 
 /** What `work` reports for a finished PR waiting on a person (#1675's vocabulary). */
 const AWAITING = "awaiting-human-merge";
+
+/**
+ * The published cap for a review that never judged every lane (`FIXED_CAPS`). A ready PR
+ * whose review step stopped — at its own budget or the cycle deadline — left lenses that
+ * returned no verdict, so the run is NOT work waiting on a person: nobody has read the
+ * head yet. `capStep()` names no step for it (the cap carries no `:`), so `failedStep`
+ * stays absent, and `capKind()` reads it as `process`: neither gate judged the code.
+ */
+const REVIEW_INCOMPLETE = "review-incomplete";
 
 /** A lean `failure.step` must be a `WorkStep`; `handback` has no counterpart. */
 const LEAN_FAILURE_STEP = "handoff" as const;
@@ -234,8 +244,35 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
 }
 
 /**
+ * Did this run's review judge every lens it was bought? `false` when the NEWEST `review`
+ * step in log order — whatever it decided (`done`, `fixed` or `error`) — carries the bound
+ * its stop wrote with lanes in it; `true` otherwise, including a run that never reached
+ * review and a stop that recorded no lane at all (a `noteStop` with an empty list is still
+ * a review that ran out of nothing to judge). Log POSITION decides, exactly as it does for
+ * `prState`'s gate readings: an older stopped attempt that a later, fully judged review
+ * superseded is not this run's verdict.
+ *
+ * Read off the record, never off prose: the same `reviewBound` the `gates` object publishes
+ * and the loader validates is the only evidence consulted here.
+ */
+function reviewCompleteOf(steps: Step[]): boolean {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (steps[i]?.state !== "review") continue;
+    const lanes = steps[i]?.outcome?.reviewBound?.unreviewedLanes;
+    return lanes === undefined || lanes.length === 0;
+  }
+  return true;
+}
+
+/**
  * The cap. `undefined` when no published cap name says what happened — the
  * cause is then on `failure` alone, which is the open list.
+ *
+ * `review-incomplete` outranks `awaiting-human-merge` on a ready PR: the two are told
+ * apart by whether the run's own review read every lens, and telling a host to merge over
+ * lanes that never ran is the failure this cap exists to prevent. `reviewComplete` is
+ * `true` when the switch is off (today's single cap) or when the newest review step left
+ * no lane unjudged.
  *
  * A PR URL is NOT enough for `awaiting-human-merge`: a run can push a branch,
  * open a PR, and then have its own gate call the work red, and that is a park,
@@ -252,9 +289,10 @@ function leanCap(
   status: IssueResult["status"],
   prUrl: string | undefined,
   prState: IssueResult["prState"],
+  reviewComplete: boolean,
 ): HeadlessCap | undefined {
-  if (prUrl !== undefined && status === "handoff" && prState === "ready") return AWAITING;
-  return undefined;
+  if (prUrl === undefined || status !== "handoff" || prState !== "ready") return undefined;
+  return reviewComplete ? AWAITING : REVIEW_INCOMPLETE;
 }
 
 /**
@@ -319,7 +357,13 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
   const status = leanStatus(run, code);
   const failure = leanFailure(run);
   const prState = prStateOf(steps, run.counters.draft);
-  const cap = leanCap(status, prUrl, prState);
+  // The one read of the review record, feeding both the cap and the field: they cannot
+  // disagree because neither of them decides the question on its own. Under the off arm
+  // the cap sees a complete review (today's single name) and the field is not written,
+  // which is what leaves the off document byte-identical to the pre-cap build.
+  const reviewSwitch = leanReviewIncompleteCapEnabled();
+  const reviewComplete = reviewCompleteOf(steps);
+  const cap = leanCap(status, prUrl, prState, !reviewSwitch || reviewComplete);
   // The head this run's PR stands on, worked out ONCE here by the reader `prStateOf`
   // itself uses. `gates.handback.head` asks a different question — the head that actually
   // SHIPPED, which after a rewind is no longer this one — so it reads the handback step's
@@ -355,6 +399,10 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
     result.reviewBound = reviewBoundSentence(rec, (s) => redactClip(s, TEXT_MAX));
     break;
   }
+  // Written on one switch, and attached whole or not at all, so the off arm leaves no key
+  // holding `undefined` behind for a host that string-compares the file. `true` is a real
+  // answer, not a default: it says the newest `review` step left no lane unjudged.
+  if (reviewSwitch) result.reviewComplete = reviewComplete;
   // `failedStep` is reported ONLY when the cap names it: `capStep()` is the
   // driver's own rule for a step-template cap, and lean's states are not
   // `WorkStep`s, so a guessed step would be a wrong answer rather than a

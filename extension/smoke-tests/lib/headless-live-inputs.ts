@@ -37,6 +37,7 @@ import {
 import { leanReadyFactsOnLoadEnabled } from "../../src/lean/ready-facts-switch.ts";
 import { leanResultGatesEnabled } from "../../src/lean/result-gates-switch.ts";
 import { leanReviewAcceptanceEnabled } from "../../src/lean/review-acceptance-switch.ts";
+import { leanReviewIncompleteCapEnabled } from "../../src/lean/review-incomplete-cap-switch.ts";
 import { leanReviewProblemEnabled } from "../../src/lean/review-problem-switch.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRewindLeaseBinds } from "../../src/lean/rewind-lease-switch.ts";
@@ -226,6 +227,11 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // The gate events on the host's result document. The reader is `v !== "0"`, so the
   // gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_RESULT_GATES", leanResultGatesEnabled],
+  // Whether an unjudged lean review gets its own cap and the `reviewComplete` field. The
+  // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on";
+  // the truth table, the four-arm matrix and the off arm's golden are pinned by
+  // test-headless-work-lean-review-incomplete-cap-switch.ts.
+  ["PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP", leanReviewIncompleteCapEnabled],
   // #2255 — the publishable-branch guard's fail-closed arm. The reader is `v !== "0"`,
   // so the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_GUARD_FAIL_CLOSED", leanGuardFailClosed],

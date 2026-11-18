@@ -35,6 +35,11 @@ import {
   stepWith,
   withReason,
 } from "./lib/lean-result-fixture.ts";
+import {
+  judgedReviewStep,
+  unjudgedReviewStep,
+  withReviews,
+} from "./lib/lean-review-incomplete-cap-golden.ts";
 import { REPO, fakeRun, verbRun } from "./lib/work-lean-verb-fixture.ts";
 
 const { assert, state } = makeAssert();
@@ -282,6 +287,65 @@ const log = leanLog;
     `crashed-ci: an outcome-less newest ci is not ready (got ${String(j.prState)})`,
   );
   assert(j.cap === undefined, `crashed-ci: no cap (got ${String(j.cap)})`);
+}
+
+// ── (2j) a READY PR whose review judged no further lens is not work waiting on a
+// person. The run reached publish, the gate cleared the head and the forge left the PR
+// ready — and the newest `review` step stopped with lanes that never ran. `prState` is
+// still `ready` (publish's own rule, unchanged), so the cap is the one field that can say
+// "nobody read this head", and it says it off the step's bound record, never off prose.
+{
+  const ready = log({ prUrl: URL, draft: false, dispatches: CHILDREN });
+  const stoppedFix = stepWith("review", {
+    kind: "fixed",
+    reason: "fix wave pushed; the re-review never ran",
+    reviewBound: {
+      wave: "fix",
+      unreviewedLanes: ["adversarial re-review"],
+      reason: "review STEP stopped: minutes budget 20 exceeded (used 24)",
+    },
+  });
+  // AC1's two red arms (a `done` stop and a `fixed` one) and AC2's four ways of earning
+  // today's cap, as one table: the cap and the field are the two answers, and the table
+  // says which record produces which. `reviewBound` PRESENT is not the predicate — a
+  // non-empty lane list is — so `no-lane-named` sits with the judged arms, and a stop a
+  // later fully judged review overtook sits there too: log position decides.
+  const arms: [string, Step[], "review-incomplete" | "awaiting-human-merge", boolean][] = [
+    ["deadline-stopped", [unjudgedReviewStep()], "review-incomplete", false],
+    ["pushed-fix", [stoppedFix], "review-incomplete", false],
+    ["superseded", [unjudgedReviewStep(0), judgedReviewStep(1)], "awaiting-human-merge", true],
+    ["no-lane-named", [unjudgedReviewStep(0, [])], "awaiting-human-merge", true],
+    ["clean-review", [judgedReviewStep()], "awaiting-human-merge", true],
+    ["never-reviewed", [], "awaiting-human-merge", true],
+  ];
+  for (const [label, reviews, cap, complete] of arms) {
+    const r = await drive("handed-back", 10, withReviews(ready, reviews));
+    const i = r.issue ?? {};
+    const marker = String((i.handoff as Record<string, unknown> | undefined)?.marker ?? "");
+    assert(
+      i.prState === "ready",
+      `${label}: prState is publish's answer, not the review's (got ${String(i.prState)})`,
+    );
+    assert(
+      i.cap === cap && i.reviewComplete === complete,
+      `${label}: cap ${cap} and reviewComplete ${String(complete)} (got ${String(i.cap)} / ${String(i.reviewComplete)})`,
+    );
+    assert(
+      i.exitCode === 10 && r.code === 10,
+      `${label}: the exit code does not move with the cap (${String(i.exitCode)} / ${String(r.code)})`,
+    );
+    assert(
+      marker.includes(`cap=${cap}`),
+      `${label}: the handoff marker follows the cap (got ${marker})`,
+    );
+  }
+  // And the bound line beside the new cap still names the lanes it named before.
+  const s =
+    (await drive("handed-back", 10, withReviews(ready, [unjudgedReviewStep()]))).issue ?? {};
+  assert(
+    String(s.reviewBound).includes("3 of 6 lenses unjudged"),
+    `unjudged: the bound line beside the cap still names the lanes (${String(s.reviewBound)})`,
+  );
 }
 
 // ── (3) NO PR: the run handed back before any publish step decided.

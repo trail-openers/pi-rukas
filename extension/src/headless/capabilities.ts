@@ -103,8 +103,12 @@ export const HEADLESS_FEATURES = {
    * #1920 slice B — `work-lean`'s success document is the SAME schema the
    * `work` verb writes: `schemaVersion: 5` and one `issues[]` entry with
    * `status`, `cap`, `failure`, `branch`, `prUrl`, `usage` (with `byRole`) and
-   * the lean-only typed `prState` (`ready` | `draft` | `none`), so a host needs
-   * no second reader to compare the two engines. A build without this feature
+   * the lean-only typed `prState` (`ready` | `draft` | `none`) and
+   * `reviewComplete`, so a host needs no second reader to compare the two
+   * engines. `awaiting-human-merge` means `ready` WITH EVERY REVIEW LENS JUDGED:
+   * a `ready` PR whose newest `review` step stopped with lanes unjudged carries
+   * `review-incomplete` and `reviewComplete: false` instead, so the cap a host
+   * would merge on is never a head nobody read. A build without this feature
    * writes lean's own pre-#1920 document (`state`/`summary`/`steps`/`prUrl`)
    * and has no `prState` to switch on — refuse the image rather than guess.
    */

@@ -185,6 +185,11 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // certified does not run. The reader is `leanReviewAcceptanceEnabled` in
   // lean/review-acceptance-switch.ts.
   flag("LEAN_REVIEW_ACCEPTANCE", true),
+  // Whether a lean run whose review stopped with lanes unjudged gets its own cap: on (the
+  // default) such a `ready` PR reports `review-incomplete` and `issues[].reviewComplete:
+  // false`; `"0"` writes today's `awaiting-human-merge` and no field at all. The reader is
+  // `leanReviewIncompleteCapEnabled` in lean/review-incomplete-cap-switch.ts.
+  flag("LEAN_REVIEW_INCOMPLETE_CAP", true),
   // #2265 — open the review seats' criteria section with the spec's `problem`, so
   // a statement whose tail sits past the prose bound still reaches every seat.
   // `0` takes the statement out and leaves every brief byte-identical to the
