@@ -41,6 +41,7 @@ import {
 } from "./work-driver-verify-baseline-stale.ts";
 import { verifyHostEnv } from "./work-driver-verify-cmd.ts";
 import { baseStreamIsHarnessOnly } from "./work-driver-verify-echo.ts";
+import { panicCanExcuseChange } from "./work-driver-verify-failures.ts";
 import { combinedExecFailureStream } from "./work-driver-verify-flake.ts";
 import { summaryCount } from "./work-driver-verify-names.ts";
 import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
@@ -457,8 +458,9 @@ export function baselineRedMessage(
 /**
  * #1349 — true only when the change's failures are demonstrably the base's:
  * every one shares the (extracted, non-null) base assertion, or the base and
- * every change run were killed at the bound. A base that is red some other
- * way says nothing about a failure the change added, so it never excuses one.
+ * every change run were killed at the bound. A base red some other way says
+ * nothing, and a Rust panic excuses only on {@link panicCanExcuseChange}'s
+ * evidence — the base run's own per-test line naming that test as FAILED.
  */
 export function baselineExplainsChange(
   verdict: RedBaselineVerdict,
@@ -466,11 +468,9 @@ export function baselineExplainsChange(
 ): boolean {
   if (changeFailures.length === 0) return false;
   if (verdict.status === "red-timed-out") return changeFailures.every((f) => f.timedOut);
-  const assertion = verdict.assertion;
-  return (
-    assertion !== null &&
-    changeFailures.every((f) => !f.timedOut && sharesAssertion(f.text, assertion))
-  );
+  const { assertion, rawStream } = verdict;
+  if (assertion === null || !panicCanExcuseChange(rawStream, assertion)) return false;
+  return changeFailures.every((f) => !f.timedOut && sharesAssertion(f.text, assertion));
 }
 
 /**

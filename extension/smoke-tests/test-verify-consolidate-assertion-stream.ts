@@ -31,6 +31,7 @@ import {
   classifyConsolidatedVerifyFailure,
   consolidatedFailureMessage,
 } from "../src/work-driver-consolidation-classify.ts";
+import { baselineExplainsChange } from "../src/work-driver-verify-baseline.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
 import {
   NO_SPECIFIC_ASSERTION,
@@ -256,15 +257,75 @@ function windowAndStream(): { window: string; stream: string } {
       NO_SPECIFIC_ASSERTION,
     "chain shape control: with `test main ... ok` present the veto still fires — the rule is name-correlated",
   );
-  // KNOWN-DEFERRED BOUNDARY, deliberately UNPINNED: a panic on a non-test
-  // thread inside an otherwise green target (`worker-N` in a run whose tally
-  // closed `0 failed`) and a `#[should_panic]` DOCTEST (`thread 'main'
-  // panicked at src/lib.rs:5:5:` beside
+  // KNOWN-DEFERRED BOUNDARY, deliberately UNPINNED as a QUOTE refusal: a panic
+  // on a non-test thread inside an otherwise green target (`worker-N` in a run
+  // whose tally closed `0 failed`) and a `#[should_panic]` DOCTEST (`thread
+  // 'main' panicked at src/lib.rs:5:5:` beside
   // `test src/lib.rs - parses (line 3) ... ok`) are captured prints whose
-  // thread the run never named in a verdict, and they are quoted. Refusing
-  // them needs cargo's per-target banner identity (`     Running unittests
-  // …`, `   Doc-tests pkg`); until that exists the classes behave as they do
-  // on `main`, and nothing here pins that quoting as desirable.
+  // thread the run never named in a verdict, and they are quoted. Refusing the
+  // quote needs cargo's per-target banner identity (`     Running unittests
+  // …`, `   Doc-tests pkg`), which no reader in this build parses — and
+  // `main` recognises no Rust panic line at all, so the same streams reported
+  // honest absence there: the cargo/libtest dialect, and the quoting with it,
+  // is this module's. What the shipped code does instead of guessing is
+  // `panicCanExcuseChange`: the capture stays quotable to the operator, and a
+  // Rust panic excuses a change-added failure ONLY on the base run's own
+  // per-test line naming that exact test FAILED — all three cases pinned below.
+  const unobserved = [
+    "running 2 tests",
+    "test g::one ... ok",
+    "test g::two ... ok",
+    pad(40, "unobs"),
+    rustPanicHeader("worker-3", "src/pool.rs:41:9"),
+    "assertion failed: the value the change broke",
+    "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured",
+    "make: *** [Makefile:12: e2e] Error 1",
+  ].join("\n");
+  const unobservedTail = extractAttributedTail(unobserved, 1500).tail;
+  const unobservedAssertion = extractSpecificAssertion(unobservedTail, unobserved);
+  assert(
+    unobservedAssertion.startsWith("thread 'worker-3' panicked at src/pool.rs:41:9:"),
+    `unobserved name (#2341): the worker-thread panic is still QUOTED to the operator (got ${JSON.stringify(unobservedAssertion.slice(0, 60))})`,
+  );
+  assert(
+    baselineExplainsChange(
+      {
+        status: "red",
+        rawStream: unobserved,
+        probed: true,
+        exitCode: 101,
+        assertion: unobservedAssertion,
+      },
+      [{ text: unobserved, timedOut: false }],
+    ) === false,
+    "unobserved name (#2341): and the same header never EXCUSES — the run reported no FAILED for that thread, so it is no evidence about the base",
+  );
+  // The guard is not a ban on panics: the same pair, with the name reported
+  // FAILED by the base run's own verdict line, still excuses.
+  const failingName = "g::bad";
+  const observedFailed = [
+    "running 2 tests",
+    "test g::one ... ok",
+    `test ${failingName} ... FAILED`,
+    rustPanicHeader(failingName, "src/bad.rs:3:3"),
+    "assertion failed: the value that was already broken at base",
+    "test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured",
+    "error: test failed, to rerun pass `--lib`",
+  ].join("\n");
+  const failedAssertion = extractSpecificAssertion(observedFailed, observedFailed);
+  assert(
+    baselineExplainsChange(
+      {
+        status: "red",
+        rawStream: observedFailed,
+        probed: true,
+        exitCode: 101,
+        assertion: failedAssertion,
+      },
+      [{ text: observedFailed, timedOut: false }],
+    ) === true,
+    `observed FAILED (#2341): a panic the base run DID report failing still excuses — the gate is evidence, not a ban (assertion ${JSON.stringify(failedAssertion.slice(0, 48))})`,
+  );
 }
 
 // ── 7. the record is not its own stream: publishers thread the raw run ──────

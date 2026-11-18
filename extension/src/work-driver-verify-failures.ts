@@ -157,11 +157,14 @@ export {
 // reader (`sharesAssertion`, `extractSpecificAssertion`) and the evidence-anchor
 // walk (`work-driver-exec-error.ts`) must ask the SAME predicates, so they are
 // re-exported here from `work-driver-verify-rust.ts` like the marker vocabulary
-// above.
+// above. The two name-correlated panic predicates travel together: one asks the
+// QUOTE, its mirror asks the EXCUSE, and the two may never disagree about what
+// the stream said about a name.
 export {
   isCargoTargetSummaryLine,
   isLibtestVerdictLine,
   isLocationlessCodeDiagnostic,
+  panicCanExcuseChange,
   panicIsCapturedPrint,
   rustPanicSamenessKey,
   rustPanicTestName,

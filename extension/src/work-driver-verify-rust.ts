@@ -6,9 +6,10 @@
  * Split out of `work-driver-verify-shapes.ts` along the natural seam
  * (AGENTS.md §12 file-size cap): that module's own header reserves it for the
  * TABLE DATA — the shape entries, their priority order, the pre-veto exemption
- * pair. The #2341 fix wave added the one predicate that has to SCAN a whole
+ * pair. The #2341 fix wave added the predicates that have to SCAN a whole
  * stream and decide, per test name, whether the run reported it as PASSING
- * ({@link panicIsCapturedPrint}) — stream-scanning LOGIC, which does not
+ * ({@link panicIsCapturedPrint}) or reported it AT ALL
+ * ({@link panicCanExcuseChange}) — stream-scanning LOGIC, which does not
  * belong in the data module and which pushed it past the cap. The direction
  * stays one-way (shapes → here for the dialect regexes; failures → here for
  * the predicates; nothing here imports either), which is what keeps the module
@@ -106,23 +107,49 @@ export function isLibtestVerdictLine(line: string): boolean {
  * libtest's per-test verdict line, with the test NAME and its verdict both
  * captured. The name group is the WHOLE span between `test ` and ` ... `,
  * compared with `===`, so `a::t` is answered for by neither `a::t2` nor
- * `a::t::nested`, and a verdict path that carries spaces is read rather than
- * silently unmatched. This line is the ONLY evidence
- * {@link panicIsCapturedPrint} consults, and each line speaks for exactly one
- * test.
+ * `a::t::nested`, and a doctest's SPACED verdict path
+ * (`test src/lib.rs - name (line 3) ... ok`) is read rather than silently
+ * unmatched — a `\S+` group there would make that whole class undecidable, and
+ * `test-verify-rust-veto-sweep.ts` carries one capture case with such a path so
+ * the re-spell goes red. This line is the ONLY evidence
+ * {@link panicIsCapturedPrint} and {@link panicCanExcuseChange} consult, and
+ * each line speaks for exactly one test.
  */
 const LIBTEST_PER_TEST_VERDICT_RE = /^test\s+(.+?)\s+\.\.\.\s+(ok|FAILED)\b/;
 
 /**
- * The ONE question the `#[should_panic]` veto asks (#2341): does the stream
- * report this `thread '<name>' panicked at …` print's OWN test as passing?
+ * The verdict libtest's per-test lines report for the EXACT `name` — `"ok"`
+ * MONOTONICALLY (any `ok` wins, so a later `FAILED` for the same name cannot
+ * unshield an earlier passing capture), `"FAILED"` when the name was seen
+ * failing and never ok, `undefined` when NO per-test line names it. One scan
+ * and one rule for both predicates below: they may never disagree about what
+ * the stream said about a name.
+ */
+function perTestVerdictFor(stream: string, name: string): "ok" | "FAILED" | undefined {
+  let verdict: "ok" | "FAILED" | undefined;
+  for (const raw of stream.split("\n")) {
+    const m = LIBTEST_PER_TEST_VERDICT_RE.exec(raw.trim());
+    if (m === null || m[1] !== name) continue;
+    if (m[2] === "ok") return "ok";
+    verdict ??= "FAILED";
+  }
+  return verdict;
+}
+
+/**
+ * The ONE question the `#[should_panic]` QUOTE gate asks (#2341): does the
+ * stream report this `thread '<name>' panicked at …` print's OWN test as
+ * passing? Its ONLY admissible evidence is one per-test verdict line for the
+ * header's exact name, and it is the quote's only gate — the excuse has its own
+ * rule ({@link panicCanExcuseChange}).
  * `true` means quoting it would be the #746/#798 class — a confident wrong
  * answer where honest absence was the truth. The directions are NOT
- * symmetric: quoting a passing capture makes
- * `baselineExplainsChange` excuse a failure the change added and spend the
- * cycle's one corrective round on a test that passes (silent, unrecoverable),
- * while `(no specific assertion could be extracted)` is loud, visible, and
- * costs one round — so every ambiguity resolves toward NOT quoting.
+ * symmetric: `(no specific assertion could be extracted)` is loud, visible, and
+ * costs one round, while a wrong quote spends the cycle's one corrective round
+ * on a test that passes (silent, unrecoverable) — so every ambiguity resolves
+ * toward NOT quoting. The two gates stay independent: even a print this gate
+ * did not refuse cannot excuse anything, because {@link panicCanExcuseChange}
+ * asks its own question of the same lines.
  *
  * The predicate IS the observed-passing question, asked over the WHOLE stream,
  * never a window (a window's elision is what made the verdict invisible; that
@@ -151,16 +178,18 @@ const LIBTEST_PER_TEST_VERDICT_RE = /^test\s+(.+?)\s+\.\.\.\s+(ok|FAILED)\b/;
  * otherwise green target (`worker-N`, `tokio-runtime-worker`, `<unnamed>`) and
  * a `#[should_panic]` DOCTEST (header `thread 'main' panicked at
  * src/lib.rs:5:5:`, verdict line `test src/lib.rs - name (line 3) ... ok`) name
- * no test the run reported, so their captured prints are still quotable and
- * `baselineExplainsChange` can then excuse a failure the change added. This is
- * the behaviour `main` has, not one this module added. Closing it needs
- * cargo's per-target banner identity (`     Running unittests src/main.rs (…)`,
- * `   Doc-tests pkg`) — the one thing that separates an enclosing run's
- * aggregate verdict, or a sibling crate's verdict, from this header's own test;
- * until a banner-based region exists, those two classes are quoted rather than
- * guessed away. The same absence is what makes a workspace in which two crates
- * use the same test name DELIBERATELY OVER-REFUSE the second crate's real
- * panic (see OBSERVED PASSING: any ok for the name wins).
+ * no test the run reported, so this predicate does not veto them and their
+ * captured prints are QUOTED. `main` recognises no Rust panic line at all, so
+ * those streams reported honest absence there — the cargo/libtest dialect, and
+ * the quoting with it, is this module's — and what the shipped code does about
+ * them instead of guessing is {@link panicCanExcuseChange}: they stay quotable
+ * to the operator and never excuse a failure the change added. Refusing the
+ * QUOTE too needs cargo's per-target banner identity (`     Running unittests
+ * src/main.rs (…)`, `   Doc-tests pkg`) — the one thing that separates an
+ * enclosing run's aggregate verdict, or a sibling crate's verdict, from this
+ * header's own test. The same absence is what makes a workspace in which two
+ * crates use the same test name DELIBERATELY OVER-REFUSE the second crate's
+ * real panic (see OBSERVED PASSING: any ok for the name wins).
  *
  * The #1762 counterweight follows from the same rule: an early green STAGE
  * followed by a later binary dying as `main` has no `test main ... ok` line,
@@ -168,12 +197,25 @@ const LIBTEST_PER_TEST_VERDICT_RE = /^test\s+(.+?)\s+\.\.\.\s+(ok|FAILED)\b/;
  */
 export function panicIsCapturedPrint(stream: string, name: string | undefined): boolean {
   if (name === undefined) return false;
-  let okSeen = false;
-  for (const raw of stream.split("\n")) {
-    const m = LIBTEST_PER_TEST_VERDICT_RE.exec(raw.trim());
-    if (m !== null && m[1] === name && m[2] === "ok") okSeen = true;
-  }
-  return okSeen;
+  return perTestVerdictFor(stream, name) === "ok";
+}
+
+/**
+ * The excuse gate for a Rust-legible base assertion, and the only one: a panic
+ * header excuses a change-added failure ONLY when the base run's OWN per-test
+ * verdict line reports its exact test name as `FAILED`. Nothing else is
+ * admissible — not an `ok`, not an unobserved name, not the target-level
+ * `test result:` tally, not a `---- <name> stdout ----` block label. Text that
+ * is not a panic header is not this rule's to refuse, so it answers `true` and
+ * the classic containment rule decides. {@link panicIsCapturedPrint} is the
+ * quote's only gate: the two ask different questions of the same lines, and they
+ * fail in opposite directions — this one refuses to excuse, that one never
+ * refuses to quote.
+ */
+export function panicCanExcuseChange(stream: string, assertion: string): boolean {
+  if (!PANIC_HEADER_LOOK_RE.test(assertion)) return true;
+  const name = rustPanicTestName(assertion);
+  return name !== undefined && perTestVerdictFor(stream, name) === "FAILED";
 }
 
 /**

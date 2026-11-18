@@ -31,8 +31,13 @@
  *
  * KNOWN-DEFERRED, NOT COVERED HERE: the unobserved-name classes — a panic on a
  * non-test thread inside an otherwise green target, and a `#[should_panic]`
- * doctest — are refused by nothing in the shipped predicate (cargo per-target
- * banner identity is the missing evidence), so no case here generates them.
+ * doctest — are refused by nothing in the shipped QUOTE veto (cargo per-target
+ * banner identity is the missing evidence), so no case here generates them; the
+ * excuse gate (`panicCanExcuseChange`) excuses nothing from their headers, and
+ * the two shapes a follow-up must pin alongside it are the ninth pass's
+ * aborted-target then green-target composite (one target aborts with its panic,
+ * the next closes `0 failed`) and the `---- <name> stdout ----` block label
+ * (a label names its own block, never the header below it).
  */
 
 import {
@@ -92,8 +97,13 @@ const neuteredVeto: Veto = () => false;
  * (last `\S+`-token line for the name decides; no monotone-any-ok rule; the
  * spaced doctest path unmatchable). It is a deliberately dead copy: nothing but
  * this control reads it, and it exists so the sweep proves it can SEE the
- * defects the shipped predicate fixed — the monotone-any-ok rule and the
- * whole-span name matcher are the only differences the corpus still exercises.
+ * defects the shipped predicate fixed. BOTH of its differences from the shipped
+ * rule are exercised: the same-named-crate capture below is what the monotone
+ * any-ok rule costs it, and the spaced-doctest-path capture is what the
+ * whole-span name matcher costs it — 8 permutations each, so either rule being
+ * re-spelled away shows up in this control's count AND in the shipped sweep's
+ * under-refusals. A control whose count came from one rule alone would be blind
+ * to the other's regression.
  */
 const PRE_WAVE_VERDICT_RE = /^test\s+(\S+)\s+\.\.\.\s+(ok|FAILED)\b/;
 const preWaveVeto: Veto = (stream, name) => {
@@ -150,6 +160,29 @@ function cases(): Case[] {
           "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured",
         ].join("\n"),
         header: header("shared::t", "src/a.rs:1:1"),
+        kind: "capture",
+      });
+
+      // CAPTURE: the `#[should_panic]` DOCTEST print whose thread name IS the
+      // SPACED verdict path (libtest names each test thread after the test) —
+      // the shape the WHOLE-SPAN name group exists for. With a `(\S+)` name
+      // group the matcher captures `src/lib.rs`, the name's `ok` line goes
+      // unmatched, and the passing capture is quoted: this is the one case in
+      // the corpus that tells the two matchers apart, so a re-spell of the
+      // shipped group back to `(\S+)` goes red here and nowhere else.
+      const spaced = "src/lib.rs - parses (line 3)";
+      out.push({
+        stream: [
+          ...head,
+          "running 1 test",
+          `test ${spaced} ... ok`,
+          header(spaced, "src/lib.rs:5:5"),
+          "explicit panic",
+          "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured",
+          "make: *** [Makefile:12: e2e] Error 1",
+          ...pad(p, "dt"),
+        ].join("\n"),
+        header: header(spaced, "src/lib.rs:5:5"),
         kind: "capture",
       });
 
