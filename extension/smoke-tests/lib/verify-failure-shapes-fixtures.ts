@@ -241,6 +241,31 @@ export const RUST_SHOULD_PANIC_TRAP_STREAM = rustShouldPanicTrapStream(true);
 export const RUST_SHOULD_PANIC_TRAP_AFTER_STREAM = rustShouldPanicTrapStream(false);
 
 /**
+ * #2341 fix wave 4 (H1/H2) — the captured `#[should_panic]` panic whose OWN
+ * `test a::t ... ok` verdict line is invisible to the ≤1500-char window the
+ * anchor walk is about to produce. Padding on both sides puts the elision cut
+ * between the header and its verdict line, so the window built from the
+ * capture's own offset holds the header but not the line that proves the test
+ * passed: a veto asked only on THAT window answers "no verdict observed" and
+ * lets the capture own the anchor and become the assertion — the two readers
+ * disagreeing because they ask on two different line sets. The unannotated
+ * noise lines are what keeps the stream free of any other anchor candidate,
+ * so the capture is the ONLY recognised line and any attribution it earns is
+ * the walk volunteering it, not the last-resort slice.
+ */
+const VERDICT_OUTSIDE_WINDOW_NOISE = Array.from(
+  { length: 60 },
+  (_, n) => `crate dep_${n} downloaded and compiled`,
+).join("\n");
+export const RUST_VERDICT_OUTSIDE_WINDOW_STREAM = [
+  VERDICT_OUTSIDE_WINDOW_NOISE,
+  rustPanicHeader("a::t", "src/a.rs:7:5"),
+  "explicit panic",
+  "test a::t ... ok",
+  VERDICT_OUTSIDE_WINDOW_NOISE,
+].join("\n");
+
+/**
  * #2341 fix wave (H2) — two location-less rustc `error[E…]` failures from
  * DIFFERENT files. cargo prints the location on the SEPARATE following
  * `--> file:line:col` line, so the two `error[…]` lines are byte-identical

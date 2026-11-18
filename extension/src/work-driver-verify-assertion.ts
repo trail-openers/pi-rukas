@@ -295,8 +295,11 @@ export function extractSpecificAssertion(failureTail: string): string {
       // all — a truncated window, a single-line fixture) vetoes nothing: an
       // absent observation is not a verdict either way. ONE predicate with the
       // evidence-anchor walk, which asks the same veto before letting a header
-      // own the anchor — see `work-driver-exec-error.ts`.
-      if (libtestVerdictForTest(lines, rustPanicTestName(candidate)) === false) continue;
+      // own the anchor — see `work-driver-exec-error.ts`. #2341 fix wave 4
+      // (H1/H2): the predicate takes the WINDOW TEXT and derives its own lines
+      // (the walk hands it the very window `tailFromAnchor` builds for this
+      // tail), so the two readers ask one question over one line set.
+      if (libtestVerdictForTest(failureTail, rustPanicTestName(candidate)) === false) continue;
       return redactedAssertion(joinedRustPanic(candidate, lines[i + 1]));
     }
     return redactedAssertion(candidate);

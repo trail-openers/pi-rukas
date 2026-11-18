@@ -8,12 +8,16 @@
  * naive `.slice(-N)` window.
  */
 
-import { extractSpecificAssertion } from "../src/work-driver-consolidation-classify.ts";
+import {
+  NO_SPECIFIC_ASSERTION,
+  extractSpecificAssertion,
+} from "../src/work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
 import {
   RUST_CARGO_STREAM,
   RUST_SHOULD_PANIC_TRAP_AFTER_STREAM,
   RUST_TRAP_PAIR,
+  RUST_VERDICT_OUTSIDE_WINDOW_STREAM,
 } from "./lib/verify-failure-shapes-fixtures.ts";
 
 let exit = 0;
@@ -180,6 +184,36 @@ function assert(cond: boolean, msg: string) {
   assert(
     extractSpecificAssertion(tail) === RUST_TRAP_PAIR,
     `cargo anchor (#2341 H1): the failing test's pair survives the window (got: ${JSON.stringify(extractSpecificAssertion(tail))})`,
+  );
+}
+
+// 3e. #2341 fix wave 4 (H1/H2) — the per-test verdict of the captured name is
+// visible ONLY OUTSIDE the 1500-char window: the elision cut lands between the
+// panic header and its own `test a::t ... ok` line, so a veto asked on the
+// window alone sees no verdict and lets the capture own the anchor and become
+// the assertion. The anchor walk now asks the shared predicate on the very
+// window it is about to produce AND on the whole stream, and a header whose
+// test any observed verdict line reports as passing is refused at BOTH tiers —
+// not named, not even a last-resort anchor. The control below keeps the veto
+// name-correlated rather than a ban: with no verdict for the name anywhere,
+// nothing was observed and the header still anchors.
+{
+  const { tail, attributed } = extractAttributedTail(RUST_VERDICT_OUTSIDE_WINDOW_STREAM, 1500);
+  assert(
+    !tail.startsWith("thread '"),
+    `cargo anchor (#2341 H1/H2): the captured panic does not own the anchor even though its ok line is outside the window (got: ${JSON.stringify(tail.slice(0, 40))})`,
+  );
+  assert(
+    extractSpecificAssertion(tail) === NO_SPECIFIC_ASSERTION,
+    `cargo anchor (#2341 H1/H2): the captured panic never becomes the assertion (got: ${JSON.stringify(extractSpecificAssertion(tail).slice(0, 60))})`,
+  );
+  const unobserved = extractAttributedTail(
+    RUST_VERDICT_OUTSIDE_WINDOW_STREAM.replace("test a::t ... ok\n", ""),
+    1500,
+  );
+  assert(
+    unobserved.attributed && unobserved.tail.startsWith("thread '"),
+    "cargo anchor (#2341 H1/H2): an unobserved verdict vetoes nothing — the header still anchors when no verdict line exists",
   );
 }
 

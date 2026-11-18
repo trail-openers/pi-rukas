@@ -112,9 +112,10 @@ export function isLibtestVerdictLine(line: string): boolean {
  *     1500-char tail, a hand-built single-line fixture). Nothing was observed,
  *     so nothing is vetoed.
  */
-function libtestWindowVerdict(lines: readonly string[]): boolean | undefined {
+function libtestWindowVerdict(window: string): boolean | undefined {
   let seen = false;
-  for (const line of lines) {
+  for (const raw of window.split("\n")) {
+    const line = raw.trim();
     if (!LIBTEST_VERDICT_RE.test(line)) continue;
     seen = true;
     if (LIBTEST_FAILING_VERDICT_RE.test(line)) return true;
@@ -126,8 +127,8 @@ function libtestWindowVerdict(lines: readonly string[]): boolean | undefined {
 const LIBTEST_PER_TEST_VERDICT_RE = /^test\s+(\S+)\s+\.\.\.\s+(ok|FAILED)\b/;
 
 /**
- * The NAME-correlated answer to "does this window report test `<name>` as
- * FAILED?" (#2341 fix wave H1) — the ONE predicate the extractor's
+ * The NAME-correlated answer to "does the text `window` report test `<name>`
+ * as FAILED?" (#2341 fix wave H1) — the ONE predicate the extractor's
  * `should_panic` veto and the evidence-anchor walk (`work-driver-exec-error.ts`)
  * both ask, so the veto and the anchor cannot disagree about which panic
  * names a failing test. A per-test verdict line for THIS name is decisive
@@ -137,19 +138,31 @@ const LIBTEST_PER_TEST_VERDICT_RE = /^test\s+(\S+)\s+\.\.\.\s+(ok|FAILED)\b/;
  * window's tri-state ({@link libtestWindowVerdict}): a clipped window must
  * not veto a header the run really did fail on, and an unobserved verdict
  * vetoes nothing.
+ *
+ * #2341 fix wave 4 (H1/H2) — the predicate takes the WINDOW TEXT and derives
+ * its own lines. The two readers used to hand it two different line sets (the
+ * walk the whole stream, the extractor its ≤1500-char window) and the answer
+ * was not monotone in where the anchor landed — a captured panic's `... ok`
+ * visible to one reader and elided from the other is how the capture still
+ * won. The line set is now PART OF THE PREDICATE'S CONTRACT: every reader
+ * hands it a text and the predicate owns the split (trim, per line), so two
+ * readers asking about the same text cannot ask about different lines. A
+ * reader that asks about a different text (the walk also asks about the whole
+ * stream) is making a different, explicit question — never the same question
+ * answered twice from drifting line sets.
  */
 export function libtestVerdictForTest(
-  lines: readonly string[],
+  window: string,
   name: string | undefined,
 ): boolean | undefined {
   let verdict: boolean | undefined;
   if (name !== undefined) {
-    for (const line of lines) {
-      const m = LIBTEST_PER_TEST_VERDICT_RE.exec(line);
+    for (const raw of window.split("\n")) {
+      const m = LIBTEST_PER_TEST_VERDICT_RE.exec(raw.trim());
       if (m !== null && m[1] === name) verdict = m[2] === "FAILED";
     }
   }
-  return verdict ?? libtestWindowVerdict(lines);
+  return verdict ?? libtestWindowVerdict(window);
 }
 
 /**
