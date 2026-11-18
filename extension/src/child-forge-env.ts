@@ -48,6 +48,7 @@
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { FORGE_READ_SECRET_ENV, FORGE_READ_SOCKET_ENV } from "./child-forge-read-activation.ts";
 import { trace } from "./trace.ts";
 
 /** The five variables that carry a forge login to `gh` / `glab`. */
@@ -87,12 +88,20 @@ export const OPS_ROLE = "ops";
  *
  * `source` is the env copied, and defaults to `process.env` — a test states its
  * own credentials rather than inheriting whatever the suite process carries.
+ *
+ * The one pair that does NOT travel is `PI_ENSEMBLE_FORGE_READ_SOCKET` and
+ * `PI_ENSEMBLE_FORGE_READ_SECRET`: that broker pair is the PARENT's own — it
+ * authenticates `forge_read` from a helper child that has no login — and a
+ * driver exec is neither, so it gets the credentials and none of the socket.
  */
 export function glabCreateEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(source)) {
     if (v !== undefined) env[k] = v;
   }
+  // Deleted, never assigned `undefined` — see `buildChildForgeEnv`.
+  Reflect.deleteProperty(env, FORGE_READ_SOCKET_ENV);
+  Reflect.deleteProperty(env, FORGE_READ_SECRET_ENV);
   env.CI = "1";
   env.GIT_TERMINAL_PROMPT = "0";
   return env;
@@ -120,7 +129,8 @@ export function keepsForgeLogin(role: string): boolean {
  * reattach path, and any path that strips without serving a broker — it makes a
  * private `mkdtemp` dir of its own, so the returned path is always a whole
  * directory the caller may `rmSync`: never a sibling name inside a temp root
- * someone else owns.
+ * someone else owns. In that root-less arm — the reattach path — the directory
+ * is allocated here and this module never removes it: the caller owns it.
  */
 export function createChildForgeConfigDir(root?: string): string {
   const parent = root ?? mkdtempSync(join(tmpdir(), "pi-rukas-forge-"));

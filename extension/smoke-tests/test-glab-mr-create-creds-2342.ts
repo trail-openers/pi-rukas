@@ -107,6 +107,34 @@ await withEnv(
   },
 );
 
+// The parent's forge_read broker pair is the parent's OWN credential surface: a
+// `glab` child holds no forge_read tool and no socket to dial, so forwarding the
+// pair would hand a driver exec a path to the parent's broker. It is deleted
+// here while every real credential stays.
+await withEnv(
+  {
+    GITLAB_TOKEN: TOKEN,
+    GLAB_CONFIG_DIR: CONFIG_DIR,
+    PI_ENSEMBLE_FORGE_READ_SOCKET: "/run/parent/broker.sock",
+    PI_ENSEMBLE_FORGE_READ_SECRET: "0".repeat(64),
+  },
+  async () => {
+    const env = await envOfTheCreate(process.env as Record<string, string>);
+    assert(
+      !("PI_ENSEMBLE_FORGE_READ_SOCKET" in (env ?? {})),
+      `the create carries no parent broker socket (got ${String(env?.PI_ENSEMBLE_FORGE_READ_SOCKET)})`,
+    );
+    assert(
+      !("PI_ENSEMBLE_FORGE_READ_SECRET" in (env ?? {})),
+      `the create carries no parent broker secret (got ${String(env?.PI_ENSEMBLE_FORGE_READ_SECRET)})`,
+    );
+    assert(
+      env?.GITLAB_TOKEN === TOKEN,
+      `deleting the broker pair leaves GITLAB_TOKEN in place (got ${String(env?.GITLAB_TOKEN)})`,
+    );
+  },
+);
+
 // ── 2. the helper-child strip is NOT regressed ─────────────────────────────
 
 {
