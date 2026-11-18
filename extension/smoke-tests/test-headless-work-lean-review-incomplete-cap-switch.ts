@@ -356,6 +356,13 @@ for (const [value, want] of [
     ["round missing three severities", [{ CRITICAL: 0 }]],
     ["string entry", ["x"]],
     ["number entry", [7]],
+    // The two sparse shapes: a predicate that visits only present indices agrees with the
+    // loader on contiguous arrays and silently skips what the loader reads as `undefined`.
+    ["sole entry is a hole (new Array(1))", new Array(1) as unknown[]],
+    [
+      "hole beside a well-formed round",
+      Object.assign(new Array(2) as unknown[], { 1: allZero()[0] }),
+    ],
   ] as [string, unknown[]][]) {
     const malformed =
       (await driveLean("handed-back", 10, withReviews(ready, [malformedRoundsReviewStep(rounds)])))

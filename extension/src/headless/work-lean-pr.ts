@@ -234,7 +234,10 @@ export function reviewCompleteOf(steps: Step[]): boolean {
   // is array-shaped non-evidence, and this precondition is the last line of defence.
   const rounds = outcome?.review?.rounds;
   if (!Array.isArray(rounds) || rounds.length === 0) return false;
-  if (rounds.some((round) => reviewRoundProblem(round) !== undefined)) return false;
+  // Match the loader's iteration, which yields holes as undefined.
+  for (const round of rounds) {
+    if (reviewRoundProblem(round) !== undefined) return false;
+  }
   const wave = outcome?.kind === REVIEW_FIXED ? lastWaveHead(outcome) : undefined;
   if (wave === undefined) return lastAttempt(steps, "publish") < review;
   // Undecided-inclusive, as the position rule is: one publish attempt after the review that
