@@ -24,7 +24,10 @@ import {
   GATE_HANG_NO_NAMED_TEST as NO_NAMED_TEST,
   isGateHangFailure,
 } from "./work-driver-gate-hang.ts";
-import { BASELINE_RED_MARKER } from "./work-driver-verify-baseline.ts";
+import {
+  BASELINE_RED_MARKER,
+  BASELINE_STALE_BASE_MARKER,
+} from "./work-driver-verify-baseline.ts";
 import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
 import type { VerifyEvidenceOrigin } from "./workflow-state-schema-verify.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
@@ -222,7 +225,12 @@ export function explainVerifyFailed(cap: Cap, state: WorkState): string {
   // send the operator to a diff that was never the problem.
   if (failures.some(isBuildResidueFailure)) return buildResidueText(step, findings, suffix);
   const advice = failures.some((f) => f.startsWith(BASELINE_RED_MARKER))
-    ? "The verify command already fails at the cycle's base commit — fix the gate there (or the host it runs on) before inspecting the worktree(s), then re-run."
+    ? // #2341 — a recorded stale-base finding says the base trails the default
+      // branch; "fix the gate there" is the advice that sent an operator to
+      // chase a base no change could ever turn green.
+      failures.some((f) => f.includes(BASELINE_STALE_BASE_MARKER))
+      ? "The verify command already fails at the cycle's base commit, and the finding says the base trails the default branch — re-run against a base that includes the default branch before treating the base gate as broken."
+      : "The verify command already fails at the cycle's base commit — fix the gate there (or the host it runs on) before inspecting the worktree(s), then re-run."
     : "Inspect the worktree(s), fix or re-dispatch, and re-run.";
   const merged = step === "develop" ? mergedSplitNote(state) : "";
   return `the driver's outcome-verification gate rejected the ${step} step's "done" claim — the claimed result is not backed by executed evidence:${findings}${suffix}${merged}\nNo LLM judged this; the driver ran the checks itself (git diff/rev-list, the project's verify command, gh pr view). ${advice} Set PI_ENSEMBLE_VERIFY=0 to disable the gate (not recommended)`;
@@ -275,8 +283,19 @@ export function explainNoVerdictCap(cap: Cap, state: WorkState): string | undefi
       if (ev?.step === step && ev.buildResidueOnly === true)
         return buildResidueText(step, bullets(failures), suffix);
       return hostExhaustionText(step, bullets(failures), suffix);
-    case "verify-baseline-red":
-      return `the ${step} step's verify command already fails at the cycle's base commit, without this change — the gate was red before the change was written, so no change can pass it and it reached no verdict on this one:${bullets(failures)}${suffix}\nFix the gate at the base commit (or the host it runs on) first, then re-run the cycle. The change is not implicated until the base is green. Do not set PI_ENSEMBLE_VERIFY=0 for this: the gate is broken at base, not wrong about the change`;
+    case "verify-baseline-red": {
+      // #2341 — when the recorded finding carries the stale-base marker, the
+      // red is plausibly explained by commits already on the default branch;
+      // telling the operator to fix the gate at the base commit is advice that
+      // cannot be acted on (no change on that base makes it green), so this
+      // route drops it and names the divergence instead. Without the marker
+      // the classic advice is unchanged — an absent probe is never a claim.
+      const stale = failures.some((f) => f.includes(BASELINE_STALE_BASE_MARKER));
+      const advice = stale
+        ? "The recorded finding says the base trails the default branch, which already carries commits this base predates — re-run the cycle against a base that includes the default branch; the base commit itself is not what to fix first."
+        : "Fix the gate at the base commit (or the host it runs on) first, then re-run the cycle.";
+      return `the ${step} step's verify command already fails at the cycle's base commit, without this change — the gate was red before the change was written, so no change can pass it and it reached no verdict on this one:${bullets(failures)}${suffix}\n${advice} The change is not implicated until the base is green. Do not set PI_ENSEMBLE_VERIFY=0 for this: the gate is broken at base, not wrong about the change`;
+    }
     case "pr-not-open":
       return `${prNotOpenText(step, failures)}${suffix}`;
     case "fix-pass-park":

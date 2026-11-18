@@ -19,10 +19,11 @@
  *     36 cases, 0 failed` contains the substring `fail`, matches a naive
  *     `/error|fail/i`, and was printed as the top evidence of a handoff. So every
  *     classifier asks `isSuccessLine` first, and a key that can also occur inside
- *     an ordinary word is anchored (`^\s*ok\s+\d`, never /ok/). ONE shape is
- *     exempt: the runner's assertion mark, which {@link matchShape} asks BEFORE
- *     that veto because a failing assertion is printed with the count it expected
- *     (`✗ expected 0 failures`). See that function for why the exemption cannot
+ *     an ordinary word is anchored (`^\s*ok\s+\d`, never /ok/). The runner's own
+ *     VERDICT shapes (the assertion mark, the payload marker, the Rust panic
+ *     header) are exempt — {@link matchShape} asks them BEFORE that veto because
+ *     a failing assertion is printed with the count it expected
+ *     (`✗ expected 0 failures`). See that function for why the exemptions cannot
  *     admit a passing tally.
  *   - One line, one shape. The table is tried in priority order and the first
  *     match wins, so `not ok 3 - x` reports `not-ok` and never `ok`.
@@ -57,7 +58,11 @@ export type FailureShape =
   | "tap-not-ok"
   | "pytest-failed"
   | "pytest-error"
-  | "go-fail";
+  | "go-fail"
+  /** The Rust panic header (#2341): `thread 'x' panicked at FILE:LINE:`. */
+  | "rust-panic"
+  /** cargo's target-level test summary (#2341): names a target, never a check. */
+  | "cargo-summary";
 
 /**
  * ONE RULE PER SHAPE: whether a line carrying it may be the line the operator is
@@ -92,6 +97,11 @@ export const SHAPE_NAMES_A_CHECK: Record<FailureShape, boolean> = {
   "pytest-failed": true,
   "pytest-error": true,
   "go-fail": true,
+  // #2341 — the panic header names the failing test; the trailing cargo
+  // summary names only the target, so it may anchor evidence but can never be
+  // "the specific assertion", and no sameness rule may fire on it alone.
+  "rust-panic": true,
+  "cargo-summary": false,
 };
 
 /** What `classifyFailureLine` decided about one line. */
@@ -124,6 +134,11 @@ export {
   isBareFailedMarker,
   scriptTallyCount,
 } from "./work-driver-verify-marker.ts";
+
+// #2341 — the cargo target-summary predicate is failure-line vocabulary: the
+// table's own entry and every sameness reader (`sharesAssertion`) must ask the
+// SAME predicate, so it is re-exported here like the marker vocabulary above.
+export { isCargoTargetSummaryLine } from "./work-driver-verify-shapes.ts";
 
 import { FAILED_MARKER_RE, isBareFailedMarker } from "./work-driver-verify-marker.ts";
 import {

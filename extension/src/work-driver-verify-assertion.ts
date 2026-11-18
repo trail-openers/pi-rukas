@@ -34,6 +34,7 @@ import {
   classifyFailureLine,
   harnessInnerLine,
   isBareFailedMarker,
+  isCargoTargetSummaryLine,
   isHarnessWrapper,
 } from "./work-driver-verify-failures.ts";
 
@@ -161,6 +162,29 @@ function redactedAssertion(candidate: string): string {
 }
 
 /**
+ * #2341 — join a Rust panic header with its message line. libtest prints the
+ * failing verdict as TWO lines — `thread 'NAME' panicked at FILE:LINE:` then
+ * the message (`fast path took 101.409582ms, which is over the 100 ms bound`)
+ * — and only the pair names the measured value and the bound the operator
+ * needs; the header alone sent the nessie 1415 handoff hunting for a memory
+ * problem while the decisive line sat in the same window. The message is
+ * joined only when the header ends at its colon (the pre-1.73 single-line
+ * form carries it inline) and the next line is still the message: a `note:`,
+ * a `---- ` block separator, another classified failure line, or a
+ * marker/echo/secret-shaped line is NOT the message, and a half-pair is
+ * returned as the header — it still names the test, file and line, which
+ * beats reporting absence for a truncation the window caused. An empty
+ * `lines[i + 1]` (the pair cut between the two lines) takes this same path.
+ */
+function joinedRustPanic(header: string, next: string | undefined): string {
+  if (!header.endsWith(":")) return header;
+  if (next === undefined) return header;
+  if (/^(note:|----|thread\s+')/.test(next)) return header;
+  if (isNonAssertionLine(next) || classifyFailureLine(next) !== undefined) return header;
+  return `${header} ${next}`;
+}
+
+/**
  * Extract the specific failing assertion from a consolidated-verify failure
  * tail. The tail comes from `extractAttributedTail` — when `attributed:
  * true` it starts at a `FAILED:` marker (post-#804 the LAST one, the
@@ -201,7 +225,7 @@ export function extractSpecificAssertion(failureTail: string): string {
     if (candidate === undefined || isNonAssertionLine(candidate)) continue;
     if (/^✗\s/.test(candidate)) return redactedAssertion(candidate);
   }
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
     const candidate = assertionCandidate(line);
     if (candidate === undefined || isNonAssertionLine(candidate)) continue;
     // The count summary is the one BARE-marker-shaped line this reader KEEPS — the
@@ -214,9 +238,18 @@ export function extractSpecificAssertion(failureTail: string): string {
     // (an operator sent to a file, and the one corrective round spent there). Only
     // a line that names a check may be the specific assertion, so a bare marker
     // stays refused however it classifies, and the count-summary exception above
-    // stays the only marker-shaped line that survives.
+    // stays the only marker-shaped line that survives. #2341 adds the same veto on
+    // shape: cargo's `error: test failed, to rerun pass \`--bin X\`` summary is
+    // recognised (`cargo-summary`) but names only the target, so a stream whose
+    // only recognised line is that summary now reports ABSENCE — the honest
+    // absence the #807 sentinel exists for — instead of quoting the least useful
+    // line in the run as "the assertion".
     if (isMarkerLine(candidate) && !isCountSummary(candidate)) continue;
-    if (classifyFailureLine(candidate)?.namesTest === true) return redactedAssertion(candidate);
+    const kind = classifyFailureLine(candidate);
+    if (kind?.namesTest !== true) continue;
+    if (kind.shape === "rust-panic")
+      return redactedAssertion(joinedRustPanic(candidate, lines[i + 1]));
+    return redactedAssertion(candidate);
   }
   return NO_SPECIFIC_ASSERTION;
 }
@@ -229,7 +262,21 @@ export function extractSpecificAssertion(failureTail: string): string {
  * miss) where the identical `✗ …` line sat invisibly underneath. The
  * sentinel never matches — absence on either side is not evidence of a
  * shared cause.
+ *
+ * #2341 — sameness FAILS CLOSED on a target-level cargo summary. Every
+ * failing test in one cargo target prints the byte-identical
+ * `error: test failed, to rerun pass \`--bin X\`` line, so substring
+ * containment on that line claims "the SAME assertion" between two genuinely
+ * different Rust test failures — and `baselineExplainsChange` excuses a
+ * regression the change itself introduced. The extractor can no longer
+ * produce such an assertion (the `cargo-summary` shape is `namesTest:
+ * false`), but this reader is the sameness gate for hand-built values too,
+ * so it refuses the summary wherever it arrives from.
  */
 export function sharesAssertion(consolidated: string, per: string): boolean {
-  return per !== NO_SPECIFIC_ASSERTION && consolidated.includes(per);
+  return (
+    per !== NO_SPECIFIC_ASSERTION &&
+    !isCargoTargetSummaryLine(per) &&
+    consolidated.includes(per)
+  );
 }

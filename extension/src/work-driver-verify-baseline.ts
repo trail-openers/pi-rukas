@@ -44,6 +44,36 @@ import { type ExecFn, worktreePath } from "./worktree.ts";
 export const BASELINE_RED_MARKER = "[baseline-red]";
 
 /**
+ * #2341 — rides mid-string on a `baselineRedMessage` whose red is plausibly
+ * explained by commits the base predates on the default branch. The two
+ * explainers (`explainNoVerdictCap`, `explainVerifyFailed`) key on it to drop
+ * the "Fix the gate at the base commit" instruction, which is unactionable
+ * advice when the base can never go green because mainline already moved on.
+ */
+export const BASELINE_STALE_BASE_MARKER = "[baseline-behind-default-branch]";
+
+/**
+ * #2341 — the tri-state answer of the stale-base probe, asked only after a
+ * base run came back red. `behind` is the git fact the handoff may state
+ * (base is a strict ancestor of the default-branch tip, N commits back);
+ * `not-behind` is the answer that keeps the fix-the-base advice; `unknown` is
+ * an unreadable probe — it never reads as "the red is not explained by
+ * mainline commits" with confidence, so the handoff says it could not
+ * establish the fact. Silence is never a pass in either direction.
+ */
+export type BaseBehindDefaultBranch =
+  | {
+      status: "behind";
+      /** The default branch name ("main"), without the remote prefix. */
+      branch: string;
+      commitsBehind: number;
+      /** `git log --oneline` subjects of the missing commits, newest first. */
+      commits: readonly string[];
+    }
+  | { status: "not-behind" }
+  | { status: "unknown"; reason: string };
+
+/**
  * The ONE naming rule for a baseline probe's throwaway worktree. Exported
  * because the attribution seam has to name the same tree the probe creates —
  * it hands that path to the name comparison as the root the base run's names
@@ -123,6 +153,13 @@ interface RedBaselineExtra {
    * (`workflow-state-schema-base-health.ts`).
    */
   secondRun?: "green" | "red" | "red-timed-out" | "unknown";
+  /**
+   * #2341 — the stale-base probe's answer, computed by `probeBaselineVerify`
+   * only on a freshly red arm. Absent (a reused arm, or an arm rebuilt from a
+   * cache record) means the probe did not ask, which renders as the plain
+   * fix-the-base advice — the pre-#2341 text, never a claim either way.
+   */
+  staleBase?: BaseBehindDefaultBranch;
 }
 
 export type RedBaselineVerdict =
@@ -244,9 +281,28 @@ export async function probeBaselineVerify(
       // (`failingTestNames` parses its `FAILED:` markers, and the 1500-char
       // assertion window would elide all but the last of them).
       const assertion = extractSpecificAssertion(extractAttributedTail(raw, 1500).tail);
+      // #2341 — a red base may be red only because it predates commits already
+      // on the default branch (nessie 1415: the base predated the fix for the
+      // very check that was red, so the handoff told the operator to fix a
+      // gate no change could pass). Ask the git fact HERE, where `execFn` and
+      // `repoRoot` exist — `baselineRedMessage` only renders. The probe tree
+      // is detached and may lack the remote refs, so the reads run against
+      // the cycle's own checkout, on the driver's host env like its other
+      // git calls. A `red-timed-out` arm never gets here: a killed run
+      // judges nothing, including staleness.
+      const staleBase = await probeBaseBehindDefault(execFn, {
+        repoRoot,
+        baseSha,
+        env: hostEnv,
+      });
       return {
         status: "red",
-        assertion: assertion === NO_SPECIFIC_ASSERTION ? null : assertion.slice(0, 200),
+        // 400, not 200: the nessie 1415 panic pair is ~206 code points and the
+        // AC1 clause the operator needs ("which is over the 100 ms bound")
+        // sits at the END of it — a 200-code-point clip amputated exactly the
+        // decisive text. The cap stays well inside the 800-char evidence
+        // bound the failure string must fit.
+        assertion: assertion === NO_SPECIFIC_ASSERTION ? null : assertion.slice(0, 400),
         rawStream: raw,
         // #1404 — the gate judged itself. The loop's own SUMMARY line
         // (`verify-report.sh`'s `FAILED: <n> test(s) — …`) is the positive
@@ -258,11 +314,92 @@ export async function probeBaselineVerify(
         // base commit's tests.
         probed: summaryCount(raw) !== undefined,
         exitCode: typeof e.code === "number" ? e.code : null,
+        staleBase,
       };
     }
   } finally {
     await remove();
   }
+}
+
+/**
+ * #2341 — is the red base simply BEHIND the default branch? Three local git
+ * reads against the cycle's own checkout (the probe tree is detached and
+ * carries no remote refs), and every one is TRI-STATE: a git call that could
+ * not answer is `unknown`, never a silent "no" — the same rule
+ * `work-driver-adversarial-fix-git.ts`'s `isAncestor` follows, including its
+ * exit-code convention (`merge-base --is-ancestor` exits 1 for a definitive
+ * non-ancestor; any other failure is an unreadable probe).
+ *
+ * Local reads only — no `gh`, no network — because this runs on the red
+ * path inside the develop gate and a network probe there is a hang the gate
+ * did not budget for. `origin/HEAD` is the primary resolution with `main`
+ * and `master` as the two names every clone answers to; a clone whose
+ * default branch is neither gets `unknown`, not a guess.
+ *
+ * `behind` requires BOTH halves of the git fact: the base is a strict
+ * ancestor of the default-branch tip AND commits sit between them. A
+ * diverged base (not an ancestor) is `not-behind`: the probe cannot claim
+ * mainline moves the red for a base that carries its own commits.
+ */
+async function probeBaseBehindDefault(
+  execFn: ExecFn,
+  opts: { repoRoot: string; baseSha: string; env?: NodeJS.ProcessEnv },
+): Promise<BaseBehindDefaultBranch> {
+  const git = async (
+    argv: string[],
+  ): Promise<{ ok: true; stdout: string } | { ok: false; code?: number; reason: string }> => {
+    try {
+      const { stdout } = await execFn("git", {
+        argv,
+        cwd: opts.repoRoot,
+        maxBuffer: 256 * 1024,
+        timeout: 30_000,
+        ...(opts.env === undefined ? {} : { env: opts.env }),
+      });
+      return { ok: true, stdout };
+    } catch (err) {
+      const e = err as Error & { code?: number | string };
+      const code = typeof e.code === "number" ? e.code : undefined;
+      return { ok: false, ...(code === undefined ? {} : { code }), reason: e.message ?? "" };
+    }
+  };
+  let ref = "";
+  const head = await git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
+  if (head.ok && head.stdout.trim() !== "") ref = head.stdout.trim();
+  else {
+    for (const candidate of ["origin/main", "origin/master"]) {
+      const r = await git(["rev-parse", "--verify", "--quiet", candidate]);
+      if (r.ok && r.stdout.trim() !== "") {
+        ref = candidate;
+        break;
+      }
+    }
+  }
+  if (ref === "")
+    return {
+      status: "unknown",
+      reason: "could not resolve origin/HEAD, origin/main or origin/master locally",
+    };
+  const ancestor = await git(["merge-base", "--is-ancestor", opts.baseSha, ref]);
+  if (!ancestor.ok) {
+    // Exit 1 is git's definitive NO; anything else never read as either answer.
+    if (ancestor.code === 1) return { status: "not-behind" };
+    return { status: "unknown", reason: `ancestry probe failed: ${ancestor.reason}` };
+  }
+  const log = await git(["log", "--oneline", "--no-decorate", `${opts.baseSha}..${ref}`]);
+  if (!log.ok) return { status: "unknown", reason: `divergence read failed: ${log.reason}` };
+  const commits = log.stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  if (commits.length === 0) return { status: "not-behind" };
+  return {
+    status: "behind",
+    branch: ref.replace(/^origin\//, ""),
+    commitsBehind: commits.length,
+    commits,
+  };
 }
 
 /**
@@ -287,7 +424,25 @@ export function baselineRedMessage(
     verdict.assertion !== null && sharesAssertion(opts.changeFailure, verdict.assertion)
       ? " — the SAME assertion the change's run failed on"
       : "";
-  return `${BASELINE_RED_MARKER} verify command \`${opts.cmd}\` ALSO FAILS ${where} — assertion at base: ${verdict.assertion ?? NO_SPECIFIC_ASSERTION}${same}. The gate was red before this change was written, so no change can pass it; the failures below cannot be attributed to this diff until the base is green. Fix the gate at the base commit (or the host it runs on), then re-run`;
+  // #2341 — the closing advice, three-way. A base that trails the default
+  // branch cannot be advised "fix the gate at the base commit": no change on
+  // that base could ever make it green (nessie 1415 made an operator chase an
+  // OOM that did not exist and an unfixable base for 58 minutes). The probe
+  // states the git fact — the divergence and the commits — and explicitly
+  // withholds causation, which only a reproduction on the base can establish.
+  // An `unknown` probe keeps the classic advice but SAYS it could not check,
+  // so an unreadable git call never reads as "mainline does not explain the
+  // red".
+  const stale = verdict.staleBase;
+  const closing =
+    stale?.status === "behind"
+      ? ` ${BASELINE_STALE_BASE_MARKER} the base commit is ${stale.commitsBehind} commit(s) behind ${stale.branch}, which already carries ${stale.commitsBehind} commit(s) this base predates — ${stale.commits.slice(0, 3).join("; ")}${stale.commits.length > 3 ? ` (+${stale.commits.length - 3} more)` : ""}. The red may be explained by those commits rather than by the base itself (this probe establishes the divergence, not the cause): re-run against a base that includes ${stale.branch} before treating the base's gate as broken`
+      : `Fix the gate at the base commit (or the host it runs on), then re-run${
+          stale?.status === "unknown"
+            ? ` (whether the base trails the default branch could not be established: ${stale.reason.slice(0, 60)})`
+            : ""
+        }`;
+  return `${BASELINE_RED_MARKER} verify command \`${opts.cmd}\` ALSO FAILS ${where} — assertion at base: ${verdict.assertion ?? NO_SPECIFIC_ASSERTION}${same}. The gate was red before this change was written, so no change can pass it; the failures below cannot be attributed to this diff until the base is green. ${closing}`;
 }
 
 /** One failure of the change's own verify run, for the baseline comparison. */ export interface ChangeFailure {

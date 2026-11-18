@@ -17,12 +17,14 @@
  * {@link isSuccessLine} first, and a key that can also occur inside an ordinary
  * word is anchored (`^\s*ok\s+\d`, never `/ok/`).
  *
- * TWO shapes are exempt from that veto, and both for the same reason — a runner
+ * Three shapes are exempt from that veto, and all for the same reason — a runner
  * prints a FAILING line carrying the counts it compared:
  *
  *   - the assertion mark (`✗ expected 0 failures`), the runner's failure glyph;
  *   - the payload-bearing marker (#1762,
- *     `FAILED: a_test.sh: expected 0 failures, got 3`).
+ *     `FAILED: a_test.sh: expected 0 failures, got 3`);
+ *   - the Rust panic header (`thread 'x' panicked at src/a.rs:1:1:`), whose
+ *     message can quote the bound it compared (`expected 0 failures, got 3`).
  *
  * {@link matchPreVetoShapes} answers them, and it is DERIVED from the table rather
  * than restating the pair: a {@link ShapeEntry} carries `preVeto`, and the pre-veto
@@ -76,6 +78,45 @@ function reEntry(shape: FailureShape, namesTest: boolean, re: RegExp, preVeto = 
  * tally the same line carries, which is why it is asked before the success veto.
  */
 const ASSERTION_MARK_SHAPE: ShapeEntry = reEntry("assertion-mark", true, /^\s*✗\s/, true);
+
+/**
+ * #2341 — the Rust panic header, anchored at line start so the word
+ * `panicked` inside prose or a test's own output cannot classify. libtest
+ * prints the failing verdict as TWO lines: this header (test name, file,
+ * line) with the message on the NEXT line; the pairing is a stream concern
+ * and lives in `extractSpecificAssertion`, not here. The entry is `preVeto`
+ * because a panic message routinely quotes the counts it compared
+ * (`expected 0 failures, got 3`), and `isSuccessLine`'s `0 failures` arm
+ * would veto the one line that names the defect — the #1762 symptom
+ * arriving through the Rust dialect. The trade kept: a `#[should_panic]`
+ * test run with `--nocapture` prints this shape on a GREEN run too, so the
+ * shape classifies it as a failure line; the extractor that returns it as
+ * "the assertion" only ever reads a stream whose run already exited non-zero.
+ */
+const RUST_PANIC_RE = /^thread\s+'[^']+'\s+panicked\s+at\s+\S/;
+const RUST_PANIC_SHAPE: ShapeEntry = reEntry("rust-panic", true, RUST_PANIC_RE, true);
+
+/**
+ * #2341 — cargo's TRAILING target-level summary, the ONE line every failing
+ * test in a cargo target prints byte-identically (`error: test failed, to
+ * rerun pass \`--bin nessie\``). It names a TARGET, not a check, so it is
+ * recognised (`namesTest: false` — the table still anchors on it) but can
+ * never be "the specific assertion", and {@link isCargoTargetSummaryLine} is
+ * the single predicate every sameness reader asks so a deliberately generic
+ * assertion can never produce a "SAME assertion" claim.
+ */
+const CARGO_TARGET_SUMMARY_RE = /^error:?\s+test failed, to rerun\b/;
+
+/** The ONE predicate for cargo's target-level test-failed summary (#2341). */
+export function isCargoTargetSummaryLine(line: string): boolean {
+  return CARGO_TARGET_SUMMARY_RE.test(line);
+}
+
+const CARGO_TARGET_SUMMARY_SHAPE: ShapeEntry = reEntry(
+  "cargo-summary",
+  false,
+  CARGO_TARGET_SUMMARY_RE,
+);
 
 /**
  * The `failed-marker` entry, hoisted so the ONE definition serves the table and,
@@ -185,6 +226,14 @@ export const SHAPES: ReadonlyArray<ShapeEntry> = [
   ASSERTION_MARKER_SHAPE,
   FAILED_MARKER_SHAPE,
   ASSERTION_MARK_SHAPE,
+  // #2341 — the Rust/cargo dialect, ahead of `diagnostic` because the table is
+  // first-match-wins and that arm's `^error:?\s` already swallows cargo's
+  // target-level summary: recognised there as a `diagnostic` it became the
+  // "specific assertion" of every cargo test failure, which is the misquote
+  // this closes. The panic header names the test, file and line; the summary
+  // names only the target, so it is recognised but never names a check.
+  RUST_PANIC_SHAPE,
+  CARGO_TARGET_SUMMARY_SHAPE,
   // The driver's own dialect: tsc, cargo rustc, and bare `error:`/`Error:` lines.
   {
     shape: "diagnostic",
