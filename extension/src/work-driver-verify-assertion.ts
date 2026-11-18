@@ -29,12 +29,20 @@
  */
 
 import { redactSecrets } from "./secret-patterns.ts";
+import { detailLooksCredential } from "./work-driver-verify-credential-screen.ts";
 import {
   FAILED_MARKER_RE,
   classifyFailureLine,
   harnessInnerLine,
   isBareFailedMarker,
+  isCargoTargetSummaryLine,
   isHarnessWrapper,
+  isLibtestVerdictLine,
+  isLocationlessCodeDiagnostic,
+  panicIsCapturedPrint,
+  rustPanicHeaderIn,
+  rustPanicSamenessKey,
+  rustPanicTestName,
 } from "./work-driver-verify-failures.ts";
 
 /**
@@ -161,6 +169,85 @@ function redactedAssertion(candidate: string): string {
 }
 
 /**
+ * A runner's completion token printed on a line of its own: libtest with
+ * `--nocapture` closes each test with `ok` / `FAILED` / `ignored` / `measured`,
+ * and other runners print `passed` / `failed`. It reports the RUNNER's verdict
+ * for the test, never the panic's message, so the join guard refuses it — the
+ * same class as the `failures:` boilerplate below, and quoting it produced
+ * `thread 'a::t' panicked at src/a.rs:7:5: ok` for a [baseline-red] reader to
+ * chase.
+ *
+ * Not `isSuccessLine`: its arms need trailing content (`^\s*ok\s`) or a counted
+ * tally, so none of them covers a bare token, and widening that predicate would
+ * move the classifier's GLOBAL success veto to settle a question the join site
+ * alone asks — where it would also veto a real message that quotes a passing
+ * tally (`… : 0 failed, the binary still crashed`).
+ */
+const RUNNER_COMPLETION_TOKEN_RE = /^\s*(?:ok|FAILED|ignored|measured|passed|failed)\b\.?\s*$/i;
+
+/**
+ * The extractor's OWN elision marker ({@link extractAttributedTail} splices it
+ * between the anchor line and the tail), in either spelling, asked as a whole
+ * line. Anchored rather than compared for equality because the join guard, like
+ * the `\S+::` arm below, must hold wherever a caller stops trimming.
+ */
+const ELISION_MARKER_RE = /^\s*(?:\.{3}|\u2026)\s*$/;
+
+/**
+ * #2341 — join a Rust panic header with its message line. libtest prints the
+ * failing verdict as TWO lines — `thread 'NAME' panicked at FILE:LINE:` then
+ * the message (`fast path took 101.409582ms, which is over the 100 ms bound`)
+ * — and only the pair names the measured value and the bound the operator
+ * needs; the header alone sent the nessie 1415 handoff hunting for a memory
+ * problem while the decisive line sat in the same window. The message is
+ * joined only when the header ends at its colon (the pre-1.73 single-line
+ * form carries it inline) and the next line is still the message: a `note:`,
+ * a `---- ` block separator, cargo's failing-test list (`failures:` and the
+ * test-name line under it), a bare runner completion token
+ * ({@link RUNNER_COMPLETION_TOKEN_RE}), another classified failure line, a
+ * marker/echo/secret-shaped line, the extractor's own elision marker
+ * ({@link ELISION_MARKER_RE}), or a line the shared credential screen still
+ * reads as key material is NOT the message, and a half-pair is
+ * returned as the header — it still names the test, file and line, which
+ * beats reporting absence for a truncation the window caused. An empty
+ * `lines[i + 1]` (the pair cut between the two lines) takes this same path.
+ */
+
+function joinedRustPanic(header: string, next: string | undefined): string {
+  if (!header.endsWith(":")) return header;
+  if (next === undefined) return header;
+  // The extractor's OWN elision marker: `extractAttributedTail` builds an
+  // over-long window as `anchorLine + "\n...\n" + tail`, so when the clip
+  // lands directly under a panic header, `...` is the line beneath it. It is
+  // a cut, not the panic's message — joining it produced
+  // `thread '…' panicked at …: ...` for a [baseline-red] reader to chase;
+  // the header alone is preferred (it still names test, file and line).
+  if (ELISION_MARKER_RE.test(next)) return header;
+  // The `\S+::` arm is cargo's failing-test LIST: the block header `failures:`
+  // and the test-name line printed beneath it. The caller hands lines in
+  // trimmed, so the list item is matched in its bare `path::to::test` form —
+  // the `\s*` prefix keeps the indented form refused too, wherever a caller
+  // stops trimming.
+  if (/^(note:|----|thread\s+'|failures:|\s*\S+::)/.test(next)) return header;
+  if (isLibtestVerdictLine(next) || RUNNER_COMPLETION_TOKEN_RE.test(next)) return header;
+  // The join is the ONE place this reader publishes a line it never judged on
+  // its own, so the continuation passes every screen the header itself passed —
+  // including the verify-evidence credential screen. `isNonAssertionLine`'s
+  // secret arm is keyword-shaped (`api_key = …`) and cannot name a bare token
+  // welded into prose, which is the shape a panic message prints when it echoes
+  // a value it compared; `detailLooksCredential` is the one screen the record's
+  // channels and the stale-base prose already ask, so a secret on the line
+  // beneath a panic header is refused here rather than published in the pair.
+  if (
+    isNonAssertionLine(next) ||
+    classifyFailureLine(next) !== undefined ||
+    detailLooksCredential(next)
+  )
+    return header;
+  return `${header} ${next}`;
+}
+
+/**
  * Extract the specific failing assertion from a consolidated-verify failure
  * tail. The tail comes from `extractAttributedTail` — when `attributed:
  * true` it starts at a `FAILED:` marker (post-#804 the LAST one, the
@@ -185,8 +272,18 @@ function redactedAssertion(candidate: string): string {
  * extract-assertion.ts: "the specific assertion" is the FIRST real
  * assertion; the count is the summary marker's job, so it is not
  * duplicated into the extracted field.
+ *
+ * `stream` is the WHOLE combined output `failureTail` was cut from, and the
+ * `should_panic` veto is asked of IT, never of the window: the verdict line
+ * that proves a panic print is a passing `#[should_panic]` capture is routinely
+ * above the elision, so a caller that handed only a window could not answer the
+ * question (#2341 fix wave 7). The parameter is therefore REQUIRED. Passing
+ * the same string twice is honest ONLY when the input really is the whole
+ * stream (or a single line) — a CLIPPED record passed as its own stream asks
+ * the veto on bytes the clipping edited, which is the wave-7 defect the
+ * record publishers now thread the run's raw output against.
  */
-export function extractSpecificAssertion(failureTail: string): string {
+export function extractSpecificAssertion(failureTail: string, stream: string): string {
   // `FAILED:` and its `FAILED: 1 test(s) — …` summary are ONE regex, and
   // `FAILED_MARKER_RE` demands a non-empty payload: an empty marker is not a
   // marker, it is an empty line, and it must not be kept as the count summary.
@@ -201,7 +298,7 @@ export function extractSpecificAssertion(failureTail: string): string {
     if (candidate === undefined || isNonAssertionLine(candidate)) continue;
     if (/^✗\s/.test(candidate)) return redactedAssertion(candidate);
   }
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
     const candidate = assertionCandidate(line);
     if (candidate === undefined || isNonAssertionLine(candidate)) continue;
     // The count summary is the one BARE-marker-shaped line this reader KEEPS — the
@@ -214,9 +311,48 @@ export function extractSpecificAssertion(failureTail: string): string {
     // (an operator sent to a file, and the one corrective round spent there). Only
     // a line that names a check may be the specific assertion, so a bare marker
     // stays refused however it classifies, and the count-summary exception above
-    // stays the only marker-shaped line that survives.
+    // stays the only marker-shaped line that survives. #2341 adds the same veto on
+    // shape: cargo's `error: test failed, to rerun pass --bin X` summary line is
+    // recognised (`cargo-summary`) but names only the build target, never a check,
+    // so a stream whose only recognised line is that summary reports ABSENCE — the
+    // honest absence the #807 sentinel exists for — instead of quoting the least
+    // useful line in the run as "the assertion". What this reader returns is
+    // either a line that names a check, or the sentinel.
     if (isMarkerLine(candidate) && !isCountSummary(candidate)) continue;
-    if (classifyFailureLine(candidate)?.namesTest === true) return redactedAssertion(candidate);
+    const kind = classifyFailureLine(candidate);
+    if (kind?.namesTest !== true) continue;
+    // #2341 fix wave (HIGH 2) — the QUOTE decision asks the SAME recognizer the
+    // excuse gate asks (`panicCanExcuseChange`, `work-driver-verify-rust.ts`),
+    // not the table's shape key. Two recognizers — the table's line-anchored
+    // `rust-panic` shape here, the excuse gate's own `^thread '` look there —
+    // both missed a header the gate printed with a prefix (`warning:`, a
+    // timestamp, `[INFO]`, an ANSI colour, or one lifted into a record line), so
+    // such a header was neither vetoed here nor gated there: quoted as captured
+    // output AND able to excuse a change-added failure. One recognizer, asked of
+    // the whole candidate, is the property; the name goes to
+    // `rustPanicTestName` as the CANONICAL header it returns (prefix stripped),
+    // never the caller's line.
+    const panicHeader = rustPanicHeaderIn(candidate);
+    if (panicHeader !== undefined) {
+      // #2341 round 1 / fix wave 7 — the `#[should_panic]` veto, ONE question:
+      // does the STREAM report this header's own test as passing
+      // ({@link panicIsCapturedPrint})? A panic header is only evidence of a
+      // FAILING test when a verdict attributes a FAILING result to THAT test:
+      // libtest prints a passing `#[should_panic]` test's captured stdout in
+      // the identical shape, so in a run that exited non-zero for some OTHER
+      // reason this line names a test that PASSED — and quoting it is the
+      // #746/#798 class the module's own doctrine forbids. The ask goes to the
+      // stream and not the window because the window is the bytes a human is
+      // quoted: it must never gain a line to make a question decidable, and its
+      // elision is exactly what hides the `... ok`. ONE predicate, and the
+      // evidence-anchor walk asks the same one over the same stream
+      // (`work-driver-exec-error.ts`), so the veto and the anchor cannot
+      // disagree about which panic names a failing test.
+      const panicName = rustPanicTestName(panicHeader);
+      if (panicIsCapturedPrint(stream, panicName)) continue;
+      return redactedAssertion(joinedRustPanic(candidate, lines[i + 1]));
+    }
+    return redactedAssertion(candidate);
   }
   return NO_SPECIFIC_ASSERTION;
 }
@@ -229,7 +365,47 @@ export function extractSpecificAssertion(failureTail: string): string {
  * miss) where the identical `✗ …` line sat invisibly underneath. The
  * sentinel never matches — absence on either side is not evidence of a
  * shared cause.
+ *
+ * #2341 — sameness FAILS CLOSED on cargo's TARGET-LEVEL lines. Every failing
+ * test in one cargo target prints the byte-identical `error: test failed, to
+ * rerun pass --bin X` line, and cargo's other
+ * run-level summaries (`process didn't exit successfully`, `N target(s)
+ * failed`, `could not compile`) are equally identical across the different
+ * failures inside the target — so substring containment on any of them claims
+ * "the SAME assertion" between two genuinely different Rust test failures, and
+ * `baselineExplainsChange` excuses a regression the change itself introduced.
+ * The extractor can no longer produce such an assertion (the `cargo-summary`
+ * shape is `namesTest: false`), but this reader is the sameness gate for
+ * hand-built values too, so it refuses cargo's target-level dialect wherever it
+ * arrives from — the SAME predicate the table's entry asks, not a copy of it.
+ *
+ * #2341 — and a Rust panic compares on its IDENTITY, never on the joined
+ * prose: `rustPanicSamenessKey` reduces the assertion to the
+ * `thread '<test>' panicked at <file>:<line>:<col>:` header, which is the
+ * part that distinguishes failing tests (the message carries the measured
+ * value, which legitimately differs run to run, and a clip can amputate it —
+ * sameness anchored on a clipped prose prefix folds). The key FAILS CLOSED
+ * (#2341 fix wave M1): a string that starts like a panic header but whose
+ * identity could not be extracted answers `null`, and `null` is no "SAME
+ * assertion" — it never reaches the containment test. Every other shape
+ * keeps the classic rule: exact containment, no normalisation — this gate
+ * got tighter for #2341, and tightening it is the whole point of the fix.
+ *
+ * #2341 fix wave (H2) — and the location-less identity-code dialect is refused
+ * the same way the cargo target summaries are: two compile failures in
+ * different files print the byte-identical `error[E0308]: …` (cargo puts the
+ * location on the following `-->` line) or `error TS2345: …` line, so
+ * containment on it claims "the SAME assertion" between two genuinely
+ * different failures.
  */
 export function sharesAssertion(consolidated: string, per: string): boolean {
-  return per !== NO_SPECIFIC_ASSERTION && consolidated.includes(per);
+  if (
+    per === NO_SPECIFIC_ASSERTION ||
+    isCargoTargetSummaryLine(per) ||
+    isLocationlessCodeDiagnostic(per)
+  ) {
+    return false;
+  }
+  const key = rustPanicSamenessKey(per);
+  return key !== null && consolidated.includes(key);
 }

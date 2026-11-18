@@ -46,7 +46,10 @@ import {
   readBaseHealthCache,
   startBaseHealthProbeAtBranch,
 } from "../src/work-driver-verify-base-health.ts";
-import { BASELINE_RED_MARKER } from "../src/work-driver-verify-baseline.ts";
+import {
+  BASELINE_RED_MARKER,
+  baselineRedMessage,
+} from "../src/work-driver-verify-baseline.ts";
 import { developTierTimeouts } from "../src/work-driver-verify-budget.ts";
 import { VERIFY_TIMEOUT_LABEL } from "../src/work-driver-verify-develop-helpers.ts";
 import {
@@ -469,6 +472,26 @@ for (const timedOut of [false, true]) {
     `probe duration: the timed probe reached the green it earned (got ${settled17.verdict?.status ?? "absent"})`,
   );
   rmSync(seamRoot, { recursive: true, force: true });
+}
+
+// #2341 fix wave 6 — the `red-timed-out` arm shares the red arm's budget
+// discipline: its unbounded `opts.cmd` made a 400-char command publish an
+// entry past the cap-evidence bound, whose amputation then ate the LEADING
+// `[baseline-red]` marker. The cmd pays for the bound (whole, or clipped with
+// the `\u2026` span `baselineRedForCommand` licenses), and the marker leads
+// whatever survives.
+{
+  const cmd = `bash -c '${"check --fix && ".repeat(32)}exit 1'`;
+  const opts = { cmd, baseSha: "0123456789abcdef0123456789abcdef01234567", timeoutMs: 60000, changeFailure: "x" };
+  const entry = baselineRedMessage({ status: "red-timed-out", assertion: null }, opts);
+  assert(
+    cmd.length >= 400 && entry.length <= 800 && entry.startsWith(BASELINE_RED_MARKER),
+    `timed-out budget (wave 6): cmd=${cmd.length} chars publishes a ${entry.length}-char entry leading with the marker (got ${JSON.stringify(entry.slice(0, 40))})`,
+  );
+  assert(
+    baselineRedForCommand(entry, cmd),
+    "timed-out budget (wave 6): the clipped command is still the comparator-licensed span",
+  );
 }
 
 console.log(`\nexit ${exit}`);

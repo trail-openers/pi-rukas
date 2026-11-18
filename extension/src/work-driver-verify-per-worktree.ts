@@ -52,7 +52,7 @@ export async function runPerWorktreeVerify(opts: {
   suiteTimeoutKnob?: string;
   fastTimeoutMs?: number;
   /** #1667 — each failure with the cwd it ran in; the caller derives the flat list. */
-  perWorktreeRecords: Array<{ cwd: string; text: string }>;
+  perWorktreeRecords: Array<{ cwd: string; text: string; raw?: string }>;
   greensRecorded: Array<[string, WorkstreamGreen]>;
   greensRefuted: string[];
 }): Promise<void> {
@@ -212,7 +212,14 @@ export async function runPerWorktreeVerify(opts: {
         ),
         `verify command \`${ran}\` failed in ${cwd}${depsHint}`,
       );
-      perWorktreeRecords.push({ cwd, text: failureText });
+      perWorktreeRecords.push({
+        cwd,
+        text: failureText,
+        // #2341 — the UNCLIPPED run output the record's tail was cut from, so
+        // the `#[should_panic]` veto is asked on bytes the clipping did not
+        // edit (the same value `formatExecError` windowed).
+        raw: `${e.stdout ?? ""}\n${e.stderr ?? ""}`,
+      });
       // A green this workstream held describes the tree it had then. The
       // command just failed — on that tree or the one it holds now — so the
       // record is no evidence of anything and the next pass must run.

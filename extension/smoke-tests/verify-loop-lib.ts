@@ -59,7 +59,7 @@ export function runPipeline(files: string[]): {
 } {
   const { stdout } = runLoop(files);
   const { tail, attributed } = extractAttributedTail(stdout, 800);
-  const assertion = extractSpecificAssertion(tail);
+  const assertion = extractSpecificAssertion(tail, stdout);
   // N>1 with no per-worktree failures — the consolidated-failure consumer
   // shape, so the size-cap trivial-fix branch is reachable in case 6.
   const verdict = classifyConsolidatedVerifyFailure(2, ["a", "b"], tail, {});

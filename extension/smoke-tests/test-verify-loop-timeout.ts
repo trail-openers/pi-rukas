@@ -54,7 +54,7 @@ function pipelineEnv(
 ): { tail: string; attributed: boolean; assertion: string } {
   const { stdout } = runLoopEnv(files, env);
   const { tail, attributed } = extractAttributedTail(stdout, 800);
-  return { tail, attributed, assertion: extractSpecificAssertion(tail) };
+  return { tail, attributed, assertion: extractSpecificAssertion(tail, stdout) };
 }
 
 // Shared env for the two timeout cases: PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S=2

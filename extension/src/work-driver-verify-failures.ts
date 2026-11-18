@@ -19,10 +19,11 @@
  *     36 cases, 0 failed` contains the substring `fail`, matches a naive
  *     `/error|fail/i`, and was printed as the top evidence of a handoff. So every
  *     classifier asks `isSuccessLine` first, and a key that can also occur inside
- *     an ordinary word is anchored (`^\s*ok\s+\d`, never /ok/). ONE shape is
- *     exempt: the runner's assertion mark, which {@link matchShape} asks BEFORE
- *     that veto because a failing assertion is printed with the count it expected
- *     (`✗ expected 0 failures`). See that function for why the exemption cannot
+ *     an ordinary word is anchored (`^\s*ok\s+\d`, never /ok/). The runner's own
+ *     VERDICT shapes (the assertion mark, the payload marker, the Rust panic
+ *     header) are exempt — {@link matchShape} asks them BEFORE that veto because
+ *     a failing assertion is printed with the count it expected
+ *     (`✗ expected 0 failures`). See that function for why the exemptions cannot
  *     admit a passing tally.
  *   - One line, one shape. The table is tried in priority order and the first
  *     match wins, so `not ok 3 - x` reports `not-ok` and never `ok`.
@@ -57,7 +58,20 @@ export type FailureShape =
   | "tap-not-ok"
   | "pytest-failed"
   | "pytest-error"
-  | "go-fail";
+  | "go-fail"
+  /** The Rust panic header (#2341): `thread 'x' panicked at FILE:LINE:`. */
+  | "rust-panic"
+  /** cargo's target-level test summary (#2341): names a target, never a check. */
+  | "cargo-summary"
+  /**
+   * A `diagnostic`-dialect line carrying an identity code but NO file
+   * location (#2341 fix wave 4): `error[E0308]: …` / `error TS2345: …` with
+   * the location on a separate line. Byte-identical across failures in
+   * different files, so it keeps the shape and not the naming right — its
+   * own name so the union and {@link SHAPE_NAMES_A_CHECK} carry ONE answer
+   * per shape.
+   */
+  | "diagnostic-unlocated";
 
 /**
  * ONE RULE PER SHAPE: whether a line carrying it may be the line the operator is
@@ -92,6 +106,16 @@ export const SHAPE_NAMES_A_CHECK: Record<FailureShape, boolean> = {
   "pytest-failed": true,
   "pytest-error": true,
   "go-fail": true,
+  // #2341 — the panic header names the failing test; the trailing cargo
+  // summary names only the target, so it may anchor evidence but can never be
+  // "the specific assertion", and no sameness rule may fire on it alone.
+  "rust-panic": true,
+  "cargo-summary": false,
+  // #2341 fix wave 4 — the location-less diagnostic arm of the dialect. It
+  // carries an identity code but no location, so it is byte-identical across
+  // failures in different files: recognised as evidence, never as "the
+  // specific assertion", and no sameness rule may fire on it alone.
+  "diagnostic-unlocated": false,
 };
 
 /** What `classifyFailureLine` decided about one line. */
@@ -124,6 +148,31 @@ export {
   isBareFailedMarker,
   scriptTallyCount,
 } from "./work-driver-verify-marker.ts";
+
+// #2341 — the cargo target-summary predicate, the location-less
+// identity-code diagnostic test (rustc bracket and tsc `TS\d{4,}`, one shared
+// source),
+// the Rust panic sameness key and the libtest verdict vocabulary are
+// failure-line vocabulary: the table's own entries and every sameness/extractor
+// reader (`sharesAssertion`, `extractSpecificAssertion`) and the evidence-anchor
+// walk (`work-driver-exec-error.ts`) must ask the SAME predicates, so they are
+// re-exported here from `work-driver-verify-rust.ts` like the marker vocabulary
+// above. The two name-correlated panic predicates travel together: one asks the
+// QUOTE, its mirror asks the EXCUSE, and the two may never disagree about what
+// the stream said about a name. `rustPanicHeaderIn` is the ONE recognizer they
+// both ask, and `changePanicsAreBaseFailures` is that same excuse asked of every
+// failing test the change's own record reports, not of the record as a blob.
+export {
+  changePanicsAreBaseFailures,
+  isCargoTargetSummaryLine,
+  isLibtestVerdictLine,
+  isLocationlessCodeDiagnostic,
+  panicCanExcuseChange,
+  panicIsCapturedPrint,
+  rustPanicHeaderIn,
+  rustPanicSamenessKey,
+  rustPanicTestName,
+} from "./work-driver-verify-rust.ts";
 
 import { FAILED_MARKER_RE, isBareFailedMarker } from "./work-driver-verify-marker.ts";
 import {

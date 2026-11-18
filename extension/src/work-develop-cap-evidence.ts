@@ -13,8 +13,11 @@ import { extractAttributedTail } from "./work-driver-exec-error.ts";
 // field. A failure string is already an 800-char attributed tail; a
 // fanout with several failures joined unboundedly produced multi-KB
 // evidence. Bound each failure and the join itself, with a truncation
-// marker so the operator knows the evidence is bounded.
-const CAP_EVIDENCE_PER_FAILURE_MAX = 800;
+// marker so the operator knows the evidence is bounded. EXPORTED (#2341 fix
+// wave T1): `work-driver-verify-baseline.ts` budgets its rendered message
+// against the SAME number — a private copy there was a third unlinked
+// literal of it, and unlinked copies of one bound drift.
+export const CAP_EVIDENCE_PER_FAILURE_MAX = 800;
 const CAP_EVIDENCE_TOTAL_MAX = 4000;
 const CAP_EVIDENCE_TRUNCATED = " … (truncated)";
 

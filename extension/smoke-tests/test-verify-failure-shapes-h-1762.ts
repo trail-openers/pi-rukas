@@ -34,6 +34,8 @@ import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
 import { consolidatedAssertionLines } from "../src/work-driver-verify-record.ts";
 import { harvestConsolidatedTallies } from "../src/work-driver-verify-tally.ts";
 import {
+  CARGO_SIGABRT_SUMMARY,
+  CARGO_TARGET_SUMMARY,
   CHECKS_BLOCK,
   CMD,
   EXAMPLE_STREAM,
@@ -41,10 +43,13 @@ import {
   FAIL_HEADER_DETAILS,
   FAIL_HEADER_STREAM,
   PAYLOAD_MARKER,
+  RUSTC_DIAG_NO_LOCATION,
   TALLY_LINE,
   TALLY_NAMES,
+  TSC_DIAG_NO_LOCATION,
   WT,
   makeAssert,
+  rustPanicHeader,
 } from "./lib/verify-failure-shapes-fixtures.ts";
 
 const { assert, failed } = makeAssert();
@@ -211,7 +216,10 @@ const { assert, failed } = makeAssert();
     ["FAILED: smoke-tests/test-x.ts", "failed-marker"],
     [PAYLOAD_MARKER, "failed-marker-payload"],
     ["✗ expected 5 got 6", "assertion-mark"],
-    ["error: cannot compile", "diagnostic"],
+    // #2341 F1 — the probe carries a LOCATION: a location-less prose `error:`
+    // line is the target-level dialect (namesTest false), so the `diagnostic`
+    // arm that still buys the naming right is probed with the located line.
+    ["error[E0308]: mismatched types --> src/a.rs:9:5", "diagnostic"],
     [CHECKS_BLOCK, "script-tally"],
     ["scripts/test.sh: 3 failed", "named-file"],
     // #1841 — the anchorless FAIL header, the shape whose absence parked a develop
@@ -221,6 +229,28 @@ const { assert, failed } = makeAssert();
     ["FAILED tests/test_a.py::test_login", "pytest-failed"],
     ["ERROR tests/test_a.py::test_login", "pytest-error"],
     ["--- FAIL: TestThing (0.31s)", "go-fail"],
+    // #2341 — the two Rust arms; their namesTest VALUES (true for the panic
+    // header that names the test, false for the target-level cargo summary) are
+    // the checked fact, not just their keys.
+    [rustPanicHeader("a::tests::t", "src/a.rs:91:5"), "rust-panic"],
+    [CARGO_TARGET_SUMMARY, "cargo-summary"],
+    // #2341 round 1 — the rest of cargo's target-level dialect: one sentence
+    // refused was the round-1 defect, since a neighbouring cargo `error:` line
+    // classified as a `diagnostic` that names a check and folded two different
+    // Rust tests into the same assertion.
+    [CARGO_SIGABRT_SUMMARY, "cargo-summary"],
+    ["error: 1 target failed:", "cargo-summary"],
+    [
+      "error: could not compile `nessie` (bin \"nessie\") due to 1 previous error",
+      "cargo-summary",
+    ],
+    ["error: aborting due to 1 previous error", "cargo-summary"],
+    // #2341 fix wave 4 — the location-less diagnostic arm carries its OWN
+    // shape name so the union and the rule map mean what they say: one shape,
+    // one namesTest answer. Both identity dialects (rustc bracket, tsc TS\d+),
+    // one answer: false.
+    [RUSTC_DIAG_NO_LOCATION, "diagnostic-unlocated"],
+    [TSC_DIAG_NO_LOCATION, "diagnostic-unlocated"],
   ];
   for (const [line, shape] of probes) {
     const got = classifyFailureLine(line);

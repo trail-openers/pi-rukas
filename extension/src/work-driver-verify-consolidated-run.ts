@@ -37,6 +37,13 @@ export type ConsolidatedRunArgs = {
     treeUnavailable?: string;
   };
   perWorktreeVerifyFailures: string[];
+  /**
+   * #2341 — index-aligned with `perWorktreeVerifyFailures`: the UNCLIPPED run
+   * output each record text was cut from (undefined where the run never
+   * produced one), so the `#[should_panic]` veto is asked on the stream, not
+   * on the record the clipping edited.
+   */
+  perWorktreeVerifyRaws?: Array<string | undefined>;
   notes: string[];
   onVerifyFlakeRecovered?: (evidenceTail?: string) => void;
   /** Set when the whole-gate pass was reused: the probe never runs. */
@@ -55,6 +62,8 @@ export async function runConsolidatedLeg(args: ConsolidatedRunArgs): Promise<{
   consolidatedDurationMs?: number;
   /** The #807 shared view: both the retry gate and the classifier read this map. */
   perWorktreeFailuresByWs: Record<string, string>;
+  /** #2341 — the raw stream behind each entry of the map above, same keys. */
+  perWorktreeStreamsByWs: Record<string, string>;
   singlePerWs?: string;
   singlePerAssertion?: string | null;
 }> {
@@ -70,6 +79,7 @@ export async function runConsolidatedLeg(args: ConsolidatedRunArgs): Promise<{
     changedWorktrees,
     workstreamBaseShas,
     perWorktreeVerifyFailures,
+    perWorktreeVerifyRaws,
     notes,
     onVerifyFlakeRecovered,
     reusedWholeGate,
@@ -86,6 +96,14 @@ export async function runConsolidatedLeg(args: ConsolidatedRunArgs): Promise<{
     args.worktrees,
     args.changedWorktrees,
     perWorktreeVerifyFailures,
+  );
+  // #2341 — the same index mapping over the raw streams, minus the empties:
+  // the veto readers must see the stream a record was cut from, and only for
+  // records the failures map actually carries.
+  const perWorktreeStreamsByWs = buildPerWorktreeFailuresByWs(
+    args.worktrees,
+    args.changedWorktrees,
+    (perWorktreeVerifyRaws ?? []).map((raw) => raw ?? ""),
   );
   // #782/#807/#826 — the consolidated-verify flake retry, two-phase gate:
   // (1) a length-only precondition admits the FIRST consolidated run — it
@@ -118,7 +136,9 @@ export async function runConsolidatedLeg(args: ConsolidatedRunArgs): Promise<{
     ? Object.keys(perWorktreeFailuresByWs)[0]
     : undefined;
   const singlePerAssertion: string | null | undefined =
-    singlePerWs !== undefined ? gatePerAssertion(perWorktreeFailuresByWs[singlePerWs]) : undefined;
+    singlePerWs !== undefined
+      ? gatePerAssertion(perWorktreeFailuresByWs[singlePerWs], perWorktreeStreamsByWs[singlePerWs])
+      : undefined;
   // #1240 — the N=1 duplicate run: with ONE workstream whose per-worktree
   // verify just passed, the consolidated probe cherry-picks that workstream's
   // own commits onto baseSha and verifies the result — the same content the
@@ -167,6 +187,7 @@ export async function runConsolidatedLeg(args: ConsolidatedRunArgs): Promise<{
   return {
     cons,
     perWorktreeFailuresByWs,
+    perWorktreeStreamsByWs,
     singlePerWs,
     singlePerAssertion,
     // The consolidated run's wall-clock: measured, not estimated, because it is

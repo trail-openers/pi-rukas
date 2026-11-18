@@ -7,7 +7,12 @@
  * entry point every verify reader asks — and this one is the DATA it consults:
  * the shape entries, their priority order, and the passing-line veto. The
  * direction is one-way (classifier → shapes); nothing here calls back into the
- * classifier, which is what keeps the module graph a DAG.
+ * classifier, which is what keeps the module graph a DAG. The Rust/cargo
+ * READER dialect (the panic-header and libtest-verdict predicates, the sameness
+ * key, the cargo target-summary and location-less code-diagnostic tests) is
+ * window-scanning
+ * logic, not table data, and lives in `work-driver-verify-rust.ts` — this
+ * module imports only its dialect regexes for the entries below.
  *
  * THE ONE RULE THIS MODULE OWNS, and the one that was a real defect: a line that
  * reports SUCCESS is never a failure line. `pack_release_test.sh: 36 cases, 0
@@ -17,12 +22,14 @@
  * {@link isSuccessLine} first, and a key that can also occur inside an ordinary
  * word is anchored (`^\s*ok\s+\d`, never `/ok/`).
  *
- * TWO shapes are exempt from that veto, and both for the same reason — a runner
+ * Three shapes are exempt from that veto, and all for the same reason — a runner
  * prints a FAILING line carrying the counts it compared:
  *
  *   - the assertion mark (`✗ expected 0 failures`), the runner's failure glyph;
  *   - the payload-bearing marker (#1762,
- *     `FAILED: a_test.sh: expected 0 failures, got 3`).
+ *     `FAILED: a_test.sh: expected 0 failures, got 3`);
+ *   - the Rust panic header (`thread 'x' panicked at src/a.rs:1:1:`), whose
+ *     message can quote the bound it compared (`expected 0 failures, got 3`).
  *
  * {@link matchPreVetoShapes} answers them, and it is DERIVED from the table rather
  * than restating the pair: a {@link ShapeEntry} carries `preVeto`, and the pre-veto
@@ -32,6 +39,12 @@
 
 import type { FailureLine, FailureShape } from "./work-driver-verify-failures.ts";
 import { FAILED_MARKER_RE, payloadDetail } from "./work-driver-verify-marker.ts";
+import {
+  CARGO_TARGET_SUMMARY_RE,
+  DIAGNOSTIC_IDENTITY_SRC,
+  RUST_PANIC_RE,
+  isLocationlessCodeDiagnostic,
+} from "./work-driver-verify-rust.ts";
 
 /**
  * A table entry: a shape, whether it names a check, and how to recognise it.
@@ -78,6 +91,39 @@ function reEntry(shape: FailureShape, namesTest: boolean, re: RegExp, preVeto = 
 const ASSERTION_MARK_SHAPE: ShapeEntry = reEntry("assertion-mark", true, /^\s*✗\s/, true);
 
 /**
+ * #2341 — the Rust panic header (the dialect regex itself lives in
+ * `work-driver-verify-rust.ts`), a `preVeto` entry: a panic message routinely
+ * quotes the counts it compared (`expected 0 failures, got 3`), and
+ * `isSuccessLine`'s `0 failures` arm would veto the one line that names the
+ * defect — the #1762 symptom arriving through the Rust dialect. The trade
+ * kept: a `#[should_panic]` test run with `--nocapture` prints this shape on a
+ * GREEN run too, so the shape classifies it as a failure line and may anchor
+ * evidence. What it may NOT do is become "the specific assertion":
+ * `panicIsCapturedPrint` (`work-driver-verify-rust.ts`) is the veto the
+ * extractor and the evidence anchor both ask — each asking it of the WHOLE
+ * stream, keyed to the header's own test name (one predicate, one question,
+ * #2341 fix wave 7) — which refuses a panic header whose OWN test any observed
+ * per-test verdict reports as passing: a captured `should_panic` print sits
+ * beside its own `... ok` verdict and names a test that PASSED, and quoting it
+ * is the #746/#798 class (a confident wrong answer
+ * where an honest absence was the truth).
+ */
+const RUST_PANIC_SHAPE: ShapeEntry = reEntry("rust-panic", true, RUST_PANIC_RE, true);
+
+/**
+ * #2341 — cargo's trailing target-level summaries: every one of them is
+ * byte-identical across the tests that failed inside the target, so the entry
+ * is recognised but names no check (the dialect itself and the file-location
+ * and identity-code tests that keep a real `diagnostic` from being swallowed
+ * with it live in `work-driver-verify-rust.ts`).
+ */
+const CARGO_TARGET_SUMMARY_SHAPE: ShapeEntry = reEntry(
+  "cargo-summary",
+  false,
+  CARGO_TARGET_SUMMARY_RE,
+);
+
+/**
  * The `failed-marker` entry, hoisted so the ONE definition serves the table and,
  * through `isBareFailedMarker`, every veto site that used to keep its own blanket
  * `/^FAILED:/`. Two copies of that regex (one the table answers from, one the
@@ -85,6 +131,12 @@ const ASSERTION_MARK_SHAPE: ShapeEntry = reEntry("assertion-mark", true, /^\s*�
  * a payload marker either loses its shape or loses its exemption.
  */
 const FAILED_MARKER_SHAPE: ShapeEntry = reEntry("failed-marker", false, FAILED_MARKER_RE);
+
+/** The driver's own compiler/linter `error:` dialect, one literal for both
+ * location-split entries below (two copies of the arm is how they drift). The
+ * identity arms are the SAME source the target-summary lookahead asks
+ * (#2341 F1), so "carries an identity code" has one answer across the table. */
+const DIAGNOSTIC_RE = new RegExp(String.raw`^error:?\s|^Error:|${DIAGNOSTIC_IDENTITY_SRC}`);
 
 /**
  * The shape the pre-veto step answers for: the payload-bearing marker, the #1762
@@ -185,12 +237,35 @@ export const SHAPES: ReadonlyArray<ShapeEntry> = [
   ASSERTION_MARKER_SHAPE,
   FAILED_MARKER_SHAPE,
   ASSERTION_MARK_SHAPE,
+  // #2341 — the Rust/cargo dialect, ahead of `diagnostic` because the table is
+  // first-match-wins and that arm's `^error:?\s` already swallows cargo's
+  // target-level summary: recognised there as a `diagnostic` it became the
+  // "specific assertion" of every cargo test failure, which is the misquote
+  // this closes. The panic header names the test, file and line; the summary
+  // names only the target, so it is recognised but never names a check.
+  RUST_PANIC_SHAPE,
+  CARGO_TARGET_SUMMARY_SHAPE,
   // The driver's own dialect: tsc, cargo rustc, and bare `error:`/`Error:` lines.
+  // #2341 fix wave (H2) / fix wave 4 (H4) — the dialect splits in two on the
+  // location: a `error[E…]`/`error TSNNNN:` line WITHOUT a
+  // `file:line[:col]` keeps the shape (it may anchor weak evidence) but not
+  // `namesTest`, because cargo prints the location on a SEPARATE following
+  // `-->` line and the location-less line is byte-identical across failures
+  // in different files — the same folding defect as the target summaries, in
+  // the identity-code dialect. The two arms carry DIFFERENT shape names
+  // (`diagnostic` / `diagnostic-unlocated`): one shape, one `namesTest`
+  // answer, which is the contract {@link SHAPE_NAMES_A_CHECK} states.
   {
     shape: "diagnostic",
     namesTest: true,
     preVeto: false,
-    test: (line: string) => /^error:?\s|^Error:|error\[E\d+\]|\bTS\d{4,}\b/.test(line),
+    test: (line: string) => DIAGNOSTIC_RE.test(line) && !isLocationlessCodeDiagnostic(line),
+  },
+  {
+    shape: "diagnostic-unlocated",
+    namesTest: false,
+    preVeto: false,
+    test: (line: string) => DIAGNOSTIC_RE.test(line),
   },
   // The project-runner shape: a script's own summary block naming its failing checks.
   {

@@ -8,7 +8,19 @@
  * naive `.slice(-N)` window.
  */
 
+import {
+  NO_SPECIFIC_ASSERTION,
+  extractSpecificAssertion,
+} from "../src/work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
+import { baselineExplainsChange } from "../src/work-driver-verify-baseline-compare.ts";
+import {
+  RUST_CARGO_STREAM,
+  RUST_SHOULD_PANIC_TRAP_AFTER_STREAM,
+  RUST_TRAP_PAIR,
+  RUST_VERDICT_OUTSIDE_WINDOW_STREAM,
+  rustPanicHeader,
+} from "./lib/verify-failure-shapes-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -100,6 +112,19 @@ function assert(cond: boolean, msg: string) {
     tail.startsWith("verify command") || tail.startsWith("FAILED:"),
     `wrapped anchor: the tail starts at the anchor, not at the stream end (got ${JSON.stringify(tail.slice(0, 40))})`,
   );
+  // #2341 fix wave 6 (ISSUES 1), same shape in the panic dialect: wave 5's
+  // carry ran on this single clipped line, found no "\n" to buy room from, and
+  // published ONLY the verdict line it imported — `attributed: true` still. The
+  // clipped anchor line IS the window at both call-site budgets.
+  const widePanic = `thread 'tests::it_works' panicked at 'assertion failed: \`(left == right)\`: ${"x".repeat(900)}`;
+  for (const budget of [800, 1500]) {
+    const p = extractAttributedTail(`test tests::it_works ... FAILED\n${widePanic}`, budget);
+    const starts = p.tail.startsWith("thread 'tests::it_works' panicked");
+    assert(
+      p.attributed && starts && p.tail.length <= budget,
+      `wrapped anchor, panic dialect (wave 6, ${budget}): the clipped anchor line is the window, never an imported verdict (got ${JSON.stringify(p.tail.slice(0, 40))})`,
+    );
+  }
 }
 
 // 3. Empty input → empty tail, no crash.
@@ -110,6 +135,224 @@ function assert(cond: boolean, msg: string) {
   assert(
     whitespace.tail === "" && whitespace.attributed === false,
     "whitespace-only input: empty unattributed tail",
+  );
+}
+
+// 3b. #2341 — the cargo dialect, with the decisive pair EARLIER in the stream
+// than the anchor candidates: a long passing prefix, then the panic pair, then
+// cargo's trailing target summary. With only the summary recognised, the old
+// last-recognition anchor started the tail AT that trailing line and sliced
+// the panic off before the extractor ever saw it — the "recognition gap, not a
+// truncation gap" inference was wrong. The panic header (namesTest) must win
+// the anchor, and a blind end-of-stream slice must not be what remains.
+{
+  const passing = "test a::tests::passing_case_ok ... ok\n".repeat(90); // >2 KiB
+  const combined = `${passing}${RUST_CARGO_STREAM}\n`;
+  const { tail, attributed } = extractAttributedTail(combined, 1500);
+  assert(attributed, "cargo anchor (#2341): the stream is attributed");
+  assert(
+    tail.startsWith("thread '"),
+    `cargo anchor (#2341): anchored on the panic header, not the trailing summary or a blind slice (got: ${JSON.stringify(tail.slice(0, 40))})`,
+  );
+  assert(
+    tail.includes("panicked at src/session/fastpath_tests.rs:91:5") &&
+      tail.includes("fast path took 101.409582ms"),
+    "cargo anchor (#2341): the panic pair survives the 1500-char window",
+  );
+  assert(
+    !tail.startsWith("error: test failed"),
+    "cargo anchor (#2341): the target-level summary never owns the anchor",
+  );
+  assert(tail.length <= 1500, "cargo anchor (#2341): tail respects maxLen");
+}
+
+// 3c. #2341 — several panics in one target: the anchor is the LAST recognised
+// named line (the accepted last-occurrence rule, unchanged for the new shape),
+// so the LAST panic's pair is what survives — and the first panic's summary
+// half cannot de-anchor the region.
+{
+  const first =
+    "thread 'a::first_test' panicked at src/a.rs:1:1:\nfirst measured 12ms over the 10ms bound\n";
+  const second =
+    "thread 'b::second_test' panicked at src/b.rs:2:2:\nsecond measured 33ms over the 30ms bound\n";
+  const combined = `${first}note: run with \`RUST_BACKTRACE=1\`\n\n${second}error: test failed, to rerun pass \`--bin nessie\``;
+  const { tail } = extractAttributedTail(combined, 1500);
+  assert(
+    tail.startsWith("thread 'b::second_test'"),
+    `cargo anchor (#2341): the LAST panic wins the anchor, not the summary (got: ${JSON.stringify(tail.slice(0, 40))})`,
+  );
+}
+
+// 3d. #2341 fix wave (H1) — the anchor walk asks the SAME name-correlated
+// should_panic veto the extractor asks: when the CAPTURED panic of a passing
+// `#[should_panic]` test sits LAST in the stream, anchoring on it (the old
+// last-named rule) sliced the genuinely-failing test's pair off before the
+// extractor ever saw it. The header whose own test the window reports as
+// `... ok` is not a named anchor; the window starts at the failing test's
+// panic and its pair survives end to end.
+{
+  const { tail } = extractAttributedTail(RUST_SHOULD_PANIC_TRAP_AFTER_STREAM, 1500);
+  assert(
+    tail.startsWith("thread 'b::slow_path"),
+    `cargo anchor (#2341 H1): the captured panic of a passing test does not own the anchor (got: ${JSON.stringify(tail.slice(0, 40))})`,
+  );
+  assert(
+    extractSpecificAssertion(tail, RUST_SHOULD_PANIC_TRAP_AFTER_STREAM) === RUST_TRAP_PAIR,
+    `cargo anchor (#2341 H1): the failing test's pair survives the window (got: ${JSON.stringify(extractSpecificAssertion(tail, RUST_SHOULD_PANIC_TRAP_AFTER_STREAM))})`,
+  );
+}
+
+// 3e. #2341 fix wave 4 (H1/H2) — the per-test verdict of the captured name is
+// visible ONLY OUTSIDE the 1500-char window: the elision cut lands between the
+// panic header and its own `test a::t ... ok` line, so a veto asked on the
+// window alone sees no verdict and lets the capture own the anchor and become
+// the assertion. The anchor walk now asks the shared predicate on the very
+// window it is about to produce AND on the whole stream, and a header whose
+// test any observed verdict line reports as passing is refused at BOTH tiers —
+// not named, not even a last-resort anchor. The control below keeps the veto
+// name-correlated rather than a ban: with no verdict for the name anywhere,
+// nothing was observed and the header still anchors.
+{
+  const { tail, attributed } = extractAttributedTail(RUST_VERDICT_OUTSIDE_WINDOW_STREAM, 1500);
+  assert(
+    !tail.startsWith("thread '"),
+    `cargo anchor (#2341 H1/H2): the captured panic does not own the anchor even though its ok line is outside the window (got: ${JSON.stringify(tail.slice(0, 40))})`,
+  );
+  assert(
+    extractSpecificAssertion(tail, RUST_VERDICT_OUTSIDE_WINDOW_STREAM) === NO_SPECIFIC_ASSERTION,
+    `cargo anchor (#2341 H1/H2): the captured panic never becomes the assertion (got: ${JSON.stringify(extractSpecificAssertion(tail, RUST_VERDICT_OUTSIDE_WINDOW_STREAM).slice(0, 60))})`,
+  );
+  const unobserved = extractAttributedTail(
+    RUST_VERDICT_OUTSIDE_WINDOW_STREAM.replace("test a::t ... ok\n", ""),
+    1500,
+  );
+  assert(
+    unobserved.attributed && unobserved.tail.startsWith("thread '"),
+    "cargo anchor (#2341 H1/H2): an unobserved verdict vetoes nothing — the header still anchors when no verdict line exists",
+  );
+}
+
+// 3f. #2341 fix wave 4 (MEDIUM) — the extractor's OWN `...` elision marker
+// must never be joined as the panic message: `extractAttributedTail` builds
+// over-long windows as `anchorLine + "\n...\n" + tail`, so when the clip
+// lands directly under a panic header, `...` is the line beneath it and the
+// join site must refuse it and prefer the header (which still names test,
+// file and line).
+{
+  const pad = Array.from({ length: 60 }, (_, n) => `crate dep_${n} downloaded and compiled`).join("\n");
+  const stream =
+    `${pad}\ntest a::t ... FAILED\n${rustPanicHeader("a::t", "src/a.rs:7:5")}\n` +
+    Array.from({ length: 80 }, (_, n) => `warning: unused import ${n}`).join("\n") +
+    "\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out";
+  const { tail } = extractAttributedTail(stream, 1500);
+  assert(
+    tail.startsWith(rustPanicHeader("a::t", "src/a.rs:7:5")) && tail.includes("\n...\n"),
+    `elision join (#2341): the window really is the anchored cut with the marker beneath the header (got ${JSON.stringify(tail.slice(0, 60))})`,
+  );
+  assert(
+    extractSpecificAssertion(tail, stream) === rustPanicHeader("a::t", "src/a.rs:7:5"),
+    `elision join (#2341): the '...' cut line is never joined as the panic message (got ${JSON.stringify(extractSpecificAssertion(tail, stream))})`,
+  );
+}
+
+// 3g. #2341 fix wave 5 (H1/H2), re-pinned by fix wave 6 — the window the anchor
+// walk PUBLISHES stays the STREAM'S OWN BYTES. When the `FAILED:` marker owns
+// the anchor, on a long stream the elision cuts away the `test a::t ... ok`
+// line that proves the panic below it is a passing `#[should_panic]` capture.
+// Wave 5 bought decidability by IMPORTING that line into the window — and the
+// imported verdict then vetoed other targets' real same-named panics and
+// emptied whole windows. Wave 6 asks the name-correlated question on the STREAM
+// (handed alongside the tail); the window publishes only the anchored region.
+// The marker wins the anchor here, so going green says the PUBLISHED window is
+// sound, not that the walk had no other candidate.
+{
+  // `combinedExecFailureStream` puts stdout's verdict lines ABOVE stderr's panic
+  // prints, so `a::t`'s `ok` sits above the print belonging to it; the green
+  // TARGET TALLY below is what a region-bounded veto read as a boundary.
+  const compile = Array.from(
+    { length: 45 },
+    (_, n) => `   Compiling crate_${n} v0.1.0 (registry)`,
+  ).join("\n") + "\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured";
+  const stream = [
+    "FAILED: smoke-tests/test-rust-unit.ts",
+    "running 4 tests",
+    "test a::t ... ok",
+    "test a::one ... ok",
+    "test a::two ... ok",
+    compile,
+    "thread 'a::t' panicked at src/a.rs:7:5:",
+    "assertion failed: elapsed < 100ms",
+    "test a::slow ... FAILED",
+    "test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
+  ].join("\n");
+  const { tail } = extractAttributedTail(stream, 1500);
+  assert(
+    !tail.includes("test a::t ... ok"),
+    `published window stays the stream's own bytes (#2341 wave 6): the elided verdict is asked on the stream, never imported into the quoted window (got ${JSON.stringify(tail.slice(0, 60))})`,
+  );
+  assert(
+    extractSpecificAssertion(tail, stream) === NO_SPECIFIC_ASSERTION,
+    `capture in the published window (#2341 H1/H2): the passing test's panic never becomes the assertion (got: ${JSON.stringify(extractSpecificAssertion(tail, stream).slice(0, 70))})`,
+  );
+  // The same window against the change's own failure: the capture prints
+  // byte-identically in both runs, so the folded base assertion excused the
+  // panic the change added.
+  const base = extractSpecificAssertion(tail, stream);
+  const verdict = {
+    status: "red" as const,
+    rawStream: stream,
+    probed: true,
+    exitCode: 101,
+    assertion: base === NO_SPECIFIC_ASSERTION ? null : base,
+  };
+  const changeFailure = [
+    "FAILED: smoke-tests/test-rust-unit.ts",
+    "thread 'a::t' panicked at src/a.rs:7:5:",
+    "assertion failed: elapsed < 100ms",
+    "test a::slow ... FAILED",
+    "thread 'b::new' panicked at src/b.rs:2:2:",
+    "assertion failed: the check the change added",
+  ].join("\n");
+  assert(
+    baselineExplainsChange(verdict, [{ text: changeFailure, timedOut: false }]) === false,
+    "capture in the published window (#2341 H1/H2): the change-added failure is NOT excused",
+  );
+}
+
+// 3h. #2341 fix wave 5 (over-refusal) — the whole-stream ask is NAME-CORRELATED
+// ONLY. The chain shape this module's own header describes: stage 1 is a GREEN
+// `cargo test` (its target tally says `3 passed; 0 failed`) and a LATER stage's
+// binary dies. There is no `test main ... ok` line anywhere, so nothing was
+// observed about `main` — and the earlier stage's aggregate tally must not
+// answer for it. Wave 4 let it, vetoed at both tiers, and silently restored
+// #1762's unactionable generic handoff for the common case.
+{
+  const greenStage = [
+    "running 3 tests",
+    "test a::one ... ok",
+    "test a::two ... ok",
+    "test a::three ... ok",
+    "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+    ...Array.from({ length: 30 }, (_, n) => `   Compiling later_crate_${n} v0.1.0`),
+  ].join("\n");
+  const binaryDied =
+    "thread 'main' panicked at src/main.rs:12:5:\nsmoke check failed: expected 200 got 500 from /health";
+  const { tail, attributed } = extractAttributedTail(`${greenStage}\n${binaryDied}`, 1500);
+  assert(
+    attributed,
+    "chain stage (#2341 wave 5): a green earlier stage does not de-anchor the later stage's real panic",
+  );
+  assert(
+    extractSpecificAssertion(tail, `${greenStage}\n${binaryDied}`) ===
+      "thread 'main' panicked at src/main.rs:12:5: smoke check failed: expected 200 got 500 from /health",
+    `chain stage (#2341 wave 5): the binary's panic is still quoted with its message (got ${JSON.stringify(extractSpecificAssertion(tail, `${greenStage}\n${binaryDied}`).slice(0, 70))})`,
+  );
+  // The control: when the stream DOES hold a per-test verdict for the name,
+  // the name-correlated veto still fires — the fix is not the absence of one.
+  const reported = `${greenStage}\ntest main ... ok\n${binaryDied}`;
+  assert(
+    extractSpecificAssertion(extractAttributedTail(reported, 1500).tail, reported) === NO_SPECIFIC_ASSERTION,
+    "chain stage (#2341 wave 5): a per-test ok for the panic's own name still vetoes it",
   );
 }
 

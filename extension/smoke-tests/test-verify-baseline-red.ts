@@ -7,27 +7,42 @@
  * consolidated run KILLED at its timeout was reported as "specific
  * assertion: (no specific assertion could be extracted)". Driven through the
  * real `runVerifyCommandGate` with real git and a stub verify command whose
- * outcome is chosen per working directory.
+ * outcome is chosen per working directory (the builder is shared with the
+ * stale-base suite in `lib/verify-baseline-red-harness.ts`).
  */
-import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
-import type { DriverContext } from "../src/work-driver-context.ts";
+import {
+  HOST_EXHAUSTION_LABEL,
+  extractAttributedTail,
+} from "../src/work-driver-exec-error.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
+import {
+  NO_SPECIFIC_ASSERTION,
+  extractSpecificAssertion,
+  sharesAssertion,
+} from "../src/work-driver-consolidation-classify.ts";
 import { BASELINE_RED_MARKER } from "../src/work-driver-verify-baseline.ts";
-import { verifyCapFor } from "../src/work-driver-verify-develop-helpers.ts";
-import { runVerifyCommandGate } from "../src/work-driver-verify-verify-cmd.ts";
-import { appendEvent, initialState } from "../src/workflow-state.ts";
-import { commandOf } from "./lib/argv-shell.ts";
+import { baselineExplainsChange } from "../src/work-driver-verify-baseline-compare.ts";
+import { appendEvent } from "../src/workflow-state.ts";
+import {
+  runGateFixture,
+  type Outcome,
+} from "./lib/verify-baseline-red-harness.ts";
+import {
+  RUST_CARGO_STREAM,
+  CARGO_SIGABRT_SUMMARY,
+  TSC_DIAG_NO_LOCATION,
+  TSC_DIAG_STREAM,
+  rustPanicHeader,
+} from "./lib/verify-failure-shapes-fixtures.ts";
 import {
   assertDefaultVerifyBound,
   defaultBoundText,
   pinDefaultVerifyTimeout,
 } from "./lib/verify-timeout-pin.ts";
 
-const execFileP = promisify(execFile);
 let exit = 0;
 const assert = (c: boolean, m: string) => {
   if (c) console.log(`✓ ${m}`);
@@ -36,10 +51,6 @@ const assert = (c: boolean, m: string) => {
     exit = 1;
   }
 };
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
-const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd });
-
-const CMD = "bash scripts/verify.sh";
 // The timeout cases assert the DEFAULT bound's text. The bound is read from
 // the production helper with PI_ENSEMBLE_VERIFY_TIMEOUT_MS absent (see
 // ./lib/verify-timeout-pin.ts), so an operator who raised the knob (a 45-min
@@ -51,96 +62,23 @@ const BOUND = await defaultBoundText();
 // proven to put the operator's own knob value back afterwards.
 await assertDefaultVerifyBound(assert);
 const root = mkdtempSync(path.join(tmpdir(), "pi-baseline-red-"));
-type Outcome = { ok: true } | { ok: false; stdout: string; killed?: boolean };
 
-async function run(
+const run = (
   name: string,
   outcomeFor: (where: "base" | "change", baseRun?: 1 | 2) => Outcome,
-  // The callbacks the gate's tail rule (`reportBaselineLeg`) is asked to fire. A
-  // case that never passes them cannot tell a claim from a finding, which is the
-  // distinction #1826 turns on for the killed arm: the timeout's sentence still
-  // leads the evidence, and neither the cap's claim nor #1349's excuse may follow.
   baselineCallbacks: {
     onBaselineAttributed?: () => void;
     onBaselineRedEstablished?: (established: boolean) => void;
   } = {},
-) {
-  const repo = path.join(root, name, "repo");
-  mkdirSync(repo, { recursive: true });
-  writeFileSync(path.join(repo, "tracked.txt"), "base\n");
-  await execFileP("git", ["init", "--initial-branch=main", repo]);
-  await git(repo, ["config", "user.email", "t@example.com"]);
-  await git(repo, ["config", "user.name", "T"]);
-  await git(repo, ["add", "."]);
-  await git(repo, ["commit", "-q", "-m", "base"]);
-  const baseSha = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
-  const wt = path.join(repo, ".worktrees", "issue-9-default");
-  await git(repo, ["worktree", "add", "--detach", wt, baseSha]);
-  writeFileSync(path.join(wt, "change.txt"), "new\n");
-  await git(wt, ["add", "."]);
-  await git(wt, ["commit", "-q", "-m", "change"]);
-  // The integration root ignores its own worktrees, as the driver arranges.
-  writeFileSync(path.join(repo, ".git", "info", "exclude"), ".worktrees/\ntmp/\n");
+) => runGateFixture(root, name, outcomeFor, baselineCallbacks);
 
-  const baselineDir = path.join(repo, ".worktrees", "baseline-verify-9-base1");
-  const secondBaselineDir = path.join(repo, ".worktrees", "baseline-verify-9-base2");
-  const verifyRuns: Array<"base" | "change"> = [];
-  let baselineHadChange: boolean | undefined;
-  const execFn: NonNullable<DriverContext["verifyExecFn"]> = async (cmd, o) => {
-    cmd = commandOf(cmd, o);
-    if (cmd.startsWith("git ")) return { stdout: (await sh(o?.cwd ?? "", cmd)).stdout };
-    const where = o?.cwd === baselineDir || o?.cwd === secondBaselineDir ? "base" : "change";
-    if (where === "base") baselineHadChange = existsSync(path.join(baselineDir, "change.txt"));
-    verifyRuns.push(where);
-    const r = outcomeFor(where, o?.cwd === secondBaselineDir ? 2 : 1);
-    if (r.ok) return { stdout: "" };
-    const e = new Error(`Command failed: ${cmd}`) as Error & {
-      stdout?: string;
-      stderr?: string;
-      killed?: boolean;
-    };
-    e.stdout = r.stdout;
-    e.stderr = "";
-    e.killed = r.killed;
-    throw e;
-  };
-  const state = initialState(9);
-  state.pipelineState.worktrees = { default: wt };
-  state.pipelineState.baseSha = baseSha;
-  const failures: string[] = [];
-  const notes: string[] = [];
-  await runVerifyCommandGate({
-    execFn,
-    cmd: CMD,
-    ctx: {
-      host: {} as unknown as DriverContext["host"],
-      repoRoot: repo,
-      issue: 9,
-    } as DriverContext,
-    state,
-    worktrees: { default: wt },
-    baseSha,
-    changedWorktrees: [wt],
-    workstreamBaseShas: undefined,
-    failures,
-    notes,
-    ...baselineCallbacks,
-  });
-  const listed = (await git(repo, ["worktree", "list"])).stdout;
-  return {
-    failures,
-    notes,
-    verifyRuns,
-    baselineHadChange,
-    baseSha,
-    state,
-    listed,
-    baselineDir,
-    secondBaselineDir,
-  };
-}
 
-const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin console`\n";
+// #2341 — the real nessie 1415 cargo stream: the panic pair (test, file,
+// line, measured value, bound) AND the generic target summary. The defective
+// behaviour quoted only the summary; the fixture carries both so a regression
+// that re-quotas the summary fails the quote assertion rather than passing on
+// a fixture that never contained the decisive line.
+const CARGO = `${RUST_CARGO_STREAM}\n`;
 
 // 1 — the happy path never pays for a baseline run.
 {
@@ -171,9 +109,26 @@ const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin consol
     `red at base: the finding names BOTH base runs (got ${first.slice(0, 200)})`,
   );
   assert(
-    first.includes("error: test failed, to rerun pass `--bin console`") &&
-      first.includes("SAME assertion"),
-    "red at base: the finding names the base assertion and that the change's run shares it",
+    first.includes("panicked at src/session/fastpath_tests.rs:91:5") &&
+      first.includes("fast path took 101.409582ms") &&
+      first.includes("which is over the 100 ms bound"),
+    `red at base: the finding quotes the RUST PANIC — file:line, measured value and the bound it broke (got ${first.slice(0, 300)})`,
+  );
+  assert(
+    first.includes("SAME assertion"),
+    "red at base: the finding says the change's run shares that panic (same test on both sides)",
+  );
+  assert(
+    !first.includes("error: test failed, to rerun pass"),
+    "red at base: the generic cargo target summary is NEVER the quoted assertion (#2341)",
+  );
+  assert(
+    first.includes("could not be established"),
+    "red at base: with no origin the stale-base probe reports unknown rather than silently claiming the base is current (#2341)",
+  );
+  assert(
+    first.includes("Fix the gate at the base commit"),
+    "red at base: an unknown probe still gets the classic fix-the-base advice (#2341)",
   );
   assert(
     first.length <= 800,
@@ -388,6 +343,154 @@ await pinDefaultVerifyTimeout(async () => {
   assert(
     /base run 1: FAILED[\s\S]*base run 2: FAILED/.test(explained),
     "handoff: both runs are named WITH their outcomes, not just counted",
+  );
+  // #2341 — no stale marker on the finding (the probe answered unknown here),
+  // so the handoff keeps the classic fix-the-base instruction.
+  assert(
+    explained.includes("Fix the gate at the base commit"),
+    "handoff: a base with no establishable staleness still gets the fix-the-base advice",
+  );
+}
+
+// 6 — #2341 F1, the build-failure fold: the base is red on a missing `protoc`,
+// the change is red on missing protobuf headers — two different defects, and
+// cargo prints the SAME target-level summary for both. While a location-less,
+// code-less `error:` line was a quotable `diagnostic`, both streams extracted
+// that identical line, `sharesAssertion` folded them on containment, and
+// `baselineExplainsChange` excused the failure the change itself added. The
+// dialect rule takes the shared line's naming right, so each stream reports
+// honest absence and the excuse fails.
+{
+  const SHARED = "error: failed to run custom build command for `nessie-build v0.1.0`";
+  const buildFailure = (stderr: string) =>
+    [
+      "   Compiling nessie-build v0.1.0 (/repo)",
+      SHARED,
+      "  process exited with exit status: 1",
+      "  --- stderr",
+      stderr,
+      "error: build failed",
+    ].join("\n");
+  const baseStream = buildFailure("protoc: program not found");
+  const changeStream = buildFailure("google/protobuf/any.proto: File not found.");
+  assert(
+    baseStream.includes(SHARED) && changeStream.includes(SHARED),
+    "build fold: both streams really carry the byte-identical summary — the fold material is in the stream, not the fixture",
+  );
+  assert(
+    extractSpecificAssertion(baseStream, baseStream) === NO_SPECIFIC_ASSERTION,
+    `build fold: the base stream (protoc) reports honest absence (got ${JSON.stringify(extractSpecificAssertion(baseStream, baseStream))})`,
+  );
+  assert(
+    extractSpecificAssertion(changeStream, changeStream) === NO_SPECIFIC_ASSERTION,
+    `build fold: the change stream (protobuf headers) reports honest absence (got ${JSON.stringify(extractSpecificAssertion(changeStream, changeStream))})`,
+  );
+  assert(
+    !sharesAssertion(changeStream, SHARED) &&
+      !sharesAssertion(changeStream, "error: build failed"),
+    "build fold: the shared target-level line never buys a SAME-assertion claim",
+  );
+  assert(
+    !baselineExplainsChange(
+      {
+        status: "red",
+        rawStream: baseStream,
+        probed: false,
+        exitCode: 101,
+        assertion: extractSpecificAssertion(baseStream, baseStream),
+      },
+      [{ text: changeStream, timedOut: false }],
+    ),
+    "build fold: a base red on missing protoc does NOT explain a change red on missing protobuf headers",
+  );
+}
+
+// 7 — #2341 fix wave 4 (H4): the tsc dialect under the SAME location rule.
+// Two location-less `error TS2345:` failures from DIFFERENT files print the
+// byte-identical line (the file sits on another line, or a flattening gate
+// amputates it); while the location rule was keyed on the rustc bracket form
+// alone, the tsc one slipped through the rule built to refuse exactly this and
+// the fold excused a regression the change added. Neither may be quoted nor
+// share; the located tsc line still excuses its own base (the rule is not
+// simply off).
+{
+  assert(
+    TSC_DIAG_STREAM.split("\n").filter((l) => l === TSC_DIAG_NO_LOCATION).length === 2,
+    "tsc fold: the byte-identical line really is in the stream twice — the fold material is in the stream, not the fixture",
+  );
+  assert(
+    !sharesAssertion(TSC_DIAG_STREAM, TSC_DIAG_NO_LOCATION),
+    `tsc fold: two location-less error TS2345 failures in different files never share an assertion (${sharesAssertion(TSC_DIAG_STREAM, TSC_DIAG_NO_LOCATION)})`,
+  );
+  assert(
+    extractSpecificAssertion(TSC_DIAG_STREAM, TSC_DIAG_STREAM) === NO_SPECIFIC_ASSERTION,
+    `tsc fold: a location-less error TS2345 line is never the quoted assertion (got ${JSON.stringify(extractSpecificAssertion(TSC_DIAG_STREAM, TSC_DIAG_STREAM))})`,
+  );
+  assert(
+    !baselineExplainsChange(
+      {
+        status: "red",
+        rawStream: TSC_DIAG_STREAM,
+        probed: false,
+        exitCode: 2,
+        assertion: TSC_DIAG_NO_LOCATION,
+      },
+      [{ text: `tsc reported ${TSC_DIAG_NO_LOCATION} in a different file`, timedOut: false }],
+    ),
+    "tsc fold: a base red on one location-less TS2345 does not explain an unrelated change failure",
+  );
+}
+
+// The foreign-target workspace stream (#2341 fix wave 7): two crates of one
+// `cargo test --workspace` print BYTE-IDENTICAL libtest names, and the failing
+// target aborted before printing its own verdict. Separating the sibling's `ok`
+// from this header's own needs cargo's per-target banner, which the veto
+// deliberately does not parse — so this panic is DELIBERATELY OVER-REFUSED: a
+// loud absence costs one round; the silent under-refusal spends the corrective
+// round on a test that passes.
+{
+  const targetA = [
+    "running 1 test",
+    "test pkg::tests::t_0 ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+    ...Array.from({ length: 40 }, (_, n) => `   Compiling mid_crate_${n} v0.1.0 (registry)`),
+  ].join("\n");
+  const targetB = [
+    "running 1 test",
+    rustPanicHeader("pkg::tests::t_0", "src/real_0.rs:1:5"),
+    "assertion failed: `(left == right)` the value the change broke",
+    "Aborted (core dumped)",
+    CARGO_SIGABRT_SUMMARY,
+  ].join("\n");
+  const raw = `${targetA}\n${targetB}`;
+  const { tail } = extractAttributedTail(raw, 1500);
+  assert(
+    extractSpecificAssertion(tail, raw) === NO_SPECIFIC_ASSERTION,
+    `foreign target (wave 7): a sibling crate's same-named ok OVER-REFUSES, by design (got ${JSON.stringify(extractSpecificAssertion(tail, raw).slice(0, 60))})`,
+  );
+  const renamed = raw.replace("test pkg::tests::t_0 ... ok", "test pkg::other ... ok");
+  const renamedTail = extractAttributedTail(renamed, 1500).tail;
+  assert(
+    extractSpecificAssertion(renamedTail, renamed) !== NO_SPECIFIC_ASSERTION,
+    `foreign target (wave 7): the veto is exact-name, not a ban (got ${JSON.stringify(extractSpecificAssertion(renamedTail, renamed).slice(0, 60))})`,
+  );
+  assert(
+    baselineExplainsChange(
+      {
+        status: "red",
+        rawStream: raw,
+        probed: true,
+        exitCode: 101,
+        assertion: extractSpecificAssertion(extractAttributedTail(raw, 1500).tail, raw),
+      },
+      [
+        {
+          text: "thread 'pkg::tests::t_0' panicked at src/other.rs:9:9:\nthe failure the change added",
+          timedOut: false,
+        },
+      ],
+    ) === false,
+    "foreign target (wave 7): the base's assertion never excuses a DIFFERENT failure the change added",
   );
 }
 

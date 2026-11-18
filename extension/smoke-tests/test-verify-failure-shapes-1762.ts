@@ -37,12 +37,15 @@ import {
 import { depsHintStartFor } from "../src/work-driver-verify-inner-line.ts";
 import { depsHintApplies } from "../src/work-driver-verify-record.ts";
 import {
+  CARGO_SIGABRT_SUMMARY,
+  CARGO_TARGET_SUMMARY,
   CHECKS_BLOCK,
   CMD,
   FAIL_HEADER,
   FAIL_HEADER_PASSING,
   WT,
   makeAssert,
+  rustPanicHeader,
 } from "./lib/verify-failure-shapes-fixtures.ts";
 
 const { assert, failed } = makeAssert();
@@ -51,9 +54,22 @@ const { assert, failed } = makeAssert();
 const SHAPES: Array<[string, string, boolean]> = [
   ["FAILED: extension/smoke-tests/test-x.ts", "failed-marker", false],
   ["✗ expected 5 got 6", "assertion-mark", true],
-  ["error TS2345: Argument of type 'string' is not assignable", "diagnostic", true],
-  ["error: cannot compile", "diagnostic", true],
-  ["error[E0308]: mismatched types", "diagnostic", true],
+  ["error TS2345: Argument of type 'string' is not assignable", "diagnostic-unlocated", false],
+  // #2341 fix wave 4 (H4) — the tsc dialect is under the SAME location rule
+  // (shared `DIAGNOSTIC_IDENTITY_SRC`): located keeps the naming right,
+  // location-less gets `diagnostic-unlocated`/false (see the TSC row below).
+  ["src/x.ts:42:10 - error TS2345: Argument of type 'string' is not assignable", "diagnostic", true],
+  // #2341 F1 — a location-less, code-less prose `error:` line names no check:
+  // the whole cargo `error:` dialect without a file location or an error code
+  // is target-level, recognised but never quotable as "the assertion".
+  ["error: cannot compile", "cargo-summary", false],
+  // #2341 fix wave (H2) — cargo prints the rustc location on a SEPARATE
+  // following `--> file:line:col` line, so a location-less `error[E…]` line
+  // names no check: it is byte-identical across compile failures in different
+  // files, and quoted as "the assertion" it folds them together. The location
+  // (in-line, as rustc itself prints it) buys the naming right.
+  ["error[E0308]: mismatched types", "diagnostic-unlocated", false],
+  ["error[E0308]: mismatched types --> src/a.rs:9:5", "diagnostic", true],
   ["scripts/pack_release_test.sh: failed checks (1)", "script-tally", true],
   ["scripts/test.sh: 3 failed", "named-file", true],
   [FAIL_HEADER, "fail-header", true],
@@ -61,6 +77,27 @@ const SHAPES: Array<[string, string, boolean]> = [
   ["FAILED tests/test_auth.py::test_login", "pytest-failed", true],
   ["ERROR tests/test_auth.py::test_login", "pytest-error", true],
   ["--- FAIL: TestThing (0.31s)", "go-fail", true],
+  // #2341 — the Rust/cargo dialect: the panic header names the test (and its
+  // message line is paired in by `extractSpecificAssertion`), the trailing
+  // cargo summary names only the TARGET, so it is recognised but never names
+  // a check — the line that must never become "the specific assertion".
+  [rustPanicHeader("a::tests::t", "src/a.rs:91:5"), "rust-panic", true],
+  [CARGO_TARGET_SUMMARY, "cargo-summary", false],
+  // #2341 round 1 — the whole cargo target-level dialect, not just the one
+  // sentence: each of these is byte-identical across the tests that failed in
+  // the target, so none may name a check. The located `error[E0308]` is the
+  // counter-arm — a compiler diagnostic that carries its location DOES name a
+  // check, and the widened target-summary rule must not swallow it; the
+  // location-less one (#2341 fix wave H2) names none.
+  [CARGO_SIGABRT_SUMMARY, "cargo-summary", false],
+  ["error: 1 target failed:", "cargo-summary", false],
+  [
+    "error: could not compile `nessie` (bin \"nessie\") due to 1 previous error",
+    "cargo-summary",
+    false,
+  ],
+  ["error: aborting due to 1 previous error", "cargo-summary", false],
+  ["error[E0308]: mismatched types --> src/a.rs:9:5", "diagnostic", true],
 ];
 for (const [line, shape, names] of SHAPES) {
   const got = classifyFailureLine(line);
@@ -304,8 +341,8 @@ assert(
     "wrapped marker: the stream behind the harness still reports a failure, so the tail anchors",
   );
   assert(
-    extractSpecificAssertion(wrappedMarker) === NO_SPECIFIC_ASSERTION,
-    `wrapped marker: a wrapped FAILED: marker is never the specific assertion (got ${JSON.stringify(extractSpecificAssertion(wrappedMarker))})`,
+    extractSpecificAssertion(wrappedMarker, wrappedMarker) === NO_SPECIFIC_ASSERTION,
+    `wrapped marker: a wrapped FAILED: marker is never the specific assertion (got ${JSON.stringify(extractSpecificAssertion(wrappedMarker, wrappedMarker))})`,
   );
   {
     const text = wrappedMarker;
@@ -329,8 +366,8 @@ assert(
   // and the developer is given the ✗ line — not the harness sentence.
   const wrappedAssertion = `verify command \`${CMD}\` failed in ${WT}: FAILED: b.ts\n\u2717 b.ts: expected x`;
   assert(
-    extractSpecificAssertion(wrappedAssertion) === "\u2717 b.ts: expected x",
-    `wrapped marker: the ✗ line beneath the wrapped marker is the assertion (got ${JSON.stringify(extractSpecificAssertion(wrappedAssertion))})`,
+    extractSpecificAssertion(wrappedAssertion, wrappedAssertion) === "\u2717 b.ts: expected x",
+    `wrapped marker: the ✗ line beneath the wrapped marker is the assertion (got ${JSON.stringify(extractSpecificAssertion(wrappedAssertion, wrappedAssertion))})`,
   );
   {
     const text = wrappedAssertion;
@@ -423,7 +460,7 @@ assert(
   // it is `redactSecrets`, and it has to run on the value the extractor RETURNS.
   const inner = `✗ token mismatch got ${SECRET}`;
   const wrapped = `verify command \`${CMD}\` failed in ${WT}: ${inner}${filler}`;
-  const extracted = extractSpecificAssertion(wrapped);
+  const extracted = extractSpecificAssertion(wrapped, wrapped);
   assert(
     !isHarnessWrapper(extracted),
     `wrapper is never the assertion: the harness sentence is not returned (got ${JSON.stringify(extracted)})`,
@@ -439,7 +476,7 @@ assert(
   // The same line bare, and the verdict that prints the assertion in its `reason`
   // (the field the handoff shows): the return value is redacted wherever it came
   // from, not only on the wrapper path.
-  const bare = extractSpecificAssertion(`${inner}${filler}`);
+  const bare = extractSpecificAssertion(`${inner}${filler}`, `${inner}${filler}`);
   assert(
     !/ghp_[A-Za-z0-9]/.test(bare),
     `bare: no credential reaches the extracted assertion (got ${JSON.stringify(bare)})`,
@@ -454,8 +491,8 @@ assert(
   // this door.
   const unreadable = `verify command \`${CMD}\` failed in ${WT}:`;
   assert(
-    extractSpecificAssertion(unreadable) === NO_SPECIFIC_ASSERTION,
-    `empty wrapper: absence is reported, not the harness sentence (got ${JSON.stringify(extractSpecificAssertion(unreadable))})`,
+    extractSpecificAssertion(unreadable, unreadable) === NO_SPECIFIC_ASSERTION,
+    `empty wrapper: absence is reported, not the harness sentence (got ${JSON.stringify(extractSpecificAssertion(unreadable, unreadable))})`,
   );
 }
 

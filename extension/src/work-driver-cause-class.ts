@@ -219,7 +219,7 @@ function assertionLinesOf(failures: readonly string[]): string[] {
       if (out.length >= EVIDENCE_MAX_LINES) return out;
       const line = raw.trim();
       if (line.length === 0 || seen.has(line)) continue;
-      if (extractSpecificAssertion(line) === NO_SPECIFIC_ASSERTION) continue;
+      if (extractSpecificAssertion(line, f) === NO_SPECIFIC_ASSERTION) continue;
       seen.add(line);
       out.push(line);
     }

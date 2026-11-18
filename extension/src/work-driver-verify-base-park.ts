@@ -32,14 +32,36 @@ const BASELINE_RED_MARKER = "[baseline-red]";
  * being red. Position of the COMMAND decides nothing (the timed-out arm puts it
  * after both labels); position of the MARKER decides everything.
  *
+ * The name may be the renderer's CLIPPED form, and this is the renderer's own
+ * contract, not a tolerance invented here (#2341 fix wave 5, H3): when the frame
+ * alone has eaten the cap-evidence window, `baselineRedMessage` buys the last of
+ * its room from the operator-authored cmd, clipped with its own `…` to
+ * `CMD_FLOOR` — so a whole cmd in backticks is what the entry carries whenever
+ * the budget allowed, and a prefix closed by the renderer's own clip marker
+ * otherwise. #1765 routes the cap on the command named INSIDE the entry (the
+ * entry is what the operator reads and what the probe re-ran), which is why the
+ * clip is allowed to exist at all; comparing the quoted span against `cmd` —
+ * exactly, or as a prefix licensed only by the renderer's `…` — keeps the two
+ * claims one claim. A quoted span that is another command's name still answers
+ * false, and an entry with no quoted command answers false whatever `cmd` is.
+ *
  * This is the RENDERER's contract, pinned by `test-verify-baseline-attribution`
  * and used by the explain/cause seams that read a cap's failure prose; the
  * develop gate's CAP claim is NOT read this way since #1765 lens round 3 — it
  * comes from the `RedBaselineVerdict` the probe returned, because the timed-out
- * arm leads its entry with the timeout label and prose cannot name it.
+ * arm leads its entry with the timeout label and prose cannot name it. (No
+ * `src/` reader calls it today — it is re-exported for the seams and the
+ * suite — so the wave-4 drift this closes was a lying comment, not a mis-route.)
  */
 export function baselineRedForCommand(failure: string, cmd: string): boolean {
-  return failure.startsWith(BASELINE_RED_MARKER) && failure.includes(`\`${cmd}\``);
+  if (!failure.startsWith(BASELINE_RED_MARKER)) return false;
+  // The lead's quoted span, and only it: both arms put the command in the
+  // first backticks after `verify command`, and an assertion quoting a
+  // backtick sits later in the entry.
+  const quoted = /verify command `([^`]*)`/.exec(failure)?.[1];
+  if (quoted === undefined) return false;
+  if (quoted === cmd) return true;
+  return quoted.length > 1 && quoted.endsWith("\u2026") && cmd.startsWith(quoted.slice(0, -1));
 }
 
 /**
@@ -86,12 +108,13 @@ export function baseHealthRedEvidence(
   const tally = arm.status === "red" ? summaryCount(arm.rawStream) : undefined;
   const baseRuns = confirmation === undefined ? "" : baseRunsProse(confirmation);
   return {
-    message: `${baselineRedMessage(arm, {
+    message: baselineRedMessage(arm, {
       cmd: verdict.command,
       baseSha: verdict.baseSha,
       timeoutMs: verdict.tierBoundMs,
       changeFailure: "",
-    })}${baseRuns === "" ? "" : ` — ${baseRuns}`}`,
+      runs: baseRuns,
+    }),
     ...(tally === undefined ? {} : { tally }),
     ...(baseRuns === "" ? {} : { baseRuns }),
   };

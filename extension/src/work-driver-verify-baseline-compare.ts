@@ -1,3 +1,4 @@
+import { sharesAssertion } from "./work-driver-consolidation-classify.ts";
 import { named } from "./work-driver-verify-base-confirm-names.ts";
 import {
   baseRunsProse,
@@ -47,16 +48,81 @@ import {
 } from "./work-driver-verify-base-confirm.ts";
 import {
   type BaselineVerdict,
-  type ChangeFailure,
   type RedBaselineVerdict,
   type ReusableVerdict,
   baselineRedMessage,
   isRedBaseline,
 } from "./work-driver-verify-baseline.ts";
 import { boundText } from "./work-driver-verify-develop-helpers.ts";
+import {
+  changePanicsAreBaseFailures,
+  panicCanExcuseChange,
+} from "./work-driver-verify-failures.ts";
 import type { BaseHealthKey } from "./workflow-state-schema-base-health.ts";
 import { matchingVerdict } from "./workflow-state-schema-base-health.ts";
 import type { ExecFn } from "./worktree.ts";
+
+/** One failure of the change's own verify run, for the baseline comparison. */
+export interface ChangeFailure {
+  text: string;
+  timedOut: boolean;
+  /**
+   * #2341 — the run's OWN unclipped output this record's tail was cut from. Both
+   * questions the change side pays need it, and neither can be answered of the
+   * record: a per-worktree record is a clipped, formatted tail whose elision sits
+   * ABOVE the failing name's verdict line, so the record cannot say whether its own
+   * run failed that test, and the same clipping drops a second panic's HEADER
+   * outright — an elided header is a failing test the excuse never asks (the same
+   * reason the record publishers thread the raw run to the `#[should_panic]` veto).
+   * Absent — the reader then asks the text it has.
+   */
+  raw?: string;
+}
+
+/**
+ * #1349 — true only when the change's failures are demonstrably the base's:
+ * every one shares the (extracted, non-null) base assertion, or the base and
+ * every change run were killed at the bound. A base red some other way says
+ * nothing, and a Rust panic excuses only on {@link panicCanExcuseChange}'s
+ * evidence — the base run's own per-test line naming that test as FAILED.
+ *
+ * #2341 fix wave (HIGH 3) — the Rust half is decided PER FAILING TEST, not per
+ * record. The develop gate calls this with ONE entry whose text is the whole
+ * consolidated failure output, so `sharesAssertion` — substring containment —
+ * matched the base's assertion once and excused every OTHER failure inside that
+ * blob, a second Rust panic the change introduced below it included. Both runs
+ * now answer the same name-correlated question for every panic header the RUN
+ * carries ({@link changePanicsAreBaseFailures}): the base run must have reported
+ * that test `FAILED`, and the change's own run must report it `FAILED` too. The
+ * headers are enumerated over the RUN as well as the record, because the elision
+ * that hides a name's verdict line hides a second panic's header with it: a header
+ * the clip dropped is a failing test that gets asked nothing, and the known flaky's
+ * excuse covered the regression. The record stays in the enumeration — a header it
+ * quotes that the run never printed is the untrusted-text case the question exists
+ * for. A change-added regression is therefore refused; the accepted, disclosed cost
+ * is the loud direction — a run that reports no verdict for a name it prints a
+ * panic header for loses the excuse and parks as an ordinary
+ * `verify-failed:develop`.
+ */
+export function baselineExplainsChange(
+  verdict: RedBaselineVerdict,
+  changeFailures: readonly ChangeFailure[],
+): boolean {
+  if (changeFailures.length === 0) return false;
+  if (verdict.status === "red-timed-out") return changeFailures.every((f) => f.timedOut);
+  const { assertion, rawStream } = verdict;
+  if (assertion === null || !panicCanExcuseChange(rawStream, assertion)) return false;
+  return changeFailures.every(
+    (f) =>
+      !f.timedOut &&
+      sharesAssertion(f.text, assertion) &&
+      // The headers are enumerated over BOTH texts inside the predicate: the run's
+      // own, because a clipped record cannot report a header its elision cut away,
+      // and the record's, because a header it QUOTES that the run never printed is
+      // the untrusted-text case this question exists for.
+      changePanicsAreBaseFailures(f.text, f.raw ?? f.text, rawStream),
+  );
+}
 
 /**
  * The rebuild of a cached red into the arm the comparison reasons over.
@@ -325,7 +391,7 @@ export async function compareWithBaseline(
     const changeFailure = opts.changeFailures.map((f) => f.text).join("\n");
     const runs = baseRunsProse(confirmation);
     opts.failures.unshift(
-      `${baselineRedMessage(confirmation.first, { cmd, baseSha, timeoutMs, changeFailure })}${runs === "" ? "" : ` — ${runs}`}`,
+      baselineRedMessage(confirmation.first, { cmd, baseSha, timeoutMs, changeFailure, runs }),
     );
     return {
       verdict: { ...reused, reused: true },
@@ -420,9 +486,7 @@ export async function compareWithBaseline(
     return undefined;
   }
   const runs = baseRunsProse(confirmation);
-  opts.failures.unshift(
-    `${baselineRedMessage(arm, { cmd, baseSha, timeoutMs, changeFailure })}${runs === "" ? "" : ` — ${runs}`}`,
-  );
+  opts.failures.unshift(baselineRedMessage(arm, { cmd, baseSha, timeoutMs, changeFailure, runs }));
   // #1765 — the verdict is RETURNED, not re-derived by the caller from the entry
   // this wrote: the `red-timed-out` arm leads its entry with `[verify-timeout]`,
   // so prose matching cannot tell a red base from a killed run. #1349's excuse is
