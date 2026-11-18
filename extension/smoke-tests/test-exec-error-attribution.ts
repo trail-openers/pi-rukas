@@ -9,6 +9,7 @@
  */
 
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
+import { RUST_CARGO_STREAM } from "./lib/verify-failure-shapes-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -110,6 +111,51 @@ function assert(cond: boolean, msg: string) {
   assert(
     whitespace.tail === "" && whitespace.attributed === false,
     "whitespace-only input: empty unattributed tail",
+  );
+}
+
+// 3b. #2341 — the cargo dialect, with the decisive pair EARLIER in the stream
+// than the anchor candidates: a long passing prefix, then the panic pair, then
+// cargo's trailing target summary. With only the summary recognised, the old
+// last-recognition anchor started the tail AT that trailing line and sliced
+// the panic off before the extractor ever saw it — the "recognition gap, not a
+// truncation gap" inference was wrong. The panic header (namesTest) must win
+// the anchor, and a blind end-of-stream slice must not be what remains.
+{
+  const passing = "test a::tests::passing_case_ok ... ok\n".repeat(90); // >2 KiB
+  const combined = `${passing}${RUST_CARGO_STREAM}\n`;
+  const { tail, attributed } = extractAttributedTail(combined, 1500);
+  assert(attributed, "cargo anchor (#2341): the stream is attributed");
+  assert(
+    tail.startsWith("thread '"),
+    `cargo anchor (#2341): anchored on the panic header, not the trailing summary or a blind slice (got: ${JSON.stringify(tail.slice(0, 40))})`,
+  );
+  assert(
+    tail.includes("panicked at src/session/fastpath_tests.rs:91:5") &&
+      tail.includes("fast path took 101.409582ms"),
+    "cargo anchor (#2341): the panic pair survives the 1500-char window",
+  );
+  assert(
+    !tail.startsWith("error: test failed"),
+    "cargo anchor (#2341): the target-level summary never owns the anchor",
+  );
+  assert(tail.length <= 1500, "cargo anchor (#2341): tail respects maxLen");
+}
+
+// 3c. #2341 — several panics in one target: the anchor is the LAST recognised
+// named line (the accepted last-occurrence rule, unchanged for the new shape),
+// so the LAST panic's pair is what survives — and the first panic's summary
+// half cannot de-anchor the region.
+{
+  const first =
+    "thread 'a::first_test' panicked at src/a.rs:1:1:\nfirst measured 12ms over the 10ms bound\n";
+  const second =
+    "thread 'b::second_test' panicked at src/b.rs:2:2:\nsecond measured 33ms over the 30ms bound\n";
+  const combined = `${first}note: run with \`RUST_BACKTRACE=1\`\n\n${second}error: test failed, to rerun pass \`--bin nessie\``;
+  const { tail } = extractAttributedTail(combined, 1500);
+  assert(
+    tail.startsWith("thread 'b::second_test'"),
+    `cargo anchor (#2341): the LAST panic wins the anchor, not the summary (got: ${JSON.stringify(tail.slice(0, 40))})`,
   );
 }
 

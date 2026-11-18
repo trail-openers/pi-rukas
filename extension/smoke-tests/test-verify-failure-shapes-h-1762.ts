@@ -34,6 +34,7 @@ import { classifyFailureLine } from "../src/work-driver-verify-failures.ts";
 import { consolidatedAssertionLines } from "../src/work-driver-verify-record.ts";
 import { harvestConsolidatedTallies } from "../src/work-driver-verify-tally.ts";
 import {
+  CARGO_TARGET_SUMMARY,
   CHECKS_BLOCK,
   CMD,
   EXAMPLE_STREAM,
@@ -45,6 +46,7 @@ import {
   TALLY_NAMES,
   WT,
   makeAssert,
+  rustPanicHeader,
 } from "./lib/verify-failure-shapes-fixtures.ts";
 
 const { assert, failed } = makeAssert();
@@ -221,6 +223,11 @@ const { assert, failed } = makeAssert();
     ["FAILED tests/test_a.py::test_login", "pytest-failed"],
     ["ERROR tests/test_a.py::test_login", "pytest-error"],
     ["--- FAIL: TestThing (0.31s)", "go-fail"],
+    // #2341 — the two Rust arms; their namesTest VALUES (true for the panic
+    // header that names the test, false for the target-level cargo summary) are
+    // the checked fact, not just their keys.
+    [rustPanicHeader("a::tests::t", "src/a.rs:91:5"), "rust-panic"],
+    [CARGO_TARGET_SUMMARY, "cargo-summary"],
   ];
   for (const [line, shape] of probes) {
     const got = classifyFailureLine(line);

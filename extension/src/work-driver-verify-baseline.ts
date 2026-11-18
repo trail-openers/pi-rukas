@@ -432,17 +432,31 @@ export function baselineRedMessage(
   // withholds causation, which only a reproduction on the base can establish.
   // An `unknown` probe keeps the classic advice but SAYS it could not check,
   // so an unreadable git call never reads as "mainline does not explain the
-  // red".
+  // red". The behind arm also drops the middle sentence: the finding already
+  // leads with "ALSO FAILS … without this change", and the stale clause
+  // repeats its point in the operator's terms — keeping both would push the
+  // string past the 800-char cap-evidence bound, whose fallback slices the
+  // TAIL and would amputate the marker and the quoted panic, the two parts
+  // the cap's routing and the operator's diagnosis read.
   const stale = verdict.staleBase;
-  const closing =
-    stale?.status === "behind"
-      ? ` ${BASELINE_STALE_BASE_MARKER} the base commit is ${stale.commitsBehind} commit(s) behind ${stale.branch}, which already carries ${stale.commitsBehind} commit(s) this base predates — ${stale.commits.slice(0, 3).join("; ")}${stale.commits.length > 3 ? ` (+${stale.commits.length - 3} more)` : ""}. The red may be explained by those commits rather than by the base itself (this probe establishes the divergence, not the cause): re-run against a base that includes ${stale.branch} before treating the base's gate as broken`
-      : `Fix the gate at the base commit (or the host it runs on), then re-run${
-          stale?.status === "unknown"
-            ? ` (whether the base trails the default branch could not be established: ${stale.reason.slice(0, 60)})`
-            : ""
-        }`;
-  return `${BASELINE_RED_MARKER} verify command \`${opts.cmd}\` ALSO FAILS ${where} — assertion at base: ${verdict.assertion ?? NO_SPECIFIC_ASSERTION}${same}. The gate was red before this change was written, so no change can pass it; the failures below cannot be attributed to this diff until the base is green. ${closing}`;
+  const behind = stale?.status === "behind" ? stale : undefined;
+  const middle =
+    behind === undefined
+      ? "The gate was red before this change was written, so no change can pass it; the failures below cannot be attributed to this diff until the base is green. "
+      : "";
+  const closing = behind
+    ? `${BASELINE_STALE_BASE_MARKER} the base trails ${behind.branch} by ${behind.commitsBehind} commits — ${behind.commits
+        .slice(0, 2)
+        .map((c) => c.slice(0, 60))
+        .join(
+          "; ",
+        )}${behind.commits.length > 2 ? ` (+${behind.commits.length - 2} more)` : ""}: the red may be ${behind.branch}'s, not the base's (divergence, not cause); re-run on a base that includes ${behind.branch}`
+    : `Fix the gate at the base commit (or the host it runs on), then re-run${
+        stale?.status === "unknown"
+          ? ` (default-branch staleness could not be established: ${stale.reason.slice(0, 40)})`
+          : ""
+      }`;
+  return `${BASELINE_RED_MARKER} verify command \`${opts.cmd}\` ALSO FAILS ${where} — assertion at base: ${verdict.assertion ?? NO_SPECIFIC_ASSERTION}${same}. ${middle}${closing}`;
 }
 
 /** One failure of the change's own verify run, for the baseline comparison. */ export interface ChangeFailure {

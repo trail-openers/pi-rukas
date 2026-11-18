@@ -37,12 +37,14 @@ import {
 import { depsHintStartFor } from "../src/work-driver-verify-inner-line.ts";
 import { depsHintApplies } from "../src/work-driver-verify-record.ts";
 import {
+  CARGO_TARGET_SUMMARY,
   CHECKS_BLOCK,
   CMD,
   FAIL_HEADER,
   FAIL_HEADER_PASSING,
   WT,
   makeAssert,
+  rustPanicHeader,
 } from "./lib/verify-failure-shapes-fixtures.ts";
 
 const { assert, failed } = makeAssert();
@@ -61,6 +63,12 @@ const SHAPES: Array<[string, string, boolean]> = [
   ["FAILED tests/test_auth.py::test_login", "pytest-failed", true],
   ["ERROR tests/test_auth.py::test_login", "pytest-error", true],
   ["--- FAIL: TestThing (0.31s)", "go-fail", true],
+  // #2341 — the Rust/cargo dialect: the panic header names the test (and its
+  // message line is paired in by `extractSpecificAssertion`), the trailing
+  // cargo summary names only the TARGET, so it is recognised but never names
+  // a check — the line that must never become "the specific assertion".
+  [rustPanicHeader("a::tests::t", "src/a.rs:91:5"), "rust-panic", true],
+  [CARGO_TARGET_SUMMARY, "cargo-summary", false],
 ];
 for (const [line, shape, names] of SHAPES) {
   const got = classifyFailureLine(line);

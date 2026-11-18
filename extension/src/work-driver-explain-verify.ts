@@ -24,10 +24,7 @@ import {
   GATE_HANG_NO_NAMED_TEST as NO_NAMED_TEST,
   isGateHangFailure,
 } from "./work-driver-gate-hang.ts";
-import {
-  BASELINE_RED_MARKER,
-  BASELINE_STALE_BASE_MARKER,
-} from "./work-driver-verify-baseline.ts";
+import { BASELINE_RED_MARKER, BASELINE_STALE_BASE_MARKER } from "./work-driver-verify-baseline.ts";
 import { type CapHitEvent, lastCapHit } from "./workflow-state-cap.ts";
 import type { VerifyEvidenceOrigin } from "./workflow-state-schema-verify.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";

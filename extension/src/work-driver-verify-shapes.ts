@@ -119,6 +119,30 @@ const CARGO_TARGET_SUMMARY_SHAPE: ShapeEntry = reEntry(
 );
 
 /**
+ * #2341 — the SAMENESS key of a Rust panic assertion. The extractor joins
+ * the header and its message for the operator-facing value; two runs of the
+ * SAME failing test print that pair byte-identically, and two DIFFERENT
+ * failing tests in one target differ exactly in the header (test name,
+ * file, line, column). So the header alone — the `thread '<name>' panicked
+ * at <loc>:` token run up to its trailing colon, followed by whitespace or
+ * end of string — is the identity the sameness comparison anchors on. A
+ * deliberately clipped prose prefix can therefore never fold two failures
+ * together: the clip falls in the message, which the key discards, or
+ * leaves the header intact, which distinguishes the tests. Any other
+ * assertion (every other shape, and the pre-1.73 inline form whose token
+ * run does not end at a colon) is its own key — exact containment is
+ * unchanged for it.
+ */
+const RUST_PANIC_HEADER_FORM = /^(thread\s+'[^']+'\s+panicked\s+at\s+\S+:)(?:\s|$)/;
+
+/** The identity a Rust panic assertion compares on; other assertions are theirs. */
+export function rustPanicSamenessKey(assertion: string): string {
+  const m = RUST_PANIC_HEADER_FORM.exec(assertion);
+  const header = m?.[1];
+  return header !== undefined ? header : assertion;
+}
+
+/**
  * The `failed-marker` entry, hoisted so the ONE definition serves the table and,
  * through `isBareFailedMarker`, every veto site that used to keep its own blanket
  * `/^FAILED:/`. Two copies of that regex (one the table answers from, one the

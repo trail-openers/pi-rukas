@@ -135,10 +135,11 @@ export {
   scriptTallyCount,
 } from "./work-driver-verify-marker.ts";
 
-// #2341 — the cargo target-summary predicate is failure-line vocabulary: the
-// table's own entry and every sameness reader (`sharesAssertion`) must ask the
-// SAME predicate, so it is re-exported here like the marker vocabulary above.
-export { isCargoTargetSummaryLine } from "./work-driver-verify-shapes.ts";
+// #2341 — the cargo target-summary predicate and the Rust panic sameness key
+// are failure-line vocabulary: the table's own entries and every sameness
+// reader (`sharesAssertion`) must ask the SAME predicates, so they are
+// re-exported here like the marker vocabulary above.
+export { isCargoTargetSummaryLine, rustPanicSamenessKey } from "./work-driver-verify-shapes.ts";
 
 import { FAILED_MARKER_RE, isBareFailedMarker } from "./work-driver-verify-marker.ts";
 import {

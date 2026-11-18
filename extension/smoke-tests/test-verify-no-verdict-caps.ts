@@ -34,6 +34,10 @@ import type { VerifyEvidenceOrigin } from "../src/workflow-state-schema-verify.t
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { type WorkState, appendEvent, initialState } from "../src/workflow-state.ts";
 import { commandOf } from "./lib/argv-shell.ts";
+import {
+  RUST_CARGO_STREAM,
+  rustCargoStream,
+} from "./lib/verify-failure-shapes-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -88,13 +92,25 @@ const execFileP = promisify(execFile);
 const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
 const sh = (cwd: string, cmd: string) => execFileP("/bin/sh", ["-c", cmd], { cwd });
 const root = mkdtempSync(path.join(tmpdir(), "pi-no-verdict-"));
-const CARGO = "running 41 tests\nerror: test failed, to rerun pass `--bin console`\n";
+// #2341 — the change's own failure is the real nessie cargo stream (panic
+// pair + target summary), not the generic summary alone: an excuse may only
+// be built on an assertion that NAMES the failing test.
+const CARGO = `${RUST_CARGO_STREAM}\n`;
 
 /** How the verify command fails at the base commit. */
 type Base = "green" | "same" | "different" | "no-assertion" | "timeout";
 const BASE_OUTPUT: Record<Exclude<Base, "green" | "timeout">, string> = {
   same: CARGO,
-  different: "running 7 tests\nerror: test failed, to rerun pass `--bin other`\n",
+  // #2341 — the arm the defective sameness rule used to excuse: a DIFFERENT
+  // failing test in the SAME cargo target, so the only line it shares with the
+  // change's failure is the byte-identical target summary. `--bin` is held
+  // constant deliberately; varying the target name (the old fixture) let the
+  // defect hide behind a differing line.
+  different: `${rustCargoStream({
+    test: "session::fastpath_tests::slow_path_reports_progress",
+    at: "src/session/fastpath_tests.rs:120:9",
+    message: "expected progress within 50 ms, got 133.7 ms",
+  })}\n`,
   "no-assertion": "something went wrong\n",
 };
 
@@ -213,6 +229,17 @@ async function develop(name: string, base: Base | boolean, strayUncommitted: boo
     red.failures[0]?.startsWith(BASELINE_RED_MARKER) === true,
     "red at base: the probe finding leads",
   );
+  // #2341 — the finding quotes the PANIC (test, file, line, measured value)
+  // and only claims sameness because the base genuinely failed the same test.
+  assert(
+    (red.failures[0] ?? "").includes("panicked at src/session/fastpath_tests.rs:91:5") &&
+      (red.failures[0] ?? "").includes("which is over the 100 ms bound"),
+    `red at base: the finding quotes the Rust panic, not the generic cargo summary (got: ${String(red.failures[0]?.slice(0, 200))})`,
+  );
+  assert(
+    !(red.failures[0] ?? "").includes("error: test failed, to rerun pass"),
+    "red at base: the generic cargo summary is never quoted as the assertion at base",
+  );
   assert(red.baselineRedOnly, "red at base, verify failures only → baseline-red-only reported");
   // #1765 — the established claim reaches the caller through the gate's own
   // tail (`reportBaselineLeg`), not just the excuse claim beside it.
@@ -315,6 +342,20 @@ for (const [base, why] of [
       r.failures[0]?.startsWith(BASELINE_RED_MARKER) === true,
       `${why}: the baseline finding still leads the evidence (${String(r.failures[0]?.slice(0, 70))})`,
     );
+    // #2341 — the fail-closed half: a red base whose assertion was extracted
+    // (the `different` arm: a DIFFERENT Rust test in the SAME cargo target)
+    // may not claim the change's failure as its own just because both runs
+    // end on the byte-identical `error: test failed, to rerun pass` summary.
+    if (base === "different") {
+      assert(
+        !(r.failures[0] ?? "").includes("SAME assertion"),
+        `${why}: the target-level cargo summary does not buy a SAME-assertion claim (got: ${String(r.failures[0]?.slice(0, 300))})`,
+      );
+      assert(
+        (r.failures[0] ?? "").includes("slow_path_reports_progress"),
+        `${why}: the base assertion still names the base's own failing test`,
+      );
+    }
   }
   const cap = verifyCapFor("develop", r.failures, r.baselineRedOnly);
   assert(cap === "verify-failed:develop", `${why}: parks verify-failed:develop (got ${cap})`);

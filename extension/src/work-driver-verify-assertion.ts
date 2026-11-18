@@ -36,6 +36,7 @@ import {
   isBareFailedMarker,
   isCargoTargetSummaryLine,
   isHarnessWrapper,
+  rustPanicSamenessKey,
 } from "./work-driver-verify-failures.ts";
 
 /**
@@ -239,7 +240,7 @@ export function extractSpecificAssertion(failureTail: string): string {
     // a line that names a check may be the specific assertion, so a bare marker
     // stays refused however it classifies, and the count-summary exception above
     // stays the only marker-shaped line that survives. #2341 adds the same veto on
-    // shape: cargo's `error: test failed, to rerun pass \`--bin X\`` summary is
+    // shape: cargo's the line error: test failed, to rerun pass --bin X summary is
     // recognised (`cargo-summary`) but names only the target, so a stream whose
     // only recognised line is that summary now reports ABSENCE — the honest
     // absence the #807 sentinel exists for — instead of quoting the least useful
@@ -265,18 +266,24 @@ export function extractSpecificAssertion(failureTail: string): string {
  *
  * #2341 — sameness FAILS CLOSED on a target-level cargo summary. Every
  * failing test in one cargo target prints the byte-identical
- * `error: test failed, to rerun pass \`--bin X\`` line, so substring
+ * the line error: test failed, to rerun pass --bin X line, so substring
  * containment on that line claims "the SAME assertion" between two genuinely
  * different Rust test failures — and `baselineExplainsChange` excuses a
  * regression the change itself introduced. The extractor can no longer
  * produce such an assertion (the `cargo-summary` shape is `namesTest:
  * false`), but this reader is the sameness gate for hand-built values too,
  * so it refuses the summary wherever it arrives from.
+ *
+ * #2341 — and a Rust panic compares on its IDENTITY, never on the joined
+ * prose: `rustPanicSamenessKey` reduces the assertion to the
+ * `thread '<test>' panicked at <file>:<line>:<col>:` header, which is the
+ * part that distinguishes failing tests (the message carries the measured
+ * value, which legitimately differs run to run, and a clip can amputate it —
+ * sameness anchored on a clipped prose prefix folds). Every other shape
+ * keeps the classic rule: exact containment, no normalisation — this gate
+ * got tighter for #2341, and tightening it is the whole point of the fix.
  */
 export function sharesAssertion(consolidated: string, per: string): boolean {
-  return (
-    per !== NO_SPECIFIC_ASSERTION &&
-    !isCargoTargetSummaryLine(per) &&
-    consolidated.includes(per)
-  );
+  if (per === NO_SPECIFIC_ASSERTION || isCargoTargetSummaryLine(per)) return false;
+  return consolidated.includes(rustPanicSamenessKey(per));
 }

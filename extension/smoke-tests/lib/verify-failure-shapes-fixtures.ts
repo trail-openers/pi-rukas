@@ -100,6 +100,67 @@ export const TIMING = [
   "total 1314s",
 ];
 
+/**
+ * #2341 — the Rust/cargo dialect, as the nessie 1415 log printed it. libtest
+ * emits the failing verdict as TWO lines: `thread '<test>' panicked at
+ * FILE:LINE:` with the message on the NEXT line, and cargo closes every
+ * failing target with the byte-identical
+ * `error: test failed, to rerun pass \`--bin X\`` summary. The extractor must
+ * return the PAIR (it names test, file, line, measured value and bound) and
+ * never the summary (it names only the target — every failing test in the
+ * target prints it identically, which is how two different failures once
+ * compared as the same assertion).
+ */
+export const NESSIE_TEST =
+  "session::fastpath_tests::fast_path_does_not_block_behind_a_session_held_by_a_running_turn";
+export const RUST_PANIC_AT = "src/session/fastpath_tests.rs:91:5";
+export const RUST_PANIC_MESSAGE = "fast path took 101.409582ms, which is over the 100 ms bound";
+
+/** The panic header libtest prints for one failing test. */
+export function rustPanicHeader(test: string, at: string): string {
+  return `thread '${test}' panicked at ${at}:`;
+}
+
+/** cargo's trailing target-level summary (names the TARGET, never a check). */
+export const CARGO_TARGET_SUMMARY = "error: test failed, to rerun pass `--bin nessie`";
+
+/** The whole cargo/libtest stream for one panicking test, real dialect. */
+export function rustCargoStream(opts: {
+  test: string;
+  at: string;
+  message: string;
+}): string {
+  return [
+    "running 41 tests",
+    `test ${opts.test} ... FAILED`,
+    "",
+    "failures:",
+    "",
+    `---- ${opts.test} stdout ----`,
+    "",
+    rustPanicHeader(opts.test, opts.at),
+    opts.message,
+    "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace",
+    "",
+    "failures:",
+    `    ${opts.test}`,
+    "",
+    "test result: FAILED. 40 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
+    "",
+    CARGO_TARGET_SUMMARY,
+  ].join("\n");
+}
+
+/** The real nessie 1415 stream — the fixture AC1 is written against. */
+export const RUST_CARGO_STREAM = rustCargoStream({
+  test: NESSIE_TEST,
+  at: RUST_PANIC_AT,
+  message: RUST_PANIC_MESSAGE,
+});
+
+/** The joined pair the extractor must return for that stream. */
+export const RUST_PANIC_ASSERTION = `${rustPanicHeader(NESSIE_TEST, RUST_PANIC_AT)} ${RUST_PANIC_MESSAGE}`;
+
 /** The assertion helper both suites print through. */
 export function makeAssert(): {
   assert: (cond: boolean, msg: string) => void;

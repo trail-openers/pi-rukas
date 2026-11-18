@@ -5,7 +5,20 @@
  * absence honestly when no assertion-shaped line exists.
  */
 
-import { extractSpecificAssertion, NO_SPECIFIC_ASSERTION } from "../src/work-driver-consolidation-classify.ts";
+import {
+  NO_SPECIFIC_ASSERTION,
+  extractSpecificAssertion,
+  sharesAssertion,
+} from "../src/work-driver-consolidation-classify.ts";
+import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
+import {
+  CARGO_TARGET_SUMMARY,
+  NESSIE_TEST,
+  RUST_CARGO_STREAM,
+  RUST_PANIC_ASSERTION,
+  rustCargoStream,
+  rustPanicHeader,
+} from "./lib/verify-failure-shapes-fixtures.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -249,6 +262,139 @@ error TS2345: Argument of type 'string' is not assignable to parameter of type '
   assert(
     a === "✗ use single quotes (style/useTemplate)",
     `case 17 (#827 biome unchanged): chain-stage biome failure still returns the ✗ assertion (got: ${JSON.stringify(a)})`,
+  );
+}
+
+// --- Case 18 (#2341 AC1/AC4, the nessie 1415 regression): the real cargo
+// stream must yield the PANIC PAIR — header naming test, file and line, plus
+// the message naming the measured value and the bound — never cargo's generic
+// `error: test failed, to rerun pass` summary. The summary is the least
+// useful line in the run; quoting it sent an operator hunting for a memory
+// problem while the decisive line sat in the same window.
+{
+  const a = extractSpecificAssertion(RUST_CARGO_STREAM);
+  assert(
+    a === RUST_PANIC_ASSERTION,
+    `case 18 (#2341 cargo panic): returns the joined panic pair, not the summary (got: ${JSON.stringify(a)})`,
+  );
+  assert(
+    a.includes("panicked at src/session/fastpath_tests.rs:91:5:") &&
+      a.includes("101.409582ms") &&
+      a.includes("which is over the 100 ms bound"),
+    "case 18 (#2341 cargo panic): the assertion names file:line, the measured value and the bound",
+  );
+  assert(
+    !a.includes("error: test failed"),
+    "case 18 (#2341 cargo panic): never the generic cargo summary",
+  );
+}
+
+// --- Case 19 (#2341, the whole consumer path): probeBaselineVerify feeds
+// extractAttributedTail(raw, 1500) — with only the generic summary recognised,
+// lastFailureIndex anchored ON that trailing line and sliced the panic pair
+// off before the extractor ever saw it. The anchor must land on the panic
+// header (the summary is recognised but names no check), so the pair survives
+// the window end to end.
+{
+  const { tail, attributed } = extractAttributedTail(RUST_CARGO_STREAM, 1500);
+  assert(attributed, "case 19 (#2341 window): the cargo stream is attributed");
+  assert(
+    tail.startsWith("thread '"),
+    `case 19 (#2341 window): the tail anchors on the panic header, not the trailing summary (got: ${JSON.stringify(tail.slice(0, 40))})`,
+  );
+  assert(
+    extractSpecificAssertion(tail) === RUST_PANIC_ASSERTION,
+    "case 19 (#2341 window): the panic pair survives the 1500-char attributed window",
+  );
+}
+
+// --- Case 20 (#2341 AC2/AC7, the confirmed-serious half): two DIFFERENT
+// failing Rust tests in the SAME cargo target print the byte-identical
+// generic summary. They must extract to different assertions, and neither may
+// compare as the other's — otherwise baselineExplainsChange excuses a failure
+// the change itself added.
+{
+  const otherTest = "session::fastpath_tests::slow_path_reports_progress";
+  const streamB = rustCargoStream({
+    test: otherTest,
+    at: "src/session/fastpath_tests.rs:120:9",
+    message: "expected progress within 50 ms, got 133.7 ms",
+  });
+  const a = extractSpecificAssertion(RUST_CARGO_STREAM);
+  const b = extractSpecificAssertion(streamB);
+  assert(a !== b, `case 20 (#2341 sameness): two different Rust tests extract different assertions (${a === b})`);
+  assert(
+    !sharesAssertion(streamB, a) && !sharesAssertion(RUST_CARGO_STREAM, b),
+    "case 20 (#2341 sameness): neither failure shares the other's assertion — the change is not excused",
+  );
+  assert(
+    sharesAssertion(RUST_CARGO_STREAM, a),
+    "case 20 (#2341 sameness): a failure of the SAME test still shares its own assertion (the rule is not simply off)",
+  );
+}
+
+// --- Case 21 (#2341 AC7, fail-closed sameness on a deliberately generic
+// assertion): the summary sits in the consolidated stream VERBATIM, so plain
+// substring containment would match it; the sameness gate refuses the
+// target-level cargo summary wherever it arrives from — including a hand-built
+// verdict.assertion. A stream whose only recognised line is the summary
+// reports honest absence, it does not quote the summary as "the assertion".
+{
+  assert(
+    !sharesAssertion(RUST_CARGO_STREAM, CARGO_TARGET_SUMMARY),
+    "case 21 (#2341 fail-closed): the generic cargo summary never compares as a shared assertion",
+  );
+  assert(
+    RUST_CARGO_STREAM.includes(CARGO_TARGET_SUMMARY),
+    "case 21 (#2341 fail-closed): the refusal is not the fixture — the line IS in the stream",
+  );
+  const a = extractSpecificAssertion(`${"noise from the run\n".repeat(3)}${CARGO_TARGET_SUMMARY}`);
+  assert(
+    a === NO_SPECIFIC_ASSERTION,
+    `case 21 (#2341 fail-closed): a summary-only stream reports absence (got: ${JSON.stringify(a)})`,
+  );
+}
+
+// --- Case 22 (#2341, the half-pair): the window may cut BETWEEN the panic
+// header and its message line. A half-pair is returned as the header — it
+// still names the test, file and line — and never the trailing summary, and
+// the next line is joined only when it really is the message: a `note:` line
+// is cargo's boilerplate, not an assertion.
+{
+  const halfPair = rustPanicHeader(NESSIE_TEST, "src/session/fastpath_tests.rs:91:5");
+  const a = extractSpecificAssertion(halfPair);
+  assert(
+    a === halfPair,
+    `case 22 (#2341 half-pair): a header cut from its message still names test, file and line (got: ${JSON.stringify(a)})`,
+  );
+  const noteAfter = `${halfPair}\nnote: run with \`RUST_BACKTRACE=1\` environment variable to display a backtrace`;
+  assert(
+    extractSpecificAssertion(noteAfter) === halfPair,
+    "case 22 (#2341 half-pair): cargo's note: boilerplate is never joined into the assertion",
+  );
+}
+
+// --- Case 23 (#2341, the success veto): a panic message quoting the counts
+// it compared (`expected 0 failures, got 3`) is the runner's FAILING verdict,
+// not a passing tally — the shape is exempt from isSuccessLine (preVeto). And
+// a stream whose only cargo lines are the passing tally and the generic
+// summary reports absence, never a tally line.
+{
+  const zeroTally = `thread 'a::tests::t' panicked at src/a.rs:1:1:
+assertion failed: expected 0 failures, got 3`;
+  const a = extractSpecificAssertion(zeroTally);
+  assert(
+    a === `${rustPanicHeader("a::tests::t", "src/a.rs:1:1")} assertion failed: expected 0 failures, got 3`,
+    `case 23 (#2341 veto): a zero-count tally inside a panic message does not veto the line (got: ${JSON.stringify(a)})`,
+  );
+  const green = `running 3 tests
+test a::tests::one ... ok
+test a::tests::two ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+${CARGO_TARGET_SUMMARY}`;
+  assert(
+    extractSpecificAssertion(green) === NO_SPECIFIC_ASSERTION,
+    "case 23 (#2341 veto): passing tallies and the summary yield no assertion",
   );
 }
 
