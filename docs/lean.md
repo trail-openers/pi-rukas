@@ -497,19 +497,20 @@ a `publish` that ran after it without covering the head the PR stands on (`machi
 re-attests the head its `integrate` pushed, and a CI-fix round publishes a fixer's newer one
 — so the check is head IDENTITY, not position: a returned review whose record names its fix
 wave's head is complete only when the newest decided `publish`'s head IS that wave's head,
-and a record naming no head (a plain `done` pushed nothing) must sit ahead of every `publish`
-attempt), or whose log holds no `review` step at all (the machine
+and a record naming no head of its own push (a plain `done` pushed nothing, or a `fixed`
+whose `waves` name nothing usable) must sit ahead of every `publish` attempt, decided or
+not), or whose log holds no `review` step at all (the machine
 sends `publish` → `review`, so a review the deadline stopped short of dispatching judged
 nothing) reports
 **`review-incomplete`** with `reviewComplete: false` instead (same exit 10,
 different cap), and `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0` puts the single
-`awaiting-human-merge` cap back and omits the field. `reviewComplete` answers only from the step's own record (its bound, its kind, and the head
-its own fix wave pushed), and is `true` only where that record says the review finished on the
-head that shipped: a returned `done`/`fixed` step with no bound on it whose own wave pushed the
-very head the newest decided `publish` shipped, or — naming no wave, as a plain `done` never
-pushed one — with no `publish` attempt after it at all: a review that died before pass 1 read no lens, a stop that named no lane is still
+`awaiting-human-merge` cap back and omits the field. `reviewComplete` is `true` only where
+the step's own record says the review finished on the head that shipped, and `false` is
+never a default: a review that died before pass 1 read no lens, a stop that named no lane is still
 a stop, and a log with no `review` step is a review that never ran — none of them report a
-finished review. The key is written only beside the two caps above, so a merged run, a draft or
+finished review. Which reading decides — identity of the record's own wave head (behind a
+judged round), or log position for a record that names no head of its own push — is stated
+once in `reviewCompleteOf`'s jsdoc (`extension/src/headless/work-lean-pr.ts`). The key is written only beside the two caps above, so a merged run, a draft or
 a run that never reached `publish` carries neither cap nor field. A draft, or a PR over
 a gate that did not clear its head, gets no cap and rides `failure` alone. A
 build without the feature writes lean's own

@@ -112,9 +112,11 @@ export const HEADLESS_FEATURES = {
    * on (`machine.ts` re-runs `publish` after the review on TWO routes: a `fixed` review's own
    * `→ verify → publish` re-attests the head its `integrate` pushed, and a CI-fix round
    * publishes a fixer's newer one — so the rule is head IDENTITY, not position: a returned
-   * review whose record names its fix wave's head is complete only when the newest decided
-   * `publish`'s head IS that wave's head, and a record naming no head (a plain `done` pushed
-   * nothing) must sit ahead of every `publish` attempt), or whose
+   * review whose record names its fix wave's head BEHIND a judged round (`rounds` non-empty —
+   * with no round on record, the wave names a head no lens is shown to have read) is complete
+   * only when the newest decided `publish`'s head IS that wave's head, and a record naming no
+   * head of its own push (a plain `done`, or a `fixed` whose `waves` name nothing usable) must
+   * sit ahead of every `publish` attempt), or whose
    * log holds no `review` step at all (the machine sends `publish` → `review`, so that
    * review was never dispatched) carries `review-incomplete` and
    * `reviewComplete: false` instead — and the key appears on no document without one of those
