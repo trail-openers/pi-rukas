@@ -51,14 +51,14 @@ export type ReaskOutcome =
   | { ok: true; text: string; usage?: DispatchResult["usage"] }
   | { ok: false; reason: ReaskFailure };
 
-/** The answer a re-ask yielded that the strict reader still refused — the
- * fenced answer, the menu echo, the prose. The round falls back to the same
- * infrastructure failure an absent answer gets; the reply travels only so the
- * loop can say WHY nothing was readable. */
-export interface ReaskUnreadable {
-  unreadable: true;
-  text: string;
-}
+/** The answer a re-ask yielded that the strict reader still refused — the fenced
+ * answer, the menu echo, the prose — and what the loop keeps from one it did
+ * read. Declared ONCE, in the loop-side module that consumes them
+ * (`adversarial-verdict-reask.ts`), and re-exported here so a caller of either
+ * half of the seam names the type without importing the other half across it.
+ * The vocabulary both sides must agree on lives in
+ * `adversarial-verdict-reask-constants.ts` for the same reason. */
+export type { ReaskUnreadable, ReaskedVerdict } from "./adversarial-verdict-reask.ts";
 
 /** The seam: asks the re-ask child. Tests inject this; production is
  * {@link spawnVerdictReaskChild}. */
@@ -70,20 +70,6 @@ export type VerdictReaskFn = (args: {
   boundMs: number;
   prompt: string;
 }) => Promise<ReaskOutcome>;
-
-/** What the loop keeps from a successful re-ask: the STATUS the answer states,
- * the re-ask child's own reply and cost, and the tag naming where the verdict
- * came from. The round's findings and raw text stay the reviewer's own reply —
- * a re-ask signs a verdict, it does not write findings. */
-export interface ReaskedVerdict {
-  /** The status the re-ask's answer states, read by the SAME strict reader. */
-  status: AdversarialVerdict["status"];
-  /** The re-ask child's own final reply — kept for the trace, not the round. */
-  text: string;
-  ms: number;
-  usage: DispatchResult["usage"];
-  source: typeof VERDICT_REASK_SOURCE_TAG;
-}
 
 /** The assistant text of the LAST `agent_end` the stream carried.
  *
@@ -185,18 +171,39 @@ export async function spawnVerdictReaskChild(args: {
   const model = args.model ?? choice.model;
   const provider = args.provider ?? choice.provider;
   return withOperatorConfigGuard(args.role, async () => {
-    const promptFile = await writeReviewerPromptFile(args.role);
-    if (promptFile === undefined) return { ok: false, reason: "spawn-failed" };
-    const invocation = getPiInvocation(
-      reaskChildArgs({
-        transcriptPath: args.transcriptPath,
-        role: args.role,
-        promptFile,
-        ...(model === undefined ? {} : { model }),
-        ...(provider === undefined ? {} : { provider }),
-      }),
-    );
-    return runReaskChild(invocation.command, invocation.args, args);
+    // The prompt file is written inside the guard's own window, so every fs call
+    // it makes — reading the role's prompt, `mkdtemp`, the write — can fail here.
+    // The contract on this function is that every failure is an OUTCOME: an
+    // exception would propagate through `reaskRoundOnce` into the round body and
+    // end the loop where a wedged temp root only costs the re-ask. The prompt dir
+    // is removed once the child settles, on every arm (a spawn that never started
+    // still runs its own kill and settle), so the `finally` covers success,
+    // failure and the bound alike.
+    let promptDir: string | undefined;
+    try {
+      const written = await writeReviewerPromptFile(args.role);
+      if (written === undefined) return { ok: false, reason: "spawn-failed" };
+      promptDir = written.dir;
+      const invocation = getPiInvocation(
+        reaskChildArgs({
+          transcriptPath: args.transcriptPath,
+          role: args.role,
+          promptFile: written.promptFile,
+          ...(model === undefined ? {} : { model }),
+          ...(provider === undefined ? {} : { provider }),
+        }),
+      );
+      return await runReaskChild(invocation.command, invocation.args, args);
+    } catch (err) {
+      const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      trace(`${VERDICT_REASK_SOURCE_TAG}: prompt file could not be prepared (${reason})`);
+      return { ok: false, reason: "spawn-failed" };
+    } finally {
+      if (promptDir !== undefined) {
+        const fs = await import("node:fs/promises");
+        await fs.rm(promptDir, { recursive: true, force: true }).catch(() => undefined);
+      }
+    }
   });
 }
 
@@ -292,8 +299,13 @@ async function runReaskChild(
 
 /** The role's system prompt, written to a temp file the way `spawnSpecialist`
  * does, so the re-ask child is configured the same as the reviewer it resumes.
- * A role that is not a reviewer has no business being re-asked, and gets none. */
-async function writeReviewerPromptFile(role: string): Promise<string | undefined> {
+ * A role that is not a reviewer has no business being re-asked, and gets none.
+ * The temp DIRECTORY travels with the file because the caller owns its removal:
+ * the ask outlives this call, and a prompt file left in a shared /tmp per round
+ * is a role's system prompt nobody cleans up. */
+async function writeReviewerPromptFile(
+  role: string,
+): Promise<{ dir: string; promptFile: string } | undefined> {
   if (!isReviewerRole(role)) return undefined;
   const roleDef = ROLES[role as keyof typeof ROLES];
   if (roleDef === undefined) return undefined;
@@ -305,13 +317,14 @@ async function writeReviewerPromptFile(role: string): Promise<string | undefined
 }
 
 /** The temp-file write, split out so the file the child is configured with comes
- * from one function a test can drive without touching a role's prompt. */
+ * from one function a test can drive without touching a role's prompt. Returns
+ * the temp dir alongside the file so the caller can remove the whole tree. */
 export async function writeReaskPromptFile(
   role: string,
   systemPrompt: string,
   tmpRoot: string,
   join: (...parts: string[]) => string,
-): Promise<string> {
+): Promise<{ dir: string; promptFile: string }> {
   const fs = await import("node:fs/promises");
   const tmpDir = await fs.mkdtemp(join(tmpRoot, "pi-rukas-reask-"));
   await fs.chmod(tmpDir, 0o700);
@@ -320,5 +333,5 @@ export async function writeReaskPromptFile(
   // owner AND mode, and a group/world-readable copy of the role's system prompt
   // in a shared /tmp is the thing that walk is meant to refuse.
   await fs.writeFile(promptFile, systemPrompt, { mode: 0o600 });
-  return promptFile;
+  return { dir: tmpDir, promptFile };
 }

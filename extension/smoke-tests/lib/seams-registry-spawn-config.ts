@@ -61,9 +61,10 @@ export const SEAMS_SPAWN_CONFIG: Seam[] = [
         "the RPC-stream reply extractor; test-adversarial-verdict-reask-child.ts pins that only the last turn answers",
       // The temp-file write behind the child's `--append-system-prompt`; split
       // out of `writeReviewerPromptFile` so the mode and name are assertable
-      // without a role's prompt file on disk.
+      // without a role's prompt file on disk. Returns the temp DIR with the file so
+      // the spawner can remove the tree once the child settles.
       writeReaskPromptFile:
-        "the prompt-file write (0700 dir, 0600 file, role-named); test-adversarial-verdict-reask-child.ts drives it against a mkdtemp root",
+        "the prompt-file write (0700 dir, 0600 file, role-named, dir returned for cleanup); test-adversarial-verdict-reask-child.ts drives it against a mkdtemp root",
     },
     canary: { symbol: "spawnVerdictReaskChild", importer: "adversarial-verdict-reask.ts" },
   },

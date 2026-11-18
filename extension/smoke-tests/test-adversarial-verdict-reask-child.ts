@@ -107,7 +107,7 @@ const { assert, failures } = makeAssert();
   const fs = await import("node:fs/promises");
   const os = await import("node:os");
   const path = await import("node:path");
-  const file = await writeReaskPromptFile(
+  const { dir: promptDir, promptFile: file } = await writeReaskPromptFile(
     "adversarial-developer",
     "system prompt bytes",
     await fs.mkdtemp(path.join(os.tmpdir(), "reask-root-")),
@@ -130,6 +130,20 @@ const { assert, failures } = makeAssert();
   assert(
     (await fs.readFile(file, "utf8")) === "system prompt bytes",
     "(12) written byte for byte, so the child is configured as the reviewer was",
+  );
+  // The dir is the caller's to remove — `spawnVerdictReaskChild` takes it from the
+  // return and rm's it once the child settles (case (17) of
+  // `test-adversarial-verdict-reask-spawn.ts` pins that). Here it is removed so
+  // the suite leaves nothing behind, which is also what proves the return names
+  // the same directory the file sits in.
+  await fs.rm(promptDir, { recursive: true, force: true });
+  assert(
+    path.dirname(file) === promptDir &&
+      !(await fs.stat(promptDir).then(
+        () => true,
+        () => false,
+      )),
+    "(12) and the return names the temp dir holding the file, which the caller can remove",
   );
 }
 console.log(`\nre-ask child ${failures() === 0 ? "green" : "RED"} (${String(failures())} failing)`);

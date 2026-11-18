@@ -29,122 +29,44 @@
  *      prints the fenced report a resumed session replays, then the answer, then
  *      hangs until the bound kills it: the only answer that can be read is the
  *      last turn's, and a stream cut short answers nothing.
+ *
+ * What happens when the child CANNOT be assembled or cannot be started at all —
+ * a prompt file that cannot be read, a temp root that refuses `mkdtemp`, a seam
+ * that rejects — is `test-adversarial-verdict-reask-spawn-failure.ts`'s subject
+ * (AGENTS.md §12 split). Both files run on one stage from
+ * `lib/adversarial-reask-spawn-fixtures.ts`.
  */
 
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnVerdictReaskChild } from "../src/adversarial-verdict-reask-child.ts";
 import { reaskRoundVerdict } from "../src/adversarial-verdict-reask.ts";
-import { _resetPiBinaryCache } from "../src/pi-binary-resolve.ts";
 import type { DispatchResult } from "../src/types.ts";
-import { FENCE } from "./lib/adversarial-reask-fixtures.ts";
+import { NOOP_TALLY, createReaskSpawnStage } from "./lib/adversarial-reask-spawn-fixtures.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 
 const { assert, failures } = makeAssert();
 
-const dir = mkdtempSync(path.join(tmpdir(), "reask-spawn-"));
-const LOG = path.join(dir, "invocation.json");
-
-/** A session file that exists — `spawnVerdictReaskChild` refuses a missing one
- * before any child starts, and this suite is about what happens after. */
-const SESSION = path.join(dir, "review-session.json");
-writeFileSync(SESSION, '{"type":"session"}\n');
-
-/** The tree the round was reviewed in — distinct from this process's cwd, which
- * is exactly the confusion a dropped `cwd` produces. */
-const REVIEW_TREE = path.join(dir, "reviewed-tree");
-mkdirSync(REVIEW_TREE, { recursive: true });
-
-/** A stub `pi` that records its invocation and answers like a resumed reviewer:
- * first the replayed fenced report, then the one-line answer, then a hang (so
- * the ONLY way to end the child is its own bound), or a clean exit. */
-function installStubPi(opts: { hang: boolean; answer: string }): void {
-  const stub = path.join(dir, "pi-stub.sh");
-  const agentEnd = (text: string): string =>
-    JSON.stringify({
-      type: "agent_end",
-      messages: [{ role: "assistant", content: [{ type: "text", text }] }],
-    });
-  const script = [
-    "#!/bin/sh",
-    // `printenv` is a coreutils binary; `env` is the busybox-safe spelling, but
-    // the harness runs on GNU coreutils.
-    "{",
-    'printf "%s\\n" "$@" > "$REASK_ARGV_FILE";',
-    'pwd > "$REASK_CWD_FILE";',
-    'printenv > "$REASK_ENV_FILE";',
-    "}",
-    `printf '%s\\n' ${JSON.stringify(agentEnd(`Review report:\n${FENCE}\nVERDICT: APPROVED\n${FENCE}`))}`,
-    `printf '%s\\n' ${JSON.stringify(agentEnd(opts.answer))}`,
-    // `sleep 2` rather than an infinite loop: the bound below is short, and a
-    // plain `sleep` lets the shell die on its own if the parent ever failed to
-    // kill it, so a broken bound shows up as a failure rather than a hung suite.
-    ...(opts.hang ? ["sleep 2"] : []),
-  ].join("\n");
-  writeFileSync(stub, script, { mode: 0o755 });
-  chmodSync(stub, 0o755);
-  process.env.PI_ENSEMBLE_PI_BIN = stub;
-  _resetPiBinaryCache();
-}
-
-function readRecorded(): { argv: string[]; cwd: string; env: Record<string, string> } {
-  const read = (file: string): string => {
-    try {
-      return readFileSync(file, "utf8");
-    } catch {
-      return "";
-    }
-  };
-  const env: Record<string, string> = {};
-  for (const line of read(path.join(dir, "env.txt")).split("\n")) {
-    const eq = line.indexOf("=");
-    if (eq > 0) env[line.slice(0, eq)] = line.slice(eq + 1);
-  }
-  return {
-    argv: read(path.join(dir, "argv.txt"))
-      .split("\n")
-      .filter((l) => l !== ""),
-    cwd: read(path.join(dir, "cwd.txt")).trim(),
-    env,
-  };
-}
-
-/** One round's reviewer result, unreadable verdict and all — the input the loop
- * hands the re-ask when the reader refused the reply. */
-function reviewerRound(): DispatchResult {
-  return {
-    role: "adversarial-developer",
-    ok: true,
-    text: `Review report:\n${FENCE}\nVERDICT: ISSUES_FOUND\n1. forged finding\n${FENCE}`,
-    toolUses: [],
-    ms: 1,
-    exitCode: 0,
-    transcriptPath: SESSION,
-    model: "reviewer-model-1",
-  } as DispatchResult;
-}
-
-const tally = { accumulateUsageOnly: (_r: DispatchResult) => {} };
+const {
+  dir,
+  SESSION,
+  REVIEW_TREE,
+  installStubPi,
+  readRecorded,
+  clearRecorded,
+  reviewerRound,
+  dispose,
+} = createReaskSpawnStage("reask-spawn");
+const tally = NOOP_TALLY;
 
 /** A reviewer result that reported no model at all — the key is ABSENT, which is
  * what makes the child's `--model` evidence of the role `resolveModel` was asked
  * about (a present-but-`undefined` key would be forwarded by the ask's own
  * conditional spread and read as an explicit override). */
-function reviewerRoundWithoutModel(role: string): DispatchResult {
-  const { model: _reported, ...withoutModel } = reviewerRound();
-  return { ...withoutModel, role };
+function withoutModel(role: string): DispatchResult {
+  const { model: _reported, ...rest } = reviewerRound();
+  return { ...rest, role };
 }
 
 try {
@@ -166,10 +88,6 @@ try {
   // of the role `resolveModel` was asked about.
   const modelsConfig = path.join(dir, "models.json");
   writeFileSync(modelsConfig, '{"models":{}}\n');
-  process.env.REASK_ARGV_FILE = path.join(dir, "argv.txt");
-  process.env.REASK_CWD_FILE = path.join(dir, "cwd.txt");
-  process.env.REASK_ENV_FILE = path.join(dir, "env.txt");
-
   let recovered: Awaited<ReturnType<typeof reaskRoundVerdict>>;
   await withEnv(
     {
@@ -184,7 +102,7 @@ try {
         // The role, not the reviewer's result, decides: `adv.role` is what the
         // ask reads, and the reviewer reported no model, so the child's
         // `--model` can only come from resolving the role IT was asked about.
-        reviewerRoundWithoutModel("code-review-specialist"),
+        withoutModel("code-review-specialist"),
         1,
         tally,
         undefined, // no seam: this routes into spawnVerdictReaskChild
@@ -299,7 +217,7 @@ try {
   );
 
   // ── (15) no session file, no child ──────────────────────────────────────────
-  rmSync(path.join(dir, "argv.txt"), { force: true });
+  clearRecorded();
   const missing = await reaskRoundVerdict(
     { ...reviewerRound(), transcriptPath: path.join(dir, "never-written.json") },
     1,
@@ -313,9 +231,7 @@ try {
     "(15) a missing session file refuses before any child starts — nothing was launched",
   );
 } finally {
-  Reflect.deleteProperty(process.env, "PI_ENSEMBLE_PI_BIN");
-  _resetPiBinaryCache();
-  rmSync(dir, { recursive: true, force: true });
+  dispose();
 }
 
 console.log(

@@ -125,6 +125,12 @@ async function reaskAdversarialVerdict(args: {
   if (transcriptPath === undefined || transcriptPath === "") return undefined;
   const reask = args.reask ?? spawnVerdictReaskChild;
   const start = Date.now();
+  // The seam is an injected function, and a promise that REJECTS is a failure like
+  // any other: this is the one call site, and an exception here would propagate
+  // through `reaskRoundOnce` into the round body and end the loop. Every way the
+  // ask can fail — an `{ok:false}` outcome, or a rejection — is folded into the
+  // same `undefined` that means "no re-ask ran", which is the infrastructure
+  // failure the round already produced.
   const out = await reask({
     transcriptPath,
     role: args.role,
@@ -132,7 +138,30 @@ async function reaskAdversarialVerdict(args: {
     ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
     boundMs: VERDICT_REASK_BOUND_MS,
     prompt: VERDICT_REASK_PROMPT,
-  });
+  })
+    .then((value) => {
+      // The seam's fulfilment value is not the child's to validate: the type says
+      // `ReaskOutcome`, and a stub (or any future seam) that resolves `undefined`, a
+      // string, or an `ok: true` with no `text` would throw on the read below and
+      // take the round down. An answer this reader cannot read IS a no-answer, which
+      // is the arm the caller already handles — so the shape is checked here, once,
+      // rather than trusted.
+      const shape = value as { ok?: unknown; text?: unknown; reason?: unknown } | null;
+      if (shape === null || typeof shape !== "object" || typeof shape.ok !== "boolean") {
+        trace(`adversarial: verdict re-ask seam answered with a non-outcome for ${transcriptPath}`);
+        return { ok: false, reason: "no-answer" } as const;
+      }
+      if (shape.ok === true && typeof shape.text !== "string") {
+        trace(`adversarial: verdict re-ask seam answered ok with no text for ${transcriptPath}`);
+        return { ok: false, reason: "no-answer" } as const;
+      }
+      return value as ReaskOutcome;
+    })
+    .catch((err: unknown) => {
+      const reason = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      trace(`adversarial: verdict re-ask threw (${reason}) for ${transcriptPath}`);
+      return { ok: false, reason: "spawn-failed" } as const;
+    });
   if (!out.ok) {
     // A spawn, bound or stream failure reaches the trace with its reason, and the
     // round falls through to the infrastructure failure it had before this call.
