@@ -29,11 +29,7 @@ import {
   reusableGatePass,
 } from "./work-driver-verify-gate-reuse.ts";
 import { runPerWorktreeVerify } from "./work-driver-verify-per-worktree.ts";
-import {
-  type RanVerifyRecord,
-  type VerifyRecordSlot,
-  gatePerAssertion,
-} from "./work-driver-verify-record.ts";
+import type { RanVerifyRecord, VerifyRecordSlot } from "./work-driver-verify-record.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { execp } from "./work-driver-verify.ts";
 import type { WorkstreamGreen } from "./workflow-state-schema-gate-reuse.ts";

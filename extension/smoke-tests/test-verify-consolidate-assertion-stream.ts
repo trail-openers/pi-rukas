@@ -220,66 +220,15 @@ function windowAndStream(): { window: string; stream: string } {
   );
 }
 
-// ── 6. the UNOBSERVED-NAME refusals (#2341 wave 9) and their counterweights ──
+// ── 6. the UNOBSERVED-NAME boundary and the #1762 counterweight ─────────────
 {
-  // (a) A panic on a NON-TEST thread inside an otherwise green target: the
-  // run opened (`running N tests`), reported every test it ran, and closed
-  // `test result: ok. N passed; 0 failed` — so the panic print whose thread
-  // never appeared in any verdict is the run's own captured output, not a
-  // defect. Quoting it sent the corrective round after a green suite.
-  const worker = [
-    "FAILED: smoke-tests/test-e2e.ts",
-    "running 2 tests",
-    `test ${PASSING} ... ok`,
-    "thread 'worker-1' panicked at src/w.rs:3:1:",
-    "retry exhausted",
-    "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-    "make: *** [Makefile:12: e2e] Error 1",
-  ].join("\n");
-  assert(
-    extractSpecificAssertion(extractAttributedTail(worker, 1500).tail, worker) ===
-      NO_SPECIFIC_ASSERTION,
-    `unobserved green-run: a worker-thread panic in a zero-failure target is refused (got ${JSON.stringify(extractSpecificAssertion(extractAttributedTail(worker, 1500).tail, worker).slice(0, 60))})`,
-  );
-  // (b) A `#[should_panic]` DOCTEST: the verdict line carries the spaced
-  // path (`test src/lib.rs - name (line 3) ... ok`) the old `\S+` matcher
-  // could never equal, so the class was structurally unrefusable. Refused
-  // both with and without the `---- <path> stdout ----` capture label.
-  const doctestMsg = "explicit panic";
-  const doctestVerdict = "test src/lib.rs - parses (line 3) ... ok";
-  const doctestHeader = "thread 'main' panicked at src/lib.rs:5:5:";
-  const doctestRun = [
-    "running 1 test",
-    doctestVerdict,
-    doctestHeader,
-    doctestMsg,
-    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-    "make: *** [Makefile:3: doc] Error 1",
-  ].join("\n");
-  assert(
-    extractSpecificAssertion(doctestRun, doctestRun) === NO_SPECIFIC_ASSERTION,
-    "unobserved doctest: the should_panic doctest print inside its green run is refused",
-  );
-  const doctestBlock = [
-    "running 1 test",
-    doctestVerdict,
-    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
-    "",
-    "failures:",
-    "",
-    "---- src/lib.rs - parses (line 3) stdout ----",
-    doctestHeader,
-    doctestMsg,
-    "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace",
-  ].join("\n");
-  assert(
-    extractSpecificAssertion(doctestBlock, doctestBlock) === NO_SPECIFIC_ASSERTION,
-    "unobserved doctest: the print under its capture block label, below the tally, is refused by the block arm",
-  );
-  // (c) THE COUNTERWEIGHT (#1762): a green STAGE followed by a later binary
-  // dying as `main` — no capture label, no run enclosing the print (the
-  // stage's tally sits ABOVE it and nothing closes below) — still anchors
-  // and quotes. The refusals above must not reopen this.
+  // A panic whose thread name appears in NO per-test verdict line is not
+  // refused: the veto's ONLY evidence is the verdict for the exact name, and
+  // neither a target-level tally nor a `---- <name> stdout ----` block label
+  // says which test printed a header. The shape this must never swallow is
+  // #1762's chain — a green STAGE followed by a later binary dying as `main`,
+  // with no capture label and nothing closing below it — which anchors and
+  // quotes.
   const chainStage = [
     "running 3 tests",
     "test m::a ... ok",
@@ -307,6 +256,15 @@ function windowAndStream(): { window: string; stream: string } {
       NO_SPECIFIC_ASSERTION,
     "chain shape control: with `test main ... ok` present the veto still fires — the rule is name-correlated",
   );
+  // KNOWN-DEFERRED BOUNDARY, deliberately UNPINNED: a panic on a non-test
+  // thread inside an otherwise green target (`worker-N` in a run whose tally
+  // closed `0 failed`) and a `#[should_panic]` DOCTEST (`thread 'main'
+  // panicked at src/lib.rs:5:5:` beside
+  // `test src/lib.rs - parses (line 3) ... ok`) are captured prints whose
+  // thread the run never named in a verdict, and they are quoted. Refusing
+  // them needs cargo's per-target banner identity (`     Running unittests
+  // …`, `   Doc-tests pkg`); until that exists the classes behave as they do
+  // on `main`, and nothing here pins that quoting as desirable.
 }
 
 // ── 7. the record is not its own stream: publishers thread the raw run ──────
