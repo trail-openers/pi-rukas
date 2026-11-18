@@ -13,6 +13,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { boundJoinFailures } from "../src/work-develop-cap-evidence.ts";
+import { baselineRedForCommand } from "../src/work-driver-verify-base-health.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import {
   BASELINE_RED_MARKER,
@@ -352,6 +353,72 @@ const CARGO = `${RUST_CARGO_STREAM}\n`;
   assert(
     msg.includes("the default branch") && !msg.includes(`main-${blob.slice(0, 20)}`),
     `screens (#2341 M): a credential-shaped branch name renders as the fixed 'the default branch' (got ${msg.slice(0, 400)})`,
+  );
+}
+
+// 12 — #2341 fix wave 5 (H3): the budget buys room from the RIGHT thing, in the
+// order middle → closing → cmd → assertion. The wave-4 renderer bought it from
+// the operator's own verify command while the behind-branch closing kept its
+// full width — the branch name THREE times plus two subjects — and the measured
+// result was a 400-char assertion reduced to 101 characters at a 212-char cmd,
+// to 1 character at 312, and to 71 at a 100-char branch name AND a 250-char
+// cmd, where the clip also broke the backticked identity #1765's cap routing
+// reads. The entry now fits the bound at that width with the assertion at its
+// floor, and the cmd keeps its whole quoted form wherever the room allows.
+{
+  const longAssertion = `thread '${NESSIE_TEST}' panicked at ${RUST_PANIC_AT}: ${"m".repeat(400)}`;
+  const arm = (branch: string, cmd: string, subjectLen: number): string =>
+    baselineRedMessage(
+      redArm(longAssertion, {
+        status: "behind",
+        branch,
+        commitsBehind: 3,
+        commits: [`fix(a): ${"s".repeat(subjectLen)}`, `fix(b): ${"t".repeat(subjectLen)}`, "fix(c): 3"],
+      }),
+      {
+        cmd,
+        baseSha: "0123456789abcdef0123456789",
+        timeoutMs: 60_000,
+        changeFailure: "",
+        runs: "base run 1: FAILED; base run 2: FAILED",
+      },
+    );
+  const cmdAt = (n: number): string => `bash -c 'sh .pi/verify-cmd ${"x".repeat(n - 28)}'`;
+  const wide = arm("b".repeat(100), cmdAt(250), 20);
+  assert(
+    cmdAt(250).length === 250,
+    `budget order (#2341 H3): the fixture cmd is the width the review measured (${cmdAt(250).length})`,
+  );
+  assert(
+    wide.length <= 800,
+    `budget order (#2341 H3): a 100-char branch name and a 250-char cmd fit the cap-evidence bound (${wide.length})`,
+  );
+  assert(
+    wide.includes(longAssertion.slice(0, 120)),
+    `budget order (#2341 H3): the assertion keeps its 120-char floor instead of being traded for the closing's boilerplate (${wide.length})`,
+  );
+  assert(
+    baselineRedForCommand(wide, cmdAt(250)),
+    `budget order (#2341 H3): the entry still names the command the probe re-ran — whole, or clipped with the renderer's own marker, which is what #1765 routes the cap on`,
+  );
+  assert(
+    wide.split("b".repeat(100)).length - 1 === 1,
+    `budget order (#2341 H3): the behind-branch closing names the branch ONCE (${wide.split("b".repeat(100)).length - 1})`,
+  );
+  assert(
+    boundJoinFailures([wide]).includes(BASELINE_RED_MARKER),
+    "budget order (#2341 H3): the cap's own join keeps the [baseline-red] lead",
+  );
+  // The cmd is quoted WHOLE at every width the room allows — the clip is the
+  // last resort, not the first buy.
+  const ordinary = arm("main", cmdAt(210), 50);
+  assert(
+    ordinary.includes(`\`${cmdAt(210)}\``) && baselineRedForCommand(ordinary, cmdAt(210)),
+    `budget order (#2341 H3): at a 210-char cmd the room came from the closing, so the command is quoted whole (${ordinary.length})`,
+  );
+  assert(
+    ordinary.includes(longAssertion.slice(0, 120)),
+    `budget order (#2341 H3): and the assertion still clears its floor there (${ordinary.length})`,
   );
 }
 

@@ -391,13 +391,20 @@ export function baselineRedMessage(
     behind === undefined
       ? "The gate was red before this change was written, so no change can pass it; the failures below cannot be attributed to this diff until the base is green. "
       : "";
-  const closing = behind
-    ? staleBaseClosing(behind)
-    : `Fix the gate at the base commit (or the host it runs on), then re-run${
-        stale?.status === "unknown"
-          ? ` (default-branch staleness could not be established: ${stale.reason})`
-          : ""
-      }`;
+  const unknownClause =
+    stale?.status === "unknown"
+      ? ` (default-branch staleness could not be established: ${stale.reason})`
+      : "";
+  // #2341 fix wave 5 (H3) — the closing has TWO arms, widest first: the second
+  // thing the budget takes from (after the middle sentence, BEFORE the cmd or
+  // the assertion). The compact arm drops the commit subjects and the
+  // parenthetical; the divergence count and the re-run advice stay in both.
+  const closings: [string, string] = behind
+    ? [staleBaseClosing(behind), staleBaseClosing(behind, { subjects: false })]
+    : [
+        `Fix the gate at the base commit (or the host it runs on), then re-run${unknownClause}`,
+        `Fix the gate at the base commit, then re-run${unknownClause}`,
+      ];
   // #2341 round 1 — the BOUND IS ENFORCED, not asserted. The stored assertion
   // is bounded at 400 by the probe, but 400 was never the width that FITS: the
   // whole message has to live inside the 800-char cap-evidence window, whose
@@ -405,37 +412,46 @@ export function baselineRedMessage(
   // failure) amputates the TAIL — so a 361-char assertion pushed the
   // `[baseline-red]` marker and the quoted command, the two parts the cap's
   // routing and the operator's diagnosis read, out of the evidence artefact.
-  // So: buy room by dropping the middle sentence first (it restates the lead
-  // clause in prose the operator has just read, and both explain routes still
-  // carry the full advice), and clip the assertion's TAIL only when even that
-  // is not enough — its head is the half that names the test, the file and the
-  // line. #2341 fix wave 4 (H3): when even the frame leaves no room, the room
-  // is bought from the one unbounded part — the operator-authored cmd, clipped
-  // with its own marker to a recognition floor — rather than emitting a lone
-  // `…` as "the assertion" while the entry still overflows.
+  // So the room is bought in a FIXED ORDER (#2341 fix wave 5): the middle
+  // sentence first (it restates the lead clause, and both explain routes still
+  // carry the full advice), then the closing's width, then the one genuinely
+  // unbounded part — the operator-authored cmd, clipped with its own marker to
+  // a recognition floor (#2341 fix wave 4 H3) — and ONLY THEN the assertion's
+  // tail. Buying from the cmd before the closing traded the actionable half
+  // #1762 exists to deliver for boilerplate that printed the branch name thrice.
   const leadOf = (cmdText: string): string =>
     `${BASELINE_RED_MARKER} verify command \`${cmdText}\` ALSO FAILS ${where} — assertion at base: `;
-  const frame = (mid: string, cmdText: string): number =>
-    leadOf(cmdText).length + `${same}. ${mid}${closing}${suffix}`.length;
+  const frame = (mid: string, cmdText: string, close: string): number =>
+    leadOf(cmdText).length + `${same}. ${mid}${close}${suffix}`.length;
+  // The assertion CHARACTERS the entry would show at a frame (the clip's `\u2026`
+  // costs one) — what the floor is a floor on.
+  const room = (mid: string, cmdText: string, close: string): number => {
+    const budget = CAP_EVIDENCE_BOUND - frame(mid, cmdText, close);
+    if (budget <= 0) return 0;
+    return Math.min(assertionText.length, assertionText.length <= budget ? budget : budget - 1);
+  };
   let cmdText = opts.cmd;
-  if (CAP_EVIDENCE_BOUND - frame(middle, cmdText) < MIN_ASSERTION_CHARS) middle = "";
-  let budget = CAP_EVIDENCE_BOUND - frame(middle, cmdText);
-  if (budget < 1) {
-    const buy = Math.min(
-      MIN_ASSERTION_CHARS - budget,
-      Math.max(0, opts.cmd.length - CMD_FLOOR - 1),
-    );
-    if (buy > 0) {
-      cmdText = `${opts.cmd.slice(0, opts.cmd.length - buy)}\u2026`;
-      budget = CAP_EVIDENCE_BOUND - frame(middle, cmdText);
-    }
+  const wanted = Math.min(MIN_ASSERTION_CHARS, assertionText.length);
+  if (room(middle, cmdText, closings[0]) < wanted) middle = "";
+  const fitting = closings.find((candidate) => room(middle, cmdText, candidate) >= wanted);
+  const closing = fitting ?? closings[1];
+  const budget = CAP_EVIDENCE_BOUND - frame(middle, cmdText, closing);
+  if (room(middle, cmdText, closing) < wanted) {
+    // The clip buys room: `buy - 1` characters of frame (its own `\u2026` costs
+    // one). The cmd is quoted WHOLE whenever the room allows — the clip is the
+    // last buy, and #1765 routes the cap on the command named INSIDE the entry
+    // (`baselineRedForCommand` compares that span: whole, or clipped with this
+    // marker).
+    const buy = Math.min(wanted + 2 - budget, Math.max(0, opts.cmd.length - CMD_FLOOR - 1));
+    if (buy > 0) cmdText = `${opts.cmd.slice(0, opts.cmd.length - buy)}\u2026`;
   }
+  const roomLeft = room(middle, cmdText, closing);
   const shown =
-    budget <= 0
-      ? ""
-      : assertionText.length <= budget
-        ? assertionText
-        : `${assertionText.slice(0, budget - 1)}\u2026`;
+    roomLeft >= assertionText.length
+      ? assertionText
+      : roomLeft > 0
+        ? `${assertionText.slice(0, roomLeft)}\u2026`
+        : "";
   return `${leadOf(cmdText)}${shown}${same}. ${middle}${closing}${suffix}`;
 }
 

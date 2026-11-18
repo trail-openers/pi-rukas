@@ -172,8 +172,9 @@ export async function probeBaseBehindDefault(
  */
 export function staleBaseClosing(
   behind: Extract<BaseBehindDefaultBranch, { status: "behind" }>,
+  opts: { subjects?: boolean } = {},
 ): string {
-  const candidates = behind.commits.slice(0, 2);
+  const candidates = opts.subjects === false ? [] : behind.commits.slice(0, 2);
   const shown: string[] = [];
   for (const c of candidates) {
     if (detailLooksCredential(c)) continue;
@@ -183,10 +184,20 @@ export function staleBaseClosing(
   const branchLabel = detailLooksCredential(behind.branch)
     ? "the default branch"
     : redactSecrets(behind.branch).text;
-  const more = behind.commits.length - shown.length;
-  return `${BASELINE_STALE_BASE_MARKER} the base trails ${branchLabel} by ${behind.commitsBehind} commits${
-    shown.length > 0 ? ` — ${shown.join("; ")}` : ""
-  }${more > 0 ? ` (+${more} more)` : ""}${
+  // The compact arm (#2341 fix wave 5, H3) shows no subjects at all, so the
+  // "+N more" disclosure would only restate the count the sentence already
+  // carries — it is dropped with the subjects, not left to double the width.
+  const more = opts.subjects === false ? 0 : behind.commits.length - shown.length;
+  // The branch is NAMED ONCE (#2341 fix wave 5, H3). It used to be printed
+  // three times in one sentence — the divergence, the attribution and the
+  // re-run instruction — which cost three times the branch name's width in the
+  // 800-char cap-evidence entry (and three copies of the redaction on a
+  // credential-shaped name, which is a disclosure the sentence never needed).
+  // The two later mentions carry no fact the first does not: the operator
+  // re-runs on the branch the sentence just named.
+  return `${BASELINE_STALE_BASE_MARKER} the base trails ${branchLabel} by ${behind.commitsBehind} commit${
+    behind.commitsBehind === 1 ? "" : "s"
+  }${shown.length > 0 ? ` — ${shown.join("; ")}` : ""}${more > 0 ? ` (+${more} more)` : ""}${
     withheld > 0 ? ` (${withheld} subject${withheld > 1 ? "s" : ""} withheld)` : ""
-  }: the red may be ${branchLabel}'s, not the base's (divergence, not cause); re-run on a base that includes ${branchLabel}`;
+  }: the red may be that branch's, not the base's (divergence, not cause); re-run on a base that includes it`;
 }
