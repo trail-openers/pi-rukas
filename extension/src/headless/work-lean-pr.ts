@@ -179,15 +179,15 @@ const REVIEW_FIXED: OutcomeKind<"review"> = "fixed";
  * re-publish can only have had its head moved by a later push, and log order is all the record
  * has to say about that.
  *
- * **Identity is predicated on a judged round.** `review.ts` folds pass 1 into
+ * **Both readings are predicated on a judged round.** `review.ts` folds pass 1 into
  * `outcome.review.rounds` with `noteRound` BEFORE either verdict is read, and its only
  * `noteWave` sits below that fold — so in a record the step itself wrote, every wave stands
  * behind a round that ran. The loader cannot close the gap the other way: it bounds `rounds`
  * from above and never asks for one (`reviewRecordProblem` accepts an empty array), so a
  * record that reaches this projection by any other route can name a wave's head with no
- * round vouching for it. A `fixed` record whose `rounds` is absent or empty therefore
- * answers `false` beside its waves: a head no round is on record as judged is a head no
- * lens read, whatever its waves name.
+ * round vouching for it. A record of either returned kind whose `rounds` is absent or
+ * empty therefore answers `false` BEFORE either reading is asked: a head no round is on
+ * record as judged is a head no lens read, whatever its waves name or its position says.
  *
  * Then the newest `review` step itself answers in three ways:
  *
@@ -221,13 +221,14 @@ export function reviewCompleteOf(steps: Step[]): boolean {
   const outcome = steps[review]?.outcome;
   if (outcome?.reviewBound !== undefined) return false;
   if (outcome?.kind !== REVIEW_DONE && outcome?.kind !== REVIEW_FIXED) return false;
-  const wave = outcome?.kind === REVIEW_FIXED ? lastWaveHead(outcome) : undefined;
-  if (wave === undefined) return lastAttempt(steps, "publish") < review;
-  // The wave arm's precondition, outranking identity as the bound's presence does: no
-  // record with waves but no judged round is one the step's own writer can leave behind
-  // (see the jsdoc), and a head no round is on record as judged certifies nothing.
+  // The precondition for BOTH readings, outranking each as the bound's presence does:
+  // no record the step's own writer can leave behind carries a returned kind without a
+  // judged round (see the jsdoc), so a record that names none is refused before
+  // position or wave identity can certify it.
   const rounds = outcome?.review?.rounds;
   if (!Array.isArray(rounds) || rounds.length === 0) return false;
+  const wave = outcome?.kind === REVIEW_FIXED ? lastWaveHead(outcome) : undefined;
+  if (wave === undefined) return lastAttempt(steps, "publish") < review;
   // Undecided-inclusive, as the position rule is: one publish attempt after the review that
   // recorded nothing can have moved the head past the wave this record names.
   for (let i = review + 1; i < steps.length; i++)

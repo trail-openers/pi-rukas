@@ -94,9 +94,50 @@ export function unjudgedReviewStep(n = 0, lanes = GOLDEN_REVIEW_BOUND.unreviewed
   );
 }
 
-/** A `review` step that judged every lens it was bought and said so. */
+/** A `review` step that judged every lens it was bought and said so — with the judged
+ * round ON THE RECORD, the way `review.ts`'s clean arm writes it: `noteRound` folds
+ * pass 1 before the step returns, and no fixer was bought, so `waves` is empty and
+ * `attach` still prints the `review` key. The projection refuses a record that names
+ * no round, so the suite's "fully judged review" has to show one. */
 export function judgedReviewStep(n = 0): Step {
+  return stepWith(
+    "review",
+    {
+      kind: "done",
+      reason: "adversarial and six-lens review clean",
+      review: { rounds: [{ CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 }], waves: [] },
+    },
+    n,
+  );
+}
+
+/** A `done` review record that names no `review` at all — no round, no wave. No
+ * production writer leaves one behind: `review.ts`'s only `done` return folds pass 1
+ * into the tally with `noteRound` before it returns, and `attach` prints the `review`
+ * key whenever a round was folded. The loader validates a `review` that is present
+ * and never asks for one (`reviewRecordProblem`), so this is the probe of the shape
+ * that can reach the projection by another route: a returned kind with no judged
+ * round on record certifies nothing, whichever arm would otherwise read it. */
+export function passNoRecordReviewStep(n = 0): Step {
   return stepWith("review", { kind: "done", reason: "adversarial and six-lens review clean" }, n);
+}
+
+/** A `fixed` review record whose `review` is present but EMPTY on both sides —
+ * `rounds: []` names no judged round and `waves: []` names no head, so position is
+ * the only rule left that could answer `true`, and it answers wrongly for a record
+ * no lens vouches for. Same provenance as `waveNoRoundReviewStep`: the production
+ * writer folds pass 1 before any return, and `attach` omits an all-empty record
+ * rather than printing it — only a record from another route looks like this. */
+export function emptyRecordReviewStep(n = 0): Step {
+  return stepWith(
+    "review",
+    {
+      kind: "fixed",
+      reason: "adversarial and six-lens review clean on the fix",
+      review: { rounds: [], waves: [] },
+    },
+    n,
+  );
 }
 
 /** A `review` step that ran one fix wave, cleared it, and RETURNED `fixed` with no

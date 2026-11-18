@@ -37,9 +37,11 @@ import {
 } from "./lib/lean-result-fixture.ts";
 import {
   diedReviewStep,
+  emptyRecordReviewStep,
   erroredEmptyLaneReviewStep,
   erroredMidWaveReviewStep,
   judgedReviewStep,
+  passNoRecordReviewStep,
   pushedFixReviewStep,
   unansweredReviewStep,
   unjudgedReviewStep,
@@ -336,6 +338,13 @@ const reviewed = (steps: Step[]): Step[] => withReviews(steps, [judgedReviewStep
       true,
     ],
     ["no-lane-named", [unjudgedReviewStep(0, [])], "review-incomplete", false],
+    // A returned kind with no judged round on record: `done` naming no `review` at
+    // all, and `fixed` whose record is empty on both sides. Neither writer produces
+    // one (`review.ts` folds pass 1 before every return), and each is the shape that
+    // would otherwise be certified by position alone — the round precondition
+    // outranks both readings.
+    ["pass-no-record", [passNoRecordReviewStep()], "review-incomplete", false],
+    ["fixed-empty-record", [emptyRecordReviewStep()], "review-incomplete", false],
     ["clean-review", [judgedReviewStep()], "awaiting-human-merge", true],
     ["never-reviewed", [], "review-incomplete", false],
   ];
