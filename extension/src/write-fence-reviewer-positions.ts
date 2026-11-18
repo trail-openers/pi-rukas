@@ -34,6 +34,7 @@ import {
 import { type BashTarget, bashWriteTargets } from "./write-fence-bash.ts";
 import { deletePositions } from "./write-fence-deletion-positions.ts";
 import { GIT_CLEAN_LOG_TOKEN } from "./write-fence-deletion-tokens.ts";
+import { interpreterBody, interpreterFlags } from "./write-fence-interpreter-flags.ts";
 import { expandHome, safeResolve } from "./write-fence-path.ts";
 
 /** The commands whose DESTINATIONS the copy rules name (their sources stay reads). */
@@ -101,16 +102,6 @@ const INTERPRETER_WRITE_SHAPES: Record<string, RegExp> = {
   node: /\b(?:write|append)FileSync\b|\b(?:rm|rmSync|rename|renameSync|mkdir|mkdirSync|unlink|unlinkSync|copyFile|copyFileSync|truncate|truncateSync|chmod|chmodSync|chown|chownSync)(?:Sync)?\b|\bchild_process\b|\bexec(?:Sync)?\b|\bspawn(?:Sync)?\b/,
   // bun runs the same JS dialect as node, so the same shapes are a write there.
   bun: /\b(?:write|append)FileSync\b|\b(?:rm|rmSync|rename|renameSync|mkdir|mkdirSync|unlink|unlinkSync|copyFile|copyFileSync|truncate|truncateSync|chmod|chmodSync|chown|chownSync)(?:Sync)?\b|\bchild_process\b|\bexec(?:Sync)?\b|\bspawn(?:Sync)?\b/,
-};
-
-/** The flag that carries each interpreter's body, as the deletion reader names it. */
-const INTERPRETER_BODY_FLAG: Record<string, string> = {
-  python: "-c",
-  python3: "-c",
-  ruby: "-e",
-  perl: "-e",
-  node: "-e",
-  bun: "-e",
 };
 
 /** The shells whose operand list is a program the shell will read and run. */
@@ -261,13 +252,17 @@ function unresolvable(w: Word): boolean {
  * cannot lift out is reported rather than trusted: the field's probe named its
  * target on the same line as the write, and a reader that hoped to see a literal
  * would have let it run.
+ *
+ * The flags are the shared table (`write-fence-interpreter-flags.ts`) — the same one
+ * the deletion reader reads — because each spelling is a body the runtime runs: a
+ * table that named only `-e` let `node --print 'require("fs").writeFileSync(…)'`
+ * through as an ordinary word.
  */
 function interpreterWriteIsOpaque(name: string, args: Word[]): boolean {
-  const flag = INTERPRETER_BODY_FLAG[name];
+  const flags = interpreterFlags(name);
   const shape = INTERPRETER_WRITE_SHAPES[name];
-  if (flag === undefined || shape === undefined) return false;
-  const idx = args.findIndex((w) => w.text === flag);
-  const body = idx === -1 ? undefined : args[idx + 1];
+  if (flags === undefined || shape === undefined) return false;
+  const body = interpreterBody(args, flags);
   if (body === undefined) return false;
   // `body.dyn` is the double-quoted spelling (`python3 -c "open(p,'w')"`, where the
   // quote inside made the lexer give up on the text). A single-quoted body is literal,

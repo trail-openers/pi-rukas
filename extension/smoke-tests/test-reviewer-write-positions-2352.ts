@@ -146,6 +146,28 @@ allowed("xargs into grep", `ls | xargs grep foo`);
 allowed("xargs into cat", `ls | xargs cat`);
 allowed("xargs into a tool that names no write verb", `ls src | xargs npx tsc --noEmit`);
 
-assert.equal(groups.length, 5, "each group printed its own header");
+group("B2: an interpreter body behind any of its flags, not only one spelling");
+// The body flag is the deletion reader's table, so `--print`, `-p` and `--eval` are
+// bodies for node and bun exactly as `-e` is: a write the reader cannot aim is a
+// class-(c) word whatever flag carried it. The read-only spellings still run.
+for (const interp of ["node", "bun"]) {
+  for (const flag of ["-e", "--eval", "-p", "--print"]) {
+    refused(
+      `${interp} ${flag} with a writeFileSync`,
+      `${interp} ${flag} 'require("fs").writeFileSync("${outside}/x","a")'`,
+    );
+  }
+  // The inline spelling the deletion reader already reads: `--flag=BODY`.
+  refused(
+    `${interp} --print= with a writeFileSync`,
+    `${interp} --print='require("fs").writeFileSync("${outside}/x","a")'`,
+  );
+}
+allowed("a read-only node -e", `node -e 'console.log(1)'`);
+allowed("a read-only node -p", `node -p '1+1'`);
+allowed("a read-only bun --print", `bun --print '1+1'`);
+allowed("a read-only node --print of a file", `node --print 'require("fs").readFileSync("${outside}/index.ts","utf8")'`);
+
+assert.equal(groups.length, 6, "each group printed its own header");
 rmSync(root, { recursive: true, force: true });
-console.log("\nreviewer write positions (#2352 C1, I1, B1): all groups passed");
+console.log("\nreviewer write positions (#2352 C1, I1, B1, B2): all groups passed");
