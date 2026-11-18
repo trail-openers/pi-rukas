@@ -274,5 +274,27 @@ for (const [value, want] of [
   );
 }
 
+// ─── (5) THE WAVE ARM REFUSES AN UNDECIDED PUBLISH AFTER THE REVIEW ──────────
+// Every other undecided-publish assertion in this file drives the POSITION arm (a `done`
+// review, whose record names no head). This is the only case that reaches the loop in
+// `work-lean-pr.ts`'s wave arm: the record is the well-formed `fixed` wave of section (4)
+// — the newest decided publish's head EQUALS the wave head, so identity alone would
+// answer `true` — and the single fact refusing it is an outcome-less `publish` attempt
+// after the review. A push whose outcome nobody wrote cannot be shown to have moved
+// nothing, and the wave's own head does not vouch for a branch the log says moved again.
+{
+  const deadPush =
+    (await driveLean("handed-back", 10, republishedAfterReview(fixedWaveLog(), true))).issue ??
+    {};
+  assert(
+    deadPush.prState === "ready",
+    `wave-arm dead-push: publish's own rule still reads the PR ready — only the wave arm's undecided rule can refuse it (${String(deadPush.prState)})`,
+  );
+  assert(
+    deadPush.cap === "review-incomplete" && deadPush.reviewComplete === false,
+    `wave-arm dead-push: an outcome-less publish after a fixed review whose wave head matches the published head fails closed (got ${String(deadPush.cap)} / ${String(deadPush.reviewComplete)})`,
+  );
+}
+
 console.log(`\nexit ${String(failures())}`);
 process.exit(failures());
