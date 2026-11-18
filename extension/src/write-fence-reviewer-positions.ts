@@ -178,9 +178,33 @@ export function absolutiseTarget(text: string, from: string): string {
 export const POSITION_UNJUDGED_REASON =
   "its path comes from a glob, a brace list or a shell expansion the guard cannot resolve, so it is refused rather than guessed. Name each path literally, inside your own roots";
 
-/** Whether a word is a glob, a brace list, or an expansion the judge cannot resolve. */
+/** A character the shell gives a meaning to that the lexer reported as plain text. */
+const SHELL_METACHARS = /[$`\\]/;
+
+/**
+ * Whether a word is a glob, a brace list, or an expansion the judge cannot resolve.
+ *
+ * The `dyn` flag covers every expansion the lexer SAW. It cannot cover the ones the
+ * lexer faithfully reported as text: a single-quoted word is literal to the lexer and
+ * `$`, a backtick and a backslash survive it verbatim, so `cp x '$T/pwned'` arrives
+ * here as the text `$T/pwned` with `dyn` false — and the shell then expands `$T`, so
+ * the file lands wherever `T` points, not where the judge resolved the text to. A
+ * backslash is the same trap in the other direction: `\$T` is literal to the lexer and
+ * expansion to the shell. So a word that still carries one of those characters at a
+ * write position names no path this rule can aim.
+ *
+ * The quoted form is what makes this safe to apply to every write-position word: a
+ * double-quoted or unquoted expansion already set `dyn`, and a single-quoted path with
+ * none of these characters in it — `'src/a b,c.md'` — is exactly as literal as the
+ * shell will make it.
+ */
 function unresolvable(w: Word): boolean {
-  return w.dyn || w.glob === true || /\{[^{}]*(,|\.\.)[^{}]*\}/.test(w.text);
+  return (
+    w.dyn ||
+    w.glob === true ||
+    SHELL_METACHARS.test(w.text) ||
+    /\{[^{}]*(,|\.\.)[^{}]*\}/.test(w.text)
+  );
 }
 
 /**
@@ -197,7 +221,11 @@ function interpreterWriteIsOpaque(name: string, args: Word[]): boolean {
   const idx = args.findIndex((w) => w.text === flag);
   const body = idx === -1 ? undefined : args[idx + 1];
   if (body === undefined) return false;
-  return body.dyn || shape.test(body.text);
+  // `body.dyn` is the double-quoted spelling (`python3 -c "open(p,'w')"`, where the
+  // quote inside made the lexer give up on the text). A single-quoted body is literal,
+  // so its write shapes are matched on the text itself — the same shapes, which is the
+  // point: the quoting must not decide whether the guard reads the body.
+  return body.dyn || SHELL_METACHARS.test(body.text) || shape.test(body.text);
 }
 
 /** One walk target as a position. Its opaque verdict carries its own reason. */
