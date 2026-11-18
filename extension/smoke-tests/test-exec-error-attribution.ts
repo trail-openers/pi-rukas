@@ -197,8 +197,8 @@ function assert(cond: boolean, msg: string) {
     `cargo anchor (#2341 H1): the captured panic of a passing test does not own the anchor (got: ${JSON.stringify(tail.slice(0, 40))})`,
   );
   assert(
-    extractSpecificAssertion(tail) === RUST_TRAP_PAIR,
-    `cargo anchor (#2341 H1): the failing test's pair survives the window (got: ${JSON.stringify(extractSpecificAssertion(tail))})`,
+    extractSpecificAssertion(tail, RUST_SHOULD_PANIC_TRAP_AFTER_STREAM) === RUST_TRAP_PAIR,
+    `cargo anchor (#2341 H1): the failing test's pair survives the window (got: ${JSON.stringify(extractSpecificAssertion(tail, RUST_SHOULD_PANIC_TRAP_AFTER_STREAM))})`,
   );
 }
 
@@ -219,8 +219,8 @@ function assert(cond: boolean, msg: string) {
     `cargo anchor (#2341 H1/H2): the captured panic does not own the anchor even though its ok line is outside the window (got: ${JSON.stringify(tail.slice(0, 40))})`,
   );
   assert(
-    extractSpecificAssertion(tail) === NO_SPECIFIC_ASSERTION,
-    `cargo anchor (#2341 H1/H2): the captured panic never becomes the assertion (got: ${JSON.stringify(extractSpecificAssertion(tail).slice(0, 60))})`,
+    extractSpecificAssertion(tail, RUST_VERDICT_OUTSIDE_WINDOW_STREAM) === NO_SPECIFIC_ASSERTION,
+    `cargo anchor (#2341 H1/H2): the captured panic never becomes the assertion (got: ${JSON.stringify(extractSpecificAssertion(tail, RUST_VERDICT_OUTSIDE_WINDOW_STREAM).slice(0, 60))})`,
   );
   const unobserved = extractAttributedTail(
     RUST_VERDICT_OUTSIDE_WINDOW_STREAM.replace("test a::t ... ok\n", ""),
@@ -250,8 +250,8 @@ function assert(cond: boolean, msg: string) {
     `elision join (#2341): the window really is the anchored cut with the marker beneath the header (got ${JSON.stringify(tail.slice(0, 60))})`,
   );
   assert(
-    extractSpecificAssertion(tail) === rustPanicHeader("a::t", "src/a.rs:7:5"),
-    `elision join (#2341): the '...' cut line is never joined as the panic message (got ${JSON.stringify(extractSpecificAssertion(tail))})`,
+    extractSpecificAssertion(tail, stream) === rustPanicHeader("a::t", "src/a.rs:7:5"),
+    `elision join (#2341): the '...' cut line is never joined as the panic message (got ${JSON.stringify(extractSpecificAssertion(tail, stream))})`,
   );
 }
 
@@ -266,13 +266,13 @@ function assert(cond: boolean, msg: string) {
 // The marker wins the anchor here, so going green says the PUBLISHED window is
 // sound, not that the walk had no other candidate.
 {
+  // `combinedExecFailureStream` puts stdout's verdict lines ABOVE stderr's panic
+  // prints, so `a::t`'s `ok` sits above the print belonging to it; the green
+  // TARGET TALLY below is what a region-bounded veto read as a boundary.
   const compile = Array.from(
     { length: 45 },
     (_, n) => `   Compiling crate_${n} v0.1.0 (registry)`,
-  ).join("\n");
-  // `combinedExecFailureStream` orders a stage's stdout (the verdict lines)
-  // before its stderr (the panic prints), which is what puts `a::t`'s `ok`
-  // ABOVE the panic print that belongs to it.
+  ).join("\n") + "\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured";
   const stream = [
     "FAILED: smoke-tests/test-rust-unit.ts",
     "running 4 tests",
@@ -343,15 +343,15 @@ function assert(cond: boolean, msg: string) {
     "chain stage (#2341 wave 5): a green earlier stage does not de-anchor the later stage's real panic",
   );
   assert(
-    extractSpecificAssertion(tail) ===
+    extractSpecificAssertion(tail, `${greenStage}\n${binaryDied}`) ===
       "thread 'main' panicked at src/main.rs:12:5: smoke check failed: expected 200 got 500 from /health",
-    `chain stage (#2341 wave 5): the binary's panic is still quoted with its message (got ${JSON.stringify(extractSpecificAssertion(tail).slice(0, 70))})`,
+    `chain stage (#2341 wave 5): the binary's panic is still quoted with its message (got ${JSON.stringify(extractSpecificAssertion(tail, `${greenStage}\n${binaryDied}`).slice(0, 70))})`,
   );
   // The control: when the stream DOES hold a per-test verdict for the name,
   // the name-correlated veto still fires — the fix is not the absence of one.
   const reported = `${greenStage}\ntest main ... ok\n${binaryDied}`;
   assert(
-    extractSpecificAssertion(extractAttributedTail(reported, 1500).tail) === NO_SPECIFIC_ASSERTION,
+    extractSpecificAssertion(extractAttributedTail(reported, 1500).tail, reported) === NO_SPECIFIC_ASSERTION,
     "chain stage (#2341 wave 5): a per-test ok for the panic's own name still vetoes it",
   );
 }
