@@ -180,6 +180,10 @@ export const GL_MR_VIEW = {
  * the four readiness fields the epic spec names, plus `diff_refs.head_sha`:
  * the normalized MR (`mapGlMr`) keeps no commit oid, so the raw reply is the
  * only place a caller can read which commit its verdict is about.
+ *
+ * `detailed_merge_status` is a value from GitLab's own documented enum — the one
+ * a ready MR answers with. A fixture carrying a name the API never emits makes
+ * every readiness test in the repo pass over a table that matches no real reply.
  */
 export const GL_MR = {
   iid: 17,
@@ -193,7 +197,7 @@ export const GL_MR = {
   labels: ["enhancement"],
   created_at: "2026-09-01T00:00:00Z",
   updated_at: "2026-09-02T00:00:00Z",
-  detailed_merge_status: "can_be_merged",
+  detailed_merge_status: "mergeable",
   has_conflicts: false,
   blocking_discussions_resolved: true,
   approvals_left: 0,

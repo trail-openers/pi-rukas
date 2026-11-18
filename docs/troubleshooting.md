@@ -4125,6 +4125,62 @@ themselves are checked against the subcommand's own `--help` by
 `extension/smoke-tests/test-glab-flags.ts`, so an invented flag fails the offline suite
 rather than a live cycle.
 
+## A GitLab readiness read fails with `unmapped detailed_merge_status`
+
+### The symptom
+
+A `/work` or work-lean cycle on a GitLab project cannot get past the step that asks the forge
+whether the MR may merge — most often `ci`, and at the land step the merge evidence gate refuses
+with the same words. The trace carries the composition's own complaint:
+
+```
+could not read the MR's merge readiness: forge mapping: unmapped detailed_merge_status "mergeable"
+```
+
+The MR is ready: GitLab's own page says it can be merged, its pipeline is green, its discussions
+are resolved. Nothing about the code is wrong and re-running the cycle repeats the failure, so it
+is not transient.
+
+### What was wrong
+
+The GitLab half of the readiness composition (`extension/src/forge-merge.ts`) was written in
+GitHub's vocabulary rather than GitLab's: it mapped `can_be_merged`, `succeeding`, `has_conflicts`
+and a family of `blocked_by_*` names. None of those is a value GitLab's `detailed_merge_status`
+field has ever emitted — the table matched no real reply. Because the composition fails closed on
+any value it does not know (a guess about a merge is exactly the class of defect this project
+removes), the one value a ready MR answers with — `mergeable` — fell through to the refusal, and a
+green MR read as "not mergeable". The same happened for every other documented value, including
+the five that mean "the forge is still deciding".
+
+### The fix
+
+The table now carries GitLab's documented enum in full: `mergeable` composes `CLEAN`; `checking`,
+`unchecked`, `preparing`, `approvals_syncing` and `ci_still_running` compose `UNKNOWN`, the
+retryable verdict; every other documented value composes `DIRTY` and its refusal names the value
+that blocked the merge (`not_approved`, `need_rebase`, `requested_changes`, …), which is the
+actionable part of the handoff. A value outside the documented set still fails closed and still
+names itself — that arm is what catches a GitLab server-side enum addition instead of guessing
+past it.
+
+The retry keys on the readiness VALUE now, never on one status word: `ci`'s poll waits on any
+`UNKNOWN`, treats `DIRTY` as the verdict it is, and takes a red job row immediately even while the
+readiness is still `UNKNOWN` — waiting on the forge there would spend the `ci` budget on a build that is
+already red. An expired wait names the value it was waiting on (`… still pending after 30 min: readiness
+ci_still_running (…)`) rather than printing an empty reason.
+
+### What to do
+
+Nothing, if your build is current — the table is pinned value-by-value against GitLab's documented
+enum by `extension/smoke-tests/test-forge-gl-detailed-status.ts`, and `mergeable` composing
+`CLEAN` end-to-end through the `ci` step is pinned by `extension/smoke-tests/test-lean-ci-gl.ts`
+and its readiness sibling `extension/smoke-tests/lib/lean-ci-gl-readiness.ts`. If you still see this
+line, read the value it quotes:
+it is a state this table has genuinely never seen, which means GitLab added one. Confirm it
+against your instance's own API (`glab api /projects/:id/merge_requests/:iid`, read
+`detailed_merge_status`), then file it — the composition must be told what the new value means
+before an agent merges on its strength, and inventing a mapping locally would trade a parked cycle
+for a wrong merge.
+
 ## Every lens failed on a large diff (`#2261`)
 
 ### The symptom

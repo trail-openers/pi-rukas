@@ -71,8 +71,8 @@ async function main() {
   });
 
   await check("a failed job refuses as a CI verdict", async () => {
-    // `can_be_merged` is the fixture a real GitLab instance does answer with
-    // while a pipeline is red (the required-checks rules are per-project), so
+    // `mergeable` is what a real GitLab instance does answer while a pipeline is
+    // red (the required-checks rules are per-project), so
     // the job rows are the ONLY thing that stops this merge — the same shape
     // the GitHub `failing` fixture in the headless suite uses, and for the same
     // reason: a DIRTY answer would let the readiness blocklist do the work and
@@ -149,7 +149,7 @@ async function main() {
   await check("DIRTY readiness refuses", async () => {
     const { fn } = mkExec(
       glReads(
-        mrRow({ detailed_merge_status: "has_conflicts", has_conflicts: true }),
+        mrRow({ detailed_merge_status: "conflict", has_conflicts: true }),
         [pipelineRow(PIPELINE, HEAD)],
         GL_JOBS,
       ),

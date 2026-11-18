@@ -104,6 +104,13 @@ interface ForgeRead {
   prHead: string | undefined;
   /** The check rows, or `undefined` when the reply was not an array. */
   rows: { name?: unknown; state?: unknown; bucket?: unknown; blocking?: unknown }[] | undefined;
+  /** The composition's own words for a GitLab verdict — every field it read.
+   *  Undefined on GitHub, where `mergeStateStatus` is gh's own word and needs no
+   *  gloss. */
+  detail?: string;
+  /** The `detailed_merge_status` the composition read, verbatim — the word an
+   *  operator looks up, and the one an expired wait quotes. Undefined on GitHub. */
+  status?: string;
 }
 
 /** A row's grade, or `undefined` when the row is simply passing. */
@@ -208,6 +215,8 @@ async function readForge(
       mergeStateStatus: read.mergeStateStatus,
       prHead: read.prHead,
       rows: read.rows,
+      detail: read.detail,
+      status: read.status,
     };
   }
   const reads = ghReads(prNumber);
@@ -243,8 +252,21 @@ async function readForge(
  * keeps its own afterwards ({@link ciTierBudgetMs}). Still pending when the wait expires is a handback,
  * never a red.
  *
- * On GitLab the same arms serve the composed readiness: `UNKNOWN` (`checking`) is the one retryable
- * readiness and waits on this bound; `DIRTY` is red with the composition's own detail.
+ * On GitLab the same arms serve the composed readiness of `forge-merge.ts`, keyed on the readiness VALUE
+ * and never on one status word, so the retry covers the whole retryable group — `checking`, `unchecked`,
+ * `preparing`, `approvals_syncing` and `ci_still_running` — rather than the single word this step once
+ * knew. The arms, in the order they decide:
+ *
+ *   - a red or not-passing JOB ROW is red immediately, whatever the readiness says — including UNKNOWN.
+ *     The rows are evidence about this commit and they have already answered; the readiness only says the
+ *     forge has not finished deciding, and waiting on it would spend the `ci` budget on a build that is
+ *     already red and hand back instead of routing a fix round;
+ *   - no red row, and either a row still pending or a readiness that is not CLEAN: WAIT on this bound, and
+ *     name in the reason what is being waited on — the pending rows, or `readiness <value>` with the
+ *     composition's detail when only the readiness is undecided (an empty reason would be a handback
+ *     nobody can act on);
+ *   - a DIRTY readiness is a verdict, not a wait: red, quoting the composition's detail, because the value
+ *     that blocked the merge (`not_approved`, `need_rebase`, …) is the actionable part of the refusal.
  */
 export async function checksRedReason(
   deps: CiDeps,
@@ -281,8 +303,24 @@ export async function checksRedReason(
       ...namesOf(read.rows, "unknown", gitlab),
     ];
     // GitLab's retryable readiness waits on the same bound as the rows: both mean the forge has not
-    // finished deciding, and neither is a verdict.
-    if (waiting.length > 0 || (gitlab && read.mergeStateStatus !== "CLEAN")) {
+    // finished deciding, and neither is a verdict. The arm asks the readiness VALUE, so every status the
+    // composition calls UNKNOWN is waited whether or not this poll has seen that word before.
+    // A DIRTY composition is NOT waited: the forge has already answered, and waiting on an answer that
+    // cannot change turns a verdict into an expired wait — a handback where a red was due.
+    const glDecided = gitlab && read.mergeStateStatus === "DIRTY";
+    if (waiting.length > 0 || (gitlab && read.mergeStateStatus !== "CLEAN" && !glDecided)) {
+      // The reason must name what is being waited on. When only the readiness is
+      // undecided there is no pending row to list, and a reason quoting nothing
+      // leaves an operator with a handback and nothing to act on. The quoted
+      // value is the one the operator can look up: the
+      // `detailed_merge_status` the composition read, not the readiness word it
+      // mapped it to.
+      const why =
+        waiting.length > 0
+          ? waiting.join(", ")
+          : `readiness ${read.status ?? read.mergeStateStatus}${
+              read.detail === undefined || read.detail === "" ? "" : ` (${read.detail})`
+            }`;
       // The whole-cycle arm is consulted on every WAIT, not only between steps: a poll that ignores it can
       // outlive the host's deadline and the run dies with no document. Read on the context's injected
       // clock so poll and engine cannot disagree about where step work ends.
@@ -293,7 +331,7 @@ export async function checksRedReason(
         );
       if (deps.now() - start >= waitMs)
         throw new VerifyInfraError(
-          `CI checks still pending after ${Math.round(waitMs / 60_000)} min: ${waiting.join(", ")}`,
+          `CI checks still pending after ${Math.round(waitMs / 60_000)} min: ${why}`,
         );
       await deps.sleep(CI_POLL_MS);
       continue;
@@ -301,7 +339,9 @@ export async function checksRedReason(
     // Every row terminal and none failed: the forge's own word is the last authority, since it encodes
     // the repo's branch protection.
     if (read.mergeStateStatus !== "CLEAN")
-      return `mergeStateStatus is ${read.mergeStateStatus === "" ? "unreadable" : read.mergeStateStatus}`;
+      return `mergeStateStatus is ${read.mergeStateStatus === "" ? "unreadable" : read.mergeStateStatus}${
+        read.detail === undefined || read.detail === "" ? "" : ` (${read.detail})`
+      }`;
     return undefined;
   }
 }
