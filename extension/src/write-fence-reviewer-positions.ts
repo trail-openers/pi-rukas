@@ -34,7 +34,7 @@ import {
 import { type BashTarget, bashWriteTargets } from "./write-fence-bash.ts";
 import { deletePositions } from "./write-fence-deletion-positions.ts";
 import { GIT_CLEAN_LOG_TOKEN } from "./write-fence-deletion-tokens.ts";
-import { expandHome } from "./write-fence-path.ts";
+import { expandHome, safeResolve } from "./write-fence-path.ts";
 
 /** The commands whose DESTINATIONS the copy rules name (their sources stay reads). */
 export const COPY_LIKE = new Set(["cp", "mv", "install", "ln", "link"]);
@@ -267,6 +267,25 @@ export function writePositions(command: string, cwd: string): WritePosition[] {
   const anyGuarded = segs.some((s) => GUARDED_COMMANDS.has(s.name));
 
   for (const t of bashWriteTargets(command, cwd)) {
+    // The `cd`/`pushd` operand is the directory the rest of the line RUNS in, not a
+    // path the command writes — the walk reports it as a target because that is what
+    // makes a later relative write judgeable, and the relative targets below carry it
+    // as their own `cwd`. For this rule the operand itself is not a write position:
+    // a reviewer must be able to `cd <reviewed> && make`, and the tree it is auditing
+    // is never writable. A write that only becomes reachable by the cd is still
+    // reported, because it is judged from the cd's directory (`cd <state> && cp x .`).
+    if (t.cwd === undefined || t.cwd === cwd) {
+      const dir = safeResolve(t.path);
+      const entered =
+        dir !== undefined &&
+        segs.some(
+          (s) =>
+            (s.name === "cd" || s.name === "pushd") &&
+            s.args[0] !== undefined &&
+            safeResolve(absolutiseTarget(s.args[0].text, cwd)) === dir,
+        );
+      if (entered) continue;
+    }
     // A resolved path is judged whatever named it; an opaque verdict is a class-(c)
     // word and belongs to this rule only when a guarded verb is on the line — or
     // when nothing lexed at all, which is the same case in another spelling.

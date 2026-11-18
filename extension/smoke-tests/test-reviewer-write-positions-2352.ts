@@ -32,6 +32,15 @@ const outside = path.join(root, "operator");
 for (const d of [worktree, childTmp, outside]) await Bun.write(path.join(d, ".keep"), "");
 const roots = reviewerRootsFrom({ [CHILD_TMP_ENV]: childTmp }, worktree);
 
+const groups: string[] = [];
+let current = "";
+const group = (title: string) => {
+  if (current === title) return;
+  current = title;
+  groups.push(title);
+  console.log(`── ${title} ──`);
+};
+
 /** Refused, with a reason that says the path could not be resolved. */
 function refused(label: string, command: string) {
   const hit = firstReviewerWriteOutside(command, roots);
@@ -44,7 +53,7 @@ function allowed(label: string, command: string) {
   assert.equal(hit, undefined, `allowed: ${label}${hit ? ` — ${hit.reason}` : ""}`);
 }
 
-console.log("── C1: a single-quoted $ at a write position is not a literal path ──");
+group("C1: a single-quoted $ at a write position is not a literal path");
 const quotedDollar = [
   "cp",
   "mv",
@@ -74,7 +83,7 @@ refused("the unquoted spelling (already refused)", `cp x $T/pwned`);
 refused("a single-quoted glob (already refused)", `touch '$T/*'`);
 refused("a single-quoted brace list (already refused)", `touch '$T/{a,b}'`);
 
-console.log("── C1: an interpreter body in single quotes is read as a body ──");
+group("C1: an interpreter body in single quotes is read as a body");
 refused("python3 -c in single quotes", `python3 -c 'open("/abs/x","w")'`);
 refused("python -c in single quotes", `python -c 'open("/abs/x","w")'`);
 refused("node -e in single quotes", `node -e 'require("fs").writeFileSync("/abs/x","a")'`);
@@ -89,12 +98,28 @@ allowed(
   `node -e 'console.log(require("fs").readFileSync("${outside}/index.ts","utf8"))'`,
 );
 
-console.log("── C1: a single-quoted literal inside the roots is still a literal ──");
+group("C1: a single-quoted literal inside the roots is still a literal");
 allowed("a single-quoted path in its own tree", `touch '${worktree}/notes.md'`);
 allowed("a single-quoted path in its scratch", `mkdir -p '${childTmp}/a b'`);
 allowed("a single-quoted copy into its tree", `cp ${outside}/x '${worktree}/copy.json'`);
 allowed("a single-quoted read", `cat '${outside}/memory.json'`);
 allowed("a single-quoted path with a space and a comma", `touch '${worktree}/a b,c.md'`);
 
+group("I1: `cd` changes the directory, it does not write one");
+// The walk reports a `cd`/`pushd` operand as a target because the rest of the line is
+// judged from it. For a reviewer that is not a write: `cd <target> && ls` is how a
+// review runs the target's own tooling, and refusing it made the whole shape unusable.
+// A write that only becomes reachable by the cd stays refused.
+for (const tail of ["ls", "ls -la", "make", "npx tsc --noEmit", "cargo test", "cat index.ts"]) {
+  allowed(`cd to the reviewed tree, then ${tail}`, `cd '${outside}' && ${tail}`);
+  allowed(`pushd to the reviewed tree, then ${tail}`, `pushd '${outside}' && ${tail}`);
+}
+refused("cd to the reviewed tree, then a relative copy", `cd '${outside}' && cp x .`);
+refused("cd to the reviewed tree, then a relative touch", `cd '${outside}' && touch y`);
+refused("cd to the reviewed tree, then a redirect", `cd '${outside}' && echo x > out.txt`);
+refused("cd into the tree and out of it", `cd '${outside}' && touch ../../escaped`);
+allowed("a bare cd with no following command", `cd '${outside}'`);
+
+assert.equal(groups.length, 4, "every group below the first printed its own header");
 rmSync(root, { recursive: true, force: true });
-console.log("\nreviewer write positions (#2352 C1): all groups passed");
+console.log("\nreviewer write positions (#2352 C1, I1): all groups passed");
