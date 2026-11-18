@@ -132,42 +132,70 @@ function libtestWindowVerdict(window: string): boolean | undefined {
 const LIBTEST_PER_TEST_VERDICT_RE = /^test\s+(\S+)\s+\.\.\.\s+(ok|FAILED)\b/;
 
 /**
- * The NAME-correlated answer to "does the text `window` report test `<name>`
- * as FAILED?" (#2341 fix wave H1) — the ONE predicate the extractor's
- * `should_panic` veto and the evidence-anchor walk (`work-driver-exec-error.ts`)
- * both ask, so the veto and the anchor cannot disagree about which panic
- * names a failing test. A per-test verdict line for THIS name is decisive
- * (libtest prints one per test it ran, so a passing `#[should_panic]` test's
- * captured print sits beside its own `... ok`, whatever other test the window
- * shows failing). With no per-test line for the name the answer is the
- * window's tri-state ({@link libtestWindowVerdict}): a clipped window must
- * not veto a header the run really did fail on, and an unobserved verdict
- * vetoes nothing.
+ * The verdict LINE the stream prints for test `name` — the last one, since
+ * libtest prints one per test it ran — or `undefined` when it prints none.
  *
- * #2341 fix wave 4 (H1/H2) — the predicate takes the WINDOW TEXT and derives
- * its own lines. The two readers used to hand it two different line sets (the
- * walk the whole stream, the extractor its ≤1500-char window) and the answer
- * was not monotone in where the anchor landed — a captured panic's `... ok`
- * visible to one reader and elided from the other is how the capture still
- * won. The line set is now PART OF THE PREDICATE'S CONTRACT: every reader
- * hands it a text and the predicate owns the split (trim, per line), so two
- * readers asking about the same text cannot ask about different lines. A
- * reader that asks about a different text (the walk also asks about the whole
- * stream) is making a different, explicit question — never the same question
- * answered twice from drifting line sets.
+ * NAME-CORRELATED ONLY, and that is the whole point (#2341 fix wave 5): this
+ * never considers the target-level `test result: …` tally, which reports on a
+ * whole TARGET. A `.pi/verify-cmd` chain whose earlier `cargo test` stage was
+ * GREEN (`test result: ok. 3 passed; 0 failed`) and whose LATER stage's binary
+ * died (`thread 'main' panicked at src/main.rs:12:5:`) has no verdict for
+ * `main` at all, and an unobserved verdict is not a verdict AGAINST it — the
+ * aggregate answer "this target passed" used to be read as that, which
+ * restored #1762's unactionable generic handoff for the chain shape this
+ * module's own header describes.
+ */
+export function perTestVerdictLine(text: string, name: string | undefined): string | undefined {
+  if (name === undefined) return undefined;
+  let line: string | undefined;
+  for (const raw of text.split("\n")) {
+    const t = raw.trim();
+    const m = LIBTEST_PER_TEST_VERDICT_RE.exec(t);
+    if (m !== null && m[1] === name) line = t;
+  }
+  return line;
+}
+
+/**
+ * The name-correlated tri-state over `text`: `true` FAILED, `false` ok,
+ * `undefined` when the text holds no per-test line for `name` — never the
+ * aggregate ({@link perTestVerdictLine} for why that distinction is the rule).
+ */
+export function perTestVerdictOnly(text: string, name: string | undefined): boolean | undefined {
+  const line = perTestVerdictLine(text, name);
+  return line === undefined ? undefined : LIBTEST_PER_TEST_VERDICT_RE.exec(line)?.[2] === "FAILED";
+}
+
+/**
+ * The answer to "does the text `window` report test `<name>` as FAILED?" for
+ * the WINDOW the extractor is about to be handed (#2341 fix wave H1) — the
+ * predicate its `should_panic` veto asks, and the one the evidence-anchor walk
+ * asks on the same bytes it publishes (`work-driver-exec-error.ts`), so the
+ * veto and the anchor cannot disagree about which panic names a failing test.
+ * A per-test verdict line for THIS name is decisive (libtest prints one per
+ * test it ran, so a passing `#[should_panic]` test's captured print sits
+ * beside its own `... ok`, whatever other test the window shows failing).
+ * With no per-test line for the name the answer is the window's tri-state
+ * ({@link libtestWindowVerdict}): a clipped window must not veto a header the
+ * run really did fail on, and an unobserved verdict vetoes nothing.
+ *
+ * The aggregate fallback is WINDOW-scoped by contract, and that is what the
+ * tail publisher is load-bearing for (#2341 fix wave 5, H1/H2): the window
+ * `extractAttributedTail` publishes carries, for every panic header it shows,
+ * the stream's own per-test verdict line for that header's name (see
+ * `carryVerdicts` in `work-driver-exec-error.ts`), so the per-test arm below
+ * answers whenever the stream holds a verdict at all. The fallback is then
+ * what it should be — the verdict of the target the window shows — and the
+ * whole-stream question is asked separately, name-correlated, by
+ * {@link perTestVerdictOnly}. Asking the whole stream THROUGH this predicate
+ * was the wave-4 defect: it let an earlier, greener stage's tally answer a
+ * later stage's question.
  */
 export function libtestVerdictForTest(
   window: string,
   name: string | undefined,
 ): boolean | undefined {
-  let verdict: boolean | undefined;
-  if (name !== undefined) {
-    for (const raw of window.split("\n")) {
-      const m = LIBTEST_PER_TEST_VERDICT_RE.exec(raw.trim());
-      if (m !== null && m[1] === name) verdict = m[2] === "FAILED";
-    }
-  }
-  return verdict ?? libtestWindowVerdict(window);
+  return perTestVerdictOnly(window, name) ?? libtestWindowVerdict(window);
 }
 
 /**

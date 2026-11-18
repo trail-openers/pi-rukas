@@ -13,6 +13,7 @@ import {
   extractSpecificAssertion,
 } from "../src/work-driver-consolidation-classify.ts";
 import { extractAttributedTail } from "../src/work-driver-exec-error.ts";
+import { baselineExplainsChange } from "../src/work-driver-verify-baseline.ts";
 import {
   RUST_CARGO_STREAM,
   RUST_SHOULD_PANIC_TRAP_AFTER_STREAM,
@@ -238,6 +239,114 @@ function assert(cond: boolean, msg: string) {
   assert(
     extractSpecificAssertion(tail) === rustPanicHeader("a::t", "src/a.rs:7:5"),
     `elision join (#2341): the '...' cut line is never joined as the panic message (got ${JSON.stringify(extractSpecificAssertion(tail))})`,
+  );
+}
+
+// 3g. #2341 fix wave 5 (H1/H2) — the window the anchor walk PUBLISHES is the
+// window the veto was asked on. When the `FAILED:` marker owns the anchor the
+// published region starts at the MARKER, not at the candidate the veto examined,
+// and on a long stream the elision cut away the `test a::t ... ok` line that
+// proves the panic below it is a passing `#[should_panic]` test's captured
+// print. The extractor then found no per-test verdict in what it was handed,
+// fell through to the target tally the window DID keep, answered "verdict
+// observed, not vetoed", and quoted the PASSING test as "the assertion at
+// base" — which `baselineExplainsChange` then used to EXCUSE the panic the
+// change added. The publisher now carries the stream's own verdict line into
+// the window it hands over, so the one veto the extractor asks is decidable on
+// the bytes it receives.
+//
+// This stream is NOT free of other anchor candidates: the `FAILED:` marker and
+// the panic header are both recognised lines, and the marker is what wins the
+// anchor — so going green here says the published window is sound, not that the
+// walk had nothing else to choose from.
+{
+  const compile = Array.from(
+    { length: 45 },
+    (_, n) => `   Compiling crate_${n} v0.1.0 (registry)`,
+  ).join("\n");
+  // `combinedExecFailureStream` orders a stage's stdout (the verdict lines)
+  // before its stderr (the panic prints), which is what puts `a::t`'s `ok`
+  // ABOVE the panic print that belongs to it.
+  const stream = [
+    "FAILED: smoke-tests/test-rust-unit.ts",
+    "running 4 tests",
+    "test a::t ... ok",
+    "test a::one ... ok",
+    "test a::two ... ok",
+    compile,
+    "thread 'a::t' panicked at src/a.rs:7:5:",
+    "assertion failed: elapsed < 100ms",
+    "test a::slow ... FAILED",
+    "test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s",
+  ].join("\n");
+  const { tail } = extractAttributedTail(stream, 1500);
+  assert(
+    tail.includes("test a::t ... ok"),
+    `capture in the published window (#2341 H1/H2): the verdict that decides the veto is in the bytes handed over (got ${JSON.stringify(tail.slice(0, 60))})`,
+  );
+  assert(
+    extractSpecificAssertion(tail) === NO_SPECIFIC_ASSERTION,
+    `capture in the published window (#2341 H1/H2): the passing test's panic never becomes the assertion (got: ${JSON.stringify(extractSpecificAssertion(tail).slice(0, 70))})`,
+  );
+  // The same window against the change's own failure: the capture prints
+  // byte-identically in both runs, so the folded base assertion excused the
+  // panic the change added.
+  const base = extractSpecificAssertion(tail);
+  const verdict = {
+    status: "red" as const,
+    rawStream: stream,
+    probed: true,
+    exitCode: 101,
+    assertion: base === NO_SPECIFIC_ASSERTION ? null : base,
+  };
+  const changeFailure = [
+    "FAILED: smoke-tests/test-rust-unit.ts",
+    "thread 'a::t' panicked at src/a.rs:7:5:",
+    "assertion failed: elapsed < 100ms",
+    "test a::slow ... FAILED",
+    "thread 'b::new' panicked at src/b.rs:2:2:",
+    "assertion failed: the check the change added",
+  ].join("\n");
+  assert(
+    baselineExplainsChange(verdict, [{ text: changeFailure, timedOut: false }]) === false,
+    "capture in the published window (#2341 H1/H2): the change-added failure is NOT excused",
+  );
+}
+
+// 3h. #2341 fix wave 5 (over-refusal) — the whole-stream ask is NAME-CORRELATED
+// ONLY. The chain shape this module's own header describes: stage 1 is a GREEN
+// `cargo test` (its target tally says `3 passed; 0 failed`) and a LATER stage's
+// binary dies. There is no `test main ... ok` line anywhere, so nothing was
+// observed about `main` — and the earlier stage's aggregate tally must not
+// answer for it. Wave 4 let it, vetoed at both tiers, and silently restored
+// #1762's unactionable generic handoff for the common case.
+{
+  const greenStage = [
+    "running 3 tests",
+    "test a::one ... ok",
+    "test a::two ... ok",
+    "test a::three ... ok",
+    "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+    ...Array.from({ length: 30 }, (_, n) => `   Compiling later_crate_${n} v0.1.0`),
+  ].join("\n");
+  const binaryDied =
+    "thread 'main' panicked at src/main.rs:12:5:\nsmoke check failed: expected 200 got 500 from /health";
+  const { tail, attributed } = extractAttributedTail(`${greenStage}\n${binaryDied}`, 1500);
+  assert(
+    attributed,
+    "chain stage (#2341 wave 5): a green earlier stage does not de-anchor the later stage's real panic",
+  );
+  assert(
+    extractSpecificAssertion(tail) ===
+      "thread 'main' panicked at src/main.rs:12:5: smoke check failed: expected 200 got 500 from /health",
+    `chain stage (#2341 wave 5): the binary's panic is still quoted with its message (got ${JSON.stringify(extractSpecificAssertion(tail).slice(0, 70))})`,
+  );
+  // The control: when the stream DOES hold a per-test verdict for the name,
+  // the name-correlated veto still fires — the fix is not the absence of one.
+  const reported = `${greenStage}\ntest main ... ok\n${binaryDied}`;
+  assert(
+    extractSpecificAssertion(extractAttributedTail(reported, 1500).tail) === NO_SPECIFIC_ASSERTION,
+    "chain stage (#2341 wave 5): a per-test ok for the panic's own name still vetoes it",
   );
 }
 

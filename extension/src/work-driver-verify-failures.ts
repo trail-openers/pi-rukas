@@ -163,6 +163,8 @@ export {
   isLibtestVerdictLine,
   isLocationlessCodeDiagnostic,
   libtestVerdictForTest,
+  perTestVerdictLine,
+  perTestVerdictOnly,
   rustPanicSamenessKey,
   rustPanicTestName,
 } from "./work-driver-verify-rust.ts";

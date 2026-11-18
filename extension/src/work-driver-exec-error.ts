@@ -48,6 +48,8 @@ import {
   FAILED_MARKER_RE,
   classifyFailureLine,
   libtestVerdictForTest,
+  perTestVerdictLine,
+  perTestVerdictOnly,
   rustPanicTestName,
 } from "./work-driver-verify-failures.ts";
 import { splitLinesWithOffsets } from "./work-driver-verify-support.ts";
@@ -78,11 +80,93 @@ export function extractAttributedTail(combined: string, maxLen: number): Attribu
   // Anchor on the LAST failure line — a chain can only fail once (the loop
   // `exit 1`s right after), but staying on the last occurrence keeps this
   // correct if a future verify-cmd shape prints more than one.
-  const anchorIndex = lastFailureIndex(trimmed, maxLen);
-  if (anchorIndex !== undefined) {
-    return { tail: tailFromAnchor(trimmed, anchorIndex, maxLen), attributed: true };
+  const anchor = lastFailureAnchor(trimmed, maxLen);
+  if (anchor !== undefined) {
+    // The window the veto was asked on, handed over as the published tail: no
+    // second cut of the stream happens between the two.
+    return { tail: anchor.window, attributed: true };
   }
-  return { tail: trimmed.slice(-maxLen), attributed: false };
+  // The blind slice is text the extractor judges too, so it gets the same
+  // verdict guarantee: it must not hand over a captured panic whose own
+  // verdict line the slice happens to leave out.
+  return { tail: carryVerdicts(trimmed, trimmed.slice(-maxLen), maxLen), attributed: false };
+}
+
+/**
+ * The bytes {@link extractAttributedTail} publishes for the line beginning at
+ * `anchorIndex`, together with the `should_panic` veto asked on exactly those
+ * bytes.
+ *
+ * ONE call produces the window and its verdict, and the caller receives this
+ * value rather than re-cutting the stream (#2341 fix wave 5, H1/H2): the text
+ * the veto reads and the text the extractor is handed are the same string, so
+ * the property holds because there is only one cut to disagree about — not
+ * because two readers remembered to ask the same question of the same lines.
+ * The wave-4 defect was the other shape of this: the walk vetoed a candidate on
+ * a window it then did not publish (the `FAILED:` marker wins the anchor and
+ * publishes a region starting at ITSELF), so the published window — the one
+ * whose elision had cut away the `... ok` proving the panic was a passing
+ * `#[should_panic]` test's captured print — reached the extractor unanswered
+ * and became "the assertion at base".
+ *
+ * `panicName` is the candidate's own panic name, or `undefined` for any other
+ * shape; with no name neither ask answers, and an unobserved verdict vetoes
+ * nothing. The stream-wide ask is the NAME-CORRELATED one
+ * ({@link perTestVerdictOnly}): a chain whose earlier `cargo test` stage was
+ * green and whose later stage's binary died has no verdict for that binary, and
+ * the target-level tally of the green stage must not answer for it.
+ */
+function publishedWindow(
+  text: string,
+  anchorIndex: number,
+  maxLen: number,
+  panicName: string | undefined,
+): { window: string; vetoed: boolean } {
+  const window = carryVerdicts(text, tailFromAnchor(text, anchorIndex, maxLen), maxLen);
+  return {
+    window,
+    vetoed:
+      libtestVerdictForTest(window, panicName) === false ||
+      perTestVerdictOnly(text, panicName) === false,
+  };
+}
+
+/**
+ * Guarantee the veto can be answered from the published bytes: for every Rust
+ * panic header `window` shows, the stream's OWN per-test verdict line for that
+ * header's test is in `window` — appended here when the elision cut it away
+ * (#2341 fix wave 5, H1/H2).
+ *
+ * A captured `#[should_panic]` print and a genuine failing panic are the same
+ * line; only `test <name> ... ok` tells them apart. The anchored region keeps
+ * the anchor line and the region's END, so on a long stream that verdict line
+ * is exactly what the `…` cut removes — and the extractor, finding no verdict
+ * in what it was handed, fell through to the target tally the window DID keep,
+ * read "the target failed", and quoted the passing test. Putting the stream's
+ * own line back makes the single veto the extractor asks decidable on the text
+ * it receives, which is the only text it can ever be asked of.
+ *
+ * Appended rather than re-inserted in stream order because the veto is a
+ * line-set question — position carries no verdict — and the room is taken from
+ * the window's TAIL, never from the anchor line or the assertion at the head.
+ */
+function carryVerdicts(text: string, window: string, maxLen: number): string {
+  const held = new Set<string>();
+  for (const raw of window.split("\n")) held.add(raw.trim());
+  const verdicts: string[] = [];
+  for (const raw of window.split("\n")) {
+    const line = raw.trim();
+    if (classifyFailureLine(line)?.shape !== "rust-panic") continue;
+    const verdict = perTestVerdictLine(text, rustPanicTestName(line));
+    if (verdict !== undefined && !held.has(verdict) && !verdicts.includes(verdict)) {
+      verdicts.push(verdict);
+    }
+  }
+  if (verdicts.length === 0) return window;
+  const added = verdicts.join("\n");
+  if (window.length + added.length + 1 <= maxLen) return `${window}\n${added}`;
+  const cut = window.lastIndexOf("\n", Math.max(0, maxLen - added.length - 1));
+  return `${window.slice(0, cut > 0 ? cut : 0)}\n${added}`;
 }
 
 /**
@@ -95,11 +179,11 @@ export function extractAttributedTail(combined: string, maxLen: number): Attribu
  * the marker, so clipping the line itself is far better evidence than a blind
  * slice of the stream's end.
  *
- * ONE owner for the window, asked by the tail it returns AND by the anchor
- * walk's `should_panic` veto (#2341 fix wave 4, H1/H2): the veto must be asked
- * on the very text the extractor is about to judge, or the two readers answer
- * the same name-correlated question from two line sets and a captured panic
- * whose decisive verdict line the elision cut away wins anyway.
+ * PRIVATE and called from {@link publishedWindow} ONLY. A caller that bounded
+ * the region on its own would publish bytes the veto never read — the exact
+ * shape of the #2341 fix wave 4 defect — so the cut is reachable from no other
+ * site; everything above goes through the one function that pairs a window with
+ * its verdict.
  */
 function tailFromAnchor(text: string, anchorIndex: number, maxLen: number): string {
   const fromMarker = text.slice(anchorIndex);
@@ -116,17 +200,21 @@ function tailFromAnchor(text: string, anchorIndex: number, maxLen: number): stri
 }
 
 /**
- * Byte offset in `text` of the line to anchor on. The last `FAILED:` marker when
- * the stream has one (the loop's own verdict line, and the pre-#1762 anchor, so
- * an already-sound attribution never moves); otherwise the last line the failure
- * table recognises, preferring among the recognised lines one that names a
- * specific assertion — a trailing `FAIL` tally is weaker evidence than the
- * assertion beneath it. Undefined when the stream has no failure line.
+ * Byte offset in `text` of the line to anchor on, and the window that owns it.
+ * The last `FAILED:` marker when the stream has one (the loop's own verdict
+ * line, and the pre-#1762 anchor, so an already-sound attribution never moves);
+ * otherwise the last line the failure table recognises, preferring among the
+ * recognised lines one that names a specific assertion — a trailing `FAIL`
+ * tally is weaker evidence than the assertion beneath it. Undefined when the
+ * stream has no failure line.
  */
-function lastFailureIndex(text: string, maxLen: number): number | undefined {
-  let marker: number | undefined;
-  let lastAny: number | undefined;
-  let lastNamed: number | undefined;
+function lastFailureAnchor(
+  text: string,
+  maxLen: number,
+): { window: string; vetoed: boolean } | undefined {
+  let marker: { window: string; vetoed: boolean } | undefined;
+  let lastAny: { window: string; vetoed: boolean } | undefined;
+  let lastNamed: { window: string; vetoed: boolean } | undefined;
   // Offsets come from the splitter, not from a `+1` the caller assumes: on a
   // `\r\n` stream a one-character advance drifts a character per line and the
   // tail would start inside the line ABOVE the failure. See
@@ -135,28 +223,30 @@ function lastFailureIndex(text: string, maxLen: number): number | undefined {
   for (const { line: raw, offset } of entries) {
     const line = raw.trim();
     const at = offset + (raw.length - raw.trimStart().length);
-    if (FAILED_MARKER_RE.test(line)) marker = at;
+    const isMarker = FAILED_MARKER_RE.test(line);
     const kind = classifyFailureLine(line);
+    if (!isMarker && kind === undefined) continue;
+    // #2341 fix wave (H1) / fix wave 5 (H1/H2) — the SAME name-correlated
+    // `should_panic` veto the extractor asks, asked on the window this
+    // candidate is about to PUBLISH (see {@link publishedWindow}: the veto and
+    // the published bytes are produced by one call). A panic header whose OWN
+    // test an observed verdict line reports as passing is not evidence — it
+    // names a test that passed — and is refused at BOTH tiers: not a named
+    // anchor, and not the last-resort `lastAny` either (the anchor it would
+    // earn could then be quoted as the assertion, the elision having cut away
+    // the `... ok` that proves it did not). An unobserved verdict vetoes
+    // nothing — absence is not a verdict either way.
+    const published = publishedWindow(
+      text,
+      at,
+      maxLen,
+      kind?.shape === "rust-panic" ? rustPanicTestName(line) : undefined,
+    );
+    if (isMarker) marker = published;
     if (kind === undefined) continue;
-    // #2341 fix wave (H1) / fix wave 4 (H1/H2) — the SAME name-correlated
-    // `should_panic` veto the extractor asks, asked here too and asked on
-    // TWO texts: the window this candidate is about to produce (`tailFromAnchor`,
-    // the exact bytes the extractor would then judge) and the whole stream.
-    // A panic header whose OWN test any observed verdict line reports as
-    // passing is not evidence — it names a test that passed — and is refused
-    // at BOTH tiers: not a named anchor, and not the last-resort `lastAny`
-    // either (the anchor it would earn could then be quoted as the assertion,
-    // the elision having cut away the `... ok` that proves it did not). An
-    // unobserved verdict vetoes nothing — absence is not a verdict either way.
-    if (
-      kind.shape === "rust-panic" &&
-      (libtestVerdictForTest(tailFromAnchor(text, at, maxLen), rustPanicTestName(line)) === false ||
-        libtestVerdictForTest(text, rustPanicTestName(line)) === false)
-    ) {
-      continue;
-    }
-    lastAny = at;
-    if (kind.namesTest) lastNamed = at;
+    if (kind.shape === "rust-panic" && published.vetoed) continue;
+    lastAny = published;
+    if (kind.namesTest) lastNamed = published;
   }
   return marker ?? lastNamed ?? lastAny;
 }
