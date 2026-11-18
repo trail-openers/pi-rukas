@@ -41,9 +41,11 @@ import {
   CHECK_DETAIL,
   CMD,
   PASSING,
+  RUST_PANIC_MESSAGE,
   TIMING,
   WT,
   makeAssert,
+  rustPanicHeader,
 } from "./lib/verify-failure-shapes-fixtures.ts";
 
 const { assert, failed } = makeAssert();
@@ -441,6 +443,32 @@ const LABEL = "[host-resource-exhaustion]";
   assert(
     extractSpecificAssertion(hintOnly) === NO_SPECIFIC_ASSERTION,
     `hint prose: a hint with no gate failure still reports absence (got ${JSON.stringify(extractSpecificAssertion(hintOnly))})`,
+  );
+}
+
+// ── 8. #2341 fix wave — a runner's bare completion token is not the panic's message ──
+// libtest run with `--nocapture` prints each test's completion token on its OWN
+// line (`ok`, `FAILED`, `ignored`). The line directly under a panic header is then
+// the runner's tally, not the message the header's trailing colon promises, and
+// none of the join guards see it: `isLibtestVerdictLine` is anchored `^test\s+…`
+// and the classifier answers `undefined` for a bare token, so the token rode into
+// the quoted assertion — `thread 'a::t' panicked at src/a.rs:7:5: ok` — which is
+// what a [baseline-red] reader would have been sent to debug.
+{
+  const header = rustPanicHeader("a::tests::t", "src/a.rs:7:5");
+  for (const completion of ["ok", "FAILED", "ignored", "measured", "passed", "failed", "ok."]) {
+    const joined = extractSpecificAssertion(`${header}\n${completion}`);
+    assert(
+      joined === header,
+      `nocapture: a bare \`${completion}\` under a panic header is never joined into the assertion (got ${JSON.stringify(joined)})`,
+    );
+  }
+  // The refusal is of the completion token, not of the message line: a real
+  // message still joins, which is the pair the nessie handoff needed.
+  const real = extractSpecificAssertion(`${header}\n${RUST_PANIC_MESSAGE}`);
+  assert(
+    real === `${header} ${RUST_PANIC_MESSAGE}`,
+    `nocapture: a real message line still joins (got ${JSON.stringify(real)})`,
   );
 }
 

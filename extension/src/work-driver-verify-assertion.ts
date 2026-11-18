@@ -167,6 +167,23 @@ function redactedAssertion(candidate: string): string {
 }
 
 /**
+ * A runner's completion token printed on a line of its own: libtest with
+ * `--nocapture` closes each test with `ok` / `FAILED` / `ignored` / `measured`,
+ * and other runners print `passed` / `failed`. It reports the RUNNER's verdict
+ * for the test, never the panic's message, so the join guard refuses it — the
+ * same class as the `failures:` boilerplate below, and quoting it produced
+ * `thread 'a::t' panicked at src/a.rs:7:5: ok` for a [baseline-red] reader to
+ * chase.
+ *
+ * Not `isSuccessLine`: its arms need trailing content (`^\s*ok\s`) or a counted
+ * tally, so none of them covers a bare token, and widening that predicate would
+ * move the classifier's GLOBAL success veto to settle a question the join site
+ * alone asks — where it would also veto a real message that quotes a passing
+ * tally (`… : 0 failed, the binary still crashed`).
+ */
+const RUNNER_COMPLETION_TOKEN_RE = /^\s*(?:ok|FAILED|ignored|measured|passed|failed)\b\.?\s*$/i;
+
+/**
  * #2341 — join a Rust panic header with its message line. libtest prints the
  * failing verdict as TWO lines — `thread 'NAME' panicked at FILE:LINE:` then
  * the message (`fast path took 101.409582ms, which is over the 100 ms bound`)
@@ -176,12 +193,14 @@ function redactedAssertion(candidate: string): string {
  * joined only when the header ends at its colon (the pre-1.73 single-line
  * form carries it inline) and the next line is still the message: a `note:`,
  * a `---- ` block separator, cargo's failing-test list (`failures:` and the
- * test-name line under it), another classified failure line, or a
+ * test-name line under it), a bare runner completion token
+ * ({@link RUNNER_COMPLETION_TOKEN_RE}), another classified failure line, or a
  * marker/echo/secret-shaped line is NOT the message, and a half-pair is
  * returned as the header — it still names the test, file and line, which
  * beats reporting absence for a truncation the window caused. An empty
  * `lines[i + 1]` (the pair cut between the two lines) takes this same path.
  */
+
 function joinedRustPanic(header: string, next: string | undefined): string {
   if (!header.endsWith(":")) return header;
   if (next === undefined) return header;
@@ -191,7 +210,7 @@ function joinedRustPanic(header: string, next: string | undefined): string {
   // the `\s*` prefix keeps the indented form refused too, wherever a caller
   // stops trimming.
   if (/^(note:|----|thread\s+'|failures:|\s*\S+::)/.test(next)) return header;
-  if (isLibtestVerdictLine(next)) return header;
+  if (isLibtestVerdictLine(next) || RUNNER_COMPLETION_TOKEN_RE.test(next)) return header;
   if (isNonAssertionLine(next) || classifyFailureLine(next) !== undefined) return header;
   return `${header} ${next}`;
 }
