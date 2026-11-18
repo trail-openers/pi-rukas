@@ -27,6 +27,7 @@
 import { leanResultDocument } from "../src/headless/work-lean-result.ts";
 import { leanReviewIncompleteCapEnabled } from "../src/lean/review-incomplete-cap-switch.ts";
 import { handoffMarker } from "../src/work-driver-handoff-channel.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { URL, driveLean, leanLog } from "./lib/lean-result-fixture.ts";
 import {
@@ -42,29 +43,10 @@ import {
 
 const { assert, failures } = makeAssert();
 
-/** The two env keys this document reads, restored after every case: both switches are
- * read at CALL time and the arms are pinned per block, so the set has to be the one the
- * scope clears — a key left set by an earlier block is a switch that silently arms the
- * next file in the same bun process. */
-const KEYS = ["PI_ENSEMBLE_LEAN_RESULT_GATES", "PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP"];
-const saved: Record<string, string | undefined> = {};
-for (const k of KEYS) saved[k] = process.env[k];
-
-async function withArms(arms: Record<string, string | undefined>, body: () => Promise<void>) {
-  for (const k of KEYS) {
-    const v = arms[k];
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
-  try {
-    await body();
-  } finally {
-    for (const k of KEYS) {
-      if (saved[k] === undefined) delete process.env[k];
-      else process.env[k] = saved[k];
-    }
-  }
-}
+// Both switches are read at CALL time and the arms are pinned per block, so each block
+// pins through `lib/env-scope.ts`'s `withEnv`: it deletes an override given as
+// `undefined` and puts back exactly what was there, so a key left set by an earlier
+// block cannot silently arm the next file in the same bun process.
 
 // ─── (1) the switch's truth table ──────────────────────────────────────────────
 // Only the literal "0" takes the cap back. An empty value is a shell that meant nothing,
@@ -76,7 +58,7 @@ for (const [value, want] of [
   ["false", true],
   ["0", false],
 ] as const) {
-  await withArms({ PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP: value }, async () => {
+  await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP: value }, async () => {
     assert(
       leanReviewIncompleteCapEnabled() === want,
       `switch ${JSON.stringify(value)} → ${String(want)}`,
@@ -95,7 +77,7 @@ for (const [value, want] of [
   const CAP = "PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP";
   const docs: Record<string, string> = {};
   const pin = (gates: string | undefined, cap: string | undefined): Promise<void> =>
-    withArms({ [GATES]: gates, [CAP]: cap }, async () => {
+    withEnv({ [GATES]: gates, [CAP]: cap }, async () => {
       docs[`${String(gates)}/${String(cap)}`] = JSON.stringify(
         leanResultDocument(seed.run, 10).doc,
       );
