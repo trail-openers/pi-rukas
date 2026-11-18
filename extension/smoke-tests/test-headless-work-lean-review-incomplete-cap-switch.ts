@@ -36,6 +36,7 @@ import {
   goldenLog,
   judgedReviewStep,
   republishedAfterReview,
+  waveNoRoundReviewStep,
   withReviews,
 } from "./lib/lean-review-incomplete-cap-golden.ts";
 
@@ -271,6 +272,21 @@ for (const [value, want] of [
   assert(
     ciFix.cap === "review-incomplete" && ciFix.reviewComplete === false,
     `ci-fix-round: a published head no wave of the review named is a head no lens read (got ${String(ciFix.cap)} / ${String(ciFix.reviewComplete)})`,
+  );
+  // The wave arm certifies from the record, and the record has to show a round actually
+  // RAN: a `fixed` record can name the published head in its `waves` with `rounds` empty
+  // (the loader bounds rounds from above and never asks for one), and identity alone
+  // reading that as "every lens judged this head" is the more-side of the invariant.
+  const noRound =
+    (await driveLean("handed-back", 10, fixedWaveLog(false, waveNoRoundReviewStep(1))))
+      .issue ?? {};
+  assert(
+    noRound.prState === "ready",
+    `wave-no-round: publish's own rule still calls the PR ready — only the wave arm can refuse it (${String(noRound.prState)})`,
+  );
+  assert(
+    noRound.cap === "review-incomplete" && noRound.reviewComplete === false,
+    `wave-no-round: waves naming the published head with no judged round certify nothing (got ${String(noRound.cap)} / ${String(noRound.reviewComplete)})`,
   );
 }
 

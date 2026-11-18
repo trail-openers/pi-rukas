@@ -165,17 +165,29 @@ const REVIEW_FIXED: OutcomeKind<"review"> = "fixed";
  * and a decided publish with no head, or none at all, cannot be shown to match either.
  *
  * **Where the record names no head of its own push, POSITION is the rule** — a head is only
- * the step's to certify when its own `integrate` pushed it, and the record that reaches the
- * position rule is a plain `done`: it ran no wave, and the machine's table forbids the
- * alternative of a `fixed` arriving name-less — `review` is routed only from `publish + ok`
- * with `reviewDone` false and both returned kinds set it, so a decided `review` is never
- * followed by a second one, and `resume.ts` re-derives its counters by replaying the log and
- * checks them against the snapshot, so a resumed attempt cannot carry another attempt's wave
- * either. A `done`'s `integrate` pushed nothing, so there is no head on its record to name
+ * the step's to certify when its own `integrate` pushed it, and the records that reach the
+ * position rule are the ones that name none: a plain `done` — it ran no wave, and the
+ * machine's table forbids the alternative of a `fixed` arriving name-less from the step
+ * (`review` is routed only from `publish + ok` with `reviewDone` false and both returned
+ * kinds set it, so a decided `review` is never followed by a second one, and `resume.ts`
+ * re-derives its counters by replaying the log and checks them against the snapshot, so a
+ * resumed attempt cannot carry another attempt's wave either) — or a `fixed` whose record
+ * names no USABLE wave head: no `waves` array, an empty one, or a newest entry whose head
+ * is not an oid (`lastWaveHead`). Neither kind can certify from a head it does not name,
  * and position is the only rule such a record can have: any `publish` attempt at a higher
  * index — decided or not — answers `false`, because a step the machine did not route through a
  * re-publish can only have had its head moved by a later push, and log order is all the record
  * has to say about that.
+ *
+ * **Identity is predicated on a judged round.** `review.ts` folds pass 1 into
+ * `outcome.review.rounds` with `noteRound` BEFORE either verdict is read, and its only
+ * `noteWave` sits below that fold — so in a record the step itself wrote, every wave stands
+ * behind a round that ran. The loader cannot close the gap the other way: it bounds `rounds`
+ * from above and never asks for one (`reviewRecordProblem` accepts an empty array), so a
+ * record that reaches this projection by any other route can name a wave's head with no
+ * round vouching for it. A `fixed` record whose `rounds` is absent or empty therefore
+ * answers `false` beside its waves: a head no round is on record as judged is a head no
+ * lens read, whatever its waves name.
  *
  * Then the newest `review` step itself answers in three ways:
  *
@@ -211,6 +223,11 @@ export function reviewCompleteOf(steps: Step[]): boolean {
   if (outcome?.kind !== REVIEW_DONE && outcome?.kind !== REVIEW_FIXED) return false;
   const wave = outcome?.kind === REVIEW_FIXED ? lastWaveHead(outcome) : undefined;
   if (wave === undefined) return lastAttempt(steps, "publish") < review;
+  // The wave arm's precondition, outranking identity as the bound's presence does: no
+  // record with waves but no judged round is one the step's own writer can leave behind
+  // (see the jsdoc), and a head no round is on record as judged certifies nothing.
+  const rounds = outcome?.review?.rounds;
+  if (!Array.isArray(rounds) || rounds.length === 0) return false;
   // Undecided-inclusive, as the position rule is: one publish attempt after the review that
   // recorded nothing can have moved the head past the wave this record names.
   for (let i = review + 1; i < steps.length; i++)

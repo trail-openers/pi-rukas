@@ -124,13 +124,36 @@ export function fixedWaveReviewStep(n = 0): Step {
   );
 }
 
+/** A `fixed` review record whose `waves` name the head its `integrate` pushed while its
+ * `rounds` is EMPTY — a head no lens is on record as having judged. The production
+ * writer cannot produce it: `review.ts` folds pass 1 into the tally with `noteRound`
+ * before either verdict is read, and its only `noteWave` sits below that fold, so every
+ * wave it records stands behind a judged round. The LOADER, though, bounds `rounds`
+ * from above and never asks for one (`reviewRecordProblem` accepts an empty array), so
+ * a record that reaches the projection by any other route can carry a wave's head with
+ * nothing vouching for it — and identity against the published head must not certify it. */
+export function waveNoRoundReviewStep(n = 0): Step {
+  return stepWith(
+    "review",
+    {
+      kind: "fixed",
+      reason: "adversarial and six-lens review clean on the fix",
+      review: { rounds: [], waves: [{ wave: "fix", head: FIX_HEAD }] },
+    },
+    n,
+  );
+}
+
 /** The reviewer's reproduction, whole: a ready PR at `HEAD`, a `review` that returned
  * a clean fix wave (no bound — nothing stopped it), and the re-`verify` and re-`publish`
  * that `review + fixed → verify → publish` buys for it, ending `ci` green. With
  * `ciFixRound` the pipeline goes red on the reviewed head instead and a genuine CI-fix
  * round moves the PR to `CI_FIX_HEAD` — a commit the review never judged — before its
- * own green `ci`. */
-export function fixedWaveLog(ciFixRound = false): Step[] {
+ * own green `ci`. With `reviewStep` the case swaps the record the wave arm reads. */
+export function fixedWaveLog(
+  ciFixRound = false,
+  reviewStep: Step = fixedWaveReviewStep(1),
+): Step[] {
   const base = leanLog({ prUrl: URL, draft: false });
   const handback = base[base.length - 1];
   if (handback?.state !== "handback") {
@@ -149,7 +172,7 @@ export function fixedWaveLog(ciFixRound = false): Step[] {
       n,
     );
   const extra: Step[] = [
-    fixedWaveReviewStep(1),
+    reviewStep,
     stepWith("verify", { kind: "green", verifiedHead: FIX_HEAD }, 1),
     republish(FIX_HEAD, 1),
   ];
