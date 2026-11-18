@@ -7,7 +7,10 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const dockerfile = readFileSync(path.resolve(import.meta.dirname, "..", "..", ".devcontainer", "Dockerfile"), "utf8");
+// argv[2] retargets the texts so a mutant Dockerfile can be run through this gate —
+// an assertion nobody has seen fail on a mutant is an assertion that may be vacuous.
+const root = process.argv[2] ? path.resolve(process.argv[2]) : path.resolve(import.meta.dirname, "..", "..");
+const dockerfile = readFileSync(path.resolve(root, ".devcontainer", "Dockerfile"), "utf8");
 const fails: string[] = [];
 const say = (ok: boolean, what: string) => {
   console.log(`${ok ? "✓" : "✗"} ${what}`);
@@ -24,6 +27,41 @@ for (let i = start; start >= 0 && i < lines.length; i++) {
   if (!lines[i]!.endsWith("\\")) break;
 }
 say(start >= 0, "Dockerfile has a vipune smoke RUN with a scratch VIPUNE_DATABASE_PATH");
+// An unbounded vipune call can hang the image build with no output at all, so each
+// invocation is wrapped in coreutils `timeout <n>`. The `\s*` after the statement
+// separator crosses a continuation's trailing backslash and newline, so a call counts
+// as invoked even when it sits on its own physical line. The bounded check stays on
+// that one line — no `\s*` after the separator, only a run of non-newline characters —
+// so a bare `vipune` is never credited to a `timeout` belonging to the command above it.
+const INVOKED = /(?:^|[;&|])\s*(?:timeout\s+\d+\s+)?vipune\s/;
+const BOUNDED = /(?:^|[;&|])[^\n\r]*timeout\s+\d+\s+vipune\s/;
+const invoked = body.filter((l) => INVOKED.test(l));
+const unbounded = invoked.filter((l) => !BOUNDED.test(l));
+const boundedOk = invoked.length >= 2 && unbounded.length === 0;
+// Canary pair: the real step passes, and an unbounded copy of it must fail the same
+// assertion — mutated in code rather than read from a fixture, so the red side cannot
+// itself be mutated into green. Without it the check cannot be told apart from one whose
+// regex matches nothing, which is how the first version of it shipped green detecting zero
+// calls.
+const unboundedStep = dockerfile.replace(/timeout 60 vipune add/g, "vipune add");
+say(
+  (() => {
+    const mb: string[] = [];
+    const ml = unboundedStep.split("\n");
+    const ms = ml.findIndex((l) => l.startsWith("RUN ") && l.includes("VIPUNE_DATABASE_PATH"));
+    for (let i = ms; ms >= 0 && i < ml.length; i++) {
+      mb.push(ml[i]!.replace(/\\$/, ""));
+      if (!ml[i]!.endsWith("\\")) break;
+    }
+    const mi = mb.filter((l) => INVOKED.test(l));
+    return !(mi.length >= 2 && mi.every((l) => BOUNDED.test(l)));
+  })(),
+  `canary: a step with an unbounded vipune call fails the check (${invoked.length} calls found, ${unbounded.length} unbounded)`,
+);
+say(
+  boundedOk,
+  `every vipune call in the smoke step is bounded by \`timeout <n>\` (${invoked.length} calls, ${unbounded.length} unbounded)`,
+);
 
 const scratch = mkdtempSync(path.join(tmpdir(), "vipune-smoke-gate-"));
 const run = (stub: string): number => {

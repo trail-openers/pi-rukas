@@ -247,9 +247,12 @@ RUN set -e; HF_HUB_DISABLE_XET=1 hf download \
 # also keeps concurrent vipune calls inside a container's CPU limit.
 ENV ORT_INTRA_OP_NUM_THREADS=1
 # Smoke: a vipune call writes only its own output. Any stderr fails the build.
+# `timeout` (coreutils, Essential on the Ubuntu base) bounds each call: a hung
+# vipune exits 124, which the `|| f=1` path reports like any other failure
+# instead of stalling the image build in silence.
 RUN d="$(mktemp -d)"; export VIPUNE_DATABASE_PATH="$d/smoke.db"; f=; \
-    vipune add "image smoke" >/dev/null 2>"$d/err" || f=1; \
-    vipune search "image smoke" --json >"$d/out" 2>>"$d/err" || f=1; \
+    timeout 60 vipune add "image smoke" >/dev/null 2>"$d/err" || f=1; \
+    timeout 60 vipune search "image smoke" --json >"$d/out" 2>>"$d/err" || f=1; \
     if [ -s "$d/err" ] || [ -n "$f" ]; then cat "$d/err" >&2; echo "vipune smoke: failed or wrote stderr" >&2; exit 1; fi; \
     grep -q '"image smoke"' "$d/out" || { echo "vipune smoke: search did not find the memory" >&2; exit 1; }; \
     rm -rf "$d"
