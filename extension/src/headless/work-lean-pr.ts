@@ -8,7 +8,10 @@
  * it. They are also the readers `headless/work-lean-gates.ts` borrows rather than
  * restating — the two head fields on `gates.handback` and `prState` are one answer read
  * through these functions, which is the only reason two surfaces cannot tell two stories
- * about the same commit.
+ * about the same commit. `reviewCompleteOf` sits here for the same reason: it is the same
+ * head question read from the other side — not "did the gate certify what shipped" but "did
+ * a LENS read what stands on the PR" — and its answer is a step's position relative to
+ * `publish`, a fact this module already owns.
  *
  * The load-bearing rule is in `gateClearedPublishedHead`: a green is worth nothing unless
  * it is about the head that shipped, and a newest step with no outcome is a crash, not a
@@ -17,6 +20,7 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
+import type { OutcomeKind } from "../lean/machine.ts";
 import { validPrUrl } from "../lean/state-outcome.ts";
 import type { Step } from "../lean/state.ts";
 import { newestDecided } from "../lean/state.ts";
@@ -58,10 +62,17 @@ export function publishedHeadOf(publish: Step | undefined): string | undefined {
  * skip an outcome-less step and let an older verdict speak for a gate that died.
  */
 export function newestAttempt(steps: Step[], state: Step["state"]): Step | undefined {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    if (steps[i]?.state === state) return steps[i];
-  }
-  return undefined;
+  const at = lastAttempt(steps, state);
+  return at < 0 ? undefined : steps[at];
+}
+
+/** The same reading as a POSITION, which is what a question about ORDER needs, and -1 when
+ * the log holds no such step. Decided or not: a step that started and died is a step that
+ * happened, and a `publish` that died mid-push is exactly the case an answer must not gloss
+ * over. */
+function lastAttempt(steps: Step[], state: Step["state"]): number {
+  for (let i = steps.length - 1; i >= 0; i--) if (steps[i]?.state === state) return i;
+  return -1;
 }
 
 /**
@@ -122,4 +133,61 @@ export function prStateOf(steps: Step[], draftCounter: boolean): IssueResult["pr
   // merges, a host told `draft` goes and looks.
   if (publish.outcome?.draft !== false) return "draft";
   return gateClearedPublishedHead(steps, publishedHeadOf(publish)) ? "ready" : "draft";
+}
+
+/** The two `review` outcome kinds that say the step RETURNED — `machine.ts`'s
+ * `OUTCOME_KINDS.review`, exactly these two (`done` pushed nothing, `fixed` integrated
+ * commits `integrate` pushes). Declared against that vocabulary because `Outcome.kind` is a
+ * plain `string` and a bare literal here would let a typo compile into a silent third arm
+ * that reads forever as "the review did not return". */
+const REVIEW_DONE: OutcomeKind<"review"> = "done";
+const REVIEW_FIXED: OutcomeKind<"review"> = "fixed";
+
+/**
+ * Did this run's review judge every lens it was bought, ON THE HEAD THE PR NOW STANDS ON?
+ * Answered off the record, and only in the ways the record answers.
+ *
+ * **The head comes first.** `machine.ts` sends `publish` → `review`, and a CI-fix round runs
+ * `publish` AGAIN after it, so the newest `review` step can sit BEHIND the newest `publish`
+ * and have judged bytes the forge no longer holds; asking only that step would report a
+ * finished review — and so the mergeable cap — over a head no lens read. The first question
+ * is therefore LOG ORDER: any `publish` step after the newest `review` answers `false`,
+ * decided or not (a publish that died mid-push recorded nothing, and nothing recorded cannot
+ * be shown to have moved nothing). This is the other half of `prStateOf` above, and the two
+ * disagree by design: publish's own rule says whether the forge left a ready PR, and only the
+ * review says whether a lens read what is on it.
+ *
+ * Then the newest `review` step answers in three ways:
+ *
+ *   - it carries a `reviewBound` — `false`, whatever its lane list. A bound is what a STOP
+ *     writes (`review.ts`'s `noteStop`) and a stopped step left work unbought: the two stops
+ *     that let the step RETURN both sit after a fixer or a re-review that went unjudged, and
+ *     `unjudgedLenses(…, true)` names that re-review in both — so no writer pairs a bound with
+ *     a returned step whose lanes all came back, and the safe reading of "a stop was recorded"
+ *     is not "the review finished". Presence is the predicate; the list does not outrank it;
+ *   - it carries no bound — `true` only for a step that RETURNED (`done`/`fixed`), the
+ *     engine's own way of saying the pass finished. A step that ended on a THROW is not that:
+ *     `errorOutcome` copies a bound onto the outcome only when the thrown error carried one,
+ *     and only the step-clock stop does, so the other throw sites — a head that moved before
+ *     pass 1 was bought, a child the operator's budget stopped — land here having judged
+ *     nothing. An absent outcome or a kind outside the vocabulary answers the same way, as
+ *     `work-lean-gates.ts`'s reader already refuses to let an undecided review speak;
+ *   - the log holds NO `review` step — `false`, whatever else the record says. The machine
+ *     sends `publish` → `review`, so a `ready` PR with no review step is one the engine never
+ *     dispatched (the deadline is checked before the NEXT state, and `stopForDeadline` stamps
+ *     `handed-back` without it): the same silence one level up, and the arm this cap exists to
+ *     refuse.
+ *
+ * So `true` is never a default — only ever something a step's own record said, about a head
+ * nothing published over afterwards. Log POSITION decides which step is asked and whether its
+ * verdict still describes the head; `kind` never decides which step is asked. Nothing here is
+ * read off a reason line.
+ */
+export function reviewCompleteOf(steps: Step[]): boolean {
+  const review = lastAttempt(steps, "review");
+  if (review < 0) return false;
+  if (lastAttempt(steps, "publish") > review) return false;
+  const outcome = steps[review]?.outcome;
+  if (outcome?.reviewBound !== undefined) return false;
+  return outcome?.kind === REVIEW_DONE || outcome?.kind === REVIEW_FIXED;
 }

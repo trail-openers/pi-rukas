@@ -17,17 +17,25 @@
  *
  * The exit code is asserted beside the arms: the cap change must not move it, or a host
  * that ends cycles on 10 would see a new failure it was never told about.
+ *
+ * Section (3) pins the cap's other half: it is bound to the HEAD, not just to the newest
+ * `review` step. `machine.ts` re-runs `publish` after the review on a CI-fix round, so a
+ * predicate that asked only that step could report a finished review over bytes no lens read
+ * — and this is where that is pinned, because the arms it decides are the cap's.
  */
 
 import { leanResultDocument } from "../src/headless/work-lean-result.ts";
 import { leanReviewIncompleteCapEnabled } from "../src/lean/review-incomplete-cap-switch.ts";
 import { handoffMarker } from "../src/work-driver-handoff-channel.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
-import { driveLean } from "./lib/lean-result-fixture.ts";
+import { URL, driveLean, leanLog } from "./lib/lean-result-fixture.ts";
 import {
   GOLDEN_GATES_OFF,
   GOLDEN_GATES_ON,
   goldenLog,
+  judgedReviewStep,
+  republishedAfterReview,
+  withReviews,
 } from "./lib/lean-review-incomplete-cap-golden.ts";
 
 const { assert, failures } = makeAssert();
@@ -187,6 +195,52 @@ for (const [value, want] of [
     `four arms, four distinct documents (${Object.values(docs)
       .map((d) => String(d?.length))
       .join(", ")} bytes)`,
+  );
+}
+
+// ─── (3) THE CAP IS BOUND TO THE HEAD THE PR NOW STANDS ON ──────────────────
+// `machine.ts` sends `publish` → `review`, and a CI-fix round runs `publish` AGAIN after
+// the review — so the newest `review` step can be older than the newest `publish`, and what
+// it judged is not what the forge holds. A predicate that asked only that step would report
+// `reviewComplete: true` and `awaiting-human-merge` on a head no lens ever read: this cap's
+// own harm. The answer is therefore taken from LOG ORDER, not from the review step alone.
+{
+  const ready = leanLog({ prUrl: URL, draft: false });
+  const judged = withReviews(ready, [judgedReviewStep()]);
+  // (b) the normal case first: publish, then a review that judged everything. This is the
+  // arm that must NOT regress — the newest review postdates the newest publish.
+  const normal = (await driveLean("handed-back", 10, judged)).issue ?? {};
+  assert(
+    normal.prState === "ready" &&
+      normal.cap === "awaiting-human-merge" &&
+      normal.reviewComplete === true,
+    `review-then-nothing: a judged review after the publish keeps today's cap (${JSON.stringify([normal.prState, normal.cap, normal.reviewComplete])})`,
+  );
+  // (a) publish → review(judged) → publish: same records, one more publish. The review step
+  // is unchanged and still the newest `review`, so only its POSITION behind the new push can
+  // answer — and the answer must be "not this head".
+  const moved = (await driveLean("handed-back", 10, republishedAfterReview(judged))).issue ?? {};
+  assert(
+    moved.prState === "ready",
+    `republished: publish's own rule still calls the PR ready — so the cap is the only field that can refuse the merge (${String(moved.prState)})`,
+  );
+  assert(
+    moved.cap === "review-incomplete" && moved.reviewComplete === false,
+    `republished: a review older than the newest publish is not a review of this head (got ${String(moved.cap)} / ${String(moved.reviewComplete)})`,
+  );
+  assert(
+    String((moved.handoff as Record<string, unknown> | undefined)?.marker ?? "").includes(
+      "cap=review-incomplete",
+    ),
+    `republished: the handoff marker follows the cap, not the older review (${JSON.stringify(moved.handoff)})`,
+  );
+  // The same position with the second publish DEAD MID-PUSH and no outcome of its own: a
+  // push that recorded nothing cannot be shown to have moved nothing, so it fails closed.
+  const crashed =
+    (await driveLean("handed-back", 10, republishedAfterReview(judged, true))).issue ?? {};
+  assert(
+    crashed.cap === "review-incomplete" && crashed.reviewComplete === false,
+    `republished-crashed: an outcome-less publish after the review is not evidence the head held (got ${String(crashed.cap)} / ${String(crashed.reviewComplete)})`,
   );
 }
 

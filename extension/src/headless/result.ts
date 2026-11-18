@@ -181,18 +181,24 @@ export interface IssueResult {
    * an older stopped attempt is named even when a later judged review overtook it, which is
    * what `reviewComplete` (reading the NEWEST step) answers separately. */
   reviewBound?: string;
-  /** Did the run's review judge every lens it was bought? `false` when the NEWEST `review`
-   * step left a lane unjudged OR never answered at all — a step that recorded a stop with
-   * lanes in it, or one that ended on a throw without recording a bound (only the step's
-   * own clock stop writes one, so a review that died before pass 1 read no lens and says
-   * nothing) — and `false` when the log holds no `review` step at all, since `publish` is
+  /** Did the run's review judge every lens it was bought, ON THE HEAD THE PR NOW STANDS ON?
+   * `false` when the NEWEST `review` step recorded a `reviewBound` at all — a bound is what a
+   * STOP writes, whatever its lane list holds, and a stopped step left work unbought — when it
+   * never answered at all (a step that ended on a throw without recording a bound: only the
+   * step's own clock stop writes one, so a review that died before pass 1 read no lens and
+   * says nothing), or when a `publish` step sits AFTER it. That last arm is the head binding:
+   * `machine.ts` re-runs `publish` after the review on a CI-fix round, so the newest `review`
+   * can predate the head the PR now stands on, and a verdict about the old one is not a verdict
+   * about this one. `false` also when the log holds no `review` step at all, since `publish` is
    * followed by `review` and a ready PR with no such step is a review the engine never
    * dispatched. `true` only where the record says the review finished: a returned `done`/
-   * `fixed` step, or one whose stop recorded an empty lane list. Lean-only,
-   * like the two fields above, and written on one switch: absent on a build running
-   * `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0` or one from before the field existed. Read
-   * it beside `cap` — a `ready` PR with this `false` carries cap `review-incomplete`, not
-   * `awaiting-human-merge`. */
+   * `fixed` step with no bound on it, and nothing published over it afterwards. Lean-only,
+   * like the two fields above, and written on one switch and only on the two arms that carry a
+   * cap: absent on a build running `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0`, on one from
+   * before the field existed, and on any run whose document carries no cap (a merge, a draft, a
+   * run that never reached `publish`) — where there is no cap to pair it with, `prState` and
+   * `status` are the answer. Read it beside `cap`: `false` pairs with `review-incomplete` and
+   * `true` with `awaiting-human-merge`, and no other document carries the key. */
   reviewComplete?: boolean;
   /**
    * The run's gate events, for a host that must not read `.pi/lean-state/<issue>.json`

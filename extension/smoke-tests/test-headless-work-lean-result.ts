@@ -308,17 +308,19 @@ const reviewed = (steps: Step[]): Step[] => withReviews(steps, [judgedReviewStep
 {
   const ready = log({ prUrl: URL, draft: false, dispatches: CHILDREN });
   // AC1's red arms and AC2's ways of earning today's cap, as one table: the cap and the
-  // field are the two answers, and the table says which record produces which. `reviewBound`
-  // PRESENT is not the predicate — a non-empty lane list is — so `no-lane-named` sits with
-  // the judged arms, and a stop a later fully judged review overtook sits there too (both
-  // kinds): log position decides which step is asked, `kind` never does. The step asked
-  // then answers in only TWO ways, and `error-silent`/`unanswered` are the second: a
-  // `review` step that threw without recording a bound read no lens at all (only the
-  // step-clock stop carries a bound on the error), and one that never answered is the same
-  // silence — neither may report a finished review. `never-reviewed` is the same silence one
-  // level up (the engine sends `publish` → `review`, so a review that was never dispatched
-  // is a review that judged nothing) and `error-empty-lanes` is its mirror: an empty list in
-  // a bound never outranks the step's own verdict that it threw.
+  // field are the two answers, and the table says which record produces which. A bound is
+  // read as PRESENT-or-absent, not as non-empty: a recorded stop judged nothing further,
+  // so `no-lane-named` sits with the incomplete arms (the one writer that can name no lane
+  // — `review.ts`'s clock read between pass 1 and the fix wave — throws, so no real record
+  // pairs an empty list with a returned step). Log position decides both which step is
+  // asked and whether the head it read is still the head the PR stands on: a stop a later
+  // fully judged review overtook sits with the judged arms, and a `publish` that postdates
+  // the newest review takes the verdict away again (pinned in the switch test's head-bound
+  // section). The step asked then answers in only TWO ways, and `error-silent`/`unanswered`
+  // are the second: a `review` step that threw without recording a bound read no lens at
+  // all, and one that never answered is the same silence — `never-reviewed` is that silence
+  // one level up (the engine sends `publish` → `review`, so an undispatched review judged
+  // nothing).
   const arms: [string, Step[], "review-incomplete" | "awaiting-human-merge", boolean][] = [
     ["deadline-stopped", [unjudgedReviewStep()], "review-incomplete", false],
     ["pushed-fix", [pushedFixReviewStep()], "review-incomplete", false],
@@ -333,7 +335,7 @@ const reviewed = (steps: Step[]): Step[] => withReviews(steps, [judgedReviewStep
       "awaiting-human-merge",
       true,
     ],
-    ["no-lane-named", [unjudgedReviewStep(0, [])], "awaiting-human-merge", true],
+    ["no-lane-named", [unjudgedReviewStep(0, [])], "review-incomplete", false],
     ["clean-review", [judgedReviewStep()], "awaiting-human-merge", true],
     ["never-reviewed", [], "review-incomplete", false],
   ];

@@ -21,10 +21,13 @@
  * evidence while they come from the pre-cap build — capture them by printing
  * `JSON.stringify(leanResultDocument(run, 10).doc)` for `goldenLog()`'s run under the commit
  * before the cap landed, and NEVER re-capture them from the current off arm, which would
- * make the off-arm comparison self-referential. The independent guard against drift is the
- * ON-arm check in `test-headless-work-lean-review-incomplete-cap-switch.ts`, which requires
- * the whole on-arm document to equal the golden with the cap renamed, so any change to a
- * field the switches do not own fails there with both lengths in the message.
+ * make the off-arm comparison self-referential. The ON-arm check in
+ * `test-headless-work-lean-review-incomplete-cap-switch.ts` is NOT a second opinion about
+ * that: it compares the on-arm document to the SAME two constants (with the cap renamed), so
+ * a re-capture from the current build would keep it green too. What it does guarantee is
+ * narrower and worth pinning: the two arms differ ONLY in the cap text and the one new key,
+ * so a field neither switch owns cannot change on one arm alone — and it fails there with
+ * both lengths in the message.
  *
  * The `*ReviewStep()` builders below are the review steps the CAP CASES share: each is one
  * answer the newest `review` step can give (stopped with lanes, pushed a wave, errored with
@@ -117,11 +120,14 @@ export function erroredMidWaveReviewStep(n = 0): Step {
   );
 }
 
-/** A `review` step that ERRORED with a bound whose lane list is EMPTY — a record no writer
- * produces (`unjudgedLenses` always names at least one lane) but one the loader accepts, an
- * empty array being a legal list. So it reaches the projection only from a state file a
- * person edited, and the question is whether an empty list outranks the step's own verdict:
- * a throw is not a finished review, whatever its bound says. */
+/** A `review` step that ERRORED with a bound whose lane list is EMPTY. A writer does
+ * produce it: `review.ts` reads its step clock once more between pass 1 and the fix wave
+ * (`if (preFix.live) handback(preFix, unjudgedLenses(review))`), and a pass 1 that judged
+ * all six lenses leaves `unjudgedLenses` with nothing to name — so the stop is recorded
+ * with `unreviewedLanes: []` and then THROWS, which is the outcome kind here. It is a real
+ * record on a real arm (the fixer was never bought), not a loader loophole, and the
+ * question it pins is whether an empty list outranks the step's own verdict: a stopped
+ * review is not a finished one, whatever its lane list says. */
 export function erroredEmptyLaneReviewStep(n = 0): Step {
   return stepWith(
     "review",
@@ -167,6 +173,46 @@ export function withReviews(steps: Step[], reviews: Step[]): Step[] {
     throw new Error("withReviews: the fixture log must end at its `handback` step");
   }
   return [...steps.slice(0, -1), ...reviews, last];
+}
+
+/** The same log with a SECOND `publish` step AFTER the newest `review` — the shape
+ * `machine.ts` produces when a CI-fix round sends the run back through build and
+ * `publish` again (`publish` → `review` the first time, `publish` → `ci` once
+ * `reviewDone` is set). The PR's head therefore moved AFTER the review read it, and the
+ * newest `review` step — still the newest `review` — judged bytes the forge no longer
+ * holds. `undecided` puts the same step where it died mid-push, recording nothing: a push
+ * whose outcome nobody wrote cannot be shown to have moved nothing, so it fails closed the
+ * same way. */
+export function republishedAfterReview(steps: Step[], undecided = false): Step[] {
+  const last = steps.length - 1;
+  if (steps[last]?.state !== "handback") {
+    throw new Error("republishedAfterReview: the fixture log must end at its `handback` step");
+  }
+  let review = -1;
+  for (let i = last; i >= 0; i -= 1) {
+    if (steps[i]?.state === "review") {
+      review = i;
+      break;
+    }
+  }
+  if (review < 0) {
+    throw new Error("republishedAfterReview: the log holds no `review` step to overtake");
+  }
+  const again = stepWith(
+    "publish",
+    {
+      kind: "ok",
+      prUrl: URL,
+      draft: false,
+      publishedHead: HEAD,
+      reason: `re-published PR ${URL} at ${HEAD.slice(0, 12)}`,
+    },
+    steps.length,
+  );
+  const moved = undecided
+    ? { key: again.key, state: again.state, startedAt: 1_000, endedAt: 2_000 }
+    : again;
+  return [...steps.slice(0, review + 1), moved, ...steps.slice(review + 1)];
 }
 
 /** The whole log the goldens were captured over. Both arms of the switch test drive THIS

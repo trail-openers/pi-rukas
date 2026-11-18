@@ -105,13 +105,18 @@ export const HEADLESS_FEATURES = {
    * `status`, `cap`, `failure`, `branch`, `prUrl`, `usage` (with `byRole`) and
    * the lean-only typed `prState` (`ready` | `draft` | `none`) and
    * `reviewComplete`, so a host needs no second reader to compare the two
-   * engines. `awaiting-human-merge` means `ready` WITH EVERY REVIEW LENS JUDGED:
-   * a `ready` PR whose newest `review` step left a lane unjudged — stopped by its
-   * own clock, or ended by a throw that recorded no verdict at all — or whose log
-   * holds no `review` step at all (the machine sends `publish` → `review`, so that
+   * engines. While `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP` is on (its shipped default),
+   * `awaiting-human-merge` means `ready` WITH EVERY REVIEW LENS JUDGED ON THE HEAD THE PR NOW
+   * STANDS ON: a `ready` PR whose newest `review` step recorded a stop (any lane list), ended
+   * on a throw that recorded no verdict at all, sits BEHIND a later `publish` (a CI-fix round
+   * re-runs `publish` after the review, so the newest review can predate the head), or whose
+   * log holds no `review` step at all (the machine sends `publish` → `review`, so that
    * review was never dispatched) carries `review-incomplete` and
-   * `reviewComplete: false` instead, so the cap a host
-   * would merge on is never a head nobody read. A build without this feature
+   * `reviewComplete: false` instead — and the key appears on no document without one of those
+   * two caps. THAT is the arm the merge-safety property belongs to: with the switch at `0` the
+   * single `awaiting-human-merge` cap is back, `reviewComplete` is not written at all, and the
+   * cap says nothing about whether a lens read the head — a host must not read the property
+   * above into that build. A build without this feature
    * writes lean's own pre-#1920 document (`state`/`summary`/`steps`/`prUrl`)
    * and has no `prState` to switch on — refuse the image rather than guess.
    */

@@ -489,19 +489,22 @@ Both sides of that rule are typed records (`Outcome.publishedHead` is the full
 is read out of prose. The rule is publish's own — it will not push at all over a
 green about a different commit — restated as a report. `ready` is the only thing
 that earns a handoff cap, and it does not earn it alone:
-**`awaiting-human-merge` means `ready` with every review lens judged**, so a
-`ready` PR whose NEWEST `review` step left a lane unjudged — stopped by its own
-clock, or ended by a throw that recorded no verdict at all — or whose log holds no
-`review` step at all (the machine sends `publish` → `review`, so a review the
-deadline stopped short of dispatching judged nothing) reports
+**`awaiting-human-merge` means `ready` with every review lens judged, on the head the PR now
+stands on**, so a `ready` PR whose NEWEST `review` step recorded a stop at its own clock — any
+lane list, empty included — or ended by a throw that recorded no verdict at all, or sits BEHIND
+a `publish` that ran after it (a CI-fix round re-runs `publish`, so the newest review can
+predate the head the PR stands on), or whose log holds no `review` step at all (the machine
+sends `publish` → `review`, so a review the deadline stopped short of dispatching judged
+nothing) reports
 **`review-incomplete`** with `reviewComplete: false` instead (same exit 10,
 different cap), and `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0` puts the single
 `awaiting-human-merge` cap back and omits the field. `reviewComplete` answers
-only from the step's own record, and is `true` only where that record says the
-review finished (a `done`/`fixed` step, or one whose stop named no lane): a
-review that died before pass 1 read no lens, an empty lane list on a step that
-threw is still a throw, and a log with no `review` step is a review that never
-ran — none of them report a finished review. A draft, or a PR over
+only from the step's own record and log position, and is `true` only where both say the review
+finished (a returned `done`/`fixed` step with no bound on it, and nothing published over it
+afterwards): a review that died before pass 1 read no lens, a stop that named no lane is still
+a stop, and a log with no `review` step is a review that never ran — none of them report a
+finished review. The key is written only beside the two caps above, so a merged run, a draft or
+a run that never reached `publish` carries neither cap nor field. A draft, or a PR over
 a gate that did not clear its head, gets no cap and rides `failure` alone. A
 build without the feature writes lean's own
 pre-#1920 document (`state`, `summary`, `steps`, `prUrl`) and has no `prState`:
