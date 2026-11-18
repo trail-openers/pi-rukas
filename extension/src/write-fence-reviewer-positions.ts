@@ -113,10 +113,53 @@ const INTERPRETER_BODY_FLAG: Record<string, string> = {
   bun: "-e",
 };
 
+/** The shells whose operand list is a program the shell will read and run. */
+const SHELLS = new Set(["sh", "bash", "zsh", "dash"]);
+
+/**
+ * Whether the words in front of one simple command are `xargs` — read from the RAW
+ * words, because `stripPrefix` consumes the wrapper and leaves only the command it runs.
+ * That is what makes `ls | xargs touch` a segment whose name is `touch`, so "the command
+ * is `xargs`" has to be asked of what the wrapper stripped, exactly as the deletion rule
+ * (#2200) asks it (`write-fence-deletion-positions.ts` reads the same raw words).
+ */
+function fedByXargs(seg: Segment): boolean {
+  return seg.raw.some((w) => commandName(w.text) === "xargs");
+}
+
+/**
+ * Whether one simple command is a shell taking its PROGRAM from elsewhere, which the
+ * guard has not read: `sh`, `bash`, `sh -s` and friends with no `-c` body on the line
+ * (`write-fence-bash.ts` reads a literal `-c` body as a command of its own, so that arm
+ * is judged and needs nothing here). What such a shell runs arrives on stdin — the
+ * classic `curl … | sh`, and the same shape with the program piped from a file — so the
+ * writes it makes are nowhere in the text the readers see. For a guarded role that is an
+ * unresolvable word rather than a pass: a reviewer has no reason to execute a program it
+ * cannot show the guard, and `sh -c "cat"` still runs.
+ */
+function shellReadsItsProgram(name: string, args: Word[]): boolean {
+  if (!SHELLS.has(commandName(name))) return false;
+  return !args.some((a) => /^-[A-Za-z]*c[A-Za-z]*$/.test(a.text));
+}
+
+/**
+ * Whether one simple command is a guarded write verb that `xargs` will run over names it
+ * received on stdin. The splitter has already stripped the wrapper, so the operands this
+ * rule can see are the ones the child typed — and the ones that decide the target are the
+ * ones stdin supplies (`xargs touch`, `xargs -I{} mv {} <dir>`). The deletion rule refuses
+ * `xargs rm` for exactly this reason; this is its write side. A `xargs grep` names no
+ * write verb, so the ordinary use still runs.
+ */
+function xargsRunsGuardedVerb(segs: Segment[]): boolean {
+  return segs.some((s) => fedByXargs(s) && GUARDED_COMMANDS.has(s.name));
+}
+
 /** One simple command of the line, as the walk's own splitter and strip name it. */
 interface Segment {
   name: string;
   args: Word[];
+  /** The words before the keywords/wrappers were stripped, which is what names an `xargs`. */
+  raw: Word[];
   /** The words the walk attributed to this command's `>`/`>>` redirects. */
   redirects: Word[];
 }
@@ -142,7 +185,12 @@ function segments(command: string): Segment[] {
     const stripped = stripPrefix(words).words;
     const first = stripped[0];
     if (first === undefined) continue;
-    out.push({ name: commandName(first.text), args: stripped.slice(1), redirects });
+    out.push({
+      name: commandName(first.text),
+      args: stripped.slice(1),
+      raw: words,
+      redirects,
+    });
   }
   return out;
 }
@@ -294,6 +342,11 @@ export function writePositions(command: string, cwd: string): WritePosition[] {
   }
 
   for (const seg of segs) {
+    // A shell that reads its program from a pipe writes whatever the pipe says, which
+    // no reader has seen; `xargs` writes whatever stdin names. Both are class (c).
+    if (shellReadsItsProgram(seg.name, seg.args) || xargsRunsGuardedVerb(segs)) {
+      out.push({ path: undefined, reason: POSITION_UNJUDGED_REASON, token: "(reviewer write)" });
+    }
     if (!GUARDED_COMMANDS.has(seg.name)) continue;
     for (const w of [...writtenWords(seg.name, seg.args), ...seg.redirects]) {
       if (isPathWord(w)) out.push(fromWord(w, cwd));
