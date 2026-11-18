@@ -12,6 +12,7 @@ import { prMergeCmd } from "./forge-commands.ts";
  */
 import { quotedOutOfScope } from "./plan-fence-bound.ts";
 import { quotedPaths } from "./plan-path-shape.ts";
+import { CI_REPORT_STEPS, CI_WAIT_STEPS } from "./work-driver-ci-wait-brief.ts";
 import { handoffOpsPromptWithoutLabel } from "./work-driver-handoff-ops-label.ts";
 import type { MergeMethod } from "./work-driver-merged-mechanized.ts";
 import {
@@ -490,9 +491,8 @@ export function inlineCiPrompt(
     `/work issue #${issue} — Step 8 (CI monitoring).`,
     "",
     branchInstruction,
-    '  2. If the run is still in progress: prefer `gh run watch <id>` (blocks until CI completes). PR15 — the driver now allows this dispatch up to 30 min by default (env-tunable via `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS`); pre-PR15 the ops 10-min cap SIGTERM\'d `gh run watch` mid-stream for real CI runs. If `gh run watch` fails or the run needs longer than the cap, fall back to a bounded poll: `while true; do status=$(gh run view <id> --json status,conclusion --jq \'.status + ":" + (.conclusion // "")\'); case $status in completed:success|completed:failure|completed:cancelled) break;; esac; sleep 30; done`.',
-    "  3. On success: end your reply with the line `ci-status: success` (driver routes to merge).",
-    "  4. On failure: end your reply with `ci-status: failure` AND include the failing-job summary so the developer round that follows has the failure context.",
+    ...CI_WAIT_STEPS,
+    ...CI_REPORT_STEPS,
     "",
     "The driver parses the last line of your reply for the `ci-status:` token — keep it exact.",
     scratchHygieneSection(scratchDirAbs),

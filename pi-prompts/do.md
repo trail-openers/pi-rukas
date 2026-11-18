@@ -59,7 +59,7 @@ git worktree add --detach .worktrees/do-slug main
 
 7. **Merge.** PR, CI and merge go through `ops`, and only after BOTH `adversarial_loop` AND `dispatch_lens_review` have passed with all CRITICAL/HIGH findings fixed — hand-managed work gets the same gates as `/work`, and a developer's self-report plus CI is NOT a pass. The only carve-out: a release-please/Dependabot follow-up on a one-off direct-to-main change may skip the full PR cycle (extremely rare); name the carve-out explicitly when you take it. If the work is genuinely issue-driven and deserves the full step machine, use `/work` instead — `start_work_driver` runs it.
 
-8. **CI watch (optional).** If the project has CI and a PR was opened, dispatch `ops` to watch it and report back — per forge: GitHub: `gh run watch`, GitLab: poll `glab ci status` (or the latest pipeline via `glab ci view`) until a terminal state (`success`, `failed`, `canceled`, `skipped` or `manual`).
+8. **CI wait (optional).** If the project has CI and a PR was opened, dispatch `ops` to wait for it and report back — a bounded poll on both forges: `sleep 60`, then one read (`gh pr checks <n> --repo <owner/repo>` on GitHub, the pipeline REST endpoint via `glab api` on GitLab), repeated until a terminal state (`success`, `failed`, `canceled`, `skipped` or `manual`) or a 30-minute cap. Never `gh run watch` and never a `--watch` flag: a blocking watch call leaves the child ending its turn with checks still pending and the merge never happens. Tell ops explicitly not to end its turn while a check is pending.
 
 9. **Report back.** Concise summary of what was done. PR URL if one was opened. Open questions if any.
 

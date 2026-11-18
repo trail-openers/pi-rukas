@@ -6,7 +6,7 @@
  * together as small tail-pipeline steps — step-back reroutes to handoff
  * with a spec-revision proposal; CI is the last gate before merge.
  *
- * Issue #279 adds the verify-full tier to runCi BEFORE the ops gh-run-watch
+ * Issue #279 adds the verify-full tier to runCi BEFORE the ops CI-poll dispatch
  * dispatch.
  */
 
@@ -131,16 +131,17 @@ export async function runStepBack(
 }
 
 /**
- * Step 8 — CI monitoring. ops runs `gh run watch` and reports the outcome.
- * The driver parses the result text for "ci-status: success/failure" so
- * routing is deterministic.
+ * Step 8 — CI monitoring. ops waits with the bounded `sleep 60` + read poll that
+ * `inlineCiPrompt` prescribes (#2333) and reports the outcome. The driver parses
+ * the result text for "ci-status: success/failure" so routing is deterministic.
  */
 /**
- * PR15 — resolve the ci-step ops timeout. `gh run watch` blocks until
- * CI completes; real project CI runs regularly exceed the ops role's
- * 10-min default (spawn.ts:141). Ci-specific override lifts the cap
- * to 30 min by default, env-tunable via
- * `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS`. Empirical: 3× ops-CI-poll
+ * PR15 — resolve the ci-step ops timeout. The wait is a poll that runs until CI
+ * reaches a terminal status or the cap fires, and real project CI runs regularly
+ * exceed the ops role's 10-min default (spawn.ts:141), so the ci-specific override
+ * lifts the cap to 30 min by default, env-tunable via
+ * `PI_ENSEMBLE_CI_WATCH_TIMEOUT_MS`. It is the same 30 minutes the brief tells the
+ * child to poll for, which is why one knob bounds both. Empirical: 3× ops-CI-poll
  * timeouts this session before PR15 forced cycles to false-halt on
  * `step-failed:ci`.
  */
@@ -176,7 +177,7 @@ export async function runCi(ctx: CycleContext, state: WorkState, now: number): P
   let next = state;
 
   // #279 — verify-full tier: read `.pi/verify-cmd-full` and execute it
-  // BEFORE the ops gh-run-watch dispatch. Run in the group's primary
+  // BEFORE the ops CI-poll dispatch. Run in the group's primary
   // worktree, NOT repoRoot (addendum: parallel groups may have repoRoot
   // on a different branch by ci time).
   if (verifyFullEnabled()) {

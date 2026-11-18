@@ -14,6 +14,7 @@ import path from "node:path";
 import { runCommitPr } from "../src/work-driver-commit.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { inlineCiPrompt, inlineCommitPrPrompt } from "../src/work-driver-prompts-late.ts";
+import { blockingWatchPrescribed } from "./lib/ci-doctrine.ts";
 import { runCi } from "../src/work-driver-stepback-ci.ts";
 import { initialState } from "../src/workflow-state.ts";
 
@@ -187,6 +188,42 @@ const scratchDir = "/tmp/pi-ensemble-issue-284";
     missing.includes("branch not captured — discover via") &&
       missing.includes("git branch --show-current"),
     "#284 C: missing branch gives an explicit discovery fallback",
+  );
+}
+
+// #2333 — the CI brief's WAIT is pinned, not just its branch interpolation.
+// Before this, nothing asserted over inlineCiPrompt's wording, so the one
+// sleep-based poll recipe a dispatched child is handed could drift back to a
+// blocking `gh run watch` (the shape that ends the child's turn mid-wait) with
+// no gate noticing — the same "dist/prose nobody greps goes stale" gap
+// test-forge-read-off-docs.ts closes for docs.
+{
+  const brief = inlineCiPrompt(284, "feature/issue-284-ground-ops", scratchDir);
+  assert(
+    /sleep 60/.test(brief) && /30 minutes|30-minute/.test(brief),
+    "#2333: CI brief pins the poll interval (60s) and the wait cap (30 min)",
+  );
+  assert(
+    /terminal/i.test(brief) &&
+      /pending[\s\S]{0,90}never a reason to end|never a reason to end[\s\S]{0,90}pending/i.test(
+        brief,
+      ),
+    "#2333: CI brief states the terminal set and that a pending check never ends the turn",
+  );
+  // The brief names the forbidden forms in order to forbid them, so the check
+  // asks the shipped classifier (clause-scoped negation) rather than a substring
+  // test that would flag the prohibition itself.
+  assert(
+    blockingWatchPrescribed(brief).length === 0 && !/while true|\$\(/.test(brief),
+    `#2333: CI brief offers no blocking watch and no chained shell loop${blockingWatchPrescribed(brief).length ? `: ${blockingWatchPrescribed(brief).join(" | ")}` : ""}`,
+  );
+  assert(
+    /never[^.\n]{0,80}pending/i.test(brief),
+    "#2333: CI brief forbids a marker carrying the pending value the router parks on",
+  );
+  assert(
+    /cap[\s\S]{0,160}?(report the wait as a failure|`?ci-status: failure)/i.test(brief),
+    "#2333: CI brief binds the cap path to a failure report, not a pending one",
   );
 }
 
