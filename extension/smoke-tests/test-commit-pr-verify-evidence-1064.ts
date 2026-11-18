@@ -450,4 +450,48 @@ const REDACTED = "[REDACTED]";
   );
 }
 
+// ---------------------------------------------------------------------------
+// #2341 fix wave 9 — the cap-fields named-failure recovery is a PUBLISHER of
+// the same handoff, and it used to carry no `should_panic` ask at all: a
+// captured panic print of a test the run reported `ok` reached the published
+// evidence as a named failure after the extractor and the classifier reader
+// had both refused it. The site's widest text is the failure record itself,
+// so the record carries its verdict line.
+{
+  const capturedRecord = [
+    "verify command `bash scripts/verify.sh` failed in /wt:",
+    "FAILED: smoke-tests/test-rust-unit.ts",
+    "running 2 tests",
+    "test a::t ... ok",
+    "thread 'a::t' panicked at src/a.rs:7:5:",
+    "explicit panic",
+    "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured",
+  ].join("\n");
+  const cap = consolidatedVerifyCapFields({
+    cap: "integration-verify-failed",
+    reason: "verify failed",
+    timedOut: false,
+    failures: [capturedRecord],
+  });
+  assert(
+    !(cap.evidence ?? "").includes("thread 'a::t'"),
+    `#2341: the cap's evidence never names a PASSING test's captured panic (got ${JSON.stringify((cap.evidence ?? "").slice(0, 90))})`,
+  );
+  // The veto is a refusal of the capture, not of panics: a failing test's
+  // own print still reaches the evidence.
+  const realRecord = capturedRecord
+    .replace("test a::t ... ok", "test a::t ... FAILED")
+    .replace("test result: ok. 2 passed; 0 failed", "test result: FAILED. 1 passed; 1 failed");
+  const realCap = consolidatedVerifyCapFields({
+    cap: "integration-verify-failed",
+    reason: "verify failed",
+    timedOut: false,
+    failures: [realRecord],
+  });
+  assert(
+    (realCap.evidence ?? "").includes("thread 'a::t'"),
+    "#2341: a genuinely failing panic still reaches the cap evidence — the veto is name-correlated, not off",
+  );
+}
+
 process.exit(exit);
