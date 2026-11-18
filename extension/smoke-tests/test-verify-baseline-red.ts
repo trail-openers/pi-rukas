@@ -13,6 +13,10 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+  HOST_EXHAUSTION_LABEL,
+  extractAttributedTail,
+} from "../src/work-driver-exec-error.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
 import {
   NO_SPECIFIC_ASSERTION,
@@ -30,8 +34,10 @@ import {
 } from "./lib/verify-baseline-red-harness.ts";
 import {
   RUST_CARGO_STREAM,
+  CARGO_SIGABRT_SUMMARY,
   TSC_DIAG_NO_LOCATION,
   TSC_DIAG_STREAM,
+  rustPanicHeader,
 } from "./lib/verify-failure-shapes-fixtures.ts";
 import {
   assertDefaultVerifyBound,
@@ -434,6 +440,59 @@ await pinDefaultVerifyTimeout(async () => {
       [{ text: `tsc reported ${TSC_DIAG_NO_LOCATION} in a different file`, timedOut: false }],
     ),
     "tsc fold: a base red on one location-less TS2345 does not explain an unrelated change failure",
+  );
+}
+
+// The foreign-target workspace stream (#2341 fix wave 6, CRITICAL 1): two crates
+// of one `cargo test --workspace` print BYTE-IDENTICAL libtest names (they are
+// per-binary module paths). The failing target's own verdict never reaches the
+// stream — it aborted after the panic print — while an EARLIER, completed-green
+// target printed `test <name> ... ok` for a DIFFERENT test of that name. Wave 5
+// imported that `ok` line into the window, the window-scoped veto answered
+// "this test passed", and the real assertion was refused. The stream-scoped ask
+// reads the earlier target's `test result: ok` as a BOUNDARY, not a verdict.
+{
+  const targetA = [
+    "running 1 test",
+    "test pkg::tests::t_0 ... ok",
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+    ...Array.from({ length: 40 }, (_, n) => `   Compiling mid_crate_${n} v0.1.0 (registry)`),
+  ].join("\n");
+  const targetB = [
+    "running 1 test",
+    rustPanicHeader("pkg::tests::t_0", "src/real_0.rs:1:5"),
+    "assertion failed: `(left == right)` the value the change broke",
+    "Aborted (core dumped)",
+    CARGO_SIGABRT_SUMMARY,
+  ].join("\n");
+  const raw = `${targetA}\n${targetB}`;
+  const { tail, attributed } = extractAttributedTail(raw, 1500);
+  assert(
+    attributed && tail.startsWith("thread 'pkg::tests::t_0'"),
+    `foreign target (wave 6): the aborting target's panic owns the anchor (got ${JSON.stringify(tail.slice(0, 40))})`,
+  );
+  assert(
+    extractSpecificAssertion(tail, raw) ===
+      `${rustPanicHeader("pkg::tests::t_0", "src/real_0.rs:1:5")} assertion failed: \`(left == right)\` the value the change broke`,
+    `foreign target (wave 6): the real assertion survives the sibling target's same-named ok (got ${JSON.stringify(extractSpecificAssertion(tail, raw).slice(0, 60))})`,
+  );
+  assert(
+    baselineExplainsChange(
+      {
+        status: "red",
+        rawStream: raw,
+        probed: true,
+        exitCode: 101,
+        assertion: extractSpecificAssertion(extractAttributedTail(raw, 1500).tail, raw),
+      },
+      [
+        {
+          text: "thread 'pkg::tests::t_0' panicked at src/other.rs:9:9:\nthe failure the change added",
+          timedOut: false,
+        },
+      ],
+    ) === false,
+    "foreign target (wave 6): the base's real assertion never excuses a DIFFERENT failure the change added",
   );
 }
 

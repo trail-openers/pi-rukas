@@ -39,6 +39,8 @@ import {
   isLibtestVerdictLine,
   isLocationlessCodeDiagnostic,
   libtestVerdictForTest,
+  panicEvidenceRegion,
+  perTestVerdictOnly,
   rustPanicSamenessKey,
   rustPanicTestName,
 } from "./work-driver-verify-failures.ts";
@@ -247,8 +249,15 @@ function joinedRustPanic(header: string, next: string | undefined): string {
  * extract-assertion.ts: "the specific assertion" is the FIRST real
  * assertion; the count is the summary marker's job, so it is not
  * duplicated into the extracted field.
+ *
+ * `stream` is the WHOLE combined output `failureTail` was cut from, when the
+ * caller has it (#2341 fix wave 6): the name-correlated `should_panic` ask
+ * needs the verdict line the window's elision cut away, and it is answered by
+ * reading the stream — never by importing lines into the window. Without it
+ * the ask degrades to the tail itself (every caller today hands either the
+ * whole stream or a single line, except the baseline probe, which passes both).
  */
-export function extractSpecificAssertion(failureTail: string): string {
+export function extractSpecificAssertion(failureTail: string, stream?: string): string {
   // `FAILED:` and its `FAILED: 1 test(s) — …` summary are ONE regex, and
   // `FAILED_MARKER_RE` demands a non-empty payload: an empty marker is not a
   // marker, it is an empty line, and it must not be kept as the count summary.
@@ -288,25 +297,33 @@ export function extractSpecificAssertion(failureTail: string): string {
     if (kind?.namesTest !== true) continue;
     if (kind.shape === "rust-panic") {
       // #2341 round 1 — the `#[should_panic]` veto. A panic header is only
-      // evidence of a FAILING test when the window attributes a FAILING
-      // verdict to THAT test: libtest prints a passing `#[should_panic]`
-      // test's captured stdout in the identical shape, so in a run that
-      // exited non-zero for some OTHER reason (a later `make` stage, a lint
-      // stage, or — #2341 fix wave H1 — a genuinely failing test whose
-      // verdict made the WINDOW look failing) this line names a test that
-      // PASSED. Quoting it as "the specific assertion" is the #746/#798 class
-      // the module's own doctrine forbids — a confident wrong answer where an
-      // honest absence was the truth — and a classified line can earn the
-      // cycle's one corrective round, while its header-as-sameness-key then
-      // excuses the change-added failure. `undefined` (no verdict observed at
-      // all — a truncated window, a single-line fixture) vetoes nothing: an
-      // absent observation is not a verdict either way. ONE predicate with the
-      // evidence-anchor walk, which asks the same veto before letting a header
-      // own the anchor — see `work-driver-exec-error.ts`. #2341 fix wave 4
-      // (H1/H2): the predicate takes the WINDOW TEXT and derives its own lines
-      // (the walk hands it the very window `tailFromAnchor` builds for this
-      // tail), so the two readers ask one question over one line set.
-      if (libtestVerdictForTest(failureTail, rustPanicTestName(candidate)) === false) continue;
+      // evidence of a FAILING test when a verdict attributes a FAILING result
+      // to THAT test: libtest prints a passing `#[should_panic]` test's
+      // captured stdout in the identical shape, so in a run that exited
+      // non-zero for some OTHER reason this line names a test that PASSED —
+      // and quoting it is the #746/#798 class the module's own doctrine
+      // forbids. #2341 fix wave 6 asks the veto as TWO questions, because
+      // they are not the same question: NAME-CORRELATED on the stream's
+      // panic evidence region ({@link panicEvidenceRegion} — the text below
+      // the last completed-green target summary above the header, so a
+      // sibling crate's same-named `... ok` cannot veto a later binary's
+      // real panic, and a binary that died before printing its verdict reads
+      // as unobserved), and the tally fallback on the published WINDOW only
+      // (the text the caller was handed, asked the same region rule). ONE
+      // predicate with the evidence-anchor walk — it asks these two over the
+      // window it publishes; see `work-driver-exec-error.ts`. `undefined`
+      // (no verdict observed) vetoes nothing: an absent observation is not a
+      // verdict either way.
+      const panicName = rustPanicTestName(candidate);
+      if (libtestVerdictForTest(panicEvidenceRegion(failureTail, candidate), panicName) === false) {
+        continue;
+      }
+      if (
+        perTestVerdictOnly(panicEvidenceRegion(stream ?? failureTail, candidate), panicName) ===
+        false
+      ) {
+        continue;
+      }
       return redactedAssertion(joinedRustPanic(candidate, lines[i + 1]));
     }
     return redactedAssertion(candidate);

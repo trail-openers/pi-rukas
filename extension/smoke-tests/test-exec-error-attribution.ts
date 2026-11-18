@@ -112,6 +112,19 @@ function assert(cond: boolean, msg: string) {
     tail.startsWith("verify command") || tail.startsWith("FAILED:"),
     `wrapped anchor: the tail starts at the anchor, not at the stream end (got ${JSON.stringify(tail.slice(0, 40))})`,
   );
+  // #2341 fix wave 6 (ISSUES 1), same shape in the panic dialect: wave 5's
+  // carry ran on this single clipped line, found no "\n" to buy room from, and
+  // published ONLY the verdict line it imported — `attributed: true` still. The
+  // clipped anchor line IS the window at both call-site budgets.
+  const widePanic = `thread 'tests::it_works' panicked at 'assertion failed: \`(left == right)\`: ${"x".repeat(900)}`;
+  for (const budget of [800, 1500]) {
+    const p = extractAttributedTail(`test tests::it_works ... FAILED\n${widePanic}`, budget);
+    const starts = p.tail.startsWith("thread 'tests::it_works' panicked");
+    assert(
+      p.attributed && starts && p.tail.length <= budget,
+      `wrapped anchor, panic dialect (wave 6, ${budget}): the clipped anchor line is the window, never an imported verdict (got ${JSON.stringify(p.tail.slice(0, 40))})`,
+    );
+  }
 }
 
 // 3. Empty input → empty tail, no crash.
@@ -242,23 +255,16 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
-// 3g. #2341 fix wave 5 (H1/H2) — the window the anchor walk PUBLISHES is the
-// window the veto was asked on. When the `FAILED:` marker owns the anchor the
-// published region starts at the MARKER, not at the candidate the veto examined,
-// and on a long stream the elision cut away the `test a::t ... ok` line that
-// proves the panic below it is a passing `#[should_panic]` test's captured
-// print. The extractor then found no per-test verdict in what it was handed,
-// fell through to the target tally the window DID keep, answered "verdict
-// observed, not vetoed", and quoted the PASSING test as "the assertion at
-// base" — which `baselineExplainsChange` then used to EXCUSE the panic the
-// change added. The publisher now carries the stream's own verdict line into
-// the window it hands over, so the one veto the extractor asks is decidable on
-// the bytes it receives.
-//
-// This stream is NOT free of other anchor candidates: the `FAILED:` marker and
-// the panic header are both recognised lines, and the marker is what wins the
-// anchor — so going green here says the published window is sound, not that the
-// walk had nothing else to choose from.
+// 3g. #2341 fix wave 5 (H1/H2), re-pinned by fix wave 6 — the window the anchor
+// walk PUBLISHES stays the STREAM'S OWN BYTES. When the `FAILED:` marker owns
+// the anchor, on a long stream the elision cuts away the `test a::t ... ok`
+// line that proves the panic below it is a passing `#[should_panic]` capture.
+// Wave 5 bought decidability by IMPORTING that line into the window — and the
+// imported verdict then vetoed other targets' real same-named panics and
+// emptied whole windows. Wave 6 asks the name-correlated question on the STREAM
+// (handed alongside the tail); the window publishes only the anchored region.
+// The marker wins the anchor here, so going green says the PUBLISHED window is
+// sound, not that the walk had no other candidate.
 {
   const compile = Array.from(
     { length: 45 },
@@ -281,17 +287,17 @@ function assert(cond: boolean, msg: string) {
   ].join("\n");
   const { tail } = extractAttributedTail(stream, 1500);
   assert(
-    tail.includes("test a::t ... ok"),
-    `capture in the published window (#2341 H1/H2): the verdict that decides the veto is in the bytes handed over (got ${JSON.stringify(tail.slice(0, 60))})`,
+    !tail.includes("test a::t ... ok"),
+    `published window stays the stream's own bytes (#2341 wave 6): the elided verdict is asked on the stream, never imported into the quoted window (got ${JSON.stringify(tail.slice(0, 60))})`,
   );
   assert(
-    extractSpecificAssertion(tail) === NO_SPECIFIC_ASSERTION,
-    `capture in the published window (#2341 H1/H2): the passing test's panic never becomes the assertion (got: ${JSON.stringify(extractSpecificAssertion(tail).slice(0, 70))})`,
+    extractSpecificAssertion(tail, stream) === NO_SPECIFIC_ASSERTION,
+    `capture in the published window (#2341 H1/H2): the passing test's panic never becomes the assertion (got: ${JSON.stringify(extractSpecificAssertion(tail, stream).slice(0, 70))})`,
   );
   // The same window against the change's own failure: the capture prints
   // byte-identically in both runs, so the folded base assertion excused the
   // panic the change added.
-  const base = extractSpecificAssertion(tail);
+  const base = extractSpecificAssertion(tail, stream);
   const verdict = {
     status: "red" as const,
     rawStream: stream,

@@ -48,7 +48,7 @@ import {
   FAILED_MARKER_RE,
   classifyFailureLine,
   libtestVerdictForTest,
-  perTestVerdictLine,
+  panicEvidenceRegion,
   perTestVerdictOnly,
   rustPanicTestName,
 } from "./work-driver-verify-failures.ts";
@@ -88,8 +88,9 @@ export function extractAttributedTail(combined: string, maxLen: number): Attribu
   }
   // The blind slice is text the extractor judges too, so it gets the same
   // verdict guarantee: it must not hand over a captured panic whose own
-  // verdict line the slice happens to leave out.
-  return { tail: carryVerdicts(trimmed, trimmed.slice(-maxLen), maxLen), attributed: false };
+  // verdict line the slice happens to leave out — the guarantee lives in the
+  // stream-scoped ask, not in an edited window (see {@link publishedWindow}).
+  return { tail: trimmed.slice(-maxLen), attributed: false };
 }
 
 /**
@@ -111,62 +112,30 @@ export function extractAttributedTail(combined: string, maxLen: number): Attribu
  *
  * `panicName` is the candidate's own panic name, or `undefined` for any other
  * shape; with no name neither ask answers, and an unobserved verdict vetoes
- * nothing. The stream-wide ask is the NAME-CORRELATED one
- * ({@link perTestVerdictOnly}): a chain whose earlier `cargo test` stage was
- * green and whose later stage's binary died has no verdict for that binary, and
- * the target-level tally of the green stage must not answer for it.
+ * nothing. The two questions are NOT the same question (#2341 fix wave 6):
+ * the NAME-CORRELATED one is asked on the stream's {@link panicEvidenceRegion}
+ * — the text after the last completed-green target summary above the header,
+ * so a sibling crate's `test X ... ok` cannot answer for a later binary's
+ * panic, and a binary that died without printing its verdict reads as
+ * unobserved — and the tally fallback is asked on the published WINDOW only.
+ * The window the walk hands over is the stream's OWN bytes: no line is ever
+ * materialised into it to make a question decidable, because the window is
+ * quoted to a human and an imported verdict line is a window that lies.
  */
 function publishedWindow(
   text: string,
   anchorIndex: number,
   maxLen: number,
   panicName: string | undefined,
+  panicHeader: string | undefined,
 ): { window: string; vetoed: boolean } {
-  const window = carryVerdicts(text, tailFromAnchor(text, anchorIndex, maxLen), maxLen);
+  const window = tailFromAnchor(text, anchorIndex, maxLen);
   return {
     window,
     vetoed:
-      libtestVerdictForTest(window, panicName) === false ||
-      perTestVerdictOnly(text, panicName) === false,
+      libtestVerdictForTest(panicEvidenceRegion(window, panicHeader), panicName) === false ||
+      perTestVerdictOnly(panicEvidenceRegion(text, panicHeader), panicName) === false,
   };
-}
-
-/**
- * Guarantee the veto can be answered from the published bytes: for every Rust
- * panic header `window` shows, the stream's OWN per-test verdict line for that
- * header's test is in `window` — appended here when the elision cut it away
- * (#2341 fix wave 5, H1/H2).
- *
- * A captured `#[should_panic]` print and a genuine failing panic are the same
- * line; only `test <name> ... ok` tells them apart. The anchored region keeps
- * the anchor line and the region's END, so on a long stream that verdict line
- * is exactly what the `…` cut removes — and the extractor, finding no verdict
- * in what it was handed, fell through to the target tally the window DID keep,
- * read "the target failed", and quoted the passing test. Putting the stream's
- * own line back makes the single veto the extractor asks decidable on the text
- * it receives, which is the only text it can ever be asked of.
- *
- * Appended rather than re-inserted in stream order because the veto is a
- * line-set question — position carries no verdict — and the room is taken from
- * the window's TAIL, never from the anchor line or the assertion at the head.
- */
-function carryVerdicts(text: string, window: string, maxLen: number): string {
-  const held = new Set<string>();
-  for (const raw of window.split("\n")) held.add(raw.trim());
-  const verdicts: string[] = [];
-  for (const raw of window.split("\n")) {
-    const line = raw.trim();
-    if (classifyFailureLine(line)?.shape !== "rust-panic") continue;
-    const verdict = perTestVerdictLine(text, rustPanicTestName(line));
-    if (verdict !== undefined && !held.has(verdict) && !verdicts.includes(verdict)) {
-      verdicts.push(verdict);
-    }
-  }
-  if (verdicts.length === 0) return window;
-  const added = verdicts.join("\n");
-  if (window.length + added.length + 1 <= maxLen) return `${window}\n${added}`;
-  const cut = window.lastIndexOf("\n", Math.max(0, maxLen - added.length - 1));
-  return `${window.slice(0, cut > 0 ? cut : 0)}\n${added}`;
 }
 
 /**
@@ -241,6 +210,7 @@ function lastFailureAnchor(
       at,
       maxLen,
       kind?.shape === "rust-panic" ? rustPanicTestName(line) : undefined,
+      kind?.shape === "rust-panic" ? line : undefined,
     );
     if (isMarker) marker = published;
     if (kind === undefined) continue;

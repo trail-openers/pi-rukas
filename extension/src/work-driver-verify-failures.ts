@@ -163,6 +163,7 @@ export {
   isLibtestVerdictLine,
   isLocationlessCodeDiagnostic,
   libtestVerdictForTest,
+  panicEvidenceRegion,
   perTestVerdictLine,
   perTestVerdictOnly,
   rustPanicSamenessKey,

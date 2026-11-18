@@ -166,6 +166,42 @@ export function perTestVerdictOnly(text: string, name: string | undefined): bool
   return line === undefined ? undefined : LIBTEST_PER_TEST_VERDICT_RE.exec(line)?.[2] === "FAILED";
 }
 
+/** A target summary that closed its run GREEN (`test result: ok. …`). */
+const PASSING_TARGET_SUMMARY_RE = /^test\s+result:\s*ok\b/;
+
+/**
+ * The text that may speak about the panic print `header`: `text` with every
+ * COMPLETED GREEN TARGET dropped from its head. libtest closes a whole target
+ * with `test result: ok. N passed; 0 failed`; every verdict line above that
+ * line — including a name-correlated `test X ... ok` — is the verdict of the
+ * binary that finished BEFORE this header, and libtest test names are
+ * per-binary module paths, so a sibling crate of one `cargo test --workspace`
+ * prints a byte-identical name for a DIFFERENT test. Asking the whole stream
+ * imported that foreign verdict and refused a later target's real panic whose
+ * own verdict never reached the stream (the binary aborted after the panic
+ * print) — #2341 fix wave 6. A run that never printed its summary (it died)
+ * drops nothing; an unobserved verdict still vetoes nothing.
+ *
+ * `header` absent from `text` (a hand-built tail, a caller quoting a line the
+ * stream does not hold) asks the whole text — the pre-region behaviour, which
+ * is the only honest reading when no position is known.
+ */
+export function panicEvidenceRegion(text: string, header: string | undefined): string {
+  if (header === undefined) return text;
+  const at = text.lastIndexOf(header);
+  if (at === -1) return text;
+  let end = 0;
+  let offset = 0;
+  for (const line of text.slice(0, at).split("\n")) {
+    const t = line.trim();
+    if (PASSING_TARGET_SUMMARY_RE.test(t) && !LIBTEST_FAILING_VERDICT_RE.test(t)) {
+      end = offset + line.length + 1;
+    }
+    offset += line.length + 1;
+  }
+  return text.slice(end);
+}
+
 /**
  * The answer to "does the text `window` report test `<name>` as FAILED?" for
  * the WINDOW the extractor is about to be handed (#2341 fix wave H1) — the
