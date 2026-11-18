@@ -144,7 +144,6 @@ function perTestVerdictFor(lines: string[], name: string): "ok" | "FAILED" | und
   }
   return verdict;
 }
-
 /**
  * Is the header at line `i` sitting inside a `---- <block> stdout ----` capture
  * block whose own test the run reported `ok`? Walking up stops at a completed
@@ -154,9 +153,10 @@ function perTestVerdictFor(lines: string[], name: string): "ok" | "FAILED" | und
  */
 function panicPrintUnderGreenBlock(lines: string[], i: number): boolean {
   for (let k = i - 1; k >= 0; k--) {
-    const block = LIBTEST_BLOCK_HEADER_RE.exec(lines[k]);
-    if (block !== null) return perTestVerdictFor(lines, block[1]) === "ok";
-    if (LIBTEST_TARGET_RESULT_RE.test(lines[k]) || LIBTEST_RUN_BANNER_RE.test(lines[k])) {
+    const line = lines[k] ?? "";
+    const block = LIBTEST_BLOCK_HEADER_RE.exec(line);
+    if (block !== null) return perTestVerdictFor(lines, block[1] ?? "") === "ok";
+    if (LIBTEST_TARGET_RESULT_RE.test(line) || LIBTEST_RUN_BANNER_RE.test(line)) {
       return false;
     }
   }
@@ -176,21 +176,23 @@ function panicPrintUnderGreenBlock(lines: string[], i: number): boolean {
 function panicPrintInsideGreenRun(lines: string[], i: number): boolean {
   let prevResult = -1;
   for (let k = i - 1; k >= 0; k--) {
-    if (LIBTEST_TARGET_RESULT_RE.test(lines[k])) {
+    if (LIBTEST_TARGET_RESULT_RE.test(lines[k] ?? "")) {
       prevResult = k;
       break;
     }
   }
   let runStart = -1;
   for (let k = i - 1; k > prevResult; k--) {
-    if (LIBTEST_RUN_BANNER_RE.test(lines[k])) {
+    if (LIBTEST_RUN_BANNER_RE.test(lines[k] ?? "")) {
       runStart = k;
       break;
     }
   }
   if (runStart === -1) return false;
   for (let k = i + 1; k < lines.length; k++) {
-    if (LIBTEST_TARGET_RESULT_RE.test(lines[k])) return LIBTEST_GREEN_CLOSE_RE.test(lines[k]);
+    if (LIBTEST_TARGET_RESULT_RE.test(lines[k] ?? "")) {
+      return LIBTEST_GREEN_CLOSE_RE.test(lines[k] ?? "");
+    }
   }
   return false;
 }
@@ -246,12 +248,13 @@ export function panicIsCapturedPrint(stream: string, name: string | undefined): 
   let failedSeen = false;
   const headers: number[] = [];
   for (let i = 0; i < lines.length; i++) {
-    const m = LIBTEST_PER_TEST_VERDICT_RE.exec(lines[i]);
+    const line = lines[i] ?? "";
+    const m = LIBTEST_PER_TEST_VERDICT_RE.exec(line);
     if (m !== null && m[1] === name) {
       if (m[2] === "ok") okSeen = true;
       else failedSeen = true;
     }
-    if (RUST_PANIC_NAME_RE.exec(lines[i])?.[1] === name) headers.push(i);
+    if (RUST_PANIC_NAME_RE.exec(line)?.[1] === name) headers.push(i);
   }
   if (okSeen) return true;
   if (failedSeen) return false;

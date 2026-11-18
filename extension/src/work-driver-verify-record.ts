@@ -38,7 +38,7 @@ export interface RanVerifyRecord {
    */
   failures: string[];
   /** One entry per worktree whose own verify run failed: its cwd and failure text. */
-  perWorktree: Array<{ cwd: string; text: string }>;
+  perWorktree: Array<{ cwd: string; text: string; raw?: string }>;
   /** The consolidated run's raw failure stream, when that run failed. */
   consolidatedRaw?: string;
 }
@@ -377,10 +377,7 @@ export function depsHintApplies(output: string): boolean {
  * test's captured panic became a "known" assertion to the flake gate. A
  * caller that has only the record passes nothing and gets the honest floor.
  */
-export function gatePerAssertion(
-  failureText: string | undefined,
-  stream?: string,
-): string | null {
+export function gatePerAssertion(failureText: string | undefined, stream?: string): string | null {
   if (failureText === undefined) return null;
   const extracted = extractSpecificAssertion(failureText, stream ?? failureText);
   return extracted === NO_SPECIFIC_ASSERTION ? null : extracted;
