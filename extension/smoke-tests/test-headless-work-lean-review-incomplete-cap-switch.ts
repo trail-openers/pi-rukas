@@ -37,6 +37,7 @@ import {
   fixedWaveLog,
   goldenLog,
   judgedReviewStep,
+  malformedRoundsReviewStep,
   passNoRecordReviewStep,
   republishedAfterReview,
   waveNoRoundReviewStep,
@@ -324,6 +325,50 @@ for (const [value, want] of [
     deadPush.cap === "review-incomplete" && deadPush.reviewComplete === false,
     `wave-arm dead-push: an outcome-less publish after a fixed review whose wave head matches the published head fails closed (got ${String(deadPush.cap)} / ${String(deadPush.reviewComplete)})`,
   );
+}
+
+// ─── (6) A `rounds` ARRAY IS ONLY EVIDENCE WHEN ITS ENTRIES ARE ROUNDS ─────
+// The precondition above asks that `rounds` be present and non-empty; array-ness and length
+// are not the same question as "does this entry record a judged round". `[null]`, `["x"]`,
+// `[7]` and `[{ CRITICAL: 0 }]` (three of the four severities missing) each satisfied the
+// length test, so the projection handed the host `awaiting-human-merge` with
+// `reviewComplete: true` on evidence that is not a round at all — the defect this cap
+// exists to refuse, reintroduced one level down by the fix meant to close it. The shape
+// rule is the loader's own (`reviewRoundProblem`), asked here rather than restated, and the
+// sibling gates reader re-checks per-round shape for the same reason. The all-zero round is
+// driven through the SAME builder as the positive control, so a refusal that also refused
+// it fails here as the fixture rather than passing as the rule.
+{
+  const ready = leanLog({ prUrl: URL, draft: false });
+  // A fresh copy per drive, the way `review-tally.ts`'s `attach` hands out clones: one
+  // shared object under the projection's hands would let a mutation leak between arms.
+  const allZero = () => [{ CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 }];
+  const judged = malformedRoundsReviewStep(allZero());
+  const wellFormed = (await driveLean("handed-back", 10, withReviews(ready, [judged]))).issue ?? {};
+  assert(
+    wellFormed.prState === "ready" &&
+      wellFormed.cap === "awaiting-human-merge" &&
+      wellFormed.reviewComplete === true,
+    `rounds well-formed: the all-zero round on the same fixture answers complete, so the refusals below are the shape rule and not the fixture (${JSON.stringify([wellFormed.prState, wellFormed.cap, wellFormed.reviewComplete])})`,
+  );
+  for (const [label, rounds] of [
+    ["null entry", [null]],
+    ["round missing three severities", [{ CRITICAL: 0 }]],
+    ["string entry", ["x"]],
+    ["number entry", [7]],
+  ] as [string, unknown[]][]) {
+    const malformed =
+      (await driveLean("handed-back", 10, withReviews(ready, [malformedRoundsReviewStep(rounds)])))
+        .issue ?? {};
+    assert(
+      malformed.prState === "ready",
+      `rounds ${label}: publish's own rule still calls this PR ready — only the round-shape rule can refuse it (${String(malformed.prState)})`,
+    );
+    assert(
+      malformed.cap === "review-incomplete" && malformed.reviewComplete === false,
+      `rounds ${label}: a returned review whose rounds array holds no round tally certifies nothing (got ${String(malformed.cap)} / ${String(malformed.reviewComplete)})`,
+    );
+  }
 }
 
 console.log(`\nexit ${String(failures())}`);

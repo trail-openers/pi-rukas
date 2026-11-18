@@ -21,6 +21,7 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import type { OutcomeKind } from "../lean/machine.ts";
+import { reviewRoundProblem } from "../lean/state-outcome-gates.ts";
 import { validPrUrl } from "../lean/state-outcome.ts";
 import type { Outcome, Step } from "../lean/state.ts";
 import { newestDecided } from "../lean/state.ts";
@@ -185,9 +186,13 @@ const REVIEW_FIXED: OutcomeKind<"review"> = "fixed";
  * behind a round that ran. The loader cannot close the gap the other way: it bounds `rounds`
  * from above and never asks for one (`reviewRecordProblem` accepts an empty array), so a
  * record that reaches this projection by any other route can name a wave's head with no
- * round vouching for it. A record of either returned kind whose `rounds` is absent or
- * empty therefore answers `false` BEFORE either reading is asked: a head no round is on
- * record as judged is a head no lens read, whatever its waves name or its position says.
+ * round vouching for it. A record of either returned kind whose `rounds` is absent, empty,
+ * or holding an entry that is not a round tally by the record validator's own rule
+ * (`reviewRoundProblem` — the loader's per-round shape check, asked here rather than
+ * restated) therefore answers `false` BEFORE either reading is asked: a head no round is on
+ * record as judged is a head no lens read, whatever its waves name or its position says —
+ * and `[null]`, `["x"]`, `[7]` or a round missing three of the four severities is no more a
+ * judged round than no array at all.
  *
  * Then the newest `review` step itself answers in three ways:
  *
@@ -223,10 +228,13 @@ export function reviewCompleteOf(steps: Step[]): boolean {
   if (outcome?.kind !== REVIEW_DONE && outcome?.kind !== REVIEW_FIXED) return false;
   // The precondition for BOTH readings, outranking each as the bound's presence does:
   // no record the step's own writer can leave behind carries a returned kind without a
-  // judged round (see the jsdoc), so a record that names none is refused before
-  // position or wave identity can certify it.
+  // judged round (see the jsdoc), so a record that names none — or names entries that are
+  // not rounds — is refused before position or wave identity can certify it. The shape
+  // rule is the loader's own, not a second opinion written here: an array of non-rounds
+  // is array-shaped non-evidence, and this precondition is the last line of defence.
   const rounds = outcome?.review?.rounds;
   if (!Array.isArray(rounds) || rounds.length === 0) return false;
+  if (rounds.some((round) => reviewRoundProblem(round) !== undefined)) return false;
   const wave = outcome?.kind === REVIEW_FIXED ? lastWaveHead(outcome) : undefined;
   if (wave === undefined) return lastAttempt(steps, "publish") < review;
   // Undecided-inclusive, as the position rule is: one publish attempt after the review that

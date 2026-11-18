@@ -41,6 +41,7 @@
  * backlog in this change. The steps are the same records, written by the same `stepWith`.
  */
 
+import type { ReviewRecord } from "../../src/lean/state-outcome-gates.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import { CLOCK } from "./lean-engine-fixtures.ts";
 import { HEAD, URL, leanLog, stepWith } from "./lean-result-fixture.ts";
@@ -135,6 +136,29 @@ export function emptyRecordReviewStep(n = 0): Step {
       kind: "fixed",
       reason: "adversarial and six-lens review clean on the fix",
       review: { rounds: [], waves: [] },
+    },
+    n,
+  );
+}
+
+/** A `done` review record whose `rounds` array is present and non-empty but holds one
+ * entry that is NOT a round tally — `null`, `"x"`, `7`, or a round naming one of the four
+ * severities. Array-ness and length alone satisfied the projection's precondition, so each
+ * of these read as a judged round and handed the host `awaiting-human-merge` with
+ * `reviewComplete: true` on evidence that is not a round at all — the defect this cap
+ * exists to refuse, reintroduced one level down by the precondition meant to close it. No
+ * production writer leaves one behind (`review.ts` folds `roundCounts`, which always names
+ * all four keys), and the loader's `reviewRecordProblem` refuses the record upstream — but
+ * the precondition is the last line of defence precisely because a `Step[]` need not have
+ * passed through the loader, so it asks the loader's own per-round question rather than a
+ * second, weaker one of its own. */
+export function malformedRoundsReviewStep(rounds: unknown[], n = 0): Step {
+  return stepWith(
+    "review",
+    {
+      kind: "done",
+      reason: "adversarial and six-lens review clean",
+      review: { rounds, waves: [] } as unknown as ReviewRecord,
     },
     n,
   );
