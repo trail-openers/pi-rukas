@@ -325,7 +325,7 @@ export async function compareWithBaseline(
     const changeFailure = opts.changeFailures.map((f) => f.text).join("\n");
     const runs = baseRunsProse(confirmation);
     opts.failures.unshift(
-      `${baselineRedMessage(confirmation.first, { cmd, baseSha, timeoutMs, changeFailure })}${runs === "" ? "" : ` — ${runs}`}`,
+      baselineRedMessage(confirmation.first, { cmd, baseSha, timeoutMs, changeFailure, runs }),
     );
     return {
       verdict: { ...reused, reused: true },
@@ -421,7 +421,7 @@ export async function compareWithBaseline(
   }
   const runs = baseRunsProse(confirmation);
   opts.failures.unshift(
-    `${baselineRedMessage(arm, { cmd, baseSha, timeoutMs, changeFailure })}${runs === "" ? "" : ` — ${runs}`}`,
+    baselineRedMessage(arm, { cmd, baseSha, timeoutMs, changeFailure, runs }),
   );
   // #1765 — the verdict is RETURNED, not re-derived by the caller from the entry
   // this wrote: the `red-timed-out` arm leads its entry with `[verify-timeout]`,

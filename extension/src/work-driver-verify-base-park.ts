@@ -86,12 +86,13 @@ export function baseHealthRedEvidence(
   const tally = arm.status === "red" ? summaryCount(arm.rawStream) : undefined;
   const baseRuns = confirmation === undefined ? "" : baseRunsProse(confirmation);
   return {
-    message: `${baselineRedMessage(arm, {
+    message: baselineRedMessage(arm, {
       cmd: verdict.command,
       baseSha: verdict.baseSha,
       timeoutMs: verdict.tierBoundMs,
       changeFailure: "",
-    })}${baseRuns === "" ? "" : ` — ${baseRuns}`}`,
+      runs: baseRuns,
+    }),
     ...(tally === undefined ? {} : { tally }),
     ...(baseRuns === "" ? {} : { baseRuns }),
   };

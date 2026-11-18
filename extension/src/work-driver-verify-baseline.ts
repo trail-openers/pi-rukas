@@ -29,9 +29,9 @@ import { CAP_EVIDENCE_PER_FAILURE_MAX } from "./work-develop-cap-evidence.ts";
 import {
   NO_SPECIFIC_ASSERTION,
   extractSpecificAssertion,
-  looksLikeCredential,
   sharesAssertion,
 } from "./work-driver-consolidation-classify.ts";
+import { detailLooksCredential } from "./work-driver-verify-credential-screen.ts";
 import { extractAttributedTail } from "./work-driver-exec-error.ts";
 import {
   BASELINE_STALE_BASE_MARKER,
@@ -80,6 +80,13 @@ const CAP_EVIDENCE_BOUND = CAP_EVIDENCE_PER_FAILURE_MAX;
  * they act on. The two explain routes still carry the full advice.
  */
 const MIN_ASSERTION_CHARS = 120;
+
+/**
+ * The recognition floor the cmd is clipped down to when the frame alone has
+ * eaten the window (#2341 fix wave 4, H3) — long enough for the operator to
+ * name the command back, short enough to buy the assertion its room.
+ */
+const CMD_FLOOR = 12;
 
 /**
  * The ONE naming rule for a baseline probe's throwaway worktree. Exported
@@ -338,18 +345,31 @@ export async function probeBaselineVerify(
  * made only when the base assertion appears in it. The stale-base probe that
  * decides the closing advice lives in `work-driver-verify-baseline-stale.ts`
  * (#2341) and is asked by `probeBaselineVerify`, on the freshly-red arm only.
+ *
+ * #2341 fix wave 4 (H3) — the bound is enforced on the PUBLISHED entry: the
+ * two-run prose the publishers used to append after the return is passed in
+ * as `runs` and budgeted inside it. A message composed to exactly the bound
+ * and then extended published past the bound it claimed to enforce.
  */
 export function baselineRedMessage(
   verdict: RedBaselineVerdict,
-  opts: { cmd: string; baseSha: string; timeoutMs: number; changeFailure: string },
+  opts: {
+    cmd: string;
+    baseSha: string;
+    timeoutMs: number;
+    changeFailure: string;
+    /** The publishers' two-run prose, budgeted as part of the entry (#2341 H3). */
+    runs?: string;
+  },
 ): string {
   const where = `on a clean checkout of the cycle's base commit ${opts.baseSha.slice(0, 12)}, without this change`;
+  const suffix = opts.runs === undefined || opts.runs === "" ? "" : ` — ${opts.runs}`;
   if (verdict.status === "red-timed-out") {
     // #1509 — the knob named here is the one that governs the tier the probe
     // ran (the suite tier: it re-runs `.pi/verify-cmd` at base), and the bound
     // is the caller's `timeoutMs` threaded in rather than re-read, so the text
     // can only ever describe the run that actually happened.
-    return `${BASELINE_RED_MARKER} ${VERIFY_TIMEOUT_LABEL} verify command \`${opts.cmd}\` exceeded its ${boundText(opts.timeoutMs)} timeout ${where} — the gate cannot finish inside its bound on this host whatever the diff contains. Raise ${TIER_KNOB.suite} (or .pi/${TIER_TIMEOUT_FILE.suite}, or ${VERIFY_TIMEOUT_ENV} in the environment) or make the gate faster; the failures below do not implicate this change`;
+    return `${BASELINE_RED_MARKER} ${VERIFY_TIMEOUT_LABEL} verify command \`${opts.cmd}\` exceeded its ${boundText(opts.timeoutMs)} timeout ${where} — the gate cannot finish inside its bound on this host whatever the diff contains. Raise ${TIER_KNOB.suite} (or .pi/${TIER_TIMEOUT_FILE.suite}, or ${VERIFY_TIMEOUT_ENV} in the environment) or make the gate faster; the failures below do not implicate this change${suffix}`;
   }
   const same =
     verdict.assertion !== null && sharesAssertion(opts.changeFailure, verdict.assertion)
@@ -368,27 +388,48 @@ export function baselineRedMessage(
   // as "mainline does not explain the red".
   const stale = verdict.staleBase;
   const behind = stale?.status === "behind" ? stale : undefined;
-  // #2341 fix wave (M2) — the subjects below come from `git log --oneline` on
-  // the operator's repository and rode, verbatim until now, into a PUBLIC
+  // #2341 fix wave (M2) / fix wave 4 — the subjects below come from
+  // `git log --oneline` on the operator's repository and ride into a PUBLIC
   // handoff (cap evidence and the issue body). Each is run through
-  // `redactSecrets`, and a subject `looksLikeCredential` rejects is dropped
-  // whole — the same screen `isNamedFailureLine` applies to gate output. An
-  // author who pasted a credential into a commit subject must not have it
-  // published again by the gate that reports their base.
-  const shownCommits = behind
-    ? behind.commits
-        .slice(0, 2)
-        .map((c) => (looksLikeCredential(c) ? undefined : redactSecrets(c).text.slice(0, 60)))
-        .filter((c): c is string => c !== undefined)
-    : [];
+  // `redactSecrets`, and a subject the VERIFY-EVIDENCE credential screen
+  // (`detailLooksCredential`, the same one the record's channels and the
+  // header-detail harvest ask) rejects is dropped whole. The screen used to be
+  // the keyword-shaped `looksLikeCredential` alone, which has no arm for an
+  // unprefixed base64 blob — the shape an author who pasted a key into a
+  // subject actually prints.
+  const subjectCandidates = behind ? behind.commits.slice(0, 2) : [];
+  const shownCommits: string[] = [];
+  for (const c of subjectCandidates) {
+    if (detailLooksCredential(c)) continue;
+    shownCommits.push(redactSecrets(c).text.slice(0, 60));
+  }
+  // The ` (+N more)` disclosure counts against what was SHOWN, not against
+  // the two slots — a screen-dropped subject is otherwise silently uncounted
+  // — and the drop itself is disclosed as withheld.
+  const withheldSubjects = subjectCandidates.length - shownCommits.length;
+  // #2341 fix wave 4 — the branch name is `git symbolic-ref` output from the
+  // operator's clone and reached the public handoff unscreened while its
+  // subjects were screened. Same screen; on a hit the arm keeps its value
+  // (the divergence count is the actionable half) under the fixed name.
+  const branchLabel =
+    behind === undefined
+      ? ""
+      : detailLooksCredential(behind.branch)
+        ? "the default branch"
+        : redactSecrets(behind.branch).text;
+  const shownMore = behind === undefined ? 0 : behind.commits.length - shownCommits.length;
   let middle =
     behind === undefined
       ? "The gate was red before this change was written, so no change can pass it; the failures below cannot be attributed to this diff until the base is green. "
       : "";
   const closing = behind
-    ? `${BASELINE_STALE_BASE_MARKER} the base trails ${behind.branch} by ${behind.commitsBehind} commits${
+    ? `${BASELINE_STALE_BASE_MARKER} the base trails ${branchLabel} by ${behind.commitsBehind} commits${
         shownCommits.length > 0 ? ` — ${shownCommits.join("; ")}` : ""
-      }${behind.commits.length > 2 ? ` (+${behind.commits.length - 2} more)` : ""}: the red may be ${behind.branch}'s, not the base's (divergence, not cause); re-run on a base that includes ${behind.branch}`
+      }${shownMore > 0 ? ` (+${shownMore} more)` : ""}${
+        withheldSubjects > 0
+          ? ` (${withheldSubjects} subject${withheldSubjects > 1 ? "s" : ""} withheld)`
+          : ""
+      }: the red may be ${branchLabel}'s, not the base's (divergence, not cause); re-run on a base that includes ${branchLabel}`
     : `Fix the gate at the base commit (or the host it runs on), then re-run${
         stale?.status === "unknown"
           ? ` (default-branch staleness could not be established: ${stale.reason})`
@@ -405,19 +446,34 @@ export function baselineRedMessage(
   // clause in prose the operator has just read, and both explain routes still
   // carry the full advice), and clip the assertion's TAIL only when even that
   // is not enough — its head is the half that names the test, the file and the
-  // line. Only an operator-authored verify command longer than the window can
-  // still overflow, and that string is quoted whole by design (#1765 routes
-  // the cap on the command named INSIDE the entry).
-  const lead = `${BASELINE_RED_MARKER} verify command \`${opts.cmd}\` ALSO FAILS ${where} — assertion at base: `;
-  const budgetFor = (mid: string): number =>
-    Math.max(0, CAP_EVIDENCE_BOUND - lead.length - `${same}. ${mid}${closing}`.length);
-  if (budgetFor(middle) < MIN_ASSERTION_CHARS) middle = "";
-  const budget = budgetFor(middle);
+  // line. #2341 fix wave 4 (H3): when even the frame leaves no room, the room
+  // is bought from the one unbounded part — the operator-authored cmd, clipped
+  // with its own marker to a recognition floor — rather than emitting a lone
+  // `…` as "the assertion" while the entry still overflows.
+  const leadOf = (cmdText: string): string =>
+    `${BASELINE_RED_MARKER} verify command \`${cmdText}\` ALSO FAILS ${where} — assertion at base: `;
+  const frame = (mid: string, cmdText: string): number =>
+    leadOf(cmdText).length + `${same}. ${mid}${closing}${suffix}`.length;
+  let cmdText = opts.cmd;
+  if (CAP_EVIDENCE_BOUND - frame(middle, cmdText) < MIN_ASSERTION_CHARS) middle = "";
+  let budget = CAP_EVIDENCE_BOUND - frame(middle, cmdText);
+  if (budget < 1) {
+    const buy = Math.min(
+      MIN_ASSERTION_CHARS - budget,
+      Math.max(0, opts.cmd.length - CMD_FLOOR - 1),
+    );
+    if (buy > 0) {
+      cmdText = `${opts.cmd.slice(0, opts.cmd.length - buy)}\u2026`;
+      budget = CAP_EVIDENCE_BOUND - frame(middle, cmdText);
+    }
+  }
   const shown =
-    assertionText.length <= budget
-      ? assertionText
-      : `${assertionText.slice(0, Math.max(0, budget - 1))}\u2026`;
-  return `${lead}${shown}${same}. ${middle}${closing}`;
+    budget <= 0
+      ? ""
+      : assertionText.length <= budget
+        ? assertionText
+        : `${assertionText.slice(0, budget - 1)}\u2026`;
+  return `${leadOf(cmdText)}${shown}${same}. ${middle}${closing}${suffix}`;
 }
 
 /** One failure of the change's own verify run, for the baseline comparison. */ export interface ChangeFailure {

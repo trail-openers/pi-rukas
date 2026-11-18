@@ -255,5 +255,105 @@ const CARGO = `${RUST_CARGO_STREAM}\n`;
   );
 }
 
+// 9 — #2341 fix wave 4 (H3): the 800-char bound must be enforced on the
+// PUBLISHED entry, not on a string no publisher emits. Both publishers append
+// the two-run prose (` — base run 1: FAILED; base run 2: FAILED`) after the
+// renderer's return, so a message composed to exactly the bound published past
+// it. The renderer now takes the `runs` prose and composes the WHOLE entry
+// inside the bound.
+{
+  const longAssertion = `thread '${NESSIE_TEST}' panicked at ${RUST_PANIC_AT}: ${"m".repeat(400)}`;
+  const runs = "base run 1: FAILED; base run 2: FAILED";
+  const entry = baselineRedMessage(
+    redArm(longAssertion, {
+      status: "behind",
+      branch: "main",
+      commitsBehind: 9,
+      commits: [
+        `fix(a): ${"s".repeat(58)}`,
+        `fix(b): ${"t".repeat(58)}`,
+        "fix(c): 3",
+        "fix(d): 4",
+      ],
+    }),
+    { cmd: "bash scripts/verify-with-extra-stage.sh", baseSha: "0123456789abcdef0123456789", timeoutMs: 60_000, changeFailure: "", runs },
+  );
+  assert(
+    entry.includes(runs),
+    `published entry (#2341 H3): the runs prose the publishers append is part of the rendered entry (got ${entry.slice(-80)})`,
+  );
+  assert(
+    entry.length <= 800,
+    `published entry (#2341 H3): the FULL published entry — not just the pre-suffix string — fits the cap-evidence bound (${entry.length})`,
+  );
+  assert(
+    entry.startsWith(BASELINE_RED_MARKER) &&
+      entry.includes("bash scripts/verify-with-extra-stage.sh"),
+    "published entry (#2341 H3): the marker and the quoted command survive the tighter budget",
+  );
+}
+
+// 10 — #2341 fix wave 4 (H3, same function): at the extreme the frame itself
+// (a very long operator-authored verify command) leaves NO room for the
+// assertion. Before, the renderer emitted a lone `…` as the "assertion" and
+// the entry still overflowed the bound. Now the room is bought from the
+// unbounded part — the cmd is clipped with its own marker — and the entry
+// fits.
+{
+  const longCmd = `bash -c '${"verify --stage ".repeat(60)}'`;
+  const msg = baselineRedMessage(redArm(RUST_PANIC_ASSERTION), {
+    cmd: longCmd,
+    baseSha: "0123456789abcdef0123456789",
+    timeoutMs: 60_000,
+    changeFailure: "",
+  });
+  assert(
+    msg.length <= 800,
+    `budget 0 (#2341 H3): an over-long command no longer pushes the entry past the bound while quoting a lone ellipsis (${msg.length})`,
+  );
+  assert(
+    msg.includes("\u2026`") && !msg.includes(": \u2026. ") && msg.includes("panicked at"),
+    `budget 0 (#2341 H3): the cmd is clipped with its own marker and the assertion keeps its identity (${JSON.stringify(msg.slice(msg.length - 120))})`,
+  );
+}
+
+// 11 — #2341 fix wave 4 (MEDIUMs): the behind-branch name and the commit
+// subjects reach the public handoff through a screen. (a) The SUBJECT screen
+// is the verify-evidence one (`detailLooksCredential`), not just the
+// keyword-shaped `looksLikeCredential` — a subject carrying an unprefixed
+// base64 blob (no keyword for the weak screen to anchor on) is dropped. (b)
+// The `(+N more)` disclosure counts against what was SHOWN, not against the
+// two slots, and a screen-dropped subject is disclosed as withheld. (c) The
+// branch name gets the same screen, falling back to the fixed
+// `the default branch` on a hit.
+{
+  const blob = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVoxMjM0NTY3ODkgc2lnbmluZyBrZXkgYm9keQ";
+  const msg = baselineRedMessage(
+    redArm(RUST_PANIC_ASSERTION, {
+      status: "behind",
+      branch: `main-${blob}`,
+      commitsBehind: 2,
+      commits: [`chore: rotate ${blob}`, "fix(a): keep me"],
+    }),
+    { cmd: CMD, baseSha: "0123456789abcdef0123456789", timeoutMs: 60_000, changeFailure: "" },
+  );
+  assert(
+    !msg.includes(blob.slice(0, 40)),
+    `screens (#2341 M): the stricter screen refuses the opaque-run subject the weak screen admits — no blob reaches the handoff (got ${msg.slice(0, 400)})`,
+  );
+  assert(
+    msg.includes("fix(a): keep me"),
+    `screens (#2341 M): the ordinary subject beside it still shows (got ${msg.slice(0, 400)})`,
+  );
+  assert(
+    msg.includes("(+1 more)") && /subject(?:s)? withheld/.test(msg),
+    `screens (#2341 M): the disclosure counts against what was shown and marks the withheld subject (got ${msg.slice(0, 400)})`,
+  );
+  assert(
+    msg.includes("the default branch") && !msg.includes(`main-${blob.slice(0, 20)}`),
+    `screens (#2341 M): a credential-shaped branch name renders as the fixed 'the default branch' (got ${msg.slice(0, 400)})`,
+  );
+}
+
 rmSync(root, { recursive: true, force: true });
 process.exit(exit);
