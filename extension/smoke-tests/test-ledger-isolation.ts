@@ -95,6 +95,12 @@ const ISOLATION_MARKERS = [
   // The shared helper module self-isolates on import (lib/
   // review-ledger-test-helpers.ts, #1069) — importing it isolates the file.
   "review-ledger-test-helpers",
+  // The helper's own entry point: a file that calls it is isolated by that call
+  // (the helper always points at a fresh private temp file, #1449). Named
+  // separately from the module because the re-ask suite re-exports it through
+  // lib/adversarial-reask-fixtures.ts, so the module path never appears in the
+  // calling file — only the call does.
+  "isolateLedger(",
   // The findings-memory fixture (lib/review-findings-fixtures.ts, #1125) points
   // the ledger AND the findings file at a per-fixture temp dir in its factory,
   // so a test that builds its repo through `setupReviewFixture` is isolated

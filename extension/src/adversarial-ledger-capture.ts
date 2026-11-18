@@ -17,6 +17,8 @@ import {
   writeAdversarialLedgerEntry,
 } from "./adversarial-ledger.ts";
 import { isToolPathProvenance } from "./adversarial-loop-params.ts";
+import type { LoopResultState } from "./adversarial-verdict.ts";
+import { synthesizeResult } from "./adversarial-verdict.ts";
 import { execp } from "./exec.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -322,6 +324,8 @@ export function makeLedgerWrite(opts: {
  * binding is captured by the LAST round that read its diff and dispatched a
  * reviewer; the writer refuses the row when the tool-path bindings do not hold.
  */
+export type PreRoundState = LoopResultState & { text: string };
+
 export function makeLoopLedger(params: {
   workCwd?: string;
   branch?: string;
@@ -342,8 +346,22 @@ export function makeLoopLedger(params: {
    * the same text the caller sees. */
   decorate: (raw: DispatchResult) => DispatchResult;
   note: (result: DispatchResult) => DispatchResult;
-}): { binding: BindingState; write: (raw: DispatchResult) => DispatchResult } {
+}): {
+  binding: BindingState;
+  write: (raw: DispatchResult) => DispatchResult;
+  /** A reportOnly loop whose verdict policy was unrecognised — an infrastructure
+   * failure, on the ledger, before any round ran. Takes the loop's own tally
+   * state so the row and the result report what the loop actually spent. */
+  policyErrorResult: (i: PreRoundState) => DispatchResult;
+  /** A loop with nothing to review — rejected, on the ledger, before any round
+   * ran. Same tally state as {@link policyErrorResult}. */
+  noDiffResult: (i: PreRoundState) => DispatchResult;
+} {
   const binding: BindingState = { captured: { binding: {}, headRef: params.headRef } };
+  // ONE writer for every result the loop returns — the round results and the two
+  // pre-round exits alike. Two `makeLedgerWrite` instances over one
+  // `BindingState` are a liability with no upside: the row is the only record a
+  // parked cycle leaves, so both exits travel the same path the round results do.
   const write = makeLedgerWrite({
     state: binding,
     workCwd: params.workCwd,
@@ -357,7 +375,32 @@ export function makeLoopLedger(params: {
     decorate: params.decorate,
     note: params.note,
   });
-  return { binding, write };
+  // The two results a loop can return BEFORE it has a round to report: a
+  // reportOnly caller whose verdict policy was unrecognised, and a caller that
+  // supplied nothing to review. They are built here because both must travel the
+  // SAME ledger path as every round result — a row for a loop that never judged
+  // the diff is what makes a parked cycle auditable, and a hand-built result at
+  // the call site is how one of them ends up unwritten. `start` is the loop's
+  // own entry instant, threaded in by the caller, so `ms` reports the wall time
+  // the loop actually took rather than the ~0 ms this builder happens to cost.
+  const preRound = (loopOutcome: DispatchResult["loopOutcome"], i: PreRoundState): DispatchResult =>
+    write(
+      synthesizeResult({
+        ok: false,
+        loopOutcome,
+        text: i.text,
+        ms: Date.now() - i.start,
+        usage: i.usage,
+        transcriptPath: i.lastTranscript,
+        model: i.lastModel,
+      }),
+    );
+  return {
+    binding,
+    write,
+    policyErrorResult: (i) => preRound("infra-failure", i),
+    noDiffResult: (i) => preRound("rejected", i),
+  };
 }
 
 /**

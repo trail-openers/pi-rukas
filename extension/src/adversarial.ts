@@ -27,15 +27,17 @@ import {
 } from "./adversarial-reviewer-arm.ts";
 import { type RoundReview, roundAfterReread } from "./adversarial-round-state.ts";
 import { type RoundRecord, createUsageTally } from "./adversarial-usage.ts";
+import { reaskResultText, reaskRoundOnce } from "./adversarial-verdict-reask.ts";
 import {
+  type LoopResultState,
   decideLoopAction,
   fixRefusedResult,
   fixThrewResult,
   parseVerdict,
-  passedRoundText,
-  rejectedLoopText,
+  passingRoundResult,
+  rejectedLoopResult,
+  reportRoundResult,
   summariseFindings,
-  synthesizeResult,
   toRoundRecords,
   workCwdRequiredResult,
 } from "./adversarial-verdict.ts";
@@ -97,7 +99,12 @@ export async function runAdversarialLoop(
   // provenance marker travels UN-narrowed: the writer narrows it itself, so a
   // boolean here would read `false` and take the row off its bindings.
   const toolPath = isToolPathProvenance(params.toolPath);
-  const { binding: ledgerBinding, write: ledgerWrite } = makeLoopLedger({
+  const {
+    binding: ledgerBinding,
+    write: ledgerWrite,
+    policyErrorResult,
+    noDiffResult: preRoundNoDiff,
+  } = makeLoopLedger({
     workCwd: params.workCwd,
     branch: params.branch,
     resolvedBranch: branchResolved,
@@ -111,6 +118,15 @@ export async function runAdversarialLoop(
     note: withLedgerNote,
   });
 
+  // Both pre-round exits — the unrecognised report policy and the nothing-to-
+  // review case — report the tally as it stands when the result is built (#980),
+  // through the same shape the round results use.
+  const preRoundState = (): LoopResultState => ({
+    start,
+    usage,
+    lastTranscript: tally.lastTranscript,
+    lastModel: tally.lastModel,
+  });
   const reportTerminal = params.reportVerdict === "terminal";
 
   // #1978 — the cause THIS round's reviewer child died of, projected onto the
@@ -131,17 +147,10 @@ export async function runAdversarialLoop(
   // failure, never a verdict judged as a routed round.
   const policyError = reportPolicyError(params);
   if (policyError) {
-    return ledgerWrite(
-      synthesizeResult({
-        ok: false,
-        loopOutcome: "infra-failure",
-        text: policyInfraFailureText(policyError),
-        ms: Date.now() - start,
-        usage,
-        transcriptPath: tally.lastTranscript,
-        model: tally.lastModel,
-      }),
-    );
+    return policyErrorResult({
+      ...preRoundState(),
+      text: policyInfraFailureText(policyError),
+    });
   }
   // #859 — resolve the ref range (used by both the diff and the comment check).
   const range = params.base && params.head ? { base: params.base, head: params.head } : null;
@@ -161,18 +170,12 @@ export async function runAdversarialLoop(
   const commentsLineNow = () => formatReportLine(lastComments);
   // #980 — the result builders read the tally at CALL time, never at loop entry.
   const infraCtxNow = (): InfraCtx => ({
-    start,
-    usage,
-    lastTranscript: tally.lastTranscript,
-    lastModel: tally.lastModel,
+    ...preRoundState(),
     toRoundRecords,
   });
   /** The fix-phase failures' result state: the same tally at call time + rounds. */
   const roundStateNow = (completed: RoundRecord[]) => ({
-    start,
-    usage,
-    lastTranscript: tally.lastTranscript,
-    lastModel: tally.lastModel,
+    ...preRoundState(),
     rounds: completed,
   });
   // The diff source for rounds 2+: the caller's `getDiff`, replaced below by a
@@ -185,17 +188,7 @@ export async function runAdversarialLoop(
   // git seam; the tool path is the only caller that runs it.
   const captureRound = makeRoundCapture(ledgerBinding, params.commentExecFn);
   const noDiffResult = (text: string): DispatchResult =>
-    ledgerWrite(
-      synthesizeResult({
-        ok: false,
-        loopOutcome: "rejected",
-        text,
-        ms: Date.now() - start,
-        usage,
-        transcriptPath: tally.lastTranscript,
-        model: tally.lastModel,
-      }),
-    );
+    preRoundNoDiff({ ...preRoundState(), text });
   if (params.diff) {
     // A pasted diff wins outright, so a caller that sent both gets no range read
     // and no range in the reviewer's notice (the loop never diffed a range).
@@ -349,9 +342,30 @@ export async function runAdversarialLoop(
     }
 
     const verdict = parseVerdict(adv.text);
-    rounds.push({ round, verdict, ms: adv.ms });
+    // An unreadable verdict is the round's LAST chance rather than its end: a
+    // reviewer that wrote its report (fence included) performed the review, and
+    // the verdict it signed is recoverable by asking its own session for the one
+    // line. `recovered` is the loop's account of that, read at each return
+    // below; `undefined` means no re-ask ran or nothing was salvaged — which is
+    // the pre-feature behaviour, byte for byte. ONE ask per round number, and it
+    // sits here rather than inside `runPhase` on purpose: `runPhase` is the one
+    // dispatcher shared by every adversarial role in this file — the fixer, and
+    // the lens and code-review-specialist passes of `runPhase`'s consumers — and
+    // a re-ask living there would follow it everywhere. The review dispatch is
+    // the only one this loop makes, so it is the only one that can be asked.
+    const recovered =
+      verdict.verdictParsed === false
+        ? await reaskRoundOnce(adv, round, tally, params, orchestratorJobId, signal)
+        : undefined;
+    const finalVerdict = recovered?.verdict ?? verdict;
+    rounds.push({
+      round,
+      verdict: finalVerdict,
+      ms: adv.ms,
+      ...(recovered === undefined ? {} : { verdictFromReask: true }),
+    });
     if (params.reportOnly) {
-      if (verdict.verdictParsed !== true) {
+      if (finalVerdict.verdictParsed !== true) {
         return ledgerWrite(
           infraFailureResult(
             round,
@@ -366,22 +380,23 @@ export async function runAdversarialLoop(
       // reviewed round records its verdict: a pass is `approved`, anything the
       // driver will route back or reject is `rejected` (replaced by a later pass).
       const terminalRound = reportTerminal ? MAX_ROUNDS : round;
-      const passed = decideLoopAction(verdict.status, terminalRound, MAX_ROUNDS, true) === "pass";
+      const passed =
+        decideLoopAction(finalVerdict.status, terminalRound, MAX_ROUNDS, true) === "pass";
       return ledgerWrite(
-        synthesizeResult({
-          ok: true,
-          loopOutcome: passed ? "approved" : "rejected",
-          text: verdict.findings,
-          ms: Date.now() - start,
-          usage,
-          transcriptPath: tally.lastTranscript,
-          model: tally.lastModel,
-          adversarialRounds: toRoundRecords(rounds),
+        reportRoundResult(roundStateNow(rounds), {
+          passed,
+          findings: reaskResultText(recovered, verdict.findings),
+          rounds,
           ...synthKillCause(reviewerKillCause),
         }),
       );
     }
-    const action = decideLoopAction(verdict.status, round, MAX_ROUNDS, verdict.verdictParsed);
+    const action = decideLoopAction(
+      finalVerdict.status,
+      round,
+      MAX_ROUNDS,
+      finalVerdict.verdictParsed,
+    );
     if (action === "incomplete") {
       // Out of rounds with no readable verdict on the last one. Nothing was
       // reviewed, so this is not an approval and not a rejection — it is the
@@ -409,28 +424,20 @@ export async function runAdversarialLoop(
       // outstanding — the operator (and the lens gate) must tell the two apart;
       // `commit-pr` carries the findings into the PR body.
       const commentsLine = await commentsLineNow();
-      const r = synthesizeResult({
-        ok: true,
-        loopOutcome: "approved",
-        text: passedRoundText({
-          clean: verdict.status === "APPROVED",
-          round,
-          status: verdict.status,
-          findings: verdict.findings,
-          commentsLine,
-          notes: diffRereadNotes,
-        }),
-        ms: Date.now() - start,
-        usage,
-        transcriptPath: tally.lastTranscript,
-        model: tally.lastModel,
-        adversarialRounds: toRoundRecords(rounds),
+      const r = passingRoundResult(roundStateNow(rounds), {
+        clean: finalVerdict.status === "APPROVED",
+        round,
+        status: finalVerdict.status,
+        findings: reaskResultText(recovered, finalVerdict.findings),
+        commentsLine,
+        notes: diffRereadNotes,
+        rounds,
       });
       return ledgerWrite(r);
     }
     if (action === "reject") break;
     if (!params.workCwd) {
-      return ledgerWrite(workCwdRequiredResult(round, verdict, roundStateNow(rounds)));
+      return ledgerWrite(workCwdRequiredResult(round, finalVerdict, roundStateNow(rounds)));
     }
     // #1104 — the fence checks workCwd (a worktree of the caller's repo) before
     // the first fix round, and runs the caller-repo check after every round,
@@ -442,7 +449,7 @@ export async function runAdversarialLoop(
           "developer",
           `round${round}-fix`,
           buildFixPrompt({
-            findings: verdict.findings,
+            findings: finalVerdict.findings,
             context: params.context,
             diff: review.diff,
             round,
@@ -467,7 +474,7 @@ export async function runAdversarialLoop(
     const fix = fixRun.value;
     // Record what this round asked for, so the next fixer does not undo it.
     priorFindings.push(
-      `Round ${round} (${verdict.status}): ${summariseFindings(verdict.findings)}`,
+      `Round ${round} (${finalVerdict.status}): ${summariseFindings(finalVerdict.findings)}`,
     );
     const fixCls = classifyDispatchOutcome(fix);
     if (fixCls.cause !== "success") {
@@ -475,23 +482,14 @@ export async function runAdversarialLoop(
     }
   }
 
-  const last = rounds[rounds.length - 1];
   const commentsLine = await commentsLineNow();
-  const r = synthesizeResult({
-    ok: false,
-    loopOutcome: "rejected",
-    text: rejectedLoopText({
+  return ledgerWrite(
+    rejectedLoopResult(roundStateNow(rounds), {
       maxRounds: MAX_ROUNDS,
-      lastStatus: last?.verdict.status,
-      findings: last?.verdict.findings ?? "",
+      last: rounds[rounds.length - 1],
       commentsLine,
       notes: diffRereadNotes,
+      rounds,
     }),
-    ms: Date.now() - start,
-    usage,
-    transcriptPath: tally.lastTranscript,
-    model: tally.lastModel,
-    adversarialRounds: toRoundRecords(rounds),
-  });
-  return ledgerWrite(r);
+  );
 }

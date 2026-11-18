@@ -101,6 +101,12 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         // body it sits beside. A raw arg carrying the key is dropped the same way
         // the budget arms are.
         reviewCriteria: _criteria,
+        // The re-ask seam is the loop's, not the caller's: its one production
+        // value is absent (which means `spawnVerdictReaskChild`), and the only
+        // writer is the offline suite. A raw arg carrying the key would install
+        // an arbitrary function at the seam a round's verdict is read from —
+        // stripped the same way the budget arms are, for the same reason.
+        verdictReask: _reask,
         ...callerParams
       } = params as typeof params & {
         toolPath?: unknown;
@@ -108,6 +114,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         signal?: unknown;
         onProgress?: unknown;
         reviewCriteria?: unknown;
+        verdictReask?: unknown;
       };
       // #1154 — the verdict policy is set after the raw spread, so a caller
       // cannot spoof it: reportOnly picks "terminal"; anything else gets none.

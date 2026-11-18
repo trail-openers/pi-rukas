@@ -184,6 +184,108 @@ export function rejectedLoopText(i: {
   ].join("\n");
 }
 
+/** The tally state a synthesized result reports from — the same fields every
+ * builder in this file reads, supplied at call time so a partial loop reports
+ * what it actually spent (#980). */
+export interface LoopResultState {
+  start: number;
+  usage: DispatchResult["usage"];
+  lastTranscript: string | undefined;
+  lastModel: string | undefined;
+}
+
+/** The report-only round's result: the reviewed verdict's findings, the pass or
+ * the rejection the per-round routing decided, and the kill cause the reviewer
+ * child died of (if any). Extracted from the loop for the file-size gate; the
+ * clause is a pure function of what the loop already knew, so moving it cannot
+ * change a byte of what the gate reads.
+ */
+export function reportRoundResult(
+  state: LoopResultState,
+  i: {
+    passed: boolean;
+    findings: string;
+    rounds: Array<{ round: number; verdict: AdversarialVerdict; verdictFromReask?: boolean }>;
+    killCause?: DispatchResult["killCause"];
+  },
+): DispatchResult {
+  return synthesizeResult({
+    ok: true,
+    loopOutcome: i.passed ? "approved" : "rejected",
+    text: i.findings,
+    ms: Date.now() - state.start,
+    usage: state.usage,
+    transcriptPath: state.lastTranscript,
+    model: state.lastModel,
+    adversarialRounds: toRoundRecords(i.rounds),
+    ...(i.killCause ? { killCause: i.killCause } : {}),
+  });
+}
+
+/** The passing round's result. `recovered` names the re-ask when the verdict
+ * came from one; with no re-ask the text is exactly what the loop printed before
+ * this existed. */
+export function passingRoundResult(
+  state: LoopResultState,
+  i: {
+    clean: boolean;
+    round: number;
+    status: AdversarialVerdictStatus;
+    findings: string;
+    commentsLine: string;
+    notes: string[];
+    rounds: Array<{ round: number; verdict: AdversarialVerdict; verdictFromReask?: boolean }>;
+  },
+): DispatchResult {
+  return synthesizeResult({
+    ok: true,
+    loopOutcome: "approved",
+    text: passedRoundText({
+      clean: i.clean,
+      round: i.round,
+      status: i.status,
+      findings: i.findings,
+      commentsLine: i.commentsLine,
+      notes: i.notes,
+    }),
+    ms: Date.now() - state.start,
+    usage: state.usage,
+    transcriptPath: state.lastTranscript,
+    model: state.lastModel,
+    adversarialRounds: toRoundRecords(i.rounds),
+  });
+}
+
+/** The cap-spent rejection: the loop exits with no verdict, so the four options
+ * are handed to the operator verbatim and the loop picks none of them. */
+export function rejectedLoopResult(
+  state: LoopResultState,
+  i: {
+    maxRounds: number;
+    last: { verdict: AdversarialVerdict } | undefined;
+    commentsLine: string;
+    notes: string[];
+    rounds: Array<{ round: number; verdict: AdversarialVerdict; verdictFromReask?: boolean }>;
+  },
+): DispatchResult {
+  return synthesizeResult({
+    ok: false,
+    loopOutcome: "rejected",
+    text: rejectedLoopText({
+      maxRounds: i.maxRounds,
+      lastStatus: i.last?.verdict.status,
+      findings: i.last?.verdict.findings ?? "",
+      commentsLine: i.commentsLine,
+      notes: i.notes,
+    }),
+    ms: Date.now() - state.start,
+    usage: state.usage,
+    transcriptPath: state.lastTranscript,
+    model: state.lastModel,
+    adversarialRounds: toRoundRecords(i.rounds),
+  });
+}
+
 interface SynthesizeInput {
   ok: boolean;
   text: string;
@@ -220,12 +322,19 @@ export function synthesizeResult(i: SynthesizeInput): DispatchResult {
 }
 
 export function toRoundRecords(
-  rounds: Array<{ round: number; verdict: AdversarialVerdict; ms: number }>,
+  rounds: Array<{
+    round: number;
+    verdict: AdversarialVerdict;
+    verdictFromReask?: boolean;
+  }>,
 ): DispatchResult["adversarialRounds"] {
   return rounds.map((r) => ({
     round: r.round,
     status: r.verdict.status,
     verdictParsed: r.verdict.verdictParsed !== false,
+    // Printed only when a round's verdict came from the re-ask, so the records
+    // of an ordinary loop stay exactly the objects they always were.
+    ...(r.verdictFromReask === true ? { verdictFromReask: true } : {}),
   }));
 }
 

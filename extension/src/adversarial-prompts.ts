@@ -30,6 +30,7 @@
  */
 
 import { type DiffRange, boundDiffForPrompt } from "./adversarial-diff-cap.ts";
+import { adversarialVerdictReaskEnabled } from "./adversarial-verdict-reask.ts";
 import { COMMENT_JUDGEMENT_PROSE } from "./comment-evidence.ts";
 import { fenceText } from "./lean/text-fence.ts";
 
@@ -252,6 +253,17 @@ export function buildAdversarialPrompt(opts: {
   // names it, so a reviewer never reads the list as part of the body it just
   // read — and it is empty for every caller that does not render one.
   const criteria = opts.reviewCriteria ? `\n\n${opts.reviewCriteria}` : "";
+  // The instruction that keeps a report from being written inside one fence. The
+  // role prompt's `## Output Format` prints its whole template — `VERDICT:`
+  // included — inside a ``` block, and a reviewer that copies that layout
+  // verbatim signs nothing the reader can see: a fenced line is a verdict being
+  // shown, not signed. The re-ask (adversarial-verdict-reask.ts) recovers such a
+  // round; this sentence is what stops it happening. It says WHERE the line goes
+  // and never repeats the values — the menu below is the only place they are
+  // printed, and a second copy would be a second menu to echo.
+  const verdictPlacement = adversarialVerdictReaskEnabled()
+    ? "\n\nThe Output Format in your system prompt is a layout guide only: do not wrap your reply in a code fence. Your verdict line goes at column 0, outside any code fence, as the LAST line of your reply."
+    : "";
   return `You are reviewing the diff below. Context: ${opts.context}
 Round: ${opts.round} of ${opts.maxRounds}.
 
@@ -261,7 +273,7 @@ VERDICT: MINOR_OBSERVATIONS
 VERDICT: ISSUES_FOUND
 VERDICT: CRITICAL_ISSUES_FOUND
 
-Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${scopeSection}${issue}${criteria}${commentSection}${opts.fixDelta ?? ""}
+Use the severity your role prompt defines. Only CRITICAL_ISSUES_FOUND blocks the commit; the others are recorded and carried into the pull request. Inflating a finding's severity to avoid approving is the worst failure mode of this role.${verdictPlacement}${scopeSection}${issue}${criteria}${commentSection}${opts.fixDelta ?? ""}
 
 Diff:
 ${FENCE}diff

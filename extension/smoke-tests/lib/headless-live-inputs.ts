@@ -18,6 +18,7 @@
  * pins the truth table, this roster pins the default.
  */
 import { adversarialPhaseBudgetMs } from "../../src/adversarial-retry.ts";
+import { adversarialVerdictReaskEnabled } from "../../src/adversarial-verdict-reask.ts";
 import { childCodemodeEnabled } from "../../src/child-codemode.ts";
 import { commentRetentionEnabled } from "../../src/comment-retention.ts";
 import { COMMENT_RETENTION_PATHS } from "../../src/comment-retention.ts";
@@ -29,17 +30,17 @@ import { leanGuardFailClosed } from "../../src/lean/guard-fail-closed-switch.ts"
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
 import { leanReportBoundEnabled } from "../../src/lean/handback-report-bound-switch.ts";
 import { leanBuildIssueProseEnabled, leanIssueProseEnabled } from "../../src/lean/issue-prose.ts";
+import {
+  leanPreflightProbeCollectableEnabled,
+  leanPreflightProbeContainEnabled,
+} from "../../src/lean/preflight-probe-switch.ts";
+import { leanReadyFactsOnLoadEnabled } from "../../src/lean/ready-facts-switch.ts";
 import { leanResultGatesEnabled } from "../../src/lean/result-gates-switch.ts";
 import { leanReviewAcceptanceEnabled } from "../../src/lean/review-acceptance-switch.ts";
 import { leanReviewProblemEnabled } from "../../src/lean/review-problem-switch.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRewindLeaseBinds } from "../../src/lean/rewind-lease-switch.ts";
-import {
-  leanPreflightProbeCollectableEnabled,
-  leanPreflightProbeContainEnabled,
-} from "../../src/lean/preflight-probe-switch.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
-import { leanReadyFactsOnLoadEnabled } from "../../src/lean/ready-facts-switch.ts";
 import { leanSubmodulesLocalEnabled } from "../../src/lean/submodules-local-switch.ts";
 import {
   leanHandbackNoHeadRecordEnabled,
@@ -118,6 +119,7 @@ import { tierDefaultReader } from "./verify-tier-pin.ts";
 /** Each entry's name and the live reader its listed default must equal. */
 export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_ADVERSARIAL_PHASE_BUDGET_MS", adversarialPhaseBudgetMs],
+  ["PI_ENSEMBLE_ADVERSARIAL_VERDICT_REASK", adversarialVerdictReaskEnabled],
   ["PI_ENSEMBLE_CAP_KILL_GRACE_MS", capKillGraceMs],
   ["PI_ENSEMBLE_CHILD_BOUND_GRACE_MS", childBoundGraceMs],
   ["PI_ENSEMBLE_DEVELOP_BOUND_MS", developChildBoundMs],

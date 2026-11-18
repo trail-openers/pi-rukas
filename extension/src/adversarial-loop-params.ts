@@ -13,6 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { FixFence } from "./adversarial-fix-guard.ts";
 import type { ReportPolicy } from "./adversarial-policy.ts";
 import type { SiblingScope } from "./adversarial-prompts.ts";
+import type { VerdictReaskFn } from "./adversarial-verdict-reask.ts";
 import type { RunningState } from "./progress.ts";
 import type { OnSlowCallback } from "./slow-notice.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -150,4 +151,17 @@ export type AdversarialLoopParams = ReportPolicy & {
    * child received in `test-adversarial-reviewer-budget.ts`.
    */
   onProgress?: (s: RunningState) => void;
+  /**
+   * The re-ask seam: how a round whose reviewer signed no readable verdict asks
+   * its own session for the verdict line. Set ONLY by the offline tests; every
+   * production caller leaves it absent and gets {@link spawnVerdictReaskChild}
+   * — a real `pi` child on the reviewer's session file. It exists as a param
+   * rather than a module mock because `assertLiveSpawnAllowed` refuses a real
+   * adversarial spawn, and the re-ask is the one dispatch of the round a smoke
+   * test must be able to script without scripting the reviewer too. Because it
+   * is a FUNCTION, the `adversarial_loop` tool strips it from raw args (the tool
+   * schema has no such property) so no caller can install its own reader at the
+   * seam a verdict is decided on — the same treatment the budget arms get.
+   */
+  verdictReask?: VerdictReaskFn;
 };

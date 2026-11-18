@@ -239,6 +239,15 @@ export interface DispatchResult {
     round: number;
     status: AdversarialVerdictStatus;
     verdictParsed: boolean;
+    /**
+     * The round's reviewer signed no readable verdict and this status came from
+     * the re-ask (a second child on the reviewer's own session, asked for the one
+     * line). `status` and `verdictParsed` are read exactly as they were before,
+     * so every existing reader of this record — the lean gate, the fix router,
+     * the re-entry reconstruction — works unchanged; the field exists so a reader
+     * can tell a recovered verdict from one the reviewer signed itself.
+     */
+    verdictFromReask?: boolean;
   }>;
   /** Total review rounds executed; present when the loop exited with no verdict. */
   roundsExecuted?: number;
