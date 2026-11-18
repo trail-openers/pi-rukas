@@ -25,8 +25,13 @@
  * value the tool itself reads, and it is set once, at the one construction site.
  *
  * Three home-derived roots the child still needs are RE-EXPORTED here by name,
- * at the values the parent resolves for them today (R12): `PI_AGENT_DIR` (Pi's
- * own agent dir — model auth and settings live there), `PI_ENSEMBLE_SKILLS_DIR`
+ * at the values the parent resolves for them today (R12): `PI_CODING_AGENT_DIR`
+ * (Pi's own config dir — `models.json`, `auth.json` and `settings.json` live
+ * there, and it is the name Pi reads: `getAgentDir` falls back to `<HOME>/.pi/agent`,
+ * so the redirect would otherwise move a child onto an empty config dir and its
+ * model resolution would die with `Unknown provider`), `PI_AGENT_DIR` (the name
+ * pi-rukas's own modules read for the same tree — transcripts, the findings
+ * store, forwarded extensions), `PI_ENSEMBLE_SKILLS_DIR`
  * (the reviewer's skill file, which the review skill-read cap counts reads of),
  * and `VIPUNE_DATABASE_PATH` — vipune's real variable, not `VIPUNE_DB_PATH`,
  * which vipune ignores (#2357). The last one is the point of the whole
@@ -78,8 +83,23 @@ export const SCRATCH_HOME_VARS = [
  * value the parent resolves today. `VIPUNE_DATABASE_PATH` is vipune's real
  * variable (#2357); `VIPUNE_DB_PATH` is read by pi-rukas's own stats reader and
  * is NOT what the CLI follows, so setting that one would have been a no-op.
+ *
+ * `PI_CODING_AGENT_DIR` and `PI_AGENT_DIR` name the same tree to two different
+ * readers and both are load-bearing, so both travel. `PI_CODING_AGENT_DIR` is
+ * the name PI reads (`config.js` `getAgentDir`), whose fallback is
+ * `<HOME>/.pi/agent`: without the pin a confined child resolves its config dir
+ * under the scratch and finds no `models.json`, `auth.json` or `settings.json`,
+ * which surfaces as `Unknown provider "…"` roughly eight seconds into the run
+ * (#2368). `PI_AGENT_DIR` is the name PI-RUKAS reads — `spawn-support.ts`
+ * (transcripts), `review-store-locator.ts` / `review-state-path.ts` (the
+ * findings store) and `spawn-extension-forward.ts` (installed extensions) all
+ * resolve it with the same `?? <homedir>/.pi/agent` default, and `review-accept
+ * -guard.ts` matches a command text that names `$PI_AGENT_DIR` against the root
+ * it resolves from it — so dropping it would have moved those roots to the
+ * scratch while leaving every reader of it confident nothing had moved.
  */
 export const REEXPORTED_HOME_ROOTS = [
+  "PI_CODING_AGENT_DIR",
   "PI_AGENT_DIR",
   "PI_ENSEMBLE_SKILLS_DIR",
   "VIPUNE_DATABASE_PATH",
@@ -154,6 +174,12 @@ export function reviewerScratchHomeEnv(
   // The re-exports come FIRST so the child's own values are what the child sees
   // for the roots it must keep; each is read from the parent env, falling back
   // to the same default the owning module uses.
+  // Pi's own config dir: pi reads only this name, and its default is derived
+  // from `HOME`, which is precisely the value this function has just redirected.
+  // An empty-string value counts as unset here, as it does in pi's `getAgentDir`.
+  out.PI_CODING_AGENT_DIR = env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent");
+  // pi-rukas's name for the same tree, read by the transcript path, the findings
+  // store and extension forwarding.
   out.PI_AGENT_DIR = env.PI_AGENT_DIR ?? path.join(homedir(), ".pi", "agent");
   out.PI_ENSEMBLE_SKILLS_DIR =
     env.PI_ENSEMBLE_SKILLS_DIR ?? path.join(homedir(), ".pi", "agent", "skills");

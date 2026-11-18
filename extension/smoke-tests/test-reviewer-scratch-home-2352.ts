@@ -52,6 +52,7 @@ function run() {
   const home = path.join(childTmp, SCRATCH_HOME_DIR);
   assert.equal(reviewerScratchHome(childTmp), home, "the scratch is a home/ under the child's dir");
   const parent = {
+    PI_CODING_AGENT_DIR: "/parent/.pi/agent",
     PI_AGENT_DIR: "/parent/.pi/agent",
     PI_ENSEMBLE_SKILLS_DIR: "/parent/skills",
     VIPUNE_DATABASE_PATH: "/parent/vipune.db",
@@ -81,11 +82,20 @@ function run() {
   assert.equal(env.XDG_DATA_HOME, path.join(home, ".local", "share"));
   assert.equal(env.XDG_CACHE_HOME, path.join(home, ".cache"));
 
-  // R12: the three roots survive the redirect at the parent's own values.
+  // R12: the home-derived roots survive the redirect at the parent's own values.
+  // `PI_CODING_AGENT_DIR` is the name PI reads for its config dir and is the
+  // #2368 half of this list; `PI_AGENT_DIR` is pi-rukas's own name for the same
+  // tree — both travel, see the module's jsdoc.
   assert.deepEqual(
     [...REEXPORTED_HOME_ROOTS],
-    ["PI_AGENT_DIR", "PI_ENSEMBLE_SKILLS_DIR", "VIPUNE_DATABASE_PATH"],
+    [
+      "PI_CODING_AGENT_DIR",
+      "PI_AGENT_DIR",
+      "PI_ENSEMBLE_SKILLS_DIR",
+      "VIPUNE_DATABASE_PATH",
+    ],
   );
+  assert.equal(env.PI_CODING_AGENT_DIR, "/parent/.pi/agent");
   assert.equal(env.PI_AGENT_DIR, "/parent/.pi/agent");
   assert.equal(env.PI_ENSEMBLE_SKILLS_DIR, "/parent/skills");
   assert.equal(env.VIPUNE_DATABASE_PATH, "/parent/vipune.db");
@@ -102,6 +112,25 @@ function run() {
   assert.equal(
     reviewerScratchHomeEnv("explore", childTmp, {}, () => "/parent-home").PI_AGENT_DIR,
     path.join("/parent-home", ".pi", "agent"),
+  );
+  // #2368: the name PI itself reads, and the same parent-home default. Left
+  // unset, a confined child would resolve its config dir under the scratch HOME
+  // and die in model resolution with `Unknown provider`.
+  assert.equal(
+    reviewerScratchHomeEnv("explore", childTmp, {}, () => "/parent-home").PI_CODING_AGENT_DIR,
+    path.join("/parent-home", ".pi", "agent"),
+    "PI_CODING_AGENT_DIR falls back to the parent's home, never the scratch's",
+  );
+  assert.notEqual(
+    reviewerScratchHomeEnv("explore", childTmp, {}, () => "/parent-home").PI_CODING_AGENT_DIR,
+    path.join(path.join(childTmp, SCRATCH_HOME_DIR), ".pi", "agent"),
+    "the child's config dir is never inside the scratch HOME",
+  );
+  assert.equal(
+    reviewerScratchHomeEnv("explore", childTmp, { PI_CODING_AGENT_DIR: "" }, () => "/parent-home")
+      .PI_CODING_AGENT_DIR,
+    path.join("/parent-home", ".pi", "agent"),
+    "an empty value is unset here too, as it is in pi's own getAgentDir",
   );
 
   console.log("── who gets it ──");
