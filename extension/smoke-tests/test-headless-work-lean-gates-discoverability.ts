@@ -11,7 +11,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { buildCapabilities, HEADLESS_FEATURES } from "../src/headless/capabilities.ts";
+import { HEADLESS_FEATURES, buildCapabilities } from "../src/headless/capabilities.ts";
 import { HEADLESS_INPUTS } from "../src/headless/inputs.ts";
 import { GATE_SEVERITIES } from "../src/lean/gate-severities.ts";
 import { SEVERITIES } from "../src/review-threshold-types.ts";
@@ -97,8 +97,7 @@ const { assert, failures } = makeAssert();
     "docs/headless.md names the review-incomplete cap and the issues[].reviewComplete field",
   );
   assert(
-    host.includes("awaiting-human-merge` means `ready`") &&
-      host.includes("with every lens judged"),
+    host.includes("awaiting-human-merge` means `ready`") && host.includes("with every lens judged"),
     "docs/headless.md qualifies the awaiting-human-merge-means-ready claim with every lens judged",
   );
 }

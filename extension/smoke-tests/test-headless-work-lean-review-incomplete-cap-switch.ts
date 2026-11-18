@@ -19,15 +19,15 @@
  * that ends cycles on 10 would see a new failure it was never told about.
  */
 
-import { leanReviewIncompleteCapEnabled } from "../src/lean/review-incomplete-cap-switch.ts";
 import { leanResultDocument } from "../src/headless/work-lean-result.ts";
+import { leanReviewIncompleteCapEnabled } from "../src/lean/review-incomplete-cap-switch.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
+import { driveLean } from "./lib/lean-result-fixture.ts";
 import {
   GOLDEN_GATES_OFF,
   GOLDEN_GATES_ON,
   goldenLog,
 } from "./lib/lean-review-incomplete-cap-golden.ts";
-import { driveLean } from "./lib/lean-result-fixture.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -152,7 +152,11 @@ for (const [value, want] of [
     // drop the key from the on arm and the bytes must be the pre-change document with the
     // cap renamed. Nothing else on the record moved.
     const stripped = JSON.parse(text) as { issues: Record<string, unknown>[] };
-    delete stripped.issues[0]?.reviewComplete;
+    // Reflect.deleteProperty, not `delete`: same removal, without the biome `noDelete`
+    // finding on a computed optional-chain delete. The guard keeps the missing-row case a
+    // failed assertion downstream rather than a throw here.
+    const row = stripped.issues[0];
+    if (row) Reflect.deleteProperty(row, "reviewComplete");
     const expected = (gates === "0" ? GOLDEN_GATES_OFF : GOLDEN_GATES_ON).replace(
       /awaiting-human-merge/g,
       "review-incomplete",
