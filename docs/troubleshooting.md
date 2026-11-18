@@ -4077,6 +4077,16 @@ glab waiting on a prompt. The new MR's URL is read from the plain-text line glab
 success. A blank or `-` body is refused by name before anything is exec'd, because `-d -` on
 a create is the flag that would open the editor.
 
+The create runs with the **run's own credentials**: it is a driver exec, not a
+helper subagent, so `GITLAB_TOKEN` (or the operator's `glab` login under
+`GLAB_CONFIG_DIR`) reaches `glab` unchanged and `GITLAB_HOST` picks the instance.
+The credential strip belongs to spawned helper children only; applied to a create
+it leaves neither token nor config root, and a **private** project answers 404 —
+and `glab auth login` cannot repair that, because the redirected config dir is
+not the one holding the login. The only additions to the env are `CI=1` and
+`GIT_TERMINAL_PROMPT=0`, which stop a non-interactive exec waiting on a prompt
+nobody can answer.
+
 ### What to do
 
 Nothing, if your `glab` is current — a build that lists the flags above works. If a cycle

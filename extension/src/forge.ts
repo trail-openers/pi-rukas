@@ -11,7 +11,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { glabCreateEnv, removeGlabCreateEnvDirs } from "./child-forge-env.ts";
+import { glabCreateEnv } from "./child-forge-env.ts";
 import { execp } from "./exec.ts";
 import { forgeChecks } from "./forge-checks.ts";
 import { ciRunLog as ciRunLogImpl } from "./forge-ci-log.ts";
@@ -359,14 +359,9 @@ export function createForge(det: ForgeDetection, opts: CreateForgeOpts = {}): Fo
             opts,
             run,
             withBodyFile,
-            // The create owns the teardown of what this builder allocates: the
-            // forge-config dir it mkdtemps is removed whether the create opens
-            // an MR or throws (see `createPullRequest`). A bare getter would
-            // hand the dir out and forget it.
-            () => {
-              const { env, owned } = glabCreateEnv();
-              return { env, dispose: () => removeGlabCreateEnvDirs(owned) };
-            },
+            // The env the create is exec'd with is the run's own, copied and
+            // added to — no strip, no redirected config root (see `glabCreateEnv`).
+            () => ({ env: glabCreateEnv() }),
           ),
         ),
       ),

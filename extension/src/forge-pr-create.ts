@@ -55,10 +55,10 @@ const GL_MR_URL_LINE = /^https?:\/\/\S+\/-\/merge_requests\/\d+$/;
  * policy stay in one place; this module owns only the per-forge command shape and
  * its reply mapping.
  *
- * `createEnv` hands back the env AND a `dispose` for what building it allocated
- * (the forge-config temp dir), so the create tears that down in a `finally` —
- * on a rejection as much as on a success. The GitHub / off arms never call it,
- * so `dispose` is optional and they leave it unset.
+ * `createEnv` hands back the env the GitLab create is exec'd with — the run's own
+ * credentials copied, with the two non-interactive flags added. It allocates
+ * nothing, so there is nothing to tear down and no `finally` around the run.
+ * The GitHub / off arms never call it.
  */
 export async function createPullRequest(
   forge: ForgeType,
@@ -70,9 +70,10 @@ export async function createPullRequest(
   withBodyFile: WithBodyFile,
   // The env the GitLab create is exec'd with, supplied by the adapter so a test
   // states it rather than inheriting whatever the suite process carries. The
-  // production value is `glabCreateEnv()` — see its comment for why an explicit
-  // env is what closes this call's stdin.
-  createEnv: () => { env: Record<string, string>; dispose?: () => void },
+  // production value is `glabCreateEnv()` — the run's own credentials, which is
+  // what a create on a private project needs; see its comment for why an explicit
+  // env is also what closes this call's stdin.
+  createEnv: () => { env: Record<string, string> },
 ): Promise<NormalizedPullRequest> {
   // An empty body is not a merge request with no description — it is the
   // driver having lost the body, and a create with an empty `-d` (or, worse,
@@ -120,34 +121,28 @@ export async function createPullRequest(
   // `GL_MR_URL_LINE`). A create that printed no such line created nothing, and
   // saying so beats a number 0 that reads as MR #0.
   const built = cmds.prCreateCmd(forge, title, headBranch, body, opts ?? {});
-  const { env, dispose } = createEnv();
-  try {
-    return await run(
-      built,
-      (stdout) => {
-        const line = stdout
-          .split("\n")
-          .map((l) => l.trim())
-          .filter((l) => GL_MR_URL_LINE.test(l))
-          .pop();
-        const parsed = line ? parsePrNumberFromResponse(line) : undefined;
-        if (!parsed) {
-          throw new Error(
-            `forge pr create: glab printed no merge request URL: ${stdout.trim().slice(0, 120)}`,
-          );
-        }
-        return makeMinimalPr(parsed);
-      },
-      // The explicit env strips the forge login and answers "nobody is here"; the
-      // argv carries `-y` so the submission prompt is skipped anyway. Closing this
-      // call's stdin is `execp`'s argv form, which ends the child's stdin so a
-      // prompting CLI reads EOF rather than waiting on a terminal the driver does
-      // not have (test-exec-argv-stdin.ts is the pin).
-      { env },
-    );
-  } finally {
-    // The config dir this call allocated is removed on the rejection path as
-    // well as the success path — a create that failed still allocated it.
-    dispose?.();
-  }
+  const { env } = createEnv();
+  return await run(
+    built,
+    (stdout) => {
+      const line = stdout
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => GL_MR_URL_LINE.test(l))
+        .pop();
+      const parsed = line ? parsePrNumberFromResponse(line) : undefined;
+      if (!parsed) {
+        throw new Error(
+          `forge pr create: glab printed no merge request URL: ${stdout.trim().slice(0, 120)}`,
+        );
+      }
+      return makeMinimalPr(parsed);
+    },
+    // The explicit env answers "nobody is here" and carries the run's own forge
+    // credentials; the argv carries `-y` so the submission prompt is skipped
+    // anyway. Closing this call's stdin is `execp`'s argv form, which ends the
+    // child's stdin so a prompting CLI reads EOF rather than waiting on a terminal
+    // the driver does not have (test-exec-argv-stdin.ts is the pin).
+    { env },
+  );
 }
