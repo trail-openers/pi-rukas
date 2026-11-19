@@ -56,6 +56,7 @@ import { roundCapMergeEnabled } from "../../src/merge-guard-round-cap.ts";
 import { pendingShutdownBoundMs } from "../../src/pending-jobs-signal.ts";
 import { planCacheTtlMs } from "../../src/plan-investigation-cache.ts";
 import { adversarialChildBoundMs, reviewSkillReadCap } from "../../src/review-bounds.ts";
+import { developerBashBoundSeconds, reviewBashBoundSeconds } from "../../src/review-bash-timeout.ts";
 import { lensFixBoundMs, reviewCapMs, reviewWallClockMs } from "../../src/review-budget.ts";
 import { transcriptRetentionDays } from "../../src/runs-retention.ts";
 import { autoSteerEnabled } from "../../src/slow-notice.ts";
@@ -124,6 +125,12 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_CAP_KILL_GRACE_MS", capKillGraceMs],
   ["PI_ENSEMBLE_CHILD_BOUND_GRACE_MS", childBoundGraceMs],
   ["PI_ENSEMBLE_DEVELOP_BOUND_MS", developChildBoundMs],
+  // #2377 — the per-call bash bound a developer child carries. The reader returns
+  // SECONDS (Pi's bash schema unit) while the entry lists MILLISECONDS, and the
+  // gate compares them for equality, so the reader is adapted here the way the
+  // `() => NET_GIT_TIMEOUT_DEFAULT_MS` row adapts a ms constant: the value it
+  // returns IS what an unset/empty knob yields, in the entry's own unit.
+  ["PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS", () => developerBashBoundSeconds()! * 1000],
   ["PI_ENSEMBLE_EXPLORE_BOUND_MS", exploreChildBoundMs],
   ["PI_ENSEMBLE_SETTLED_REAP_MS", settledReapMs],
   ["PI_ENSEMBLE_LENS_BOUND_MS", lensChildBoundMs],
@@ -276,6 +283,10 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // numbers the live readers do with the caps on, not the ones it sees with them
   // off.
   ["PI_ENSEMBLE_REVIEW_SKILL_READS", reviewSkillReadCap],
+  // #2377 — the two per-call bash bounds, both arms of one `tool_call` hook.
+  // Both read `PI_ENSEMBLE_DISPATCH_CAPS`, so SWITCHES clears it: a headless run
+  // must resolve the same numbers the live readers do with the caps on.
+  ["PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS", () => reviewBashBoundSeconds()! * 1000],
   ["PI_ENSEMBLE_ADVERSARIAL_BOUND_MS", adversarialChildBoundMs],
   ["PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS", () => reviewWallClockMs()],
   ["PI_ENSEMBLE_SESSION_REATTACH", sessionReattachEnabled],
@@ -298,6 +309,8 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
 export const SWITCHES: Record<string, string> = {
   PI_ENSEMBLE_LOOP_DETECTOR: "PI_ENSEMBLE_DISPATCH_CAPS",
   PI_ENSEMBLE_REVIEW_SKILL_READS: "PI_ENSEMBLE_DISPATCH_CAPS",
+  PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: "PI_ENSEMBLE_DISPATCH_CAPS",
+  PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS: "PI_ENSEMBLE_DISPATCH_CAPS",
   PI_ENSEMBLE_ADVERSARIAL_BOUND_MS: "PI_ENSEMBLE_DISPATCH_CAPS",
   PI_ENSEMBLE_PARALLEL_GROUPS: "PI_ENSEMBLE_PARALLEL_WORK",
   PI_ENSEMBLE_SLOW_NOTICE_MS: "PI_ENSEMBLE_SLOW_NOTICE",

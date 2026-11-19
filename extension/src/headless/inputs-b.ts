@@ -31,6 +31,7 @@ import {
   str,
 } from "./entry.ts";
 import { HEADLESS_INPUTS_C } from "./inputs-c.ts";
+import { HEADLESS_INPUTS_D } from "./inputs-d.ts";
 
 export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // #1765 — 0 skips the branch step's pre-develop base-health probe (the
@@ -40,6 +41,12 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // own switch, PI_ENSEMBLE_VERIFY=0, skips the probe too.
   flag("DEVELOP_BASELINE_PROBE", true),
   ms("DEVELOP_BOUND_MS", 5_400_000),
+  // #2377 — the wall-clock bound on ONE bash call of a DEVELOPER child, the twin
+  // of REVIEW_BASH_TIMEOUT_MS with its own default. Same child-side `tool_call`
+  // hook, same never-raise rule, same Pi enforcement (nothing is killed). A
+  // measured lean `specify` call sat 41 min until the step bound killed the step.
+  // `0` is the operator's opt-out and warns nothing.
+  ms("DEVELOPER_BASH_TIMEOUT_MS", 900_000),
   dir("DIR", null),
   flag("DISABLE_EXTENSION_FORWARD", false),
   flag("DISABLE_SUBAGENT_GUARD", false),
@@ -370,60 +377,7 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   ...HEADLESS_INPUTS_C,
   str("ROLE", null, "internal"),
   dir("RUNS_DIR", "~/.pi/agent/ensemble-runs"),
-  flag("SAFETY_NET_COMMIT", true),
-  flag("SANDBOX_MODE", false, "sandbox"),
-  input("SCOPE_FANOUT_FACTOR", "number", 3),
-  int("SCOPE_FANOUT_MIN", 6),
-  flag("SCOPE_GATE", true),
-  flag("SEAM_ESCALATION", true),
-  flag("SESSION_REATTACH", false),
-  // #1521 — how long a child that reported may linger before it is reaped.
-  ms("SETTLED_REAP_MS", 60_000),
-  dir("SKILLS_DIR", "~/.pi/agent/skills"),
-  flag("SKIP_RATCHET", true),
-  flag("SLOW_NOTICE", true),
-  ms("SLOW_NOTICE_MS", 1_200_000),
-  int("SLOW_NOTICE_TOKENS", 20_000_000, "cycle", { unit: "tokens" }),
-  int("SLOW_NOTICE_TURNS", 150, "cycle", { unit: "turns" }),
-  flag("SMOKE", true),
-  int("SPAWN_CAP", 64),
-  ms("SPAWN_TIMEOUT_MS", 7_200_000),
-  flag("SPECULATIVE_EXPLORE", false),
-  ms("STALE_THRESHOLD_MS", 900_000, "interactive"),
-  ms("STEP_NOTICE_MS", 5_400_000),
-  flag("STRICT_PERMISSIONS", false),
-  flag("SUBAGENT_MODE", false, "internal"),
-  str("SUBAGENT_MODEL", null),
-  str("SUBAGENT_PROVIDER", null),
-  flag("SYMBOL_MERGE_RETRY", true),
-  // #1454 r2 — a TEST-ONLY fault injection: force the path-claims lock
-  // unreachable so `test-work-driver-claims-concurrent-writers.ts` can prove its
-  // own positive assertion can fail. Listed (not exempted) because the gate
-  // sweeps every `PI_ENSEMBLE_*` read in src/ regardless of who sets it: an
-  // operator who exports it gets an UNSERIALISED claim registry, which is
-  // exactly the kind of outcome-changing knob this table exists to surface.
-  flag("TEST_CLAIMS_LOCK_BLOCKED", false, "internal"),
-  // #1454 r2 — a TEST-ONLY knob: widen the read-modify-write window of a claim
-  // writer by this many ms, so the mutation arm of
-  // `test-work-driver-claims-concurrent-writers.ts` loses a claim
-  // DETERMINISTICALLY instead of only when eight children happen to overlap.
-  // Read ONLY while `PI_ENSEMBLE_TEST_CLAIMS_LOCK_BLOCKED=1` is also set —
-  // `resolveClaimsWindowMs` returns 0 without it — so a production cycle never
-  // waits here and the delay cannot reach a real run.
-  ms("TEST_CLAIMS_WINDOW_MS", 0, "internal"),
-  int("TEST_DELETE_TOLERANCE", 0),
-  // Unset: no budget for any role (#1642); an explicit value arms a ceiling.
-  family(int("TOKEN_BUDGET_<ROLE>", null, "cycle", { unit: "tokens" }), ROLE_MEMBERS),
-  ms("TOOL_INACTIVITY_TIMEOUT_MS", 3_600_000),
-  // #1879 — the compiler-integrity canary. 0 skips it and every guarded tier
-  // then says "compiler integrity not checked" rather than going silent.
-  flag("TOOLCHAIN_CANARY", true),
-  input("TRANSCRIPT_RETENTION_DAYS", "number", 5, "cycle", { unit: "days" }),
-  flag("TRANSIENT_RETRY", true),
-  ms("TRANSIENT_RETRY_BACKOFF_MS", 5_000),
-  flag("TRUST_MODE", false, "internal"),
-  // 0 = off; 1 = nudge at turn 80; any other positive integer is the turn.
-  int("TURN_NUDGE", 0, "cycle", { unit: "turns" }),
+  ...HEADLESS_INPUTS_D,
   // #1250 — 0 disables ONLY the N=1 docs/test unfence, so a single-workstream
   // plan keeps the planner's docs and test fences and the develop gate parks on
   // them as it did before #1250. Distinct from PLAN_UNFENCE, which turns off

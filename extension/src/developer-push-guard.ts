@@ -59,19 +59,21 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { pushRunsCommand, pushesRemote } from "./git-push-command.ts";
+import { isDeveloperRole } from "./review-bounds.ts";
 import { trace } from "./trace.ts";
-
-/** The role this guard speaks to. Every other role is untouched. */
-const DEVELOPER_ROLE = "developer";
 
 /** Operator-only opt-out (see the module header for why it is not harness-set). */
 function developerPushAllowed(): boolean {
   return process.env.PI_ENSEMBLE_ALLOW_DEVELOPER_PUSH === "1";
 }
 
-/** Whether THIS process is a developer child. Read per call, never cached. */
+/** Whether THIS process is a developer child. Read per call, never cached. The
+ *  predicate is the shared one (`review-bounds.ts`), not a local literal: the
+ *  bash bound and the push ban must answer "developer" the same way, or a role
+ *  bounded by one seam is exempt from the other — and `adversarial-developer`
+ *  is exactly the name a substring match would catch. */
 function isDeveloperChild(): boolean {
-  return process.env.PI_ENSEMBLE_ROLE === DEVELOPER_ROLE;
+  return isDeveloperRole(process.env.PI_ENSEMBLE_ROLE ?? "");
 }
 
 /**
