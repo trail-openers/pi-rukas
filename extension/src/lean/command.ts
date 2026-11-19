@@ -391,7 +391,7 @@ export function phase1Handlers(
   handlers.verify = (ctx) => verifyOutcome(ctx, verifyDeps());
   // The two post-publish steps, in the same one-line shape as the ones above: the step body is
   // the algorithm and `<step>Deps()` is the production wiring.
-  Object.assign(handlers, ciLandHandlers(repoRoot, issue), publishHandler());
+  Object.assign(handlers, ciLandHandlers(repoRoot, issue), publishHandler(headless));
   handlers.review = (ctx) => reviewOutcome(ctx, reviewDeps(headless));
   // The two steps that REPORT how the run ended live in `lean/report-handlers.ts`: the only
   // handlers that read the host channel, claim `posted`, or send text outside the process.

@@ -363,7 +363,11 @@ await withEnv({ PI_ENSEMBLE_LEAN_GUARD_FAIL_CLOSED: "0" }, async () => {
     // The same through the production deps object, so the executor `publish`
     // really hands the guard is the one under test.
     const { publishDeps } = await import("../src/lean/publish-deps.ts");
-    wiredErr = await assertPublishableBranch(dir, "lean/production-wired", publishDeps().exec).then(
+    wiredErr = await assertPublishableBranch(
+      dir,
+      "lean/production-wired",
+      publishDeps(false).exec,
+    ).then(
       () => undefined,
       (e: unknown) => e as Error,
     );

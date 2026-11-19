@@ -197,6 +197,8 @@ export interface PublishOpts {
   commandCriteria?: Record<string, string>;
   /** Extra steps appended to the log. */
   extraSteps?: Step[];
+  /** Seams a case replaces: the approved spec and its check child. */
+  depsOver?: Partial<PublishDeps>;
 }
 
 export interface PublishRun {
@@ -466,6 +468,11 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     },
     fetchBody: async () => o.body ?? renderPiSpec(spec),
     forge: async () => forge,
+    issueSpec: async () => undefined,
+    specBlock: async () => {
+      throw new Error("the fixture has no spec block");
+    },
+    ...o.depsOver,
   };
   const { publishOutcome } = await import("../../src/lean/publish.ts");
   // Read at spread time, not built now: `shared` is constructed BEFORE the step

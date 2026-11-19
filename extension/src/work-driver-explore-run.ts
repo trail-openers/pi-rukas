@@ -33,6 +33,7 @@ import {
 } from "./work-driver-intent-park-evidence.ts";
 import { intentResolutionEnabled } from "./work-driver-intent.ts";
 import { issueImagesFor } from "./work-driver-issue-images.ts";
+import { cycleSpecs, inlineBody, specFetcher } from "./work-driver-issue-spec.ts";
 import {
   type ExploreVerdict,
   parseExploreVerdict,
@@ -114,7 +115,20 @@ export async function runExplore(
   // fetching. An abort during the fetch wins over its result: the step returns
   // with no cap, and the loop records the interrupt.
   await persistCycle(ctx, next);
-  const fetchBody = ctx.issueBodyFetcherFn ?? fetchIssueBodyViaGh;
+  // An approved spec that does not verify stops the cycle before any read: the bare issue never stands in for it.
+  const read = await cycleSpecs(issues);
+  if ("why" in read)
+    return appendEvent(next, {
+      kind: "cap-hit",
+      at: Date.now(),
+      cap: "step-failed:explore",
+      reviewRound: 0,
+      nextStep: "handoff",
+      evidence: read.why,
+    });
+  const specSha = read.specs.get(ctx.issue)?.sha256;
+  if (specSha !== undefined) next = { ...next, pipelineState: { ...next.pipelineState, specSha } };
+  const fetchBody = specFetcher(ctx.issueBodyFetcherFn ?? fetchIssueBodyViaGh, read.specs);
   const bodySettled = await Promise.allSettled(
     issues.map((n) => fetchIssueBodyWithRetry(fetchBody, n, ctx.repoRoot, { signal: ctx.signal })),
   );
@@ -181,11 +195,11 @@ export async function runExplore(
           `work-driver: failed to persist issue-body artifact for #${n}: ${(err as Error).message}`,
         );
       }
-      const truncated = body.length > INLINE_BODY_CAP;
-      const inlineBody = truncated
-        ? `${body.slice(0, INLINE_BODY_CAP)}\n[... truncated; full body at ${artifactPath ?? "(artifact write failed)"}]`
-        : body;
-      bodiesForPrompt.push({ issue: n, body: inlineBody, truncated });
+      const { text, truncated } = inlineBody(body, INLINE_BODY_CAP);
+      const shown = truncated
+        ? `${text}\n[... truncated; full body at ${artifactPath ?? "(artifact write failed)"}]`
+        : text;
+      bodiesForPrompt.push({ issue: n, body: shown, truncated });
     } else if (result?.status === "rejected") {
       const reason = (result.reason as Error).message?.slice(0, 200) ?? "(no error message)";
       trace(`work-driver: gh issue view ${n} failed after every attempt: ${reason}`);

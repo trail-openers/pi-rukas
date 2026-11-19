@@ -98,6 +98,8 @@ export interface PublishBodyInput {
   version: string;
   models: Record<string, string>;
   baseSha: string;
+  /** A host's `tehas:spec v1` block (`issue-spec-block.ts`), printed last. */
+  specBlock?: string;
 }
 
 /** The result cell for a `test` criterion, given the gate's verdict. */
@@ -285,5 +287,6 @@ export function publishBody(o: PublishBodyInput): string {
     lines.push(
       "- draft: verification is not green, a criterion needs a human, or a command criterion was not runnable",
     );
+  if (o.specBlock !== undefined) lines.push("", o.specBlock);
   return `${lines.join("\n")}\n`;
 }

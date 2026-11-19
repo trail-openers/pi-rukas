@@ -39,6 +39,13 @@ import { fenceText } from "./lean/text-fence.ts";
  * bound is a second rule about how much of the spec a child gets to read. */
 export const MAX_ISSUE_CHARS = 6000;
 
+/** Where the issue prose ends and a host's approved spec begins (`issue-spec.ts` appends it). */
+export const APPROVED_SPEC_MARKER = "<!-- pi-rukas:approved-spec -->";
+
+/** The approved spec's own bound; its fenced print adds a heading and fence lines on top. */
+export const MAX_APPROVED_SPEC_CHARS = 20_000;
+export const APPROVED_TAIL_CHARS = MAX_APPROVED_SPEC_CHARS + 600;
+
 /** The fence that opens/closes the prompt's diff block.
  *
  * `String.fromCharCode` keeps the backticks out of the source: the formatter
@@ -131,6 +138,13 @@ export const ADVERSARIAL_FINDING_RULE =
 export function boundedIssueBody(issueBody: string | undefined): string {
   const trimmed = issueBody?.trim();
   if (!trimmed) return "";
+  // An approved spec rides after the issue prose and is bounded on its own, so a long issue never cuts it.
+  const at = trimmed.lastIndexOf(APPROVED_SPEC_MARKER);
+  if (at >= 0) {
+    const prose = boundedIssueBody(trimmed.slice(0, at));
+    const tail = trimmed.slice(at, at + APPROVED_TAIL_CHARS);
+    return prose === "" ? tail : `${prose}\n\n${tail}`;
+  }
   return trimmed.length > MAX_ISSUE_CHARS
     ? `${trimmed.slice(0, MAX_ISSUE_CHARS)}\n…(issue truncated)`
     : trimmed;
@@ -149,7 +163,8 @@ export const ISSUE_TRUNCATION_MARKER = "\n…(issue truncated)";
 export function fencedIssueBody(issueBody: string | undefined): string {
   const body = boundedIssueBody(issueBody);
   if (body === "") return "";
-  return fenceText(body, MAX_ISSUE_CHARS + ISSUE_TRUNCATION_MARKER.length + 1);
+  const tail = body.includes(APPROVED_SPEC_MARKER) ? APPROVED_TAIL_CHARS + 2 : 0;
+  return fenceText(body, MAX_ISSUE_CHARS + ISSUE_TRUNCATION_MARKER.length + 1 + tail);
 }
 
 /**

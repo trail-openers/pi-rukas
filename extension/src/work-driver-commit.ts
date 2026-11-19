@@ -426,6 +426,7 @@ export async function mechanizedCommitPr(
       provenanceDisclosureSectionOf(ps.provenanceDisclosures),
       preExistingSection,
       ...eventLogSections(state.eventLog),
+      ps.specBlock ?? "",
     ]
       .filter((l) => l !== "")
       .join("\n\n");
@@ -444,12 +445,10 @@ export async function mechanizedCommitPr(
         reason: "forge not determined for this repo — cannot open the PR",
       };
     }
-    // #776 — the 4th arg is the base branch: prCreateCmd builds
-    // `--head <baseBranch>...<headBranch>` from it, so a path or empty value
-    // there is what produced #753's "...mech-pr-body.md...feature/…" GraphQL
-    // failure. We pass the body STRING (the scratch file above is for the
-    // ops-fallback prompt) and no base — gh/glab defaults to the repo
-    // default branch, which is the base the driver recorded in Step 3.
+    // The 4th arg is the base branch (prCreateCmd builds `--head <base>...<head>`
+    // from it), so a path there breaks the call. We pass the body STRING (the
+    // scratch file is for the ops-fallback prompt) and no base: gh/glab default
+    // to the repo default branch, the base the driver recorded in Step 3.
     // #1292 — a draft until the review is done (see work-driver-draft-pr.ts).
     const draft = draftPrEnabled(ctx);
     const created = await forge.prCreate(title, branchName, prBody, { draft });

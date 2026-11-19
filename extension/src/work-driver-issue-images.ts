@@ -43,9 +43,9 @@ export interface IssueImage {
 export const MAX_ISSUE_IMAGES = 8;
 export const MAX_ISSUE_IMAGE_BYTES = 10 * 1024 * 1024;
 const TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-const FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+export const FILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 // Printed into a prompt: one https address of plain characters, or nothing.
-const LINK = /^https:\/\/[A-Za-z0-9._~%/?&=+:-]{1,300}$/;
+export const LINK = /^https:\/\/[A-Za-z0-9._~%/?&=+:-]{1,300}$/;
 
 export function issueImagesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.PI_ENSEMBLE_ISSUE_IMAGES !== "0";
@@ -56,12 +56,13 @@ export function imageDirs(env: NodeJS.ProcessEnv = process.env): string[] {
   return (env.PI_ENSEMBLE_EXTRA_IMAGE_DIRS ?? "").split(":").filter((d) => d.length > 0);
 }
 
-async function readManifest(
-  dir: string,
-): Promise<{ issue?: unknown; images?: unknown } | undefined> {
+/** A directory's `manifest.json` as an object; `undefined` when there is none to read. */
+export async function readManifest(dir: string): Promise<Record<string, unknown> | undefined> {
   try {
     const m: unknown = JSON.parse(await fs.readFile(path.join(dir, "manifest.json"), "utf8"));
-    return typeof m === "object" && m !== null ? m : undefined;
+    return typeof m === "object" && m !== null && !Array.isArray(m)
+      ? (m as Record<string, unknown>)
+      : undefined;
   } catch {
     return undefined;
   }

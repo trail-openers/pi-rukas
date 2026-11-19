@@ -428,6 +428,10 @@ export interface PipelineState extends IssueClosedState, PipelineStateReviewTail
    * no draft fact recorded (the PR was not opened as a draft).
    */
   prDraft?: PrDraftState;
+  /** The `tehas:spec v1` block for this cycle, carrying the manifest's sha256; computed once at commit-pr. */
+  specBlock?: string;
+  /** The approved spec's sha256 explore read: the spec the cycle is built against. */
+  specSha?: string;
   /**
    * PR17 — SHA of the base commit the feature branch grew from, recorded
    * by the branch step (git rev-parse HEAD at repoRoot after ops created

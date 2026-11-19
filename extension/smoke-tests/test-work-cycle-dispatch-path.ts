@@ -53,6 +53,9 @@ const REGISTRY: Record<string, { spawnCalls: number; stamp: RegExp }> = {
   // stamp is the run's own threaded mode and the budget's kill reaches the child's
   // tool tree through its own process group.
   "lean/spec-derive.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
+  // The approved-spec check child, reached through lean publish's `publishDeps(headless)`.
+  // Classic `work` runs the same check through `cycleDispatch` (work-driver-issue-spec.ts).
+  "issue-spec.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
 };
 
 /** Files allowed to name dispatchCore: its definition and the one cycle entry. */

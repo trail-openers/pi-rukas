@@ -518,6 +518,30 @@ What a GitLab cycle supports, and what is GitHub-only by construction:
 
 A refused check fails **open**: the cycle proceeds and says so in the trace (`PI_ENSEMBLE_DEBUG=1`), because a lookup that cannot answer must not halt work. A step that cannot be run at all (opening the cycle's PR with no forge named) halts with its own named reason.
 
+## Approved spec for hosts
+
+A host that approved an issue against a spec hands that spec to `work` or `work-lean` in the same directory and `manifest.json` that carry the issue's images (`PI_ENSEMBLE_EXTRA_IMAGE_DIRS`, manifest version 1):
+
+```json
+{"issue": 7,
+ "spec": {"file": "spec.md", "link": "https://example.com/specs/7.md", "name": "Spec 7",
+          "bytes": 2048, "sha256": "<64 hex>", "block": 1},
+ "approvedText": {"file": "approved.json", "bytes": 512, "sha256": "<64 hex>"}}
+```
+
+- **What is checked.** `file` is a plain name in that directory and a regular file, not a symbolic link; its size is `bytes` (at most 256 KiB); its bytes hash to `sha256`, and the spec decodes as UTF-8; `link` is an `https` address; `block` is absent or `1`. `approved.json` passes the same file checks and holds `{"number", "title", "body"}` with `number` equal to the issue. Anything else is refused, and the run never falls back to the bare issue: `work-lean` stops at `ready` with `could not read the issue: approved spec …`; `work` stops before any work at handoff with the cap `step-failed:explore` and evidence `approved spec …` (failureKind `process`). `PI_ENSEMBLE_ISSUE_IMAGES=0` does not turn this off.
+- **What the run reads.** Every step reads the approved body (the forge's live body when there is no `approvedText`) with the spec appended under `## Approved spec: <name>`, fenced as text, and told that where the two differ the spec is the approved requirement.
+- **The block.** With `block: 1`, the PR body either engine creates ends in:
+  ```
+  <!-- tehas:spec v1 -->
+  Spec: <link> sha256:<the manifest's sha256>
+  - <id> met: <files, functions, tests>
+  - <id> not met: <why>
+  <!-- /tehas:spec -->
+  ```
+  One line per requirement: the spec's own ids (`R1`, `FR-3`, `REQ-001` at a line start), else its top-level headings, else the spec's name. One read-only child judges each requirement against the PR's tree. A `met` that names no file present at that head, an id the child left out, and a check that did not run are each written `not met`, so the block is always present and readable, and never claims more than was checked. Whether a requirement is met is for the person who reviews.
+- **`work` keeps the block.** `work` computes the block once per cycle when it reaches commit-pr, from the develop tree the reviewers read (uncommitted files included; the integrated head does not exist yet), and caches it. After every commit-pr outcome it reads the PR body back and, when the block is missing or unreadable, rewrites it with the same manifest sha256; every later driver body rewrite (the attribution disclosure, the repair after a continued PR or the ops fallback) keeps it. The block is cached as it is published, with host paths in its lines written `<repo>/…` or `~/…`. A manifest whose spec is no longer the one explore read halts at commit-pr rather than pin a spec the cycle was not built against. A body it cannot give a valid block halts with `step-failed:commit-pr` and evidence `approved spec block: …`. On GitLab `work` has no body edit, so that halt applies whenever the body was not the one the driver created. The capped draft PR a parked cycle opens carries no block.
+
 ## `--restart` for hosts
 
 `work <issue> --restart` is the supported way to run an issue again after a handoff that a person has dealt with. A host passes it; it never removes labels itself.
@@ -640,6 +664,7 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
     "leanFailureCause": true,   // #1920 — issues[].failure.cause where the run recorded a kill
     "leanGates": true,          // issues[].gates — the run's gate events on the result document
     "timeoutFlagPrecedence": true, // #2362 — work-lean's --timeout outranks PI_ENSEMBLE_CYCLE_BUDGET_MS
+    "issueSpec": true,          // work and work-lean read the manifest's approved spec and write the tehas:spec v1 block
   },
   "resources": { … }            // #1325 — the host budget and limits; see Resource report
 }
@@ -666,12 +691,13 @@ Any other failure in this mode stops on `step-failed:branch` or `step-failed:com
 | `inputs[].type` | Hardcoded | `boolean` (`1` on, `0` off), `integer`, `number` (see `unit`), `duration-ms`, `string`, `path`, `list` (joined by `separator`) or `enum` (one of `values`). |
 | `inputs[].default` | Hardcoded; about 50 of them are checked against their live reader functions | The behaviour when the variable is unset. `null` means unset by default, with the fallback described in [configuration.md](configuration.md#environment-variables). |
 | `inputs[].scope` | Hardcoded | Who sets it: `cycle` (changes what a cycle does), `sandbox` (the sandbox wrapper), `interactive` (the Pi UI only), `install` (path overrides), `wrapper` (read only by the `bin/pi-rukas` sandbox wrapper on the host, before the container starts; it has no effect on a cycle started without the wrapper, including `pi-rukas-headless` run directly), `internal` (pi-rukas sets it on its own children, or the wrapper on its container; a host must not), `test` (smoke tests only). |
-| `inputs[].manifestVersion` | Hardcoded | Present on the two issue-image inputs: the manifest format version the build understands. |
+| `inputs[].manifestVersion` | Hardcoded | Present on the two issue-image inputs: the manifest format version the build understands. `spec` and `approvedText` are additive fields of version 1 (see [Approved spec for hosts](#approved-spec-for-hosts)); a reader ignores fields it does not know. |
 | `files[]` | `HEADLESS_FILES` (`inputs.ts`) | The `.pi/*` files a cycle reads from the project (`path`, `kind`: `command` / `hook` / `config`, and what happens `whenAbsent`). Files the driver writes, such as `.pi/work-state/`, are state, not input, and are not listed. |
 | `features.resultFromMemory` | Constant `true` | `true` when the result is taken from the driver's in-memory state rather than re-reading the state file (#1189). |
 | `features.cycleDeadline` | Constant `true` | `true` when a cycle that hits its deadline parks with a handoff rather than being killed (#1238). |
 | `features.cycleDeadlineHandoffAllowance` | Constant `true` | `true` when the deadline is where step work ends: children running at `PI_ENSEMBLE_CYCLE_DEADLINE` are stopped there, the handoff runs within `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` after it, and a step that ended past the deadline records `deadline` as the cycle's cap (#1593). A host sets the deadline to its kill minus that allowance. |
 | `features.timeoutFlagPrecedence` | Constant `true` | `true` when `work-lean`'s explicit `--timeout <minutes>` outranks an exported `PI_ENSEMBLE_CYCLE_BUDGET_MS` (#2362): the flag is one caller's word about one run and the env value is the host's default for all of them, so `--timeout 165` under a 60-minute budget runs 165 minutes and prints one `WARN` line naming both values and which won. `PI_ENSEMBLE_CYCLE_DEADLINE` outranks both (it is absolute, and its setter owns the clock), and a resumed run keeps the arm its first round persisted whatever `--timeout` says now. The roster says what the build ships, so it is a constant: an operator who runs `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE=0` has chosen the pre-#2362 order — where the exported budget outranked the flag, and the switch at `"0"` logs nothing at all, no line for any row — not told the build lacks the rule. `work`'s own `--timeout` is untouched: it has no budget arm to disagree with. |
+| `features.issueSpec` | Constant `true` | `true` when `work` and `work-lean` read an approved spec from the issue's manifest, stop before any work on one that does not verify, and with `spec.block: 1` end the PR body in one `tehas:spec v1` block: see [Approved spec for hosts](#approved-spec-for-hosts). |
 | `features.handoffChannel` | Constant `true` | `true` when the build honours `PI_ENSEMBLE_HANDOFF_CHANNEL` and carries the handoff in the result (#1327). |
 | `features.restartClearsAttention` | Constant `true` | `true` when `--restart` overrides the attention gate and clears `needs-human-attention` (#1327). See [`--restart` for hosts](#--restart-for-hosts). |
 | `features.failureReason` | Constant `true` | `true` when the result carries `issues[].failure`, the reason behind its `cap` (#1367). |

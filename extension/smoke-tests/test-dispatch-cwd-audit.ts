@@ -267,6 +267,13 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
   );
 }
 
+{
+  assert(
+    /cwd: input\.worktree/.test(read("issue-spec-check.ts")),
+    "canary: the approved-spec check child runs in the PR's worktree (cwd: input.worktree)",
+  );
+}
+
 // ------------------------------------------- census: no dispatch site escapes
 
 {
@@ -314,6 +321,7 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     "plan-driver-gate.ts": 1, // the gap gate's bounded reviewer dispatch — cwd: args.repoRoot (the plan run has no worktree)
     "research-angle.ts": 1, // one retrieval angle — cwd: ctx.repoRoot, threaded by research-driver.ts
     "work-driver-corrective-round.ts": 1, // #1667 — the corrective developer, pinned to the failing workstream's own worktree (cwd: t.cwd)
+    "issue-spec-check.ts": 1, // the approved-spec check child — cwd: input.worktree, the PR's tree
     "work-driver-plan-quality-corrective.ts": 1, // #1756 r2 — the one-shot plan corrective, moved out of the plan-quality tail for the §12 cap (repoRoot-intentional; see the allowlist row above)
   };
   // The /plan and /research drivers' seams — outside the /work driver's
@@ -351,6 +359,9 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     // it forwards each caller's spec (and cwd) unchanged, so it adds no site.
     "work-driver-cycle-entry.ts",
     "work-driver-issue-images.ts",
+    // issue-spec.ts wires the spec check's dispatch to spawnSpecialist; the
+    // spec (cwd included) is built by issue-spec-check.ts, audited above.
+    "issue-spec.ts",
     "work-driver-resume.ts",
     // #1789 — runSingleDispatch moved here and still DEFINES the seam.
     "work-driver-merged.ts",
