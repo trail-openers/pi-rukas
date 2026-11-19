@@ -292,6 +292,38 @@ base commit, the capped failure lines and the true total.
 
 **Fix:** enable Docker Desktop's **WSL2 integration** (Settings → Resources → Integrations → enable your distro), or run a Docker Engine inside the distro and start its daemon. Verify from inside WSL2: `docker version` shows both client and server, then `./install.sh` again so the image pull succeeds.
 
+## A strict or headless child dies with `Tool "forge_read" conflicts with …child-guards.ts`
+
+### Symptom
+
+Every **strict or headless** child exits at once, before its session attaches, and its report opens with:
+
+```
+Error: Failed to load extension "<repo>/extension": Tool "forge_read" conflicts with <repo>/extension/src/child-guards.ts
+Hint: Start without extensions using "pi -ne".
+```
+
+`pi-rukas-headless plan` ends at exit 40 (`ALL-ANGLES-FAILED`), and headless `/work` / `work-lean` have no working children. Interactive **trust-mode** children are unaffected — which is why an interactive session looks healthy while every headless run dies.
+
+### Cause
+
+Your `pi` is 1.5.2 or newer. A strict/headless child is given **both** pi-rukas entry points on its argv — `--extension <repo>/extension` (the full extension, forwarded because the subagent guard is on) and `--extension <repo>/extension/src/child-guards.ts` (the harness companion, appended in every mode) — and before this fix **both** registered `forge_read`. Pi 1.5.2's `detectExtensionConflicts` treats a tool name that two loaded extensions each registered as a load-time error, and `main.js` exits 1 on any extension-load error. Pi 1.4.0 tolerated the duplicate, so the shape ran until the bump.
+
+Confirm it before concluding something else is wrong — run the two-flag child load directly and read the error:
+
+```bash
+EXT=$PWD/extension
+PI_ENSEMBLE_SUBAGENT_MODE=1 pi --no-extensions --extension "$EXT" --extension "$EXT/src/child-guards.ts" --print "reply OK"
+```
+
+### Fix
+
+Nothing to do — the companion is now the single owner of `forge_read` in every mode: the forwarded full extension registers no `forge_read` at all (its child entry point, `registerSubagentGuard`, never calls the registration), so a child registers the tool exactly once, from `child-guards.ts`, whichever way round the two extensions load. The tool itself is unchanged — same schema, same parent-broker transport — so the fix moves ownership, not behaviour. Detected by `extension/smoke-tests/test-child-forge-read-single-owner.ts` (offline: both entry points into one fake API, and the trust shape) and `extension/smoke-tests/test-strict-child-forge-read-live.ts` (live: one strict-shaped dispatch that loads, answers, and reads the forge once).
+
+If you must run an unpatched build on pi ≥ 1.5.2, the operator-side workaround is to make the child a trust child — the shape that forwards no full extension at all, so only the companion loads: export `PI_ENSEMBLE_TRUST_MODE=1`, or dispatch inside a `/work` cycle (the driver sets `workCycleTrust` on its own dispatches for exactly this reason). That trades away the per-call permission gate for the cycle's children, so prefer the fix.
+
+PR: [#2382](https://github.com/trail-openers/pi-rukas/issues/2382)
+
 ## Subagents fail to start after updating pi-rukas
 
 ### Symptom

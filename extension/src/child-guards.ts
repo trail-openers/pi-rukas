@@ -124,14 +124,10 @@ export default function registerChildGuards(pi: ExtensionAPI): void {
   // own cwd and `PI_ENSEMBLE_CHILD_TMP`, which is also where the scratch HOME
   // (reviewer-scratch-home.ts) lives, so the guard and the redirect name one tree.
   registerReviewerWriteGuard(failClosedPi(pi));
-  // #2160 — the helper roles' only forge surface, registered by the companion
-  // because a trust-mode child (the interactive default) loads no other
-  // pi-rukas extension and its env carries no login to fall back on. Registered
-  // BEFORE the subagent-mode no-op so the strict child gets it too, where Pi
-  // de-duplicates the name against the forwarded extension's own registration.
-  // The predicate inside is the one activation uses — a stripped role plus a
-  // parent-served broker socket — so the tool is never present in a child that
-  // could not get an answer out of it (an ops child, or one whose bind failed).
+  // #2160 — the helper roles' only forge surface, and #2382 — one line because
+  // the rule lives in the function's jsdoc: the companion owns `forge_read` in
+  // every mode, so this call sits ABOVE the subagent-mode no-op below (which is
+  // the guards' half, not the tool's).
   registerChildForgeReadTool(pi);
   // The run's own provider endpoint and key reach every child, strict or trust:
   // the full extension registers them only in the parent.

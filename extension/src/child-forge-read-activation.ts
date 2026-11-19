@@ -19,13 +19,14 @@
  * less than the current set drops the `mcp__codebase_memory__*` tools. Each
  * child gets exactly one append, from the entry point that runs in its mode:
  *   - trust-mode children: `child-guards.ts`'s `session_start`;
- *   - strict/headless children: `registerSubagentGuard`'s `session_start`, whose
- *     registration sits ABOVE the sandbox/trust short-circuits — so it runs in
- *     every mode, including the sandbox and trust containers where the companion
- *     (and this guard's hook half) have stood down. The companion's own
- *     `session_start` is not one of these: under `PI_ENSEMBLE_SUBAGENT_MODE=1`
- *     it has already no-oped, which is why the two sites are mutually exclusive
- *     and neither is the other's backstop.
+ *   - strict/headless children: `registerSubagentGuard`'s `session_start`, which
+ *     runs in every mode (it sits ABOVE that function's sandbox/trust
+ *     short-circuits). The companion's own `session_start` is not one of these:
+ *     under `PI_ENSEMBLE_SUBAGENT_MODE=1` it has already no-oped, which is why
+ *     the two sites are mutually exclusive and neither is the other's backstop.
+ *     Registration is NOT symmetric with activation: the companion registers the
+ *     tool in every mode (§below), so a strict child's activation appends a name
+ *     the companion already put in the registry.
  *
  * Registration follows activation. The companion registers the tool through
  * `registerChildForgeReadTool`, which applies the same predicate activation
@@ -323,13 +324,30 @@ function requestForgeRead(
 
 /**
  * Register `forge_read` into a child, when this child can actually use it.
- * Called by BOTH child entry points (child-guards.ts and registerSubagentGuard),
- * each of which registers it at most once; the tool self-declares its
- * parameters and the parent does the work, so there is nothing mode-specific to
- * branch on here. The availability predicate is the one `enableChildForgeRead`
- * applies, so a tool this child was registered for always has the socket that
- * makes the call answer something — and a child that cannot reach a broker is
- * never given the tool.
+ *
+ * ONE OWNER PER PROCESS (#2382). A strict/headless child loads BOTH the full
+ * pi-rukas extension (`--extension <repo>/extension`) and the child-guards
+ * companion (`--extension <repo>/extension/src/child-guards.ts`), and Pi 1.5.2's
+ * `detectExtensionConflicts` turns a tool name two loaded extensions each
+ * registered into a load-time error — `Tool "forge_read" conflicts with
+ * <repo>/extension` — which `main.js` answers by exiting 1 before the session
+ * attaches. So the two entry points must not both register.
+ *
+ * THE COMPANION OWNS IT, in every mode. It is the one child entry point that is
+ * always present: `childGuardsArgs()` appends it to the child argv
+ * unconditionally, while the full extension's child branch only loads when the
+ * guard is on (`subagentGuardEnabled` — false in trust/sandbox mode and under
+ * `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1`). A trust-mode child therefore gets the
+ * tool from the companion alone, and a strict/headless child gets it from the
+ * same place: the full extension registers no `forge_read` at all, because
+ * `registerSubagentGuard` — its only child entry point, reachable only under
+ * `PI_ENSEMBLE_SUBAGENT_MODE=1` (index.ts and permission-guard.ts both gate it
+ * on that variable) — never calls this function. The companion is therefore the
+ * sole caller, and this is the only path to the registration.
+ *
+ * The availability predicate is the one `enableChildForgeRead` applies, so a
+ * tool this child was registered for always has the socket that makes the call
+ * answer something — and a child that cannot reach a broker is never given it.
  */
 export function registerChildForgeReadTool(pi: ExtensionAPI): void {
   const role = process.env.PI_ENSEMBLE_ROLE;
