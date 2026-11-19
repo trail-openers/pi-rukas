@@ -28,6 +28,11 @@
  * spelling change only, never a meaning change), and three counts of the normalised entry are
  * capped: 256 characters, two `**` SEGMENTS, and four `*`/`?` wildcards in one segment. The
  * rows of `test-lean-protected-globs.ts` are the matcher's contract; the caps are the entry's.
+ *
+ * The other half of that bound is the INPUT, and it belongs to the filesystem rather than the
+ * config: {@link SEGMENT_CEILING} and {@link PATH_CEILING}. A path past either cannot exist on
+ * disk, so the matcher is never asked to backtrack over it — and a path that arrives past them
+ * is answered as PROTECTED, because one this module cannot read is not one it can vouch for.
  */
 
 /**
@@ -54,6 +59,22 @@ const DEPTH_STAR_CEILING = 2;
 
 /** How many `*` and `?` one SEGMENT of an entry may carry after normalisation. */
 const SEGMENT_WILDCARD_CEILING = 4;
+
+/** Linux NAME_MAX: how long one segment can be on disk, so a longer one is not a path git ever
+ *  reported and its regex cost is not a cost this matcher can be asked to pay. */
+const SEGMENT_CEILING = 255;
+
+/** Linux PATH_MAX: how long a whole path can be — the input's side of the bound that
+ *  {@link ENTRY_CEILING} provides for the pattern. */
+const PATH_CEILING = 4096;
+
+/** Can the regex be worth running over `file` at all? Within both OS limits, every segment a
+ *  backtracking `*` could spread over is one a filesystem could actually hold. */
+function pathWithinLimits(file: string): boolean {
+  if (file.length > PATH_CEILING) return false;
+  for (const segment of file.split("/")) if (segment.length > SEGMENT_CEILING) return false;
+  return true;
+}
 
 /**
  * The entry in the only spellings it can have, as a precondition of {@link entryCost} and of
@@ -247,8 +268,18 @@ export function protectedPathProblem(entry: unknown): string | undefined {
   if (entry.length > ENTRY_CEILING)
     return `${where} entry \`${entry.slice(0, 60)}…\` is ${String(entry.length)} characters long, over the ${String(ENTRY_CEILING)}-character ceiling for one pattern`;
   const [depthStars, segmentWildcards] = entryCost(entry);
-  if (depthStars > DEPTH_STAR_CEILING)
-    return `${where} entry \`${entry}\` has ${String(depthStars)} "**" segments, over the ${String(DEPTH_STAR_CEILING)} this matcher will backtrack over`;
+  if (depthStars > DEPTH_STAR_CEILING) {
+    // A leading doublestar is the usual reason an entry is one over the ceiling, and the prefix
+    // asks only for segments IN FRONT of the rest — which a repo-relative path already satisfies
+    // wherever it lives. So dropping it keeps the rule's own literals and takes one doublestar off
+    // the matcher; it is not always the SAME rule (the prefix also covers the same directory name
+    // nested elsewhere), which is why the refusal offers it as the thing to check rather than
+    // asserting it as an equal spelling.
+    const cheaper = entry.startsWith(`${DEPTH_STAR_TEXT}/`)
+      ? ` — if it starts with "**/", that prefix only asks for segments in front of the rest, so \`${entry.slice(DEPTH_STAR_TEXT.length + 1)}\` is usually the rule meant, for one doublestar less`
+      : "";
+    return `${where} entry \`${entry}\` has ${String(depthStars)} "**" segments, over the ${String(DEPTH_STAR_CEILING)} this matcher will backtrack over${cheaper}`;
+  }
   if (segmentWildcards > SEGMENT_WILDCARD_CEILING)
     return `${where} entry \`${entry}\` has ${String(segmentWildcards)} "*"/"?" wildcards in one segment, over the ${String(SEGMENT_WILDCARD_CEILING)} this matcher will backtrack over`;
   // `dir/**/` is the same rule as `dir/**` written a second way: the doublestar already names
@@ -284,7 +315,10 @@ function compiled(entry: string): RegExp {
 }
 
 /** Does `entry` (validated or not — an entry the loader would refuse simply matches
- *  nothing) name `file`? */
+ *  nothing) name `file`? A path past {@link PATH_CEILING} or {@link SEGMENT_CEILING} is answered
+ *  PROTECTED without running the regex: no real changed path is that shape, and for one that
+ *  somehow is, reverting it is the direction that cannot lose the child's work. */
 export function protectedGlobMatches(entry: string, file: string): boolean {
+  if (!pathWithinLimits(file)) return true;
   return compiled(entry).test(file);
 }

@@ -4,7 +4,11 @@
  * so this table is the executable statement of what the matcher in `protected-globs.ts`
  * means. Rows that look "obvious" and are wrong are called out where they sit.
  */
-import { protectedGlobMatches, protectedPathProblem } from "../src/lean/protected-globs.ts";
+import { protectedGlobMatches } from "../src/lean/protected-globs.ts";
+import {
+  runSlowShapeCases,
+  SLOW_CASE_COUNT,
+} from "./lib/lean-protected-glob-shapes.ts";
 
 export const CASES: Array<[string, string, boolean]> = [
   // A single-segment pattern is a basename and matches at any depth.
@@ -109,6 +113,16 @@ export const CASES: Array<[string, string, boolean]> = [
   ["theme/**/**", "src/theme/x.css", false],
   ["**/**/theme/**", "a/theme/b.css", true],
   ["**/**/theme/**", "theme", false],
+  // A path the filesystem cannot hold is answered PROTECTED for any entry, with the regex never
+  // running: NAME_MAX caps one segment at 255 bytes and PATH_MAX the whole path at 4096, so
+  // neither shape is one git ever reported, and the one that somehow arrives is reverted rather
+  // than trusted. The two limits are independent: the first row is one oversized segment inside
+  // a short path, the second one oversized path made of legal segments, and the third is over
+  // PATH_MAX while `**` would have matched it anyway — an entry that matches nothing is enough,
+  // because protection here does not depend on the entry.
+  ["**/*/**/*q*r?s*t", `${"q-".repeat(128)}x`, true],
+  ["src/**", `${"x".repeat(300)}/${"y".repeat(300)}`, true],
+  ["no-such-dir/**", "x".repeat(4097), true],
 ];
 
 export function runCases(): void {
@@ -122,106 +136,18 @@ export function runCases(): void {
       );
     }
   }
-  for (const [name, pattern, file] of SLOW_ACCEPTED) {
-    // A non-match costs most on a DEEP path for these shapes, so the same 200 characters are
-    // tried as one wide segment and as a column of them. EVERY probe is timed and the MAXIMUM is
-    // the verdict: a short-circuiting `some` stops at the first probe and can only ever
-    // under-report the cost this row exists to bound.
-    const probes = [file, DEEP_NO_MATCH_PATH, "x/".repeat(99) + "x", "x/".repeat(59) + "x"];
-    let matched = false;
-    let worst = 0;
-    for (const probe of probes) {
-      const started = performance.now();
-      if (protectedGlobMatches(pattern, probe)) matched = true;
-      const ms = performance.now() - started;
-      if (ms > worst) worst = ms;
-    }
-    if (matched) {
-      failures++;
-      console.error(
-        `FAIL  ${name}: ${JSON.stringify(pattern)} unexpectedly matched one of the ${String(probes.length)} probe paths`,
-      );
-    }
-    if (worst > SLOW_CEILING_MS) {
-      failures++;
-      console.error(
-        `FAIL  ${name}: ${JSON.stringify(pattern)} vs ${String(probes.length)} non-matching paths (widest ${String(file.length)} chars, deepest ${String(DEEP_NO_MATCH_PATH.split("/").length)} segments) took ${worst.toFixed(1)}ms, over the ${String(SLOW_CEILING_MS)}ms ceiling`,
-      );
-    } else {
-      console.log(`ok  ${name} matched nothing in ${worst.toFixed(1)}ms`);
-    }
-  }
-  for (const [name, pattern] of SLOW_REFUSED) {
-    // The ceiling's other half, and the one an accepted-shape timer cannot see: a shape whose
-    // cost grows with the DEPTH of a path that never matches is refused at LOAD. With no ceiling
-    // low enough, the loader admits it, says nothing, and this row is red.
-    const refusal = protectedPathProblem(pattern);
-    if (refusal === undefined) {
-      failures++;
-      console.error(`FAIL  ${name}: ${JSON.stringify(pattern)} was admitted by the loader`);
-    } else {
-      console.log(`ok  ${name} refused at load (${refusal})`);
-    }
-  }
+  // What a match and a non-match COST, and which spellings the loader must refuse outright, is the
+  // other half of this contract and lives in lib/lean-protected-glob-shapes.ts.
+  failures += runSlowShapeCases();
   if (failures > 0) {
     console.error(
-      `${failures} of ${String(CASES.length + SLOW_ACCEPTED.length + SLOW_REFUSED.length)} protected-glob cases failed`,
+      `${failures} of ${String(CASES.length + SLOW_CASE_COUNT)} protected-glob cases failed`,
     );
     process.exit(1);
   }
   console.log(
-    `ok  ${String(CASES.length)} protected-glob cases match git-ignore semantics, and ${String(SLOW_ACCEPTED.length)} worst accepted shapes stayed under ${String(SLOW_CEILING_MS)}ms`,
+    `ok  ${String(CASES.length)} protected-glob cases match git-ignore semantics, and the worst accepted shapes stayed under the timing ceiling`,
   );
 }
-
-/** How long one accepted entry may take against a path it does NOT match. A regex over
- *  wildcards backtracks, so this is the one cost a project's own config file can choose. */
-const SLOW_CEILING_MS = 50;
-
-/** A path of 200 characters that none of {@link SLOW_ACCEPTED} names: one wide segment, so a
- *  `*` can never cross into the pattern's literals. */
-const NO_MATCH_PATH = "x".repeat(200);
-
-/** The same characters as a COLUMN of 400 one-character segments. A doublestar's cost is a
- *  function of the number of segment splits a path offers, not of its length, so this is where
- *  an admitted entry pays most, and the reason the ceiling is a count of `**` SEGMENTS rather
- *  than a bound on entry length: the refused shapes below are nineteen characters long. */
-const DEEP_NO_MATCH_PATH = "x/".repeat(400) + "x";
-
-/**
- * The worst shapes the loader ADMITS, each against a 200-character path and a 400-segment path
- * it does not match — the input that makes a backtracking matcher pay. The `protectedPathProblem`
- * ceilings are what keep these cheap: cost grows like (path depth)^(doublestar segments), so at
- * the admitted maximum these stay well under {@link SLOW_CEILING_MS} and one segment past it,
- * they do not (see {@link SLOW_REFUSED}).
- */
-const SLOW_ACCEPTED: Array<[string, string, string]> = [
-  // Two doublestar segments separated by a `?`, and the widest segment at the four-wildcard
-  // ceiling — together the most of each the loader admits in one entry. Timed against the DEEP
-  // path: its third probe is the wide 200-character one, so both axes are paid for every row.
-  ["2 doublestars separated by literals", "?/**/?/**/?x", DEEP_NO_MATCH_PATH],
-  // A doublestar at each end of a wildcard-heavy segment: the two splits multiply into each
-  // other rather than into a second literal, so this is the other shape worth timing.
-  ["2 doublestars around a wide tail", "**/*q*r?s*t/**/?x", DEEP_NO_MATCH_PATH],
-  // Both doublestars behind one literal, where a run of them multiplies fastest at its top end.
-  ["2 doublestars behind one literal", "a/**/**/b", DEEP_NO_MATCH_PATH],
-  // A segment at the wildcard ceiling, beside the run of doublestars it has to be placed into.
-  ["2 doublestars and a 4-wildcard segment", "a/**/**/*q*r?s*t", DEEP_NO_MATCH_PATH],
-];
-
-/**
- * Shapes the loader must REFUSE rather than admit, because their cost on a non-matching path
- * grows with that path's depth. Each row is one `**` segment over the ceiling with the cheapest
- * spelling that still backtracks: single-character segments between the doublestars and a tail
- * the path can never satisfy. This is the entry the ceiling exists for — one that normalisation
- * cannot collapse, and that a length bound cannot catch at 19 characters.
- */
-const SLOW_REFUSED: Array<[string, string]> = [
-  ["3 doublestars with one-character segments", "?/**/?/**/?/**/?x"],
-  ["4 doublestars with one-character segments", "?/**/?/**/?/**/?/**/?x"],
-  // The same three-doublestar shape behind a wildcard-heavy tail — over 300 ms on the deep path
-  // with a length bound that reads 21 characters, so the refusal is the only defence.
-  ["3 doublestars ahead of an anchored tail", "**/*/**/*/**/*q*r?s*t"],
-];
 
 runCases();
