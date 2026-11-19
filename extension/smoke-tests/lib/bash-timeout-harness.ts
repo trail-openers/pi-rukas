@@ -20,9 +20,9 @@ import { makeFakePi } from "../test-child-guards-helpers.ts";
 
 /** The reviewer arm's default, in the SECONDS Pi's bash schema takes (600000 ms). */
 export const REVIEWER_BOUND = 600;
-/** The developer arm's default, in the same unit (1500000 ms) — above the
- *  reviewer's, and above the `timeout 1200` wrapper the developer prompt types. */
-export const DEVELOPER_BOUND = 1500;
+/** The developer arm's default, in the same unit (900000 ms) — below the
+ *  reviewer's, and below the `timeout 1200` wrapper the developer prompt types. */
+export const DEVELOPER_BOUND = 900;
 
 /**
  * Drive one tool call through the hooks the companion actually installs, with

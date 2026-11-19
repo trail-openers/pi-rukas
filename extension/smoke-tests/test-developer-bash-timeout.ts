@@ -17,6 +17,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { DEFAULT_BUDGETS } from "../src/lean/config.ts";
 import { isDeveloperRole } from "../src/review-bounds.ts";
 import { developerBashBoundSeconds } from "../src/review-bash-timeout.ts";
 import { withEnv } from "./lib/env-scope.ts";
@@ -204,7 +205,17 @@ import { assert, exit as failureExit } from "./merge-guard-helpers.ts";
   await withEnv({ PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS: undefined }, async () => {
     assert(
       developerBashBoundSeconds() === DEVELOPER_BOUND,
-      `the developer knob's default is ${DEVELOPER_BOUND}s / 1500000 ms (got ${String(developerBashBoundSeconds())})`,
+      `the developer knob's default is ${DEVELOPER_BOUND}s / 900000 ms (got ${String(developerBashBoundSeconds())})`,
+    );
+    // #2377's point: the bound must end the call before the step ends the
+    // dispatch, so the default sits strictly below the lean `specify` budget —
+    // the seat whose never-returning call was the incident. A raise past it
+    // reintroduces the 41-min stall the knob exists to prevent. Stated in
+    // SECONDS on both sides, the unit `developerBashBoundSeconds` returns.
+    const specifySeconds = (DEFAULT_BUDGETS.specify ?? { minutes: 0 }).minutes * 60;
+    assert(
+      developerBashBoundSeconds()! < specifySeconds,
+      `the developer default must stay below the lean specify step budget (${String(developerBashBoundSeconds())}s vs ${String(specifySeconds)}s — at or above it, a never-returning call outlives the step)`,
     );
   });
   // R2's other half: the warning for a value that is neither default nor valid
@@ -289,8 +300,8 @@ import { assert, exit as failureExit } from "./merge-guard-helpers.ts";
   const root = path.resolve(import.meta.dirname, "..", "..");
   const configuration = readFileSync(path.join(root, "docs", "configuration.md"), "utf8");
   assert(
-    /\| `PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS` \| `1500000` \(25 min\)/.test(configuration),
-    "docs/configuration.md carries a row for PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS at 1500000 (25 min)",
+    /\| `PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS` \| `900000` \(15 min\)/.test(configuration),
+    "docs/configuration.md carries a row for PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS at 900000 (15 min)",
   );
   assert(
     /PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS`[^\n]*split or background/i.test(configuration),

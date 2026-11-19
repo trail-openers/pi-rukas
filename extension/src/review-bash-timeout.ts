@@ -17,7 +17,7 @@
  * same seam `developer-push-guard.ts` reads it, so the parent session
  * (`PI_ENSEMBLE_ROLE` unset) stays untouched — and each role reads only its
  * own knob: `PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS` (600000) for the reviewer
- * roles, `PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS` (1500000) for the
+ * roles, `PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS` (900000) for the
  * developer. Neither knob can bound the other role's calls, and `ops`,
  * `explore`, the PM session and every other role get no bound at all. A call
  * that genuinely needs longer is the child's to split or background with its
@@ -33,11 +33,10 @@
  * seconds still fit Pi's bash ceiling (`Number()` alone took `1e308`, a
  * fraction, hex and a digit separator, and a value just under the ms ceiling
  * rounds past it). An invalid non-empty value means NO bound and warns, like
- * the sibling review
- * knobs; empty or unset means the default. The developer reader has one
- * difference, and it is deliberate: `"0"` is NO bound with NO warning, because
- * `0` is how every other knob in this project spells "off" — a warning there
- * would fire on the documented way to turn the arm off.
+ * the sibling review knobs; empty or unset means the default. The developer
+ * reader has one difference, and it is deliberate: `"0"` is NO bound with NO
+ * warning, because `0` is how every other knob in this project spells "off" —
+ * a warning there would fire on the documented way to turn the arm off.
  * The hook never throws: it registers through `failClosedPi`, whose wrapper
  * turns a thrown handler into a `{ block: true }` refusal, so an operator knob
  * cannot refuse a child's bash call — a write that fails warns, as written.
@@ -51,12 +50,12 @@ import { trace, traceWarn } from "./trace.ts";
  *  bound, inside the 30-min lens bound. */
 const DEFAULT_REVIEW_BASH_TIMEOUT_MS = 600_000;
 
-/** Twenty-five minutes: ABOVE the `timeout 1200` suite wrapper the developer
- *  prompt tells the child to type, so that wrapper stays the bound that bites
- *  for a suite shard and this one only catches a call that never returns at all
- *  — and still well inside the develop / lens-fix child bounds, so the call ends
- *  and the child keeps its turn rather than the bound ending the dispatch. */
-const DEFAULT_DEVELOPER_BASH_TIMEOUT_MS = 1_500_000;
+/** Fifteen minutes: BELOW the `timeout 1200` suite wrapper the developer prompt
+ *  tells the child to type, so a call that outlives that wrapper is caught here
+ *  too, and below the lean `specify` step budget (`DEFAULT_BUDGETS.specify`,
+ *  20 min) so a never-returning call ends and the child keeps its turn instead
+ *  of the step bound ending the dispatch — the #2377 incident. */
+const DEFAULT_DEVELOPER_BASH_TIMEOUT_MS = 900_000;
 
 /** Pi's bash ceiling for `timeout` (its MAX_TIMEOUT_MS): past it the tool throws
  *  `Invalid timeout: maximum is …` instead of running anything, so a knob asking
