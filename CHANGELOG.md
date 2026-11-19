@@ -8,6 +8,20 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.92](https://github.com/trail-openers/pi-rukas/compare/v0.14.91...v0.14.92) (2026-11-19)
+
+
+### Features
+
+* **spawn:** bound a developer child's single bash call ([#2386](https://github.com/trail-openers/pi-rukas/issues/2386)) ([e8ec393](https://github.com/trail-openers/pi-rukas/commit/e8ec39335f277f8332cf368afe9428eed28170bf))
+
+
+### Bug Fixes
+
+* **forge:** pin exactly the glab flags the forge layer emits ([#2384](https://github.com/trail-openers/pi-rukas/issues/2384)) ([0bda884](https://github.com/trail-openers/pi-rukas/commit/0bda884af8bb2279c4e5d4a2149b717d14a6b918))
+* **lean:** let an explicit --timeout beat the exported cycle budget ([#2387](https://github.com/trail-openers/pi-rukas/issues/2387)) ([e2b8743](https://github.com/trail-openers/pi-rukas/commit/e2b87431eab5858accd13fb81176275b2306d520))
+* **spawn:** register forge_read once in a headless child ([#2388](https://github.com/trail-openers/pi-rukas/issues/2388)) ([2777e16](https://github.com/trail-openers/pi-rukas/commit/2777e1632a74a90d100e9951000c08ba109a63b3))
+
 ## [0.14.91](https://github.com/trail-openers/pi-rukas/compare/v0.14.90...v0.14.91) (2026-11-19)
 
 
