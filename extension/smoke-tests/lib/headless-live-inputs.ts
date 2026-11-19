@@ -80,6 +80,7 @@ import { integrationVerifyTimeoutMs } from "../../src/work-driver-commit-title.t
 import { convergeGateEnabled } from "../../src/work-driver-converge.ts";
 import { protectedPathsEnabled } from "../../src/work-driver-doctrine.ts";
 import { transientRetryEnabled } from "../../src/work-driver-failure-taxonomy.ts";
+import { timeoutFlagPrecedenceEnabled } from "../../src/work-driver-timeout-flag-precedence-switch.ts";
 import {
   burstThresholdSeconds,
   providerRetryFloorMs,
@@ -291,6 +292,11 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_REVIEW_WALL_CLOCK_MS", () => reviewWallClockMs()],
   ["PI_ENSEMBLE_SESSION_REATTACH", sessionReattachEnabled],
   ["PI_ENSEMBLE_TRANSIENT_RETRY", transientRetryEnabled],
+  // #2362 — whether `work-lean`'s `--timeout` outranks the host's exported budget. The
+  // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on";
+  // the truth table, both arms' arms, the one warning and the docs rows are pinned by
+  // test-work-driver-timeout-flag-precedence-switch.ts.
+  ["PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE", timeoutFlagPrecedenceEnabled],
   // #2283 — the two develop-gate tiers. Both readers are `v !== "0"`, so the gate's LIVE
   // loop (env deleted) pins "unset means on"; the truth tables and the docs rows are pinned
   // by test-verify-develop-switches.ts.

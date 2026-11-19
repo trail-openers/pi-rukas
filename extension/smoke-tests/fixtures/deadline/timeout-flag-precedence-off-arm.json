@@ -1,0 +1,172 @@
+{
+  "note": "Pre-fix arms and stderr for the #2362 `--timeout` precedence rule, captured ONCE from `resolveCycleDeadline` at 238291c448 (the tree with no PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE) driven by fixtures/deadline/capture-timeout-flag-precedence-off-arm.ts with PI_ENSEMBLE_DEBUG unset and every PI_ENSEMBLE_* variable deleted. `arms.off` is that tree's answer for every input combination; `arms.on` is the same reader at the fix's default, where an explicit --timeout outranks the exported budget. `stderr` is every physical line the reader wrote — the off arm's silence is a captured fact, not an assumption. Values are absolute because both the capture and the test drive the fixed clock `t0`; nothing here depends on wall time.",
+  "capturedAtCommit": "238291c448",
+  "switch": "PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE",
+  "t0": 1800000000000,
+  "flagMs": 9900000,
+  "cases": [
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_DEADLINE": "1800000007000"
+      },
+      "flag": null,
+      "arms": {
+        "on": 1800000007000,
+        "off": 1800000007000
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "3600000"
+      },
+      "flag": null,
+      "arms": {
+        "on": 1800003600000,
+        "off": 1800003600000
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "3600000"
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": 1800009900000,
+        "off": 1800003600000
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_DEADLINE": "1800000007000"
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": 1800000007000,
+        "off": 1800000007000
+      },
+      "stderr": []
+    },
+    {
+      "env": {},
+      "flag": null,
+      "arms": {
+        "on": null,
+        "off": null
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "abc"
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": null,
+        "off": null
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "-5"
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": null,
+        "off": null
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "0"
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": null,
+        "off": null
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "1e3"
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": 1800009900000,
+        "off": 1800000001000
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": " 60000 "
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": 1800009900000,
+        "off": 1800000060000
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": ""
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": 1800009900000,
+        "off": 1800009900000
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "abc"
+      },
+      "flag": null,
+      "arms": {
+        "on": null,
+        "off": null
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "0"
+      },
+      "flag": null,
+      "arms": {
+        "on": null,
+        "off": null
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "1e3"
+      },
+      "flag": null,
+      "arms": {
+        "on": 1800000001000,
+        "off": 1800000001000
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": " 60000 "
+      },
+      "flag": null,
+      "arms": {
+        "on": 1800000060000,
+        "off": 1800000060000
+      },
+      "stderr": []
+    }
+  ]
+}

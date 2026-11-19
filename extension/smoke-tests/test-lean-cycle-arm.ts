@@ -17,7 +17,8 @@
  *       into the engine as a VALUE — the environment is never written;
  *   (b) one contract, one reader: the flag, `PI_ENSEMBLE_CYCLE_BUDGET_MS` and
  *       `PI_ENSEMBLE_CYCLE_DEADLINE` resolve through the same rules `work` uses,
- *       including the epoch-in-seconds refusal;
+ *       including the epoch-in-seconds refusal — the absolute arm first, then the
+ *       caller's explicit flag, then the host's exported budget (#2362);
  *   (c) a run the clock caught ends `handed-back` at 10 with no step run at all,
  *       its reason naming the clock, and the arm on the record;
  *   (d) an arm outside the handoff allowance stops nothing;
@@ -138,10 +139,11 @@ for (const [bad, expectRan] of [
 }
 
 // ───────────────── (b) one contract, one reader: what arms a lean run's clock
-// The three inputs are weighed by the SAME `resolveCycleDeadline` `work` reads,
-// in the order the host expects: an absolute deadline it exported beats a budget
-// it exported, and either beats the caller's `--timeout`. A run that weighed them
-// differently would park a cycle its host had armed, or keep working past one.
+// The three inputs are weighed by the SAME `resolveCycleDeadline` `work` reads. An
+// explicit `--timeout` is the caller's word about THIS run, so it beats a budget the
+// host exported for all of them (#2362); an absolute deadline the host exported — it owns
+// the clock — beats both. A run that weighed them differently would park a cycle its host
+// had armed, or keep working past one.
 await withEnv({}, async () => {
   const start = 1_700_000_000_000;
   const flag = flagBudgetMs(3 * MINUTE_MS);
@@ -156,8 +158,8 @@ await withEnv({}, async () => {
   );
   await withEnv({ PI_ENSEMBLE_CYCLE_BUDGET_MS: String(99 * MINUTE_MS) }, async () => {
     assert(
-      leanDeadline(undefined, start, flag) === start + 99 * MINUTE_MS,
-      "(b) a budget the caller exported itself outranks the flag",
+      leanDeadline(undefined, start, flag) === start + 3 * MINUTE_MS,
+      "(b) an explicit flag outranks a budget the caller exported itself (#2362)",
     );
     await withEnv(
       {

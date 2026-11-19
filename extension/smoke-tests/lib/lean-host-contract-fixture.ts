@@ -56,6 +56,11 @@ export const ENV_KEYS = [
   // into the next case would quietly test the unbounded await instead of the bound.
   "PI_ENSEMBLE_LEAN_REPORT_BOUND",
   "PI_ENSEMBLE_CYCLE_BUDGET_MS",
+  // #2362 — whether `work-lean`'s `--timeout` outranks the budget above. Read at call
+  // time by `timeoutFlagPrecedenceEnabled`, and the off/on arms of
+  // `test-work-driver-timeout-flag-precedence-switch.ts` are pinned with this scope, so a
+  // leaked pin would quietly weigh the two durations in the wrong order.
+  "PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE",
   "PI_ENSEMBLE_HANDOFF_CHANNEL",
   // A case may pin the forge off for its own duration: the post seam is asserted
   // to be the WHOLE post path, which is only falsifiable when no adapter can be

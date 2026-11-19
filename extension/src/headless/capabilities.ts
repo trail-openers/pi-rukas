@@ -156,6 +156,15 @@ export const HEADLESS_FEATURES = {
    * a run nobody looked at. Absent means "do not read `gates`", never "gates is empty".
    */
   leanGates: true,
+  /**
+   * #2362 — on `work-lean`, an explicit `--timeout` outranks `PI_ENSEMBLE_CYCLE_BUDGET_MS`
+   * (the caller's word about one run beats the host's exported default); `PI_ENSEMBLE_CYCLE_DEADLINE`
+   * still outranks both, and a resume keeps the arm its first round persisted. A FEATURE the
+   * build ships, so it is a constant: the roster says what this build can do, and an operator
+   * who turns the rule off with `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE=0` is choosing the
+   * pre-#2362 order, not reporting that the build lacks the rule.
+   */
+  timeoutFlagPrecedence: true,
 } as const;
 
 export interface Capabilities {
