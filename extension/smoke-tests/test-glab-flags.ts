@@ -36,10 +36,13 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { ciJobTraceCmd, ciRunJobsCmd, ciRunLogCmd } from "../src/forge-commands.ts";
 import * as cmds from "../src/forge-commands.ts";
-import { mergeEvidenceGlJobsCmd, mergeEvidenceGlPipelinesCmd } from "../src/forge-commands-gl-evidence.ts";
-import { GLAB_FLAGS } from "./lib/glab-flags-pinned.ts";
+import { argvOf, cmdOf, GLAB_CALLS } from "./lib/glab-calls.ts";
+import { glabFlagCanaries, glabFloorCanaries } from "./lib/glab-flags-both-ways.ts";
+import { expectedNoteBodyFile, GLAB_FLAGS, GLAB_MIN_VERSION } from "./lib/glab-flags-pinned.ts";
+
+/** A full 40-char SHA — the shape the merge head pin requires of its OID. */
+const OID = "e".repeat(40);
 
 let exit = 0;
 function assert(cond: unknown, msg: string) {
@@ -54,29 +57,6 @@ let skipped = 0;
 function skip(msg: string) {
   console.log(`SKIP ${msg}`);
   skipped++;
-}
-
-
-/** One row per GitLab command the forge layer can issue: its subcommand key and
- *  the command text the builders emit. */
-interface GlabCall {
-  name: string;
-  key: string;
-  argv: string[];
-}
-
-function words(s: string): string[] {
-  // Quote the builders' own quoting is irrelevant here: only flag tokens are
-  // inspected, and a quoted value never begins with `-`.
-  return s.split(/\s+/).filter(Boolean);
-}
-
-function argvOf(cmd: string | { cmd: string; argv?: string[] }): string[] {
-  return typeof cmd === "string" ? words(cmd) : (cmd.argv ?? []);
-}
-
-function cmdOf(cmd: string | { cmd: string; argv?: string[] }): string {
-  return typeof cmd === "string" ? cmd : cmd.cmd;
 }
 
 /** Strip the `glab` word, drop any quoted endpoint (an argument, never a flag),
@@ -99,165 +79,9 @@ function flagsOf(argv: string[]): string[] {
   return argv.filter((a) => a.startsWith("-")).map((a) => a.split("=")[0]!);
 }
 
-// ── The builders, enumerated ───────────────────────────────────────────────
-
-const OID = "e".repeat(40);
-const GLAB_CALLS: GlabCall[] = [
-  { name: "mr view", key: "mr view", argv: argvOf(cmds.prViewCmd("gitlab", 17)) },
-  {
-    name: "mr list",
-    key: "mr list",
-    argv: argvOf(cmds.prListCmd("gitlab", { sourceBranch: "feature/x" })),
-  },
-  {
-    name: "mr list (open is glab's default)",
-    key: "mr list",
-    argv: argvOf(cmds.prListCmd("gitlab", { sourceBranch: "feature/x", state: "open" })),
-  },
-  {
-    name: "mr list refuses a state glab cannot spell",
-    key: "mr list",
-    // The refusal is part of the gate: a state with no `-c`/`-M` spelling must not
-    // be answered with the open list. `closed` is the call the pre-fix builder
-    // emitted `--state closed` for.
-    argv: (() => {
-      try {
-        return argvOf(cmds.prListCmd("gitlab", { sourceBranch: "feature/x", state: "closed" }));
-      } catch (e) {
-        // The refusal IS the expected shape, so it is asserted on its own below
-        // and carries no flag for this gate to judge.
-        return ["mr list", String((e as Error).message)];
-      }
-    })(),
-  },
-  { name: "mr update --ready", key: "mr update", argv: argvOf(cmds.prReadyCmd("gitlab", 7)) },
-  { name: "mr update --draft", key: "mr update", argv: argvOf(cmds.prDraftCmd("gitlab", 7)) },
-  {
-    name: "mr merge",
-    key: "mr merge",
-    argv: argvOf(cmds.prMergeCmd("gitlab", 17, OID, "squash")),
-  },
-  {
-    name: "mr merge refuses a subject glab cannot spell",
-    key: "mr merge",
-    // `--subject` is a gh flag; `glab mr merge` has none. The builder refuses
-    // rather than silently dropping a subject the driver already composed and
-    // would report as the merge commit message.
-    argv: (() => {
-      try {
-        return argvOf(cmds.prMergeCmd("gitlab", 17, OID, "squash", "feat(x): y"));
-      } catch (e) {
-        // The refusal IS the expected shape, so it is asserted on its own below
-        // and carries no flag for this gate to judge.
-        return ["mr merge", String((e as Error).message)];
-      }
-    })(),
-  },
-  { name: "mr diff", key: "mr diff", argv: argvOf(cmds.prDiffCmd("gitlab", 17)) },
-  { name: "mr checks (api)", key: "api", argv: argvOf(cmds.prChecksCmd("gitlab", 17)) },
-  { name: "mr approvals (api)", key: "api", argv: argvOf(cmds.prReviewsCmd("gitlab", 17)) },
-  { name: "issue view", key: "issue view", argv: argvOf(cmds.issueViewCmd("gitlab", 42)) },
-  {
-    name: "issue create",
-    key: "issue create",
-    argv: argvOf(cmds.issueCreateCmd("gitlab", "T", "/tmp/b", ["bug", "kind: x"])),
-  },
-  {
-    name: "issue comment (api)",
-    key: "api",
-    argv: argvOf(cmds.issueCommentCmd("gitlab", 42, "/tmp/c")),
-  },
-  { name: "issue notes (api)", key: "api", argv: argvOf(cmds.issueCommentsCmd("gitlab", 42)) },
-  {
-    name: "pr comment (api)",
-    key: "api",
-    argv: argvOf(cmds.prCommentCmd("gitlab", 17, "/tmp/c")),
-  },
-  { name: "pr notes (api)", key: "api", argv: argvOf(cmds.prCommentsCmd("gitlab", 17)) },
-  {
-    name: "issue list --search",
-    key: "issue list",
-    argv: argvOf(cmds.issueSearchCmd("gitlab", "bug", { allStates: true })),
-  },
-  {
-    name: "issue list",
-    key: "issue list",
-    argv: argvOf(cmds.issueListCmd("gitlab", { state: "all" })),
-  },
-  {
-    name: "issue edit (api)",
-    key: "api",
-    argv: argvOf(cmds.issueEditCmd("gitlab", 42, "/tmp/x/body.md")),
-  },
-  { name: "pipelines (api)", key: "api", argv: argvOf(cmds.pipelineViewCmd(5001)) },
-  { name: "pipeline list (api)", key: "api", argv: argvOf(cmds.pipelineListCmd(20)) },
-  { name: "label list", key: "label list", argv: argvOf(cmds.labelListCmd("gitlab")) },
-  { name: "label create (api)", key: "api", argv: argvOf(cmds.labelCreateCmd("gitlab", "bug", "FF0000")) },
-  { name: "label add (api)", key: "api", argv: argvOf(cmds.labelAddCmd("gitlab", "issue", 42, "bug")) },
-  {
-    name: "label remove (api)",
-    key: "api",
-    argv: argvOf(cmds.labelRemoveCmd("gitlab", "mr", 17, "bug")),
-  },
-  { name: "repo view (api)", key: "api", argv: argvOf(cmds.repoSettingsCmd("gitlab")) },
-  {
-    name: "run jobs (api)",
-    key: "api",
-    argv: argvOf(ciRunJobsCmd("gitlab", "acme", "widget", 12)),
-  },
-  { name: "ci run log", key: "ci trace", argv: argvOf(ciRunLogCmd("gitlab", 12)) },
-  { name: "job trace (api)", key: "api", argv: argvOf(ciJobTraceCmd(12)) },
-  {
-    name: "evidence pipelines",
-    key: "api",
-    argv: argvOf(mergeEvidenceGlPipelinesCmd(17)),
-  },
-  {
-    name: "evidence jobs",
-    key: "api",
-    argv: argvOf(mergeEvidenceGlJobsCmd(5001)),
-  },
-  {
-    name: "ci status --live (slow notice suggestion)",
-    key: "ci status",
-    argv: ["glab", "ci", "status", "--live"],
-  },
-  {
-    name: "ci view (slow notice suggestion)",
-    key: "ci view",
-    argv: ["glab", "ci", "view"],
-  },
-  { name: "auth status (recovery hint)", key: "auth status", argv: ["glab", "auth", "status"] },
-  { name: "version (recovery hint)", key: "version", argv: ["glab", "version"] },
-  {
-    name: "mr view --web (recovery hint)",
-    key: "mr view",
-    argv: ["glab", "mr", "view", "17", "--web"],
-  },
-  {
-    name: "mr cancel (recovery hint)",
-    key: "mr cancel",
-    argv: ["glab", "mr", "cancel", "17"],
-  },
-];
-
-/**
- * The MR-create call, read from the live builder rather than hard-coded, so the
- * gate follows whatever transport that builder is on. Its argv is the whole
- * point of the gate: it is the call whose invented flags broke every GitLab
- * cycle.
- */
-{
-  const built = cmds.prCreateCmd("gitlab", "T", "feature/x", "the body", {
-    baseBranch: "main",
-    draft: true,
-  });
-  const argv = argvOf(built);
-  GLAB_CALLS.unshift({
-    name: "mr create",
-    key: "mr create",
-    argv: cmdOf(built) === "glab" ? argv : ["glab", ...argv],
-  });
+/** Two flag lists holding the same members, in any order. */
+function sameMembers(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((x) => b.includes(x));
 }
 
 // ── Offline arm: every emitted flag is in the subcommand's pinned set ──────
@@ -269,11 +93,22 @@ for (const call of GLAB_CALLS) {
     continue;
   }
   const sub = subcommandOf(call.argv);
-  assert(sub === call.key || call.key === "api" || sub.startsWith(call.key), `${call.name}: argv names ${call.key} (got "${sub}")`);
+  const subOk =
+    sub === call.key ||
+    call.key === "api" ||
+    sub.startsWith(call.key) ||
+    // The note post runs the parent verb with the leaf's flag (`glab mr note 17
+    // --body-file`), while the pinned set — and therefore this key — is the leaf
+    // `mr note create`, the command whose help actually lists `-m/--message`.
+    (call.expectedUnknown !== undefined && call.key.startsWith(`${sub} `));
+  assert(subOk, `${call.name}: argv names ${call.key} (got "${sub}")`);
   const unknown = flagsOf(call.argv).filter((f) => !pinned.has(f));
+  const expected = call.expectedUnknown ?? [];
   assert(
-    unknown.length === 0,
-    `every flag ${call.name} emits is in the pinned set for \`${call.key}\`${unknown.length ? ` — unknown: ${unknown.join(", ")}` : ""}`,
+    sameMembers(unknown, expected),
+    `every flag ${call.name} emits is in the pinned set for \`${call.key}\`${
+      unknown.length ? ` — unknown: ${unknown.join(", ")}` : ""
+    }${expected.length && !sameMembers(unknown, expected) ? ` — expected unknown: ${expected.join(", ")}` : ""}`,
   );
 }
 
@@ -321,8 +156,41 @@ for (const call of GLAB_CALLS) {
     "mr create does not pin --description-file: the builder emits -d, which every version has",
   );
   assert(!GLAB_FLAGS["mr create"].has("--output"), "mr create does not pin --output");
-  assert(GLAB_FLAGS["mr view"]?.has("-F") === true, "mr view pins the -F short form of --output");
+  assert(
+    GLAB_FLAGS["mr view"]?.has("-F") === true,
+    "mr view pins the -F short form of --output",
+  );
+
+  // The one known defect, asserted from the data file's own naming so the flag, the
+  // command and the replacement cannot drift apart. `--body-file` is what the
+  // GitHub sibling of this post uses; the GitLab arm borrowed it, and glab answers
+  // an unknown flag with `ERROR Unknown flag:` before any network call — so the
+  // lens-residual disclosure has never landed on a GitLab MR.
+  assert(
+    !GLAB_FLAGS[expectedNoteBodyFile.key]?.has(expectedNoteBodyFile.emitted),
+    `${expectedNoteBodyFile.key} does not pin ${expectedNoteBodyFile.emitted}: glab's note takes ${expectedNoteBodyFile.instead.join("/")}, so the emitted flag is unknown`,
+  );
+  assert(
+    expectedNoteBodyFile.instead.every((f) => GLAB_FLAGS[expectedNoteBodyFile.key]?.has(f)),
+    `${expectedNoteBodyFile.key} pins the ${expectedNoteBodyFile.instead.join("/")} pair that replaces the unknown flag`,
+  );
 }
+
+// ── The floor: one literal, in the data file's header and in the docs ───────
+
+// Judged in `lib/glab-flags-both-ways.ts`, beside the equality canaries and the data
+// file whose header carries the literal.
+glabFloorCanaries(GLAB_MIN_VERSION, assert);
+
+// ── Both ways: a pin no row emits is dead data, an emitted flag no pin lists is unchecked ─
+
+// The equality itself, and the two copies of the shipped flag text that prove both
+// of its directions fail, live in `lib/glab-flags-both-ways.ts` — the same
+// data/gate seam this file already splits at, held there by the 500-line limit.
+glabFlagCanaries(GLAB_CALLS, GLAB_FLAGS, assert, {
+  flagsOf,
+  noteReplacement: { key: expectedNoteBodyFile.key, instead: expectedNoteBodyFile.instead },
+});
 
 // ── Live arm: the pinned set is a subset of the installed binary's own help ─
 
@@ -394,7 +262,9 @@ if (!glabPresent) {
     // hand-edited pinned set would have allowed it.
     const emitted = [
       ...new Set(
-        GLAB_CALLS.filter((c) => c.key === key).flatMap((c) => flagsOf(c.argv)),
+        GLAB_CALLS.filter((c) => c.key === key).flatMap((c) =>
+          flagsOf(c.argv).filter((f) => !(c.expectedUnknown ?? []).includes(f)),
+        ),
       ),
     ];
     const unlisted = emitted.filter((f) => !help.has(f) && !help.has(f.split("=")[0]!));
