@@ -15,7 +15,8 @@
  * is the sha this cycle recorded in `tmp/issue-<n>/pushed.json` is this cycle's
  * own earlier push, which `--restart` may replace by lease, so it does not stop.
  * Nor does a branch whose tip is already in the cycle's base (a merged branch
- * left on the remote): the first push on top of it is a fast-forward.
+ * left on the remote): the first push on top of it is a fast-forward. A tip the
+ * clone does not hold is not in the base, so it stops.
  * A branch with an open PR never reaches here: the PR preflight before it stops
  * on `existing-pr-detected`, and `--continue-pr` takes its own branch path.
  *

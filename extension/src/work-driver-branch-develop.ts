@@ -10,6 +10,7 @@ import { trace } from "./trace.ts";
 import {
   BranchAheadError,
   branchSlug,
+  freshMainlineTip,
   mechanizedBranchSetup,
 } from "./work-driver-branch-mechanized.ts";
 import {
@@ -159,7 +160,9 @@ export async function runBranch(
     salvageScratch,
     ctx.issue,
     branchSlug(activeIssuesOf(state), await cachedIssueTitle(state)),
-    state.pipelineState.baseSha,
+    // The base is recorded only by the setup below, so a fresh cycle reads the
+    // local mainline ref; a merge it has not fetched yet still stops.
+    state.pipelineState.baseSha ?? (await freshMainlineTip(execFnPre, ctx.repoRoot)).sha,
   );
   if (stale.length > 0) return staleRemoteBranchCap(state, stale, now);
   // #730 — same-issue worktree residue BEFORE the mechanized setup (the
