@@ -134,8 +134,14 @@ export const BUDGET_STATES: readonly LeanState[] = ["specify", "build", "challen
  * for the drafting child, and a state outside this set has its rows DROPPED rather than
  * refused — the cost goes missing silently. Like `review` it arms no child ceiling of its
  * own (`derive` is its own budget row), so it owns no budget trio.
+ * `publish` pays for the child that checks a host's approved spec.
  */
-export const DISPATCH_STATES: readonly LeanState[] = [...BUDGET_STATES, "review", "ready"];
+export const DISPATCH_STATES: readonly LeanState[] = [
+  ...BUDGET_STATES,
+  "review",
+  "ready",
+  "publish",
+];
 
 /**
  * Which state is allowed to record which evidence-bearing field. One table, one `includes`

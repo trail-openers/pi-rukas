@@ -87,8 +87,8 @@ function assert(cond: boolean, msg: string): void {
 
 // ------------------- (o) an error outcome carries rows ONLY where they belong
 //
-// `dispatches` belongs to `specify`/`build`/`challenge` (`OWNER_OF_FIELD` in
-// `state-outcome.ts`), so an engine that copied rows onto a `publish` throw
+// `dispatches` belongs to the states `DISPATCH_STATES` names (`OWNER_OF_FIELD` in
+// `state-outcome.ts`), so an engine that copied rows onto a `verify` throw
 // would leave the run's own state file refusing to load. The helper drops them.
 {
   const rows = [
@@ -100,7 +100,7 @@ function assert(cond: boolean, msg: string): void {
     },
   ];
   const owned = errorOutcome("build", Object.assign(new Error("died"), { dispatches: rows }));
-  const unowned = errorOutcome("publish", Object.assign(new Error("died"), { dispatches: rows }));
+  const unowned = errorOutcome("verify", Object.assign(new Error("died"), { dispatches: rows }));
   const notAnArray = errorOutcome("build", Object.assign(new Error("died"), { dispatches: "x" }));
   const badRow = errorOutcome(
     "build",

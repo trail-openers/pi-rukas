@@ -214,6 +214,11 @@ read off the record (so a resumed run still says it), which is how a reviewer te
 the body travels with the result instead, as with the two reporting steps. A comment
 that cannot be posted is traced, not fatal.
 
+**An approved spec.** When the issue's manifest names an approved spec, every step reads
+it after the issue body, and with `spec.block: 1` the PR body ends in a `tehas:spec v1`
+block with one `met` / `not met` line per requirement; see
+[Approved spec for hosts](headless.md#approved-spec-for-hosts).
+
 **Headless.** `pi-rukas-headless work-lean <issue> --spec-intake require|derive`
 overrides both the env and the committed field for the one run; an invalid value is
 an argument error. It is written to the env as late as the parser allows, because

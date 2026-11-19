@@ -23,6 +23,7 @@ import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { recordFallbackDraftFact } from "./work-driver-draft-pr.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import type { IntegrateResult } from "./work-driver-integrate.ts";
+import { specBlockOnPr } from "./work-driver-issue-spec.ts";
 import { parsePrNumber } from "./work-driver-merged.ts";
 import { verifyConsolidation, verifyStepOutcome } from "./work-driver-verify.ts";
 import {
@@ -74,8 +75,8 @@ function toNotes(prior: string[] | undefined): string[] | undefined {
  * AGENTS.md §12 500-line cap (#818).
  *
  * Records the root state, parses the PR number, runs the consolidation
- * completeness gate, and the outcome verification gate. Returns the
- * updated WorkState.
+ * completeness gate, the outcome verification gate, and the approved
+ * spec's PR-body block (`specBlockOnPr`). Returns the updated WorkState.
  *
  * Both commit-pr paths reach it: the LLM-ops fallback via `runCommitPrLocked`
  * and the mechanized path via `auditCommitPrFallback`'s no-fallback branch
@@ -243,6 +244,8 @@ export async function runCommitPrPostDispatchGates(
     });
     return state;
   }
+  const specHalt = await specBlockOnPr(ctx, execFn, state);
+  if (specHalt !== undefined) return specHalt;
   // #1137 — the whole-issue acceptance-coverage check, ONCE on the
   // consolidated diff (never per workstream — the per-workstream review is
   // scoped to its own paths by the adversarial prompt). A criterion no

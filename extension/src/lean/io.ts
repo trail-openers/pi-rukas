@@ -11,6 +11,7 @@
 
 import { execp } from "../exec.ts";
 import type { Forge } from "../forge.ts";
+import { issueSpecOrThrow, withApprovedSpec } from "../issue-spec.ts";
 import { detectMainline } from "../mainline.ts";
 import { resolveCycleForge } from "../work-driver-forge-ctx.ts";
 import { type PiSpec, renderPiSpec } from "./spec.ts";
@@ -27,8 +28,15 @@ export async function forgeFor(repoRoot: string): Promise<Forge | undefined> {
   return resolveCycleForge(repoRoot, { traceLabel: "lean" });
 }
 
-/** The issue body: the adapter when there is one, raw `gh` when there is not. */
+/** The body every step reads: the approved text and spec when a host handed them (`issue-spec.ts`). */
 export async function fetchIssueBody(repoRoot: string, issue: number): Promise<string> {
+  const s = await issueSpecOrThrow(issue);
+  const body = s?.approved?.body ?? (await fetchLiveIssueBody(repoRoot, issue));
+  return s === undefined ? body : withApprovedSpec(body, s);
+}
+
+/** The issue body: the adapter when there is one, raw `gh` when there is not. */
+async function fetchLiveIssueBody(repoRoot: string, issue: number): Promise<string> {
   const forge = await forgeFor(repoRoot);
   if (forge) {
     const viewed = await forge.issueView(issue);

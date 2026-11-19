@@ -22,11 +22,15 @@
  *     is named in the step's operator-facing summary AND recorded as a
  *     `consolidated-verify-skipped` event — both are produced by
  *     `finalizeCommitPrState`, which is what the mechanized path writes.
+ *  5. A host's approved spec: commit-pr runs the check child once and the PR
+ *     body ends in that cycle's `tehas:spec v1` block, even when the body the
+ *     forge holds lost it.
  *
  * Offline: real git in temp dirs, a scripted `gh`, no network, no model.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -64,7 +68,7 @@ const NEW_PR = 107;
 /** How the scripted forge answers once this cycle's PR is asked for. */
 type Forge = { create: "ok" | "fails"; state: "OPEN" | "CLOSED" };
 
-async function run(name: string, forge: Forge) {
+async function run(name: string, forge: Forge, specDir?: string) {
   const { repo } = await fixture(root, name);
   mkdirSync(path.join(repo, ".pi"));
   writeFileSync(path.join(repo, ".pi", "verify-cmd"), "test -f feature.txt\n");
@@ -89,10 +93,15 @@ async function run(name: string, forge: Forge) {
 
   let created = false;
   const gh: string[] = [];
+  const edited: string[] = [];
   const exec: NonNullable<DriverContext["verifyExecFn"]> = async (raw, o) => {
     const cmd = commandOf(raw, o);
     if (!cmd.startsWith("gh ")) return realExec(raw, o);
     gh.push(cmd);
+    if (cmd.startsWith("gh pr edit")) {
+      const argv = o?.argv ?? [];
+      edited.push(readFileSync(argv[argv.indexOf("--body-file") + 1] ?? "", "utf8"));
+    }
     // OLD_PR is closed, so an open-PR list by head never returns it.
     if (cmd.startsWith("gh pr list")) {
       const open = created && forge.state === "OPEN";
@@ -118,7 +127,10 @@ async function run(name: string, forge: Forge) {
     issue: ISSUE,
     verifyExecFn: exec,
     // The ops fallback, when the mechanized path hands over: it opens nothing.
-    dispatchFn: async () => mkResult({ role: "ops", text: "I could not open a pull request." }),
+    dispatchFn: async (_h: unknown, spec: { label?: string }) =>
+      spec.label === "spec-check"
+        ? mkResult({ text: "- R1 met: feature.txt" })
+        : mkResult({ role: "ops", text: "I could not open a pull request." }),
   } as unknown as DriverContext;
   const base = initialState(ISSUE, 1000);
   const initial: WorkState = {
@@ -140,16 +152,18 @@ async function run(name: string, forge: Forge) {
     return true;
   }) as typeof process.stderr.write;
   let state: WorkState;
+  if (specDir !== undefined) process.env.PI_ENSEMBLE_EXTRA_IMAGE_DIRS = specDir;
   try {
     state = await runCommitPr(ctx, initial, 2000);
   } finally {
     process.stderr.write = realWrite;
+    delete process.env.PI_ENSEMBLE_EXTRA_IMAGE_DIRS;
   }
   const pushed = await git(repo, ["rev-parse", "--verify", "-q", `refs/remotes/origin/${BRANCH}`])
     .then((r) => r.stdout.trim())
     .catch(() => "");
   const tail = state.eventLog[state.eventLog.length - 1];
-  return { state, tail, gh, pushed, log: traced.join("") };
+  return { state, tail, gh, edited, pushed, log: traced.join("") };
 }
 
 // ------------------ 1. an earlier PR for this head was closed; fresh state
@@ -280,6 +294,39 @@ async function run(name: string, forge: Forge) {
     ranCompletion?.kind === "dispatch-completed" &&
       !(ranCompletion.summary as string).includes("consolidated verify skipped"),
     `#1240 (control): …and its summary claims no skip (${JSON.stringify((ranCompletion as { summary?: string } | undefined)?.summary)})`,
+  );
+}
+
+// ---------------------------- 5. the approved spec's block on the PR body
+{
+  const dir = path.join(root, "spec");
+  mkdirSync(dir);
+  const spec = Buffer.from("R1: the feature file exists\n");
+  const sha = createHash("sha256").update(spec).digest("hex");
+  writeFileSync(path.join(dir, "spec.md"), spec);
+  writeFileSync(
+    path.join(dir, "manifest.json"),
+    JSON.stringify({
+      issue: ISSUE,
+      spec: {
+        file: "spec.md",
+        link: "https://example.com/s.md",
+        name: "S",
+        bytes: spec.length,
+        sha256: sha,
+        block: 1,
+      },
+    }),
+  );
+  const r = await run("approved-spec", { create: "ok", state: "OPEN" }, dir);
+  const block = r.state.pipelineState.specBlock ?? "";
+  assert(
+    block.includes(`sha256:${sha}`) && block.includes("- R1 met: feature.txt"),
+    "commit-pr computes the block from the check child, with the manifest's sha256",
+  );
+  assert(
+    r.edited.length === 1 && r.edited[0]?.endsWith(block) === true,
+    `the PR body the forge holds is repaired to end in that block (edits=${r.edited.length})`,
   );
 }
 

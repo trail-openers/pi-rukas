@@ -13,12 +13,11 @@
  * that has not opted in runs the tier exactly as it did before #1647.
  */
 
-import fs from "node:fs/promises";
 import path from "node:path";
-import { driverPublicTextCheck } from "./public-hygiene-driver.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { createVerifyChannel } from "./work-driver-integrate-verify-flake.ts";
+import { type DisclosureResult, specBlocked, writePrBody } from "./work-driver-issue-spec.ts";
 import { guardCompilerIntegrity, packageDirFor } from "./work-driver-toolchain-canary.ts";
 import { runVerifyFull, storeTierOutput } from "./work-driver-verify-full.ts";
 import { removeVerifyReportDir } from "./work-driver-verify-report-path.ts";
@@ -177,8 +176,6 @@ export async function runCiVerifyFull(
   }
 }
 
-export type DisclosureResult = { ok: true } | { ok: false; reason: string };
-
 /**
  * Write the cycle's whole attribution record into the PR body, replacing the
  * marked block the develop round wrote. Called only on a passing tier, with the
@@ -207,40 +204,13 @@ export async function discloseInPrBody(
       return { ok: false, reason: "the PR body could not be read as text, so it was not edited" };
     }
     const current = parsed.body ?? "";
-    const composed = replaceAttributionBlock(current, block);
-    if (composed === current) return { ok: true };
-    // #1788 — this is a public publish: it writes the PR body with `gh`, in
-    // process, so the tool_call guard that refuses an agent's `gh pr edit` never
-    // sees it. The same pure matcher judges it, on the same public-repositories-
-    // only rule, BEFORE the file is written and before the command runs, so a
-    // refused body posts nothing and leaves the reason in the ci tier's own
-    // failure rather than on the forge. The matcher also rewrites this host's
-    // paths to `<repo>`/`~` on a public target, and the bytes written below are
-    // the bytes it judged — `next` is the CHECKED text, never the composed one.
-    const checked = await driverPublicTextCheck(
-      "pull request body",
-      composed,
-      "gh pr edit",
-      ctx.repoRoot,
-      { exec: execFn, repoRoot: ctx.repoRoot },
+    // The cycle's spec block stays last, so the attribution rewrite re-appends and re-validates it.
+    const composed = specBlocked(
+      replaceAttributionBlock(current, block),
+      state.pipelineState.specBlock,
     );
-    if (checked.refusal !== undefined) {
-      const refusal = checked.refusal;
-      trace(
-        `work-driver: ci step — the attribution block was not written: ${refusal.slice(0, 160)}`,
-      );
-      return { ok: false, reason: refusal };
-    }
-    const next = checked.text;
-    const dir = path.join(ctx.repoRoot, "tmp", `issue-${ctx.issue}`);
-    await fs.mkdir(dir, { recursive: true });
-    const bodyFile = path.join(dir, `pr-body-verify-${prNumber}.md`);
-    await fs.writeFile(bodyFile, next, "utf8");
-    await execFn("gh", {
-      argv: ["pr", "edit", String(prNumber), "--body-file", bodyFile],
-      cwd: ctx.repoRoot,
-    });
-    return { ok: true };
+    if (composed === current) return { ok: true };
+    return await writePrBody(ctx, state, execFn, prNumber, composed, "verify");
   } catch (err) {
     const message = (err as Error).message?.slice(0, 160) ?? String(err);
     trace(

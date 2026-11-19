@@ -50,7 +50,7 @@ import { WORK_LEAN_FLAGS } from "./work-lean.ts";
  * v2 (#1326): every input with type/default/scope, and `files`.
  * Additive, no bump (docs/headless.md versioning rule): `resources` (#1325),
  * `contracts.resultSchema.failureKinds` (#1367), the S6 verbs (#1021),
- * `--continue-pr` and `features.continuePr` (#1468).
+ * `--continue-pr` and `features.continuePr` (#1468), `features.issueSpec`.
  */
 export const CAPABILITIES_VERSION = 2 as const;
 
@@ -165,6 +165,14 @@ export const HEADLESS_FEATURES = {
    * pre-#2362 order, not reporting that the build lacks the rule.
    */
   timeoutFlagPrecedence: true,
+  /**
+   * `work` and `work-lean` read the image manifest's approved spec (and `approvedText`) for
+   * check, plan and review. An entry that does not verify stops the run before any work and is
+   * never replaced by the bare issue: `work-lean` at `ready`, `work` at handoff with
+   * `step-failed:explore`. With `spec.block` 1 the PR body carries one `tehas:spec v1` block,
+   * which `work` keeps and re-validates on every driver body rewrite.
+   */
+  issueSpec: true,
 } as const;
 
 export interface Capabilities {

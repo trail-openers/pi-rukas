@@ -11,6 +11,9 @@
  * seam as `integrate()`, `runConsolidatedVerify`, handoff-consolidate, and
  * the merged teardown).
  *
+ * The approved spec's PR-body block is computed before the lock is taken
+ * (`work-driver-issue-spec.ts`).
+ *
  * A push refused because the branch moved (`pushRefusalKind`) in a continued PR is
  * halted as `continue-pr-head-moved`, the cap that names that case for continue mode.
  */
@@ -29,6 +32,7 @@ import {
 import { mechanizedCommitPr } from "./work-driver-commit.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { continueCommitPrHalt } from "./work-driver-continue-pr-commit.ts";
+import { specBlockReady } from "./work-driver-issue-spec.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { pushRefusalKind } from "./work-driver-push-refusal.ts";
 import { appendEvent } from "./workflow-state.ts";
@@ -59,7 +63,10 @@ const PLUMB_BODY_MAX = 2000;
  * commits as this group's evidence.
  */
 async function runCommitPr(ctx: CycleContext, state: WorkState, now: number): Promise<WorkState> {
-  return withIntegrationLock(ctx.repoRoot, () => runCommitPrLocked(ctx, state, now));
+  // The spec check child runs outside the lock, so it never holds up a sibling group.
+  const ready = await specBlockReady(ctx, state);
+  if (ready.halted) return ready.state;
+  return withIntegrationLock(ctx.repoRoot, () => runCommitPrLocked(ctx, ready.state, now));
 }
 
 async function runCommitPrLocked(

@@ -12,6 +12,7 @@
 import { execp } from "../exec.ts";
 import type { ExecOpts } from "../exec.ts";
 import type { Forge } from "../forge-types.ts";
+import { type IssueSpec, type SpecBlockAt, issueSpecOrThrow, specBlockAt } from "../issue-spec.ts";
 import { MAINLINE_PROBE_TIMEOUT_MS, type MainlineExecFn, resolveMainline } from "../mainline.ts";
 import { causeOf } from "../probe-cause.ts";
 import { netGitEnv, runNetGit } from "../work-driver-net-git.ts";
@@ -45,6 +46,10 @@ export interface PublishDeps {
   exec: PublishExec;
   fetchBody: (repoRoot: string, issue: number) => Promise<string>;
   forge: (repoRoot: string) => PromiseLike<PublishForge | undefined>;
+  /** The host's approved spec (`issue-spec.ts`); throws when its manifest entry is invalid. */
+  issueSpec: (issue: number) => Promise<IssueSpec | undefined>;
+  /** The approved spec's PR-body block at a head, and what its check cost. */
+  specBlock: SpecBlockAt;
 }
 
 /**
@@ -171,7 +176,7 @@ export const MAINLINE_PROBE_COMMANDS = [
 ] as const;
 
 /** Production dependencies: the real executor, the real issue read, the real forge. */
-export function publishDeps(): PublishDeps {
+export function publishDeps(headless: boolean): PublishDeps {
   return {
     // One executor for both shapes: `execp`'s opts type declares every field this step passes.
     //
@@ -190,5 +195,7 @@ export function publishDeps(): PublishDeps {
     // `undefined` is an ANSWER ("this clone has no forge the harness can drive"), and a detection that
     // THREW also comes back undefined — an unresolvable forge is not a step the run can finish either way.
     forge: forgeFor,
+    issueSpec: (issue) => issueSpecOrThrow(issue),
+    specBlock: specBlockAt(headless),
   };
 }

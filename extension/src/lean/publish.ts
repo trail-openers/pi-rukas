@@ -33,6 +33,7 @@
  */
 import { existsSync } from "node:fs";
 import type { NormalizedPullRequest } from "../forge-types.ts";
+import { specBlockProblem } from "../issue-spec-block.ts";
 import { netRefProblem } from "../work-driver-net-git.ts";
 import { testsFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
@@ -45,6 +46,7 @@ import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import { PR_URL, PR_URL_MAX_CHARS } from "./state-outcome.ts";
 import { type Outcome, newestDecided } from "./state.ts";
+import type { DispatchUsageRow } from "./step-budget.ts";
 import { oneLine } from "./text-fence.ts";
 
 /** Run git in `wt`, rejecting a read that cannot answer as infrastructure. */
@@ -191,7 +193,7 @@ async function openPr(
   branch: string,
   issue: number,
   problem: string,
-  body: string,
+  body: () => Promise<string>,
   draft: boolean,
 ): Promise<NormalizedPullRequest> {
   const open = await listOpenPrs(f, branch);
@@ -200,7 +202,8 @@ async function openPr(
     const created = await f.prCreate(
       `work-lean #${issue}: ${oneLineTitle(problem)}`,
       branch,
-      body,
+      // Built only here: a reused PR keeps its creation body, so nothing is paid for it.
+      await body(),
       { draft },
     );
     return { ...created, isDraft: await createdDraftState(f, created) };
@@ -297,6 +300,12 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   const read = specFor(fetched, ctx.run);
   if (!read.ok) throw new PublishInfraError(`the issue's spec is unusable: ${read.reason}`);
   const spec = read.spec;
+  const approved = await deps.issueSpec(issue).catch((err: unknown) => {
+    throw new PublishInfraError(
+      `could not read the issue: ${(err as Error)?.message ?? String(err)}`,
+    );
+  });
+  const dispatches: DispatchUsageRow[] = [];
 
   // Resolved ONCE: the stale-branch check and the PR check are two questions of
   // one adapter, and resolving twice is two chances to get two different answers.
@@ -331,9 +340,13 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   // handback over a pushed branch, so it says so — an error that reads only
   // "could not open the PR" hides the one fact the operator needs first. When
   // origin already held this head nothing was written, so the text says so.
+  // The rows ride on the error too: a spec-check child that ran before the refusal still spent its tokens.
   const pushed = (what: string) =>
-    new PublishInfraError(
-      `${wrote ? `pushed ${head.slice(0, 12)} to ${branch}` : `${branch} is already on origin`}, but ${what}`,
+    Object.assign(
+      new PublishInfraError(
+        `${wrote ? `pushed ${head.slice(0, 12)} to ${branch}` : `${branch} is already on origin`}, but ${what}`,
+      ),
+      { dispatches },
     );
 
   if (f === undefined) throw pushed("no forge adapter: cannot open the PR");
@@ -342,53 +355,63 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
     branch,
     issue,
     spec.problem,
-    publishBody({
-      issue,
-      spec,
-      // Provenance off the RECORD, so a resumed run reports it too.
-      specSource: specSource(ctx.run),
-      tests: testsFromLog(ctx.steps),
-      verifyKind,
-      // `verifiedHead` is the green verdict's subject. A red record's head (or
-      // one left over from an older green) printed under a red verdict would
-      // read as "this commit passed", so it travels with a green only.
-      ...(verifyKind === "green" && v?.outcome?.verifiedHead !== undefined
-        ? { verifiedHead: v.outcome.verifiedHead }
-        : {}),
-      ...(v?.outcome?.reason === undefined ? {} : { verifyReason: v.outcome.reason }),
-      ...(v?.outcome?.commandCriteria === undefined
-        ? {}
-        : { commandCriteria: Object.keys(v.outcome.commandCriteria) }),
-      ...(v?.outcome?.commandNotRunnable === undefined
-        ? {}
-        : { commandNotRunnable: v.outcome.commandNotRunnable }),
-      // The tiers the gate excused over the base commit, from the record — the body
-      // renders its disclosure from this and never from the reason prose. BOTH steps
-      // that can excuse a tier are read: `ci` excuses the project's FULL tier under
-      // its own key, and a body that read only `verify` would print a clean PR for a
-      // run whose full tier exited non-zero and was let go on the base commit's
-      // colour. A newer `ci` verdict with no disclosure replaces an older one — the
-      // newest decided step of each kind is the claim that stands, as it is for
-      // `verifyKind`.
-      ...(() => {
-        const excused = {
-          ...(v?.outcome?.preexistingFailures ?? {}),
-          ...(newestDecided(ctx.steps, "ci")?.outcome?.preexistingFailures ?? {}),
-        };
-        return Object.keys(excused).length === 0 ? {} : { preexistingFailures: excused };
-      })(),
-      // The optional adversary round that ran out of its own ceiling, read off
-      // the log rather than out of a closure, so a resumed run prints the same
-      // line a live one would. The reader's object IS the pair (`{limit, value}`)
-      // and is WRAPPED here, never spread: spreading it would hand `publishBody`
-      // two fields it never reads and drop the line without a sound. `undefined`
-      // under the key is the same absence to the renderer as no key at all.
-      challengeBudget: challengeBudgetFromLog(ctx.steps),
-      draft,
-      version: ctx.run.version,
-      models: ctx.run.models,
-      baseSha: ctx.run.baseSha,
-    }),
+    async () => {
+      // The host's block: each requirement judged at this head by one read-only child.
+      const block = approved?.block === 1 ? await deps.specBlock(approved, wt, head) : undefined;
+      dispatches.push(...(block?.dispatches ?? []));
+      const text = publishBody({
+        issue,
+        spec,
+        // Provenance off the RECORD, so a resumed run reports it too.
+        specSource: specSource(ctx.run),
+        tests: testsFromLog(ctx.steps),
+        verifyKind,
+        // `verifiedHead` is the green verdict's subject. A red record's head (or
+        // one left over from an older green) printed under a red verdict would
+        // read as "this commit passed", so it travels with a green only.
+        ...(verifyKind === "green" && v?.outcome?.verifiedHead !== undefined
+          ? { verifiedHead: v.outcome.verifiedHead }
+          : {}),
+        ...(v?.outcome?.reason === undefined ? {} : { verifyReason: v.outcome.reason }),
+        ...(v?.outcome?.commandCriteria === undefined
+          ? {}
+          : { commandCriteria: Object.keys(v.outcome.commandCriteria) }),
+        ...(v?.outcome?.commandNotRunnable === undefined
+          ? {}
+          : { commandNotRunnable: v.outcome.commandNotRunnable }),
+        // The tiers the gate excused over the base commit, from the record — the body
+        // renders its disclosure from this and never from the reason prose. BOTH steps
+        // that can excuse a tier are read: `ci` excuses the project's FULL tier under
+        // its own key, and a body that read only `verify` would print a clean PR for a
+        // run whose full tier exited non-zero and was let go on the base commit's
+        // colour. A newer `ci` verdict with no disclosure replaces an older one — the
+        // newest decided step of each kind is the claim that stands, as it is for
+        // `verifyKind`.
+        ...(() => {
+          const excused = {
+            ...(v?.outcome?.preexistingFailures ?? {}),
+            ...(newestDecided(ctx.steps, "ci")?.outcome?.preexistingFailures ?? {}),
+          };
+          return Object.keys(excused).length === 0 ? {} : { preexistingFailures: excused };
+        })(),
+        // The optional adversary round that ran out of its own ceiling, read off
+        // the log rather than out of a closure, so a resumed run prints the same
+        // line a live one would. The reader's object IS the pair (`{limit, value}`)
+        // and is WRAPPED here, never spread: spreading it would hand `publishBody`
+        // two fields it never reads and drop the line without a sound. `undefined`
+        // under the key is the same absence to the renderer as no key at all.
+        challengeBudget: challengeBudgetFromLog(ctx.steps),
+        draft,
+        version: ctx.run.version,
+        models: ctx.run.models,
+        baseSha: ctx.run.baseSha,
+        ...(block === undefined ? {} : { specBlock: block.text }),
+      });
+      const problem = block && specBlockProblem(text);
+      if (problem)
+        throw new PublishInfraError(`the PR body's spec block is unreadable: ${problem}`);
+      return text;
+    },
     draft,
   ).catch((err: unknown) => {
     // `openPr` already raises PublishInfraErrors whose text names the failure
@@ -415,6 +438,7 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
     // `head` the push carried (`assertTree` proved it 40-hex before anything was
     // written), so `ready` never rests on prose.
     publishedHead: head,
+    ...(dispatches.length === 0 ? {} : { dispatches }),
     // The state as the forge REPORTED it, never as this run asked for it: the
     // create path read the new PR back through `draftStateOf`, so a forge that
     // left a requested draft mergeable is recorded `false`; a reply that

@@ -210,6 +210,28 @@ the default the run is seeded from the superproject instead — so on the defaul
 un-populated submodule is a DISCLOSURE naming the path, not a hand-back. A runner that dies on
 the probe-shaped file is graded by the red proof alone, exactly as v0.14.71 graded it.
 
+### Symptom: a lean run stops at `ready` with `could not read the issue: approved spec …`, or a `work` cycle halts `step-failed:explore` with `approved spec …`
+
+**Cause:** the issue's `manifest.json` names an approved spec, and the entry does not match
+the files beside it: a size other than `bytes`, bytes that do not hash to `sha256`, a symbolic
+link, a `file` that is not a plain name, a `block` other than `1`, or an `approved.json` whose
+`number` is another issue. The tail of the message names which.
+
+**Fix:** the host rewrites the directory so the files are the ones it approved. pi-rukas
+never falls back to the bare issue body, because building against bytes that are not the
+approved spec is the larger mistake. See [Approved spec for hosts](headless.md#approved-spec-for-hosts).
+
+### Symptom: a `work` cycle halts `step-failed:commit-pr` with `approved spec block: …`
+
+**Cause:** the PR body does not end in a readable `tehas:spec v1` block and the driver could
+not repair it: a GitLab PR whose body the driver did not create (it has no GitLab body edit),
+a body the public-text check refused, or a PR it could not read. A manifest that stopped
+verifying since explore halts the same way with `approved spec …`, and one whose spec was
+replaced since explore with `approved spec is not the one explore read`.
+
+**Fix:** correct the body or the manifest named in the evidence and rerun the cycle (a replaced
+spec needs a fresh cycle, since the work was built against the old one); the block it writes carries the manifest's sha256 and is never recomputed.
+
 ### Symptom: a lean run hands back with `baseline red: tier <name> is red at the base commit`
 
 **Cause:** the project's own verify tier fails on the run's head AND on its base commit, and

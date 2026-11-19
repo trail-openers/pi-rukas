@@ -45,6 +45,6 @@ export function ciLandHandlers(repoRoot: string, issue: number): Pick<LeanHandle
  * Same for `publish`, so the whole post-specify spine is assembled in one place
  * and `command.ts` keeps only the steps whose deps builders it owns.
  */
-export function publishHandler(): Pick<LeanHandlers, "publish"> {
-  return { publish: (ctx: HandlerCtx) => publishOutcome(ctx, publishDeps()) };
+export function publishHandler(headless: boolean): Pick<LeanHandlers, "publish"> {
+  return { publish: (ctx: HandlerCtx) => publishOutcome(ctx, publishDeps(headless)) };
 }
