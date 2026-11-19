@@ -219,11 +219,8 @@ try {
     );
     await git(repo, ["merge", "-q", "--ff-only", sha]);
     await git(repo, ["push", "-q", "origin", "main"]);
-    const base = (await git(repo, ["rev-parse", "HEAD"])).stdout.trim();
-    assert(
-      capOf(await run(repo, { baseSha: base })) === undefined,
-      "a branch whose tip is in the base: proceeds",
-    );
+    // No recorded base, as on a fresh cycle: the check reads origin/main.
+    assert(capOf(await run(repo)) === undefined, "a branch whose tip is in the base: proceeds");
   }
   // 5. An unreadable remote.
   {
