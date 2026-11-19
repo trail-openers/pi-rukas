@@ -323,13 +323,16 @@ means defaults.** An invalid file is *not* defaulted: it raises
   **Validity** — an entry is refused at load with `LeanConfigError`, which quotes
   it: absolute, a `..` or `.` segment, empty or whitespace-padded, a backslash, a
   leading `!`, a doubled slash, or any shell metacharacter or invisible / control /
-  zero-width / bidi (including the U+202A–U+202E overrides and the U+2066–U+2069
-  isolates) character. A pattern is a rule, not a document, so three counts are
-  capped too: 256 characters, four `**` segments, and four `*`/`?` wildcards in one
-  segment — the matcher is a compiled regex, and past those the cost of a path that
-  does *not* match is chosen by a project's own config file. `dir/**/` is refused as
-  a spelling that names nothing: the `**` already takes everything under `dir` and
-  the trailing `/` then asks for one more segment below that. `*`, `?` and `**` are
+  zero-width / bidi character — the invisible class is `\p{Cf}` (the format
+  characters, TAGS block included) plus the controls, NEL and the line/paragraph
+  separators. A pattern is a rule, not a document, so three counts are
+  capped too: 256 characters, two `**` segments, and four `*`/`?` wildcards in one
+  segment — the matcher is a compiled regex whose cost grows like the depth of a
+  path that does *not* match to the power of its `**` count, so past those the cost
+  of a non-match is chosen by a project's own config file. `dir/**/` is refused as
+  the same rule as `dir/**` written twice: the `**` already takes everything under
+  `dir` and the trailing `/` then asks for one more segment below that, so the
+  refusal points at `dir/**` — the spelling that says what it means. `*`, `?` and `**` are
   otherwise legal, so `verify.testGlob`'s stricter rules deliberately do not carry
   over — this field *is* a glob.
   **An entry that matches nothing is accepted**, not refused: a rule for a file the

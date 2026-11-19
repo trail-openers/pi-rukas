@@ -23,28 +23,34 @@
  *
  * What the regex costs is bounded by what {@link protectedPathProblem} admits, not by the
  * compiler: a regex over unbounded wildcards backtracks, and a few doublestars in front of
- * an anchored tail turn a NON-matching path into a cost that grows with its depth. So the
- * entry is normalised before it is compiled (a spelling change only, never a meaning
- * change), and three counts of the normalised entry are capped. The rows of
- * `test-lean-protected-globs.ts` are the matcher's contract; the caps are the entry's.
+ * an anchored tail turn a NON-matching path into a cost that grows with its depth — like depth
+ * to the power of the doublestar count. So the entry is normalised before it is compiled (a
+ * spelling change only, never a meaning change), and three counts of the normalised entry are
+ * capped: 256 characters, two `**` SEGMENTS, and four `*`/`?` wildcards in one segment. The
+ * rows of `test-lean-protected-globs.ts` are the matcher's contract; the caps are the entry's.
  */
 
 /**
- * Characters no entry may contain: shell metacharacters, quotes, and the INVISIBLE class
- * (C0/C1 controls, zero-width, the bidi overrides U+202A–U+202E and isolates U+2066–U+2069,
- * BOM, line/paragraph separators) — an entry with one in it looks identical to the entry the
- * author meant and matches nothing. The same set `config-test-location.ts` refuses; unlike
- * that module, `*` and `?` are legal here, because a glob is the whole point of the field.
+ * Characters no entry may contain: shell metacharacters, quotes, and the INVISIBLE class —
+ * `\p{Cf}`, the format characters (zero-width, the bidi overrides and isolates, BOM, the TAGS
+ * block), plus the C0/C1 controls, NEL and the line/paragraph separators that `\p{Cc}` and two
+ * explicit code points carry. An entry with one in it looks identical to the entry the author
+ * meant and matches nothing. The same set `config-test-location.ts` refuses; unlike that module,
+ * `*` and `?` are legal here, because a glob is the whole point of the field. `\p{Cf}` is used
+ * rather than an enumerated range list because the list had never caught the TAGS block
+ * (U+E0001–U+E007F), which is format characters by property and invisible by any measure.
  */
-const FORBIDDEN =
-  /[;&|`$<>"'\\\n\r]|\p{Cc}|\u0085|\u2028|\u2029|[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/u;
+const FORBIDDEN = /[;&|`$<>"'\\\n\r]|\p{Cc}|\p{Cf}|\u0085|\u2028|\u2029/u;
 
 /** How long one entry may run. A pattern is a rule, not a document, and the length bound is
  *  what keeps a pathological config small enough to read in the refusal that names it. */
 const ENTRY_CEILING = 256;
 
-/** How many doublestar SEGMENTS one entry may carry after normalisation. */
-const DEPTH_STAR_CEILING = 4;
+/** How many doublestar SEGMENTS one entry may carry after normalisation. Cost grows like
+ *  (path depth)^(this count), so this is the one count that decides what a non-match costs: at
+ *  four, one 400-segment path that never matches costs over half a second, and the shape behind
+ *  it costs more the deeper the path runs. */
+const DEPTH_STAR_CEILING = 2;
 
 /** How many `*` and `?` one SEGMENT of an entry may carry after normalisation. */
 const SEGMENT_WILDCARD_CEILING = 4;
@@ -245,11 +251,12 @@ export function protectedPathProblem(entry: unknown): string | undefined {
     return `${where} entry \`${entry}\` has ${String(depthStars)} "**" segments, over the ${String(DEPTH_STAR_CEILING)} this matcher will backtrack over`;
   if (segmentWildcards > SEGMENT_WILDCARD_CEILING)
     return `${where} entry \`${entry}\` has ${String(segmentWildcards)} "*"/"?" wildcards in one segment, over the ${String(SEGMENT_WILDCARD_CEILING)} this matcher will backtrack over`;
-  // `dir/**/` already names everything under `dir`, and the trailing slash then asks for one
-  // more segment below that — so the two spellings together name nothing. Refuse it rather
-  // than accept a rule that reads as a protection and protects nothing.
+  // `dir/**/` is the same rule as `dir/**` written a second way: the doublestar already names
+  // everything under `dir`, so the trailing `/` asks for one more segment below what already
+  // takes everything. Refuse the spelling rather than let two ways of saying one thing read as
+  // two rules — and point at the one that works.
   if (segments[segments.length - 1] === DEPTH_STAR_TEXT && trailing)
-    return `${where} entry \`${entry}\` matches no path — the "**" already names everything under what precedes it, so write \`${entry.slice(0, -1)}\``;
+    return `${where} entry \`${entry}\` is the same rule as \`${entry.slice(0, -1)}\` written twice — the "**" already names everything under what precedes it, so write \`${entry.slice(0, -1)}\``;
   // A leading `!` is gitignore's negation, which this list has no meaning for —
   // better to refuse the spelling than to protect a file literally named `!x`.
   if ((segments[0] ?? "").startsWith("!"))
