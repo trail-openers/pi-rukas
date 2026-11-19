@@ -17,6 +17,8 @@
  *   (e) a fixer that edits a path matching a CONFIGURED `lean.protectedPaths` glob ->
  *       reverted like a built-in, named in the step reason, and absent from origin —
  *       and the same edit KEPT with `PI_ENSEMBLE_LEAN_PROTECTED_PATHS=0`
+ *   (f) a wave that reverted part of the fix AND integrated on an unpopulated submodule
+ *       -> the reason carries BOTH disclosures, not the louder one alone
  *
  * Every case drives the whole step, so each refusal is read off origin: what the
  * wave pushed (or failed to push) is the claim, not what a helper returned.
@@ -25,11 +27,18 @@
  */
 
 import { existsSync } from "node:fs";
+import path from "node:path";
 import { defaultConfig } from "../src/lean/config.ts";
 import { sha256 } from "../src/lean/specify-proof.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { put } from "./lib/lean-build-fixture.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
+import {
+  SUB,
+  attachSubmodule,
+  makeSubmoduleUnfetchable,
+  remoteRepo,
+} from "./lib/lean-submodule-off-fixture.ts";
 import {
   BRANCH,
   CAUSE_NO_CHANGE,
@@ -308,6 +317,50 @@ const blob = (repoRoot: string, ref: string, rel: string): string =>
       `(e) and the reason names only the built-in (got ${off.outcome?.reason})`,
     );
   });
+}
+
+// ── (f) a revert AND a submodule caveat reach the reason together ──────────────
+//
+// `fixDisclosure` used to be a `??` chain over the two clauses, so the revert — the clause that
+// fires first, on the commoner run — swallowed the submodule caveat entirely. The reader of the
+// run record, the PR and the handoff then saw a wave that disclosed what it undid and said
+// nothing about the commit being built on a tree whose submodule was never populated, which is
+// the one fact they cannot recover from the commit itself. The base's own submodule suite is
+// green for this because IT has no revert to hide behind: it exercises an arm where the revert
+// clause is empty. This is the both-set case, and deleting the join in `review.ts` turns it red.
+{
+  const { repoRoot, baseSha } = makeRepo();
+  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 7;\n" });
+  // The gitlink goes on the run's branch after `setup` created the worktree, exactly as
+  // `test-lean-review-submodule-off.ts` does it, and its source is deleted before any checkout
+  // of it exists — so the integration's reset has nothing to seed from and owes the caveat.
+  const runWt = path.join(repoRoot, ".worktrees", "lean-7");
+  const remote = remoteRepo("fix-capture-both");
+  attachSubmodule(runWt, remote, "chore: vendor the submodule");
+  git(runWt, "push", "-q", "origin", `refs/heads/${BRANCH}`);
+  makeSubmoduleUnfetchable(remote, runWt);
+
+  const { outcome, threw } = await run(
+    frozenCtx(repoRoot, baseSha),
+    deps((wt) => {
+      put(wt, "fix-uncommitted.ts", "export const fixed = true;\n");
+      // Reverted by the project's own configured glob: the clause that swallowed the caveat.
+      put(wt, "src/app/legacy.vue", "<template></template>\n");
+    }, ["src/**/*.vue"]),
+  );
+  const reason = outcome?.reason ?? "";
+  assert(
+    threw === undefined && outcome?.kind === "fixed",
+    `(f) the wave completed over an unpopulated submodule (${threw?.message?.split("\n")[0] ?? `kind ${String(outcome?.kind)}`})`,
+  );
+  assert(
+    reason.includes(`reverted: src/app/legacy.vue`),
+    `(f) the reason names the revert (got ${JSON.stringify(reason)})`,
+  );
+  assert(
+    reason.includes(SUB) && /submodules? are not populated/.test(reason),
+    `(f) and the SAME reason still carries the submodule caveat — the two clauses join, one does not hide the other (got ${JSON.stringify(reason)})`,
+  );
 }
 
 cleanupRoots();

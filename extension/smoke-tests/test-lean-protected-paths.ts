@@ -192,6 +192,38 @@ const PROJECT_GLOBS = ["src/**/*.vue", "scripts/**", "package*.json"];
     revertedOf(biting.outcome?.reason).includes("src/app/legacy.vue"),
     `(c) while the one that did bite is still named (got ${biting.outcome?.reason})`,
   );
+
+  // What the inert list is FOR: the project's own rules that named nothing. A BUILT-IN path is
+  // the shipped rule, not one this project wrote, so it belongs nowhere in a list of configured
+  // GLOBS — telling someone to delete `.pi/work.json` from a reason headed "protected paths
+  // matched nothing" is a disclosure that sends them at the wrong file. The built-in is still
+  // reverted and still named, just in the `reverted:` clause where it belongs.
+  const builtIn = await runBuild({
+    issue: 2371,
+    config: configWithProtected(["src/**/*.vue"]),
+    child: (wt) => {
+      put(wt, "src/retry.ts", "export const retry = () => 1;\n");
+      // The one shape the old note folded into the same list: a built-in path the child touched
+      // and the configured glob did not name.
+      put(wt, ".pi/work.json", '{ "verify": { "test": "true {file}" } }\n');
+    },
+  });
+  assert(builtIn.threw === undefined, `(c) no throw: ${builtIn.threw?.message ?? "clean"}`);
+  assert(
+    (builtIn.outcome?.reason ?? "").includes("protected paths matched nothing: src/**/*.vue"),
+    `(c) the inert configured glob is named (got ${builtIn.outcome?.reason})`,
+  );
+  assert(
+    !(builtIn.outcome?.reason ?? "")
+      .split("protected paths matched nothing: ")[1]
+      .split(";")[0]
+      .includes(".pi/work.json"),
+    `(c) and the built-in is NOT on the configured list — the built-in list is not the project's to have rotted (got ${builtIn.outcome?.reason})`,
+  );
+  assert(
+    revertedOf(builtIn.outcome?.reason).includes(".pi/work.json"),
+    `(c) while the built-in revert is still disclosed where it belongs (got ${builtIn.outcome?.reason})`,
+  );
 }
 
 // ── (d) the `0` arm: configured globs out, built-ins in, reason byte-clean ───

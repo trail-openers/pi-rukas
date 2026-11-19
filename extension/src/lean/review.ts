@@ -358,13 +358,21 @@ async function reviewPass(
     // cannot clone a prefix.
     noteWave("fix", head);
     // The fold's reverts ride the reason beside the submodule clause: the reason is the
-    // run record, the PR and the handoff, where a trace line is none of those.
+    // run record, the PR and the handoff, where a trace line is none of those. All three
+    // clauses are JOINED, never one chosen over the next: a wave that reverted part of the
+    // fix AND integrated on an unpopulated submodule owes both disclosures, and a `??` chain
+    // lets the louder one swallow the quieter — the submodule caveat is precisely the fact a
+    // reader cannot recover from the commit itself.
     fixDisclosure =
-      (fix.reverted === undefined || fix.reverted.length === 0
-        ? undefined
-        : `reverted: ${fix.reverted.join(", ")}`) ??
-      fix.submodules ??
-      fixDisclosure;
+      [
+        fix.reverted === undefined || fix.reverted.length === 0
+          ? ""
+          : `reverted: ${fix.reverted.join(", ")}`,
+        fix.submodules ?? "",
+        fixDisclosure ?? "",
+      ]
+        .filter((clause) => clause !== "")
+        .join("; ") || undefined;
 
     // R2: the fixer pushed, so the head origin holds is one nobody has re-judged. A stop
     // here is `fixed` — not a handback (the fix is already on the branch) and not a `done`

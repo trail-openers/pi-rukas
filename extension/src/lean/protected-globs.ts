@@ -20,17 +20,82 @@
  * The comparison is CASE-SENSITIVE on purpose: `isProtectedPath` in
  * `work-driver-doctrine.ts` classifies case-sensitively, and a revert rule that folded
  * case would revert files the author never named, on a case-sensitive filesystem.
+ *
+ * What the regex costs is bounded by what {@link protectedPathProblem} admits, not by the
+ * compiler: a regex over unbounded wildcards backtracks, and a few doublestars in front of
+ * an anchored tail turn a NON-matching path into a cost that grows with its depth. So the
+ * entry is normalised before it is compiled (a spelling change only, never a meaning
+ * change), and three counts of the normalised entry are capped. The rows of
+ * `test-lean-protected-globs.ts` are the matcher's contract; the caps are the entry's.
  */
 
 /**
  * Characters no entry may contain: shell metacharacters, quotes, and the INVISIBLE class
- * (C0/C1 controls, zero-width, bidi, BOM, line/paragraph separators) — an entry with one
- * in it looks identical to the entry the author meant and matches nothing. The same set
- * `config-test-location.ts` refuses; unlike that module, `*` and `?` are legal here,
- * because a glob is the whole point of the field.
+ * (C0/C1 controls, zero-width, the bidi overrides U+202A–U+202E and isolates U+2066–U+2069,
+ * BOM, line/paragraph separators) — an entry with one in it looks identical to the entry the
+ * author meant and matches nothing. The same set `config-test-location.ts` refuses; unlike
+ * that module, `*` and `?` are legal here, because a glob is the whole point of the field.
  */
 const FORBIDDEN =
-  /[;&|`$<>"'\\\n\r]|\p{Cc}|\u0085|\u2028|\u2029|[\u200b-\u200f\u2060-\u2064\ufeff]/u;
+  /[;&|`$<>"'\\\n\r]|\p{Cc}|\u0085|\u2028|\u2029|[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/u;
+
+/** How long one entry may run. A pattern is a rule, not a document, and the length bound is
+ *  what keeps a pathological config small enough to read in the refusal that names it. */
+const ENTRY_CEILING = 256;
+
+/** How many doublestar SEGMENTS one entry may carry after normalisation. */
+const DEPTH_STAR_CEILING = 4;
+
+/** How many `*` and `?` one SEGMENT of an entry may carry after normalisation. */
+const SEGMENT_WILDCARD_CEILING = 4;
+
+/**
+ * The entry in the only spellings it can have, as a precondition of {@link entryCost} and of
+ * the compile, never as a separate matcher. Two moves, neither of which can change what the
+ * entry matches:
+ *
+ *   - a run of `*` inside ONE segment is one `*`: each compiles to its own `[^/]*`, and a
+ *     repetition of `[^/]*` absorbs exactly what one of them absorbs, so `a***b` names what
+ *     `a*b` names;
+ *   - two ADJACENT doublestar SEGMENTS are one, because a doublestar already spans zero or
+ *     more whole segments and a second can only absorb what the first declined, so the
+ *     three-of-them spelling names what the one-of-them spelling names.
+ *
+ * A segment that is not exactly a doublestar keeps its interior stars — this matcher gives
+ * that spelling a pair of `[^/]*`, and the pre-pass does not reinterpret it.
+ */
+function normaliseEntry(entry: string): string {
+  const trailing = entry.endsWith("/");
+  const body = trailing ? entry.slice(0, -1) : entry;
+  const collapsed: string[] = [];
+  for (const segment of body.split("/")) {
+    const one = segment === DEPTH_STAR_TEXT ? DEPTH_STAR_TEXT : segment.replace(/\*+/g, "*");
+    if (one === DEPTH_STAR_TEXT && collapsed[collapsed.length - 1] === DEPTH_STAR_TEXT) continue;
+    collapsed.push(one);
+  }
+  return `${collapsed.join("/")}${trailing ? "/" : ""}`;
+}
+
+/**
+ * The entry's two cost counts, on its {@link normaliseEntry} spelling — so a run of stars that
+ * compiles to one `[^/]*` cannot be charged twice, nor a redundant doublestar charged as two.
+ * `[doublestar segments, widest single segment]`.
+ */
+function entryCost(entry: string): [number, number] {
+  const segments = entrySegments(normaliseEntry(entry)).segments;
+  let depthStars = 0;
+  let segmentWildcards = 0;
+  for (const segment of segments) {
+    if (segment === DEPTH_STAR_TEXT) {
+      depthStars += 1;
+      continue;
+    }
+    let wildcards = 0;
+    for (const c of segment) if (c === "*" || c === "?") wildcards += 1;
+    if (wildcards > segmentWildcards) segmentWildcards = wildcards;
+  }
+  return [depthStars, segmentWildcards];
+}
 
 /** The pattern spelling that {@link DEPTH_STAR} is the regex source of. */
 const DEPTH_STAR_TEXT = "**";
@@ -160,7 +225,7 @@ export function protectedPathProblem(entry: unknown): string | undefined {
     return `${where} entry \`${entry}\` must be repo-relative, not absolute`;
   if (/^[A-Za-z]:[\\/]/.test(entry))
     return `${where} entry \`${entry}\` must be repo-relative, not a Windows absolute path`;
-  const { segments } = entrySegments(entry);
+  const { segments, trailing } = entrySegments(entry);
   if (segments.includes("..")) return `${where} entry \`${entry}\` must not contain ".."`;
   if (segments.includes("."))
     return `${where} entry \`${entry}\` has exactly one spelling — write \`${segments
@@ -168,6 +233,23 @@ export function protectedPathProblem(entry: unknown): string | undefined {
       .join("/")}\` (the paths git reports for a changed set never carry a "." segment)`;
   if (segments.includes(""))
     return `${where} entry \`${entry}\` must not contain a doubled slash (one trailing slash, to name a directory, is the exception)`;
+  // What the entry is spelled like decides what the matcher pays, and the matcher pays in
+  // backtracking: a few doublestars in front of an anchored tail make a path that does NOT
+  // match cost more the deeper that path is. The three counts are taken on the NORMALISED
+  // entry, so a redundant `**` or a doubled `*` cannot be charged twice, and the entry that
+  // is refused is the entry that would have been compiled.
+  if (entry.length > ENTRY_CEILING)
+    return `${where} entry \`${entry.slice(0, 60)}…\` is ${String(entry.length)} characters long, over the ${String(ENTRY_CEILING)}-character ceiling for one pattern`;
+  const [depthStars, segmentWildcards] = entryCost(entry);
+  if (depthStars > DEPTH_STAR_CEILING)
+    return `${where} entry \`${entry}\` has ${String(depthStars)} "**" segments, over the ${String(DEPTH_STAR_CEILING)} this matcher will backtrack over`;
+  if (segmentWildcards > SEGMENT_WILDCARD_CEILING)
+    return `${where} entry \`${entry}\` has ${String(segmentWildcards)} "*"/"?" wildcards in one segment, over the ${String(SEGMENT_WILDCARD_CEILING)} this matcher will backtrack over`;
+  // `dir/**/` already names everything under `dir`, and the trailing slash then asks for one
+  // more segment below that — so the two spellings together name nothing. Refuse it rather
+  // than accept a rule that reads as a protection and protects nothing.
+  if (segments[segments.length - 1] === DEPTH_STAR_TEXT && trailing)
+    return `${where} entry \`${entry}\` matches no path — the "**" already names everything under what precedes it, so write \`${entry.slice(0, -1)}\``;
   // A leading `!` is gitignore's negation, which this list has no meaning for —
   // better to refuse the spelling than to protect a file literally named `!x`.
   if ((segments[0] ?? "").startsWith("!"))
@@ -183,11 +265,14 @@ const CACHE = new Map<string, RegExp>();
 const CACHE_CEILING = 512;
 
 function compiled(entry: string): RegExp {
-  const hit = CACHE.get(entry);
+  // The normalised entry is what gets compiled and cached: the two name the same paths, and
+  // a config that spells `a/**/**/b` then `a/**/b` reuses one regex rather than paying twice.
+  const key = normaliseEntry(entry);
+  const hit = CACHE.get(key);
   if (hit !== undefined) return hit;
-  const re = new RegExp(toRegexSource(entry));
+  const re = new RegExp(toRegexSource(key));
   if (CACHE.size >= CACHE_CEILING) CACHE.clear();
-  CACHE.set(entry, re);
+  CACHE.set(key, re);
   return re;
 }
 

@@ -9,26 +9,33 @@
 import type { NormaliseReport } from "./build-types.ts";
 import { clipList } from "./text-fence.ts";
 
-/** How the fold words the inert-glob clause; the accumulator strips and re-adds it verbatim. */
+/** How the fold words the inert-glob clause; the accumulator re-adds it verbatim. */
 const INERT_PREFIX = "protected paths matched nothing: ";
-const INERT_PREFIX_RE = /^protected paths matched nothing: /;
 
 /** What a reason may name before the list itself becomes the noise. */
 const LIST_CLIP = 20;
+
+/** One `name: a, b` clause, or `""` when there is nothing to name. The two lists this module
+ *  composes go through {@link clipList}, like `failingClause` already does, so a disclosure
+ *  cannot become the thing that pushes the rest of the reason past what the consumer clips. The
+ *  other fold lists keep their own wording in `build.ts`'s hands. */
+function listClause(prefix: string, items: readonly string[]): string {
+  return items.length === 0 ? "" : `${prefix}${clipList(items, LIST_CLIP)}`;
+}
 
 /**
  * The fold's account of the paths it did NOT keep, as the `ok` reason prints them. */
 export function foldClauses(report: NormaliseReport): string[] {
   return [
     report.restored.length > 0 ? `restored: ${report.restored.join(", ")}` : "",
-    report.reverted.length > 0 ? `reverted: ${report.reverted.join(", ")}` : "",
+    listClause("reverted: ", report.reverted),
     report.removed.length > 0
       ? `removed: ${report.removed.map((r) => `${r.path} (${r.why})`).join(", ")}`
       : "",
     report.deleted.length > 0 ? `deleted: ${report.deleted.join(", ")}` : "",
     // An inert configured glob is disclosed rather than accepted in silence — the only way a
     // protection rots without anyone noticing.
-    report.protectedUnmatchedNote ?? "",
+    listClause(INERT_PREFIX, report.protectedUnmatched ?? []),
     // Disclosed in the fold's own reason, not only in the trace: this step's commit was built
     // against a tree with no submodule at that path. Every kind but `seeded` is named — git
     // refusing the pass is as much a caveat as a submodule it could not find locally.
@@ -52,14 +59,12 @@ export function budgetFoldAccumulator(): {
   return {
     note: (report) => {
       for (const p of report.reverted) if (!reverted.includes(p)) reverted.push(p);
-      for (const p of (report.protectedUnmatchedNote ?? "")
-        .replace(INERT_PREFIX_RE, "")
-        .split(", "))
-        if (p !== "" && !unmatched.includes(p)) unmatched.push(p);
+      for (const p of report.protectedUnmatched ?? [])
+        if (!unmatched.includes(p)) unmatched.push(p);
     },
     clauses: (report) => [
-      reverted.length > 0 ? `reverted: ${reverted.join(", ")}` : "",
-      unmatched.length > 0 ? `${INERT_PREFIX}${unmatched.join(", ")}` : "",
+      listClause("reverted: ", reverted),
+      listClause(INERT_PREFIX, unmatched),
       // #2319 Resolution 4: a ceiling-stopped fold owes the submodule disclosure too, and
       // both its handback and the retry's prompt read this line.
       report.submodules ?? "",

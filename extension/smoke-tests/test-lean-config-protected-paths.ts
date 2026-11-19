@@ -89,6 +89,18 @@ const badProtectedPaths: Array<[string, unknown, string]> = [
   ["negation entry", ["!src/x.ts"], 'must not start with "!"'],
   ["backslash entry", ["src\\x.ts"], "plain repo-relative glob"],
   ["zero-width entry", ["src\u200b/x.ts"], "invisible"],
+  // F3 — the bidi class. An override (U+202A–U+202E) or an isolate (U+2066–U+2069) reads as the
+  // entry the author meant and matches nothing, so it is refused like every other invisible.
+  ["bidi override entry", ["src\u202e/x.ts"], "invisible"],
+  ["bidi isolate entry", ["src\u2066/x.ts"], "invisible"],
+  // The cost bounds. The matcher is a compiled regex, so these are the shapes that make a path
+  // which does NOT match cost seconds — the loader refuses them by count, quoting the entry.
+  ["over-long entry", [`${"a".repeat(300)}/**/*.ts`], "characters long"],
+  ["too many doublestars", ["a/**/b/**/c/**/d/**/e/**/f"], '"**" segments'],
+  ["too many wildcards in one segment", ["src/*a*b*c*d*e.ts"], 'wildcards in one segment'],
+  // `dir/**/` names nothing: the doublestar already takes everything under `dir` and the
+  // trailing slash then asks for one segment more beneath that.
+  ["doublestar then trailing slash", ["theme/**/"], "matches no path"],
 ];
 
 for (const [name, entries, expected] of badProtectedPaths) {
@@ -117,18 +129,28 @@ for (const [name, entries, expected] of badProtectedPaths) {
 
 {
   // The wildcard rules of `verify.testGlob` deliberately do NOT carry over: a
-  // protected-path entry IS a glob, so `*`, `?` and `**` are all legal here.
+  // protected-path entry IS a glob, so `*`, `?` and `**` are all legal here. The doublestar
+  // count is at its ceiling (4) and the widest segment at its own (4) — the most the loader
+  // admits, and the shapes the timing rows of `test-lean-protected-globs.ts` must keep cheap.
   const { repoRoot, baseSha, cleanup } = makeRepo({
     ".pi/work.json": JSON.stringify({
       version: 1,
-      lean: { protectedPaths: ["src/**", "**/theme/**", "a?c.ts", "package*.json"] },
+      lean: {
+        protectedPaths: [
+          "src/**",
+          "**/theme/**",
+          "a?c.ts",
+          "package*.json",
+          "a/**/b/**/c/**/d/**/*e*f?g*h",
+        ],
+      },
     }),
   });
   try {
     const cfg = await loadWorkConfig(execp, repoRoot, baseSha);
     assert(
-      cfg.lean?.protectedPaths?.length === 4,
-      `wildcards are legal in a protected-path entry (got ${JSON.stringify(cfg.lean?.protectedPaths)})`,
+      cfg.lean?.protectedPaths?.length === 5,
+      `wildcards are legal in a protected-path entry, up to the ceilings (got ${JSON.stringify(cfg.lean?.protectedPaths)})`,
     );
   } finally {
     cleanup();

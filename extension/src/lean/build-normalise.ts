@@ -80,18 +80,19 @@ interface Classified {
 }
 
 /**
- * The configured globs that named nothing of their own in `changed`, as one clause, or `undefined`
- * when every glob bit. A glob that matched only a path the built-in list already reverts
- * (`.pi/work.json` under `**\/*.json`) said nothing of its own, and a built-in path no glob matched
- * was written for nothing: either belongs on the inert list, where a protection that quietly rotted
- * becomes visible. Entries arrive validated by the loader, so a path lands here only when the
- * project named no path for its rule.
+ * The configured globs that named nothing of their own in `changed`, or `undefined` when every
+ * glob bit. A glob that matched only a path the built-in list already reverts (`.pi/work.json`
+ * under `**\/*.json`) said nothing of its own: either belongs on the inert list, where a
+ * protection that quietly rotted becomes visible. Entries arrive validated by the loader, so a
+ * glob lands here only when the project named no path for its rule. A BUILT-IN path is not
+ * reported here: the built-in list is the shipped rule, not one this project wrote, so naming it
+ * in a list of the project's own configured globs would tell the reader to delete a rule that
+ * belongs to no config.
  */
-function inertNote(globs: readonly string[], changed: string[]): string | undefined {
+function inertGlobs(globs: readonly string[], changed: string[]): string[] | undefined {
   const hits = (entry: string): boolean => changed.some((rel) => protectedGlobMatches(entry, rel));
   const inert = globs.filter((entry) => !hits(entry));
-  for (const rel of changed) if (isProtectedPath(rel) && !inert.some(hits)) inert.push(rel);
-  return inert.length === 0 ? undefined : `protected paths matched nothing: ${inert.join(", ")}`;
+  return inert.length === 0 ? undefined : inert;
 }
 
 /**
@@ -116,7 +117,7 @@ function classify(
     deleted: [],
   };
   if (globs !== undefined && globs.length > 0)
-    report.protectedUnmatchedNote = inertNote(globs, changed);
+    report.protectedUnmatched = inertGlobs(globs, changed);
   for (const rel of changed) {
     if (frozen[rel] !== undefined) {
       report.restored.push(rel);

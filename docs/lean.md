@@ -318,13 +318,23 @@ means defaults.** An invalid file is *not* defaulted: it raises
   **Validity** — an entry is refused at load with `LeanConfigError`, which quotes
   it: absolute, a `..` or `.` segment, empty or whitespace-padded, a backslash, a
   leading `!`, a doubled slash, or any shell metacharacter or invisible / control /
-  zero-width / bidi character. `*`, `?` and `**` are legal, so `verify.testGlob`'s
-  stricter rules deliberately do not carry over — this field *is* a glob.
+  zero-width / bidi (including the U+202A–U+202E overrides and the U+2066–U+2069
+  isolates) character. A pattern is a rule, not a document, so three counts are
+  capped too: 256 characters, four `**` segments, and four `*`/`?` wildcards in one
+  segment — the matcher is a compiled regex, and past those the cost of a path that
+  does *not* match is chosen by a project's own config file. `dir/**/` is refused as
+  a spelling that names nothing: the `**` already takes everything under `dir` and
+  the trailing `/` then asks for one more segment below that. `*`, `?` and `**` are
+  otherwise legal, so `verify.testGlob`'s stricter rules deliberately do not carry
+  over — this field *is* a glob.
   **An entry that matches nothing is accepted**, not refused: a rule for a file the
   project has not written yet is a rule someone meant. It is *disclosed* rather than
   accepted silently — the build step's reason carries
-  `protected paths matched nothing: <entries>` for the globs that named no changed
-  path, because that is the one way a protection can rot without anyone noticing.
+  `protected paths matched nothing: <entries>` for the **configured** globs that
+  named no changed path, because that is the one way a protection can rot without
+  anyone noticing. Built-in paths are not on that list: the built-in list is the
+  shipped rule rather than one the project wrote, and a built-in path the child
+  touched is already named in the `reverted:` clause.
   **The residual, stated plainly:** configured globs take part in lean's `build`
   and review-fix folds *only*. `--allow-protected`, the develop protected-path gate
   and the merge protected-path gate keep the built-in list, so a configured glob is
