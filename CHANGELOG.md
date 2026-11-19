@@ -8,6 +8,20 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.91](https://github.com/trail-openers/pi-rukas/compare/v0.14.90...v0.14.91) (2026-11-19)
+
+
+### Bug Fixes
+
+* **forge:** map GitLab's documented detailed status values ([#2379](https://github.com/trail-openers/pi-rukas/issues/2379)) ([46e71af](https://github.com/trail-openers/pi-rukas/commit/46e71af909bedb86b65ca34187a58f691dba340c))
+* **guards:** refuse a broadcast kill in every child's bash ([#2383](https://github.com/trail-openers/pi-rukas/issues/2383)) ([238291c](https://github.com/trail-openers/pi-rukas/commit/238291c4484c4cc0ae1eb6c4244d1762ac57e0bb))
+* **headless:** a lean run's reviewComplete must speak for the published head ([#2371](https://github.com/trail-openers/pi-rukas/issues/2371)) ([190c390](https://github.com/trail-openers/pi-rukas/commit/190c39051aecffbc96757e0955488a9ba43c425e))
+* **ops:** wait for CI with a bounded sleep-and-check poll, never a blocking watch ([#2355](https://github.com/trail-openers/pi-rukas/issues/2355)) ([9098bd7](https://github.com/trail-openers/pi-rukas/commit/9098bd7ffb578b9af28c8af1d22d679499b91a94))
+* **sandbox:** stop onnxruntime affinity errors on every vipune call ([#2343](https://github.com/trail-openers/pi-rukas/issues/2343)) ([85669ca](https://github.com/trail-openers/pi-rukas/commit/85669ca98d4387c936095d9033944ec4e059b632))
+* **spawn:** confine review children's writes to their review tree and scratch ([#2368](https://github.com/trail-openers/pi-rukas/issues/2368)) ([4856db5](https://github.com/trail-openers/pi-rukas/commit/4856db5ca3a124ceda102fb571e14d95577dc210))
+* **spawn:** keep a confined child on the operator's pi config dir ([#2375](https://github.com/trail-openers/pi-rukas/issues/2375)) ([5f32bd7](https://github.com/trail-openers/pi-rukas/commit/5f32bd7499fd10a186928f2ac06d5945c12ac99b))
+* **verify:** quote the Rust panic, not cargo's summary, in the handoff ([#2370](https://github.com/trail-openers/pi-rukas/issues/2370)) ([775c0f3](https://github.com/trail-openers/pi-rukas/commit/775c0f3493877743df3e902d3a933115ffceb6d6))
+
 ## [0.14.90](https://github.com/trail-openers/pi-rukas/compare/v0.14.89...v0.14.90) (2026-11-18)
 
 
