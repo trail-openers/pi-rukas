@@ -193,10 +193,15 @@ export async function foldStoppedBuild(opts: {
   issue: number;
   template: string | undefined;
   ceiling?: number;
+  /** The project's configured protected globs, from the run's base-commit config — the
+   *  same list `build`'s own fold gets, so one arm of this step cannot keep what the other
+   *  reverts. */
+  protected?: readonly string[];
   /** Bounds the whole sweep of frozen tests; a test shortens it to watch a hang. */
   timeoutMs?: number;
 }): Promise<{ kept: NormaliseReport; failing: string[] }> {
   const { exec, wt, frozen, template } = opts;
+  // `protected` rides the spread into `normaliseBuild` untouched.
   const kept = await normaliseBuild({ ...opts, budget: new CaptureBudget(opts.ceiling) });
   // Only a runner that ANSWERED counts, and only bytes the freeze hashed — the tree is whatever the killed
   // child left, so each file comes out of HEAD.

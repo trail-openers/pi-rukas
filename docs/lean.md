@@ -247,6 +247,7 @@ means defaults.** An invalid file is *not* defaulted: it raises
     "testDir": "extension/smoke-tests",
     "testGlob": "test-*.ts"
   },
+  "lean": { "protectedPaths": ["angular.json", "package*.json", "theme/"] },
   "budgets": { "build": { "turns": 100, "tokens": 5000000, "minutes": 10 } }
 }
 ```
@@ -300,6 +301,40 @@ means defaults.** An invalid file is *not* defaulted: it raises
 - **`verify.testDir` / `verify.testGlob`** — a pair or neither: where the
   adversary's acceptance tests live and what they are called, so the frozen
   tests land where your own CI runs them.
+- **`lean.protectedPaths`** — an array of repo-relative **gitignore-style globs**
+  naming the paths *your* project will not let a child's edit survive. The lean
+  folds already revert edits to a fixed built-in list (`.pi/`, `.github/`,
+  `agents.json`, `CODEOWNERS`, `.gitmodules`) because those decide what the run is
+  judged by; this field adds your own — a framework config, a lockfile, a theme
+  directory — and a changed path matching one is **reverted by the reset and named
+  in the step's reason** (`reverted: <path>`) exactly as a built-in one is. Read at
+  the base commit like every other field, so a child cannot widen what protects it
+  by editing the file, and taken out altogether by
+  `PI_ENSEMBLE_LEAN_PROTECTED_PATHS=0` — which reaches the configured list and
+  nothing else, the built-ins being another module's rule.
+  **The matcher** (`extension/src/lean/protected-globs.ts`, and the table test that
+  reads each row off `git check-ignore`): `*` spans characters *within* one segment
+  and may span none, so `package*.json` names `package.json`; `?` spans exactly one
+  non-separator character; `**` spans zero or more *whole* segments, so `a/**/b`
+  names `a/b` and `a/x/y/b`; an entry with no `/` is a basename matching at any depth,
+  so `angular.json` also names `src/angular.json`; a trailing `/` means that
+  directory *and everything under it*, so `theme/` names every file beneath it and
+  never a file called `theme`. Matching is case-sensitive, as the built-in rule is.
+  **Validity** — an entry is refused at load with `LeanConfigError`, which quotes
+  it: absolute, a `..` or `.` segment, empty or whitespace-padded, a backslash, a
+  leading `!`, a doubled slash, or any shell metacharacter or invisible / control /
+  zero-width / bidi character. `*`, `?` and `**` are legal, so `verify.testGlob`'s
+  stricter rules deliberately do not carry over — this field *is* a glob.
+  **An entry that matches nothing is accepted**, not refused: a rule for a file the
+  project has not written yet is a rule someone meant. It is *disclosed* rather than
+  accepted silently — the build step's reason carries
+  `protected paths matched nothing: <entries>` for the globs that named no changed
+  path, because that is the one way a protection can rot without anyone noticing.
+  **The residual, stated plainly:** configured globs take part in lean's `build`
+  and review-fix folds *only*. `--allow-protected`, the develop protected-path gate
+  and the merge protected-path gate keep the built-in list, so a configured glob is
+  not a path those gates refuse — it is a path the folds undo. A project that needs
+  one enforced there too still needs its own verify-tier check for it.
 - **`verify.freezeCheck`** — optional shell string, run with `cwd` at the
   worktree root. A project check over test-file **content** (a style lint, a
   forbidden-spelling grep) that a build round can no longer satisfy once a file

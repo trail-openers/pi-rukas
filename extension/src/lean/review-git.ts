@@ -169,10 +169,17 @@ export function derivedArg(run: ContractSource): ContractSource {
 /**
  * What a fix round hands back: the head now on origin, or the budget's verdict when the step's
  * own ceiling stopped the fixer. `stop` is optional on both arms so the caller narrows on one
- * field rather than a union of two shapes. `submodules` is the integration's own clause, present
- * only when there was something to say — handed up because the caller owns the step's reason.
+ * field rather than a union of two shapes. `submodules` is the integration's own clause and
+ * `reverted` the fold's — what it undid — both present only when there was something to say,
+ * and both handed up because the caller owns the step's reason: a wave that answered its
+ * findings while quietly un-doing part of the fix is what the `reverted:` clause discloses.
  */
-type FixRoundOutcome = { head?: string; stop?: BudgetFired; submodules?: string };
+type FixRoundOutcome = {
+  head?: string;
+  stop?: BudgetFired;
+  submodules?: string;
+  reverted?: string[];
+};
 
 /**
  * One fix wave: the child in its disposable tree, then its commits moved onto the
@@ -195,6 +202,9 @@ export async function fixRound(
     issueBody: string;
     /** See `AdversarialArgs.derivedSpec`. */
     derivedSpec?: DerivedSpec;
+    /** The project's configured protected globs, from the step's base-commit config, so the
+     *  fixer's tree is judged by the SAME predicate as the builder's. */
+    protected?: readonly string[];
     gate: string;
     wave: ReviewWave;
     arm: FixArm;
@@ -239,11 +249,15 @@ export async function fixRound(
     });
     // The ceiling's verdict first, so the fold below cannot capture a partial child.
     if (stop.fired !== undefined) return { stop: stop.fired };
+    // The fold's reverts reach the caller's reason line through this box: `foldFix`'
+    // signature stays the head it advanced to.
+    const disclosure: { reverted: string[] } = { reverted: [] };
     return await integrate(deps, ctx, {
       gateRead: opts.head,
-      fixHead: await foldFix(deps, ctx, wt, opts),
+      fixHead: await foldFix(deps, ctx, wt, { ...opts, disclosure }),
       frozen: opts.frozen,
       rows: opts.rows,
+      disclosure,
     });
   } finally {
     await removeWorktree(deps, ctx.repoRoot, wt);
@@ -273,6 +287,8 @@ async function integrate(
     fixHead: string;
     frozen: Record<string, string>;
     rows: DispatchUsageRow[];
+    /** Filled with what the fix fold reverted, for the step's reason line. */
+    disclosure: { reverted: string[] };
   },
 ): Promise<FixRoundOutcome> {
   const { repoRoot, issue } = ctx;
@@ -412,5 +428,9 @@ async function integrate(
   if (pushed === undefined)
     return await fail(`could not push the fix to origin/${branch}; the PR does not contain it`);
   // The disclosure travels with the head; only this place knows the tree was incomplete.
-  return { head: opts.fixHead, ...(submodules === undefined ? {} : { submodules }) };
+  return {
+    head: opts.fixHead,
+    ...(submodules === undefined ? {} : { submodules }),
+    ...(opts.disclosure.reverted.length === 0 ? {} : { reverted: opts.disclosure.reverted }),
+  };
 }

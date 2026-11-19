@@ -32,6 +32,7 @@ import {
 } from "./entry.ts";
 import { HEADLESS_INPUTS_C } from "./inputs-c.ts";
 import { HEADLESS_INPUTS_D } from "./inputs-d.ts";
+import { HEADLESS_INPUTS_LEAN } from "./inputs-lean.ts";
 
 export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // #1765 — 0 skips the branch step's pre-develop base-health probe (the
@@ -122,126 +123,7 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   flag("INTENT_CRITICALITY", true),
   flag("INVARIANT_MEMORY", true),
   input("ISSUE_IMAGES", "boolean", true, "cycle", { manifestVersion: 1 }),
-  // #2228 — show the BUILDER the issue prose its frozen tests were written from.
-  // `0` takes the section out of the build prompt only; `LEAN_ISSUE_PROSE=0`
-  // also takes it out, since one renderer serves all three seats.
-  // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
-  flag("LEAN_BUILD_ISSUE_PROSE", true),
-  // The two handback switches: the deadline stop's route to the report, and the
-  // no-head handback's record. Readers in lean/deadline-handback.ts and
-  // lean/verified-handback-switch.ts.
-  flag("LEAN_DEADLINE_HANDBACK", true),
-  // The publishable-branch guard's fail-closed arm: a mainline neither the clone
-  // nor origin will name refuses the push instead of passing it. The reader is
-  // `leanGuardFailClosed` in lean/guard-fail-closed-switch.ts.
-  flag("LEAN_GUARD_FAIL_CLOSED", true),
-  // #2279 — the handback's four origin reads (`ls-remote` for the record's head, the held
-  // head, and the branch/keeping-ref pair that decide success) go through the driver's
-  // network-git wrapper: non-interactive env, process-group kill, bounded wait. `0` puts
-  // every one of them back on the executor in its pre-fix shape — caller's env, no group
-  // kill — for an origin that needs an interactive credential helper. The reader is
-  // `leanHandbackNetGitEnabled` in lean/handback-net-git-switch.ts; the push is not in
-  // scope, `LEAN_REWIND_LEASE_BINDS` owns that argv.
-  flag("LEAN_HANDBACK_NET_GIT", true),
-  flag("LEAN_HANDBACK_NOHEAD_RECORD", true),
-  // #2171 — show the specify/challenge adversary the issue prose its frozen
-  // tests were written from. 0 takes the section back out of both prompts.
-  // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.
-  flag("LEAN_ISSUE_PROSE", true),
-  // #2202 — the runner probe's shape and the reading of ONE of its answers. `"0"`
-  // puts both back exactly as the shipped release has them: the probe is the hidden
-  // `.lean-runner-probe.test` outside the configured `verify.testDir`, and an exit 4
-  // on it is the `the test runner could not run a test file` hand-back rather than a
-  // disclosure. On, a project whose `verify.testGlob` names `.py` is probed with a
-  // visible, importable `_lean_runner_probe.py` INSIDE that folder (a hidden file
-  // cannot be imported, so the dotfile probe refused every pytest repo), and an exit
-  // 4 there is recorded as the runner rejecting the probe file — the bench is sound,
-  // the probe is the thing that was refused, so the run goes on to the adversary.
-  // The reader is `leanPreflightProbeCollectableEnabled` in
-  // lean/preflight-probe-switch.ts; the name itself is `specify-preflight.ts`.
-  flag("LEAN_PREFLIGHT_PROBE_COLLECTABLE", true),
-  // #2202 — containment for the probe's parent directory: `"0"` skips the realpath
-  // check that the folder the write goes into lies inside `realpath(worktree)`, so a
-  // base-committed `verify.testDir` that is really a symlink out of the checkout
-  // receives the probe. On, such a parent is refused and the probe falls back to the
-  // worktree root (itself containment-checked, and infrastructure if THAT fails).
-  // The reader is `leanPreflightProbeContainEnabled` in the same module.
-  flag("LEAN_PREFLIGHT_PROBE_CONTAIN", true),
-  // #2334 — whether `loadRun` rebuilds the ready step's own `derivedSpec` and `baseSha`.
-  // `buildOutcome` is the whitelist that rebuilds every step outcome field by field and
-  // had no clause for either, so the ready step's copy of the contract the run executed
-  // read back absent while the raw record carried it (the run-level copy survived, which
-  // is why derive mode worked). `0` puts the shipped release back byte for byte — the
-  // two fields drop on load exactly as v0.14.87 drops them — for an operator comparing
-  // a record against one written before the fix. The step's copy is an audit record: no
-  // production reader reads it off a step today. The reader is
-  // `leanReadyFactsOnLoadEnabled` in lean/ready-facts-switch.ts.
-  flag("LEAN_READY_FACTS_ON_LOAD", true),
-  // The routed deadline report's own wall: the report is the step the deadline's stop
-  // test exempts, so without this it is the one step nothing bounds. `0` puts the
-  // unbounded await back byte for byte. The reader is `leanReportBoundEnabled` in
-  // lean/handback-report-bound-switch.ts; the bound itself is `handoffReportBoundMs()`
-  // in lean/engine-report.ts — `handoffAllowanceMs()` plus REPORT_BOUND_HEADROOM_RATIO.
-  flag("LEAN_REPORT_BOUND", true),
-  // The gate events on the host's result document (`issues[].gates`). `"0"` writes the
-  // document exactly as it read before the object existed — no key, no placeholder — which
-  // is what makes the object safe to ship on by default. Unset or any other value leaves
-  // it in. The reader is `leanResultGatesEnabled` in lean/result-gates-switch.ts.
-  flag("LEAN_RESULT_GATES", true),
-  // The executed acceptance table in front of the lean review seats and on the run's
-  // PR: each criterion, the frozen test the run recorded for it, and what the
-  // newest green `verify` reported for it at the certified head. `0` renders none
-  // of it — both reviewer briefs are byte-identical to the render before the table,
-  // no comment is posted, and the entry guard that refuses a head the gate never
-  // certified does not run. The reader is `leanReviewAcceptanceEnabled` in
-  // lean/review-acceptance-switch.ts.
-  flag("LEAN_REVIEW_ACCEPTANCE", true),
-  // Whether a lean run whose review stopped with lanes unjudged gets its own cap: on (the
-  // default) such a `ready` PR reports `review-incomplete` and `issues[].reviewComplete:
-  // false`; `"0"` writes today's `awaiting-human-merge` and no field at all. The reader is
-  // `leanReviewIncompleteCapEnabled` in lean/review-incomplete-cap-switch.ts.
-  flag("LEAN_REVIEW_INCOMPLETE_CAP", true),
-  // #2265 — open the review seats' criteria section with the spec's `problem`, so
-  // a statement whose tail sits past the prose bound still reaches every seat.
-  // `0` takes the statement out and leaves every brief byte-identical to the
-  // render before it existed; the statement renders only when the split is on too.
-  // The reader is `leanReviewProblemEnabled` in lean/review-problem-switch.ts.
-  flag("LEAN_REVIEW_PROBLEM", true),
-  // Show the lean review seats (six lenses, adversarial reviewer, review fixer)
-  // the issue's prose and the spec's criteria as two sections, so a long
-  // statement cannot cut the criteria by competing with its own block for one
-  // bound. 0 restores the single bounded block. The reader is
-  // `leanReviewSpecSplitEnabled` in lean/review-spec-split.ts.
-  flag("LEAN_REVIEW_SPEC_SPLIT", true),
-  // #2262 — the rewind's lease: `"0"` puts the leading `+` back on the branch refspec,
-  // which makes git skip the lease and force-update a branch somebody else moved.
-  // Unset or any other value leaves the refspec unforced so the lease binds. The reader
-  // is `leanRewindLeaseBinds` in lean/rewind-lease-switch.ts.
-  flag("LEAN_REWIND_LEASE_BINDS", true),
-  // #2212 — #2179's runner preflight and the reset's submodule init, both off
-  // only on `"0"`, which restores v0.14.71's specify (no probe, no submodule
-  // call, exit 11 where the preflight would have handed back at 10).
-  flag("LEAN_RUNNER_PREFLIGHT", true),
-  // Where a lean run's contract comes from when its issue carries no `pi-spec v1`
-  // block: `require` (the default) declines, exactly as every run before this knob
-  // existed; `derive` sends the prose to one bounded read-only child, which returns
-  // a block the run then validates as though an author had written it. An invalid
-  // value is a refusal, never the default — a typo that quietly fell back to
-  // `require` would decline tickets the operator meant to run. The reader is
-  // `resolveSpecIntake` in lean/spec-intake-switch.ts.
-  input("LEAN_SPEC_INTAKE", "enum", null, "cycle", { values: ["require", "derive"] }),
-  // #2319 — where a lean worktree's submodules are initialised FROM. On (the default)
-  // each first level is seeded from the superproject — its module store under
-  // `.git/modules/<path>`, else its populated checkout — through a per-path URL this
-  // harness computes, and one this host never held is disclosed rather than fetched;
-  // `0` puts the release's own `git submodule update --init --recursive` back byte for
-  // byte, listing probe included, for an operator whose submodule lives on a remote.
-  // The outer gate is `LEAN_RUNNER_PREFLIGHT`, which wins: with it at `0` no submodule
-  // code runs at all. The reader is `leanSubmodulesLocalEnabled` in
-  // lean/submodules-local-switch.ts.
-  flag("LEAN_SUBMODULES_LOCAL", true),
-  // The rewind rule itself: reader `leanVerifiedHandbackEnabled`, same module.
-  flag("LEAN_VERIFIED_HANDBACK", true),
+  ...HEADLESS_INPUTS_LEAN,
   // Unset: derived from the host budget (CPUs, memory, pids.max); 0 = unbounded.
   // #1564 — a lens child's run bound (spawn-child-bound.ts).
   ms("LENS_BOUND_MS", 1_800_000),

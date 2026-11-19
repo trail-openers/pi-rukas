@@ -123,6 +123,7 @@ export const FIXED_CAPS = [
   // #1567 — the 2-h spawn backstop killed a develop child (was
   // `developer-timeout` before result schema v5).
   "spawn-backstop",
+  "stale-remote-branch",
   "step-back-revise-spec",
   "token-budget",
   // #1879 — the pinned compiler accepted a file with a known type error, so a
