@@ -10,6 +10,9 @@
  * AND across concurrent driver processes in the same repo clone (the same
  * seam as `integrate()`, `runConsolidatedVerify`, handoff-consolidate, and
  * the merged teardown).
+ *
+ * A push refused because the branch moved (`pushRefusalKind`) in a continued PR is
+ * halted as `continue-pr-head-moved`, the cap that names that case for continue mode.
  */
 import { execp } from "./exec.ts";
 import { redactThenBound } from "./text-flatten.ts";
@@ -27,6 +30,7 @@ import { mechanizedCommitPr } from "./work-driver-commit.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { continueCommitPrHalt } from "./work-driver-continue-pr-commit.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
+import { pushRefusalKind } from "./work-driver-push-refusal.ts";
 import { appendEvent } from "./workflow-state.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -73,6 +77,13 @@ async function runCommitPrLocked(
     const mech = await mechanizedCommitPr(ctx, state, now);
     if (mech.ok) {
       next = mech.state;
+    } else if (
+      state.pipelineState.continuedPr &&
+      mech.fallbackCause === "push-refused" &&
+      pushRefusalKind(mech.reason) === "moved"
+    ) {
+      // A continued PR whose head moved has its own cap, `continue-pr-head-moved`.
+      return continueCommitPrHalt(ctx, state, mech.reason, execFn);
     } else if (mech.terminal) {
       // The consolidated tree does not build (the `integration-verify-failed`
       // cap) OR the driver-owned integrate worktree could not be created

@@ -1,4 +1,7 @@
-/** #287 Part B — the ONLY path that writes to repoRoot. */
+/**
+ * #287 Part B — the ONLY path that writes to repoRoot. A create-mode push leases on the sha
+ * this cycle last pushed to the branch; every push records the new one (work-driver-push-lease.ts).
+ */
 
 import path from "node:path";
 import { trace } from "./trace.ts";
@@ -12,24 +15,16 @@ import { fastForwardOnto, rewindFastForward } from "./work-driver-integrate-ff.t
 import { sweepBeforeFollowupCheckout } from "./work-driver-integrate-sweep.ts";
 import { verifyIntegration } from "./work-driver-integrate-verify-step.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
+import { pushArgv, recordPushedSha } from "./work-driver-push-lease.ts";
 import { pushRefusalFromError } from "./work-driver-push-refusal.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { ExecFn } from "./worktree.ts";
-// Re-exported for backward compatibility (callers imported these from
-// work-driver-integrate.ts pre-#750; the implementations now live in
-// work-driver-preflight.ts).
+// Re-exported: callers import these from here.
 export { readDirtyPorcelain, restoreRepoRoot } from "./work-driver-preflight.ts";
 
-// #794 — the integration lock lives in work-driver-lock.ts (extracted to
-// keep this file under the 500-line gate); the re-exports below preserve
-// every existing import path unchanged.
-
 import type { IntegrateResult } from "./work-driver-integrate-result.ts";
-
-// The result contract lives in work-driver-integrate-result.ts and is re-exported
-// here so every consumer keeps importing it from the module that owns `integrate()`.
 export type { IntegrateResult };
 import { cachedIssueTitle } from "./work-driver-integrate-title.ts";
 export { cachedIssueTitle } from "./work-driver-integrate-title.ts";
@@ -40,22 +35,11 @@ export interface IntegrateOpts {
   /** Commit-ish the branch is created at. Required for mode "create". */
   baseSha?: string;
   worktrees: Record<string, string>;
-  /**
-   * #794 — per-workstream effective base map (`pipelineState.workstreamBaseShas`).
-   * A stacked workstream's OWN range is measured against its dependency's tip
-   * instead of the global baseSha, so its ancestor commits are not re-picked
-   * on top of their content (the #775 replay). A workstream with no entry
-   * falls back to `baseSha` — byte-identical to the pre-#794 behaviour.
-   */
+  /** Per-workstream base: a stacked workstream's range starts at its dependency's tip; absent means `baseSha`. */
   workstreamBaseShas?: Record<string, string>;
   /** Where conflict patches are preserved for the operator. */
   scratchDir: string;
-  /**
-   * #1362 — the cycle's `.pi/dirty-root-exempt` list. Applied to the repoRoot
-   * dirty-root preflight and the verified restore's claims; the worktree
-   * staging is deliberately NOT filtered, so a deliverable inside an exempt
-   * prefix is still committed.
-   */
+  /** `.pi/dirty-root-exempt`: filters the repoRoot preflight and restore, never the worktree staging. */
   dirtyRootExempt?: readonly string[];
   commitTitle: string;
   commitBody: string;
@@ -71,46 +55,25 @@ export interface IntegrateOpts {
   requireAllNonEmpty?: boolean;
   /** #453 — pre-existing commit SHAs from a prior attempt (resume). */
   commitShas?: Record<string, string>;
-  /**
-   * The project's verify command, run against the CONSOLIDATED tree between
-   * the commit and the push. Integration is the first place the combination
-   * is compiled — every prior gate saw one workstream in isolation. Omitted
-   * (or absent from the project) means the check is skipped, as before.
-   */
+  /** Verify command run on the consolidated tree between commit and push; absent skips it. */
   verifyCmd?: string;
   /** Executor for `verifyCmd`. Defaults to `execFn`; tests inject. */
   verifyExecFn?: ExecFn;
   /**
-   * #1240 — the single worktree whose content the develop gate verified
-   * green, when the integration is exactly that: ONE workstream, whose work
-   * arrived by cherry-pick (not a patch transplant, which adds no commit and
-   * is the shape `integrate()` step 4 verifies). The caller (mechanized
-   * commit-pr) supplies the develop worktree for the N=1 create-mode cycle.
-   * When supplied, step 4 skips its verify run if the committed integration
-   * tree is the tree that passed. Any other shape must leave this absent.
+   * The one worktree the develop gate verified green, for a single cherry-picked
+   * workstream only: step 4 skips its verify when the committed tree is that tree.
    */
   verifiedWorktree?: string;
   /** Wall-clock for `verifyCmd`. */
   verifyTimeoutMs?: number;
   /**
-   * #1404 — the cycle's ORIGINAL base commit (`pipelineState.baseSha`), the
-   * commit this cycle's commits are measured against. Threaded to the
-   * commit-pr verify so a consolidated failure earns a baseline probe. The
-   * caller must NOT pass a followup round's `followupBase` — that commit
-   * already carries this cycle's earlier commits, which would excuse every
-   * failure as pre-existing. Absent → no probe, failures park as before.
+   * The cycle's original base, for the baseline probe of a failed verify. Never a
+   * followup round's base: it holds this cycle's commits and would excuse every failure.
    */
   baselineBaseSha?: string;
   /**
-   * #782 — the commit-pr flake re-run. When the consolidated verify at this
-   * seam fails and `ciRetryCount` is unset (first consolidated run), the
-   * SAME command re-runs once on the SAME integration branch (no restore at
-   * this seam — repoRoot IS the consolidated tree) BEFORE classification.
-   * `onRecover` is called with the original failing tail when the re-run
-   * passes (the caller appends `verify-flake-recovered` BEFORE appending
-   * `verify-failed:commit-pr`, so eventLog is append-only and the ordering
-   * is the emission order). Absent on pre-#782 state files; readers treat
-   * absent as no retry (the classifier parks as today).
+   * Flake re-run: a first failing consolidated verify runs once more before it is
+   * classified; `onRecover` gets the failing tail when the re-run passes. Absent: no retry.
    */
   verifyRetry?: {
     ciRetryCount?: number;
@@ -134,11 +97,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
   // #794 — pick scope: own-range selection per workstream (see IntegrateOpts).
   const pickScope = { globalBaseSha: opts.baseSha, workstreamBaseShas: opts.workstreamBaseShas };
   const ids = Object.keys(worktrees);
-  // Where repoRoot was before we touched it. A failed integration must put it
-  // back: the previous code returned from inside the apply loop with the
-  // checkout already switched and 0..N-1 workstreams already in the index, so
-  // the operator found a half-applied branch; the NEXT cycle's dirty preflight
-  // would refuse to run at all.
+  // Where repoRoot was before we touched it; a failed integration puts it back.
   let originalRef: string | undefined;
   // #1240 — set only when step 4 skipped its verify run; carried on the
   // success result so the caller can record the visible event.
@@ -416,18 +375,18 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       return { ok: true, workstreams: appliedWorkstreams, empty: false, ...names };
     }
 
-    // 5. Push.
+    // 5. Push; a create-mode rebuild leases on this cycle's last push (work-driver-push-lease.ts).
     const pushRefProblem = netRefProblem(branchName);
     if (pushRefProblem !== undefined) throw new Error(`push refused: ${pushRefProblem}`);
     try {
       await runNetGit(execFn, "git", {
         cwd: repoRoot,
-        argv: ["push", "-u", "origin", branchName],
+        argv: await pushArgv(opts.scratchDir, branchName, mode === "create" && !opts.fastForward),
       });
     } catch (err) {
       // #1439 — a push the FORGE refused is not environment variance. GitHub push
       // protection (GH013) / repository rules refuse the ref because of its CONTENT,
-      // and a non-fast-forward asks for a force-push the driver will not make; in
+      // and a non-fast-forward or failed lease means someone moved the branch; in
       // neither case can an ops child fix it locally. Named structurally so the
       // caller parks terminally instead of dispatching a fallback that only
       // rediscovers the refusal, and so the cause classifier blames the content the
@@ -441,7 +400,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
         return {
           ok: false,
           failure: "push-refused",
-          reason: `push refused by the remote for ${branchName}: ${refusal} ${claimFor(restore)}`,
+          reason: `push refused by the remote for ${branchName}:\n${refusal}\n${claimFor(restore)}`,
         };
       }
       throw err;
@@ -456,6 +415,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     });
     const headSha = newHead.trim();
     trace(`work-driver: integrate — pushed ${branchName} @ ${headSha.slice(0, 8)}`);
+    await recordPushedSha(opts.scratchDir, branchName, headSha);
     if (headSha) {
       for (const id of appliedWorkstreams) {
         const wt = worktrees[id];

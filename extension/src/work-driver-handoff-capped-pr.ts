@@ -24,6 +24,9 @@
  * one). Any failure degrades to the status quo — a local branch and the
  * per-worktree recovery — and never blocks the handoff. Escape hatch
  * `PI_ENSEMBLE_HANDOFF_DRAFT_PR=0`.
+ *
+ * The push leases on the sha this cycle last pushed, when it pushed the branch
+ * before (work-driver-push-lease.ts), and records what it pushed.
  */
 
 import { execp } from "./exec.ts";
@@ -33,7 +36,8 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { forgeForCycle } from "./work-driver-forge-ctx.ts";
 import { adversarialOutcomeSection } from "./work-driver-handoff-adversarial.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
-import { activeIssuesOf } from "./work-driver-workspace.ts";
+import { pushArgv, recordPushedBranch } from "./work-driver-push-lease.ts";
+import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 /** The cap the cycle stopped on (the latest cap-hit), if any. */
@@ -79,7 +83,12 @@ export async function openDraftPrForCappedWork(
     if (!forge) return state;
     const refProblem = netRefProblem(branch);
     if (refProblem !== undefined) throw new Error(`push refused: ${refProblem}`);
-    await runNetGit(execp, "git", { cwd: ctx.repoRoot, argv: ["push", "-u", "origin", branch] });
+    const scratch = scratchDir(ctx.repoRoot, ctx.issue);
+    await runNetGit(execp, "git", {
+      cwd: ctx.repoRoot,
+      argv: await pushArgv(scratch, branch, true),
+    });
+    await recordPushedBranch(execp, ctx.repoRoot, scratch, branch);
     const title = await deriveCommitPrTitle(state, ctx, execp);
     const pr = await forge.prCreate(title, branch, cappedDraftPrBody(state), { draft: true });
     trace(`work-driver: handoff — pushed ${branch} and opened draft PR #${pr.number}`);
