@@ -87,8 +87,8 @@ await withEnv(PIN_CHILD, async () => {
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;
   check(
-    n === 9,
-    `registers exactly 9 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write, #1788 public-hygiene and #2140 reviewer-bash-timeout, plus the #1655 write fence and the #2200 deletion rule; oo-rewrite excluded; got ${n})`,
+    n === 10,
+    `registers exactly 10 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write, #2381 broadcast-kill, #1788 public-hygiene and #2140 reviewer-bash-timeout, plus the #1655 write fence and the #2200 deletion rule; oo-rewrite excluded; got ${n})`,
   );
   // A child with no broker socket gets no tool at all — the tool's registration
   // and its activation share one predicate, so the always-refuses state is not
@@ -121,6 +121,12 @@ await withEnv(PIN_CHILD, async () => {
 
   const view = await dispatch(fake, "bash", "gh pr view 5");
   check(view === undefined, "loaded hooks ignore `gh pr view 5` (a read stays open)");
+
+  // #2381 — the uid-wide signal is refused by the loaded set, a pid kill is not.
+  const broadcast = (await dispatch(fake, "bash", "kill -TERM -1")) as { block?: boolean } | undefined;
+  check(broadcast?.block === true, "loaded hooks refuse `kill -TERM -1` (#2381 broadcast-kill guard)");
+  const targeted = await dispatch(fake, "bash", "kill -TERM 1234");
+  check(targeted === undefined, "loaded hooks leave `kill -TERM 1234` alone");
 });
 
 // ============================================================
@@ -251,7 +257,7 @@ await withEnv(PIN_FORGE_CHILD, async () => {
   // a write root MUST add a hook, so this number cannot be reached by the fence
   // or the deletion rule quietly failing to register.
   check(
-    n === 8,
+    n === 9,
     `a stripped child with a broker socket registers the guards plus the #2200 deletion rule (got ${n})`,
   );
   await withEnv({ ...PIN_FORGE_CHILD, PI_ENSEMBLE_WRITE_ROOT: "/tmp" }, async () => {

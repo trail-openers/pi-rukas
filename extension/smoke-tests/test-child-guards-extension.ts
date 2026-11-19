@@ -156,6 +156,9 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
     "registerDeveloperPushGuard",
     // #1666 — the destructive vipune write refusal, which trust children never got from agents.json.
     "registerMemoryWriteGuard",
+    // #2381 — the uid-wide signal refusal (`kill … -1`, `pkill -u`, `killpg(1, …)`):
+    // a child runs as the operator's uid, so it belongs where every mode loads it.
+    "registerBroadcastKillGuard",
     // #1788 — the public repository hygiene guard. Same placement reasoning as
     // the merge guard: the repository is public and the modes this must fire in
     // are the defaults, so a trust or sandbox child that got only this block
