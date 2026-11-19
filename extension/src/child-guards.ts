@@ -124,15 +124,19 @@ export default function registerChildGuards(pi: ExtensionAPI): void {
   // own cwd and `PI_ENSEMBLE_CHILD_TMP`, which is also where the scratch HOME
   // (reviewer-scratch-home.ts) lives, so the guard and the redirect name one tree.
   registerReviewerWriteGuard(failClosedPi(pi));
-  // #2160 — the helper roles' only forge surface, registered by the companion
-  // because a trust-mode child (the interactive default) loads no other
-  // pi-rukas extension and its env carries no login to fall back on. Registered
-  // BEFORE the subagent-mode no-op so the strict child gets it too, where Pi
-  // de-duplicates the name against the forwarded extension's own registration.
-  // The predicate inside is the one activation uses — a stripped role plus a
-  // parent-served broker socket — so the tool is never present in a child that
-  // could not get an answer out of it (an ops child, or one whose bind failed).
-  registerChildForgeReadTool(pi);
+  // #2160 — the helper roles' only forge surface, and #2382 — the companion is
+  // its ONLY owner, in every mode. A trust-mode child (the interactive default)
+  // loads no other pi-rukas extension and its env carries no login to fall back
+  // on, so the tool must be registered here and nowhere else; under
+  // PI_ENSEMBLE_SUBAGENT_MODE=1 the forwarded full extension stands down for it
+  // (`inForwardedChild` in child-forge-read-activation.ts), which is what keeps
+  // Pi 1.5.2's duplicate-tool check from refusing the whole child load.
+  // Registered BEFORE the subagent-mode no-op for exactly that reason: the no-op
+  // below is the guards' half, not the tool's. The predicate inside is the one
+  // activation uses — a stripped role plus a parent-served broker socket — so
+  // the tool is never present in a child that could not get an answer out of it
+  // (an ops child, or one whose bind failed).
+  registerChildForgeReadTool(pi, "companion");
   // The run's own provider endpoint and key reach every child, strict or trust:
   // the full extension registers them only in the parent.
   registerProviderEnvOverrides(pi);

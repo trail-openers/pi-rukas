@@ -88,7 +88,10 @@ async function callChildToolOnce(
     // `void` on purpose: registration is a side effect, and "did it register" is
     // answered by what the fake collected, not by a return value the function
     // does not have. A role the predicate refuses leaves the list empty.
-    registerChildForgeReadTool(fakeApi);
+    // "companion": these cases drive the real child tool, and the companion is
+    // the entry point that owns the registration (#2382) — a caller that named
+    // itself the forwarded extension would register nothing under SUBAGENT_MODE.
+    registerChildForgeReadTool(fakeApi, "companion");
     const tool = registered.find((r) => r.name === "forge_read");
     if (!tool) throw new Error("forge_read was not registered under its own name");
     const res = await tool.execute("off-arm-1", args);

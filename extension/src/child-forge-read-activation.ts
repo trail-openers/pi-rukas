@@ -58,6 +58,32 @@ import { trace } from "./trace.ts";
 /** The tool name, exported so the tests and agents.json agree on one spelling. */
 export const FORGE_READ_TOOL = "forge_read";
 
+/**
+ * Whether the child-guards companion OWNS `forge_read` for this process.
+ *
+ * The companion is the single owner in every mode (#2382): it is the one child
+ * entry point that is always loaded, so it registers the tool unconditionally
+ * and the forwarded full extension must not. The predicate has to distinguish
+ * the two callers, and the argument does it — a registration is owned iff the
+ * caller is the companion itself. It is an argument rather than ambient state
+ * (a cwd or import-origin sniff) because "who is calling" is a fact the caller
+ * knows and this module must not guess: `child-guards.ts` passes `"companion"`
+ * and `registerSubagentGuard` passes `"forwarded-extension"`. The mode test is
+ * the second half: outside a forwarded child (the parent session, or a
+ * non-forwarded tool-only extension such as a lens reporter) nothing has
+ * standing down for, so that caller registers as it always has.
+ */
+export type ForgeReadRegistrationOwner = "companion" | "forwarded-extension";
+
+/** Whether this process is the child the driver forwarded pi-rukas into. */
+function inForwardedChild(): boolean {
+  return process.env.PI_ENSEMBLE_SUBAGENT_MODE === "1";
+}
+
+function ownedByCompanion(from: ForgeReadRegistrationOwner): boolean {
+  return from === "companion" || !inForwardedChild();
+}
+
 /** The env the child reads the parent's broker path from. */
 export const FORGE_READ_SOCKET_ENV = "PI_ENSEMBLE_FORGE_READ_SOCKET";
 
@@ -323,16 +349,50 @@ function requestForgeRead(
 
 /**
  * Register `forge_read` into a child, when this child can actually use it.
- * Called by BOTH child entry points (child-guards.ts and registerSubagentGuard),
- * each of which registers it at most once; the tool self-declares its
- * parameters and the parent does the work, so there is nothing mode-specific to
- * branch on here. The availability predicate is the one `enableChildForgeRead`
- * applies, so a tool this child was registered for always has the socket that
- * makes the call answer something — and a child that cannot reach a broker is
- * never given the tool.
+ *
+ * ONE OWNER PER PROCESS (#2382). A strict/headless child loads BOTH the full
+ * pi-rukas extension (`--extension <repo>/extension`) and the child-guards
+ * companion (`--extension <repo>/extension/src/child-guards.ts`), and Pi 1.5.2's
+ * `detectExtensionConflicts` turns a tool name two loaded extensions each
+ * registered into a load-time error — `Tool "forge_read" conflicts with
+ * <repo>/extension` — which `main.js` answers by exiting 1 before the session
+ * attaches. So the two entry points must not both register.
+ *
+ * THE COMPANION OWNS IT, in every mode. It is the one child entry point that is
+ * always present: `childGuardsArgs()` appends it to the child argv
+ * unconditionally, while the full extension's child branch only loads when the
+ * guard is on (`subagentGuardEnabled` — false in trust/sandbox mode and under
+ * `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1`). A trust-mode child therefore gets the
+ * tool from the companion alone, and a strict/headless child gets it from the
+ * same place with the forwarded extension standing down — which is also what
+ * `registerSubagentGuard`'s own codemode and guard-registration sites already
+ * do under `PI_ENSEMBLE_SUBAGENT_MODE=1`. This function is the only path to the
+ * registration, and the two callers are the two entry points:
+ *
+ *   - `child-guards.ts` calls it with `"companion"` — it is always the owner;
+ *   - `registerSubagentGuard` (the forwarded full extension) calls it with
+ *     `"forwarded-extension"` and stands down here, so its extension registers
+ *     no `forge_read`.
+ *
+ * The tool is byte-identical whichever entry point calls (this module holds the
+ * one definition, and its handler dials `PI_ENSEMBLE_FORGE_READ_SOCKET`), so
+ * "one owner" changes who registers, never what the model can call. The
+ * availability predicate is the one `enableChildForgeRead` applies, so a tool
+ * this child was registered for always has the socket that makes the call answer
+ * something — and a child that cannot reach a broker is never given the tool.
  */
-export function registerChildForgeReadTool(pi: ExtensionAPI): void {
+export function registerChildForgeReadTool(
+  pi: ExtensionAPI,
+  // No default on purpose: a caller that does not name itself does not get the
+  // tool, which is the fail-closed direction now that a second registration is
+  // what kills a strict/headless child's load.
+  from: ForgeReadRegistrationOwner,
+): void {
   const role = process.env.PI_ENSEMBLE_ROLE;
+  if (!ownedByCompanion(from)) {
+    trace("child-guards: forge_read owned by the companion — forwarded extension stands down");
+    return;
+  }
   if (!forgeReadAvailableForRole(role)) {
     trace(`child-guards: forge_read not registered (role=${role ?? "<unset>"})`);
     return;

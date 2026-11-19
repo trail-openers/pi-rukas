@@ -38,15 +38,17 @@ export function registerSubagentGuard(pi: ExtensionAPI): void {
     // children hold a broker to talk to.
     enableChildForgeRead(pi, process.env.PI_ENSEMBLE_ROLE);
   });
-  // #2160 — registered here as well as in the companion, and Pi de-duplicates
-  // by name, so a strict child that loads BOTH the companion and this forwarded
-  // extension still has exactly one `forge_read`. It sits above the trust and
-  // sandbox short-circuits below for the same reason the guards do: a trust
-  // child has no login, so a child with no forge_read at all could not read the
-  // issue it was dispatched to work on. The predicate it applies is the
-  // companion's — stripped role plus a parent-served broker socket — so neither
-  // site can register the tool into a child activation would leave off.
-  registerChildForgeReadTool(pi);
+  // #2160 / #2382 — the call is kept at the same site the guards use, and it
+  // REGISTERS NOTHING here: `registerChildForgeReadTool` stands down whenever
+  // this process is a forwarded child (`PI_ENSEMBLE_SUBAGENT_MODE=1`), because
+  // the child-guards companion — which every child loads, unconditionally —
+  // owns the tool. Pi 1.5.2's `detectExtensionConflicts` makes a name two
+  // loaded extensions each registered a load-time error, so a second
+  // registration at this site kills the strict/headless child before its
+  // session attaches. It stays above the trust and sandbox short-circuits so
+  // the reachability of the decision does not depend on the mode, exactly as
+  // the guards' registrations do; the predicate inside stays the companion's.
+  registerChildForgeReadTool(pi, "forwarded-extension");
   registerModeIndependentGuards(pi);
   // #716 — same registration site, same reasoning: the "mandatory oo" rule
   // for verbose runners (pytest, cargo test, bun test, …) is pure prose on the
