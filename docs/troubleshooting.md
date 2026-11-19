@@ -4242,6 +4242,11 @@ readiness is still `UNKNOWN` — waiting on the forge there would spend the `ci`
 already red. An expired wait names the value it was waiting on (`… still pending after 30 min: readiness
 ci_still_running (…)`) rather than printing an empty reason.
 
+`approvals_left` is an optional cross-check, not a required read field: `glab mr view` (and the same
+payload over `glab api /projects/:id/merge_requests/:iid`) does not return it — that number lives on
+`/merge_requests/:iid/approvals` — so its absence is skipped, and an MR awaiting approvals reaches the
+composition as `detailed_merge_status: not_approved`, which composes `DIRTY`.
+
 ### What to do
 
 Nothing, if your build is current — the table is pinned value-by-value against GitLab's documented

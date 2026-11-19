@@ -23,7 +23,9 @@
  *   2. every value the composition calls UNKNOWN is waited on the poll's bound —
  *      not only `checking`, the one word the pre-fix retry knew — and each still
  *      runs the tier exactly once when it resolves;
- *   3. a red job row outranks an UNKNOWN readiness: the rows are evidence about
+ *   3. the single-MR reply, which has never carried `approvals_left`, is read as
+ *      ready — requiring that key is what made every real MR fail closed at `ci`;
+ *   4. a red job row outranks an UNKNOWN readiness: the rows are evidence about
  *      this commit and have already answered, while the readiness only says the
  *      forge has not finished deciding, so waiting on it would burn the `ci`
  *      budget on a build that is already red.
@@ -72,6 +74,21 @@ export async function runReadinessCases(
     !mr.cmds.some((c) => c.startsWith("gh ")),
     `(g4b) and the whole step stayed on glab (${JSON.stringify(mr.cmds.filter((c) => c.startsWith("gh ")))})`,
   );
+
+  const r = await run({
+    full: "true",
+    forge: "gitlab",
+    mr: glMrMergeableRowNoApprovals,
+  });
+  want(
+    r.threw === undefined,
+    `(g4c) an MR reply with no approvals_left is a verdict, not an infra throw (${String(r.threw?.message)})`,
+  );
+  want(
+    r.outcome?.kind === "green",
+    `(g4c) and ci is green on it — the single-MR reply has never carried that field (${JSON.stringify(r.outcome ?? r.threw?.message)})`,
+  );
+  want(r.tierRuns === 1, `(g4c) and the full tier ran exactly once (${String(r.tierRuns)})`);
 
   // (g4b) every UNKNOWN value is waited, not just `checking`.
   for (const status of ["unchecked", "preparing", "approvals_syncing", "ci_still_running"]) {
@@ -134,4 +151,13 @@ function glMrMergeableRow(head: string): Record<string, unknown> {
     diff_refs: { head_sha: head },
     open_pipeline: { id: 5001, status: "success" },
   };
+}
+
+/** The MR row exactly as `glab mr view` answers it for a ready MR: no
+ *  `approvals_left`, because the single-MR endpoint has never carried that
+ *  number (it lives on `/merge_requests/:iid/approvals`). Requiring it is the
+ *  defect that made every real GitLab MR fail closed at `ci`. */
+function glMrMergeableRowNoApprovals(head: string): Record<string, unknown> {
+  const { approvals_left: _approvals, ...rest } = glMrMergeableRow(head);
+  return rest;
 }

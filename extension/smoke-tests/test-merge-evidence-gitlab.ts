@@ -70,6 +70,25 @@ async function main() {
     );
   });
 
+  // The row `glab mr view` actually answers with for a ready MR: no
+  // `approvals_left`, because the single-MR endpoint has never carried that
+  // number (it lives on `/merge_requests/:iid/approvals`). This gatherer is the
+  // SECOND consumer of the composition — the land step and the merge guard read
+  // it, and their refusal is `could not compose MR readiness: …` — so requiring
+  // the key parked a green MR at `land` here as surely as it killed `ci`.
+  // Everything else about the row is the green row above, so this is the only
+  // difference the gate is asked about.
+  await check("a green MR whose reply carries no approvals_left passes the evidence gate", async () => {
+    const noApprovals = mrRow();
+    Reflect.deleteProperty(noApprovals, "approvals_left");
+    const { fn } = mkExec(glReads(noApprovals, [pipelineRow(PIPELINE, HEAD)], GL_JOBS));
+    const ev = await gatherMergeEvidence(fn, "/x", MR, "gitlab");
+    assert(ev.ok === true, `ok: ${JSON.stringify(ev)}`);
+    assert(ev.mergeStateStatus === "CLEAN", `readiness: ${ev.mergeStateStatus}`);
+    assert(ev.headOid === HEAD, `head from the one MR read: ${ev.headOid}`);
+    assert(!/approvals_left/.test(ev.reason ?? ""), `reason: ${ev.reason}`);
+  });
+
   await check("a failed job refuses as a CI verdict", async () => {
     // `mergeable` is what a real GitLab instance does answer while a pipeline is
     // red (the required-checks rules are per-project), so
