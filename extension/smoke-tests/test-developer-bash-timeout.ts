@@ -140,6 +140,30 @@ import { assert, exit as failureExit } from "./merge-guard-helpers.ts";
     );
   }
 
+  // R2's boundary pair: the ceiling itself is accepted, and the first whole-ms
+  // value ABOVE it is rejected — not by the ms test alone (2147483001 is under
+  // 2147483647) but because the seconds this hook writes would round to a value
+  // Pi multiplies back past its maximum and refuses to run.
+  const atCeiling = await developer(
+    { PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS: "2147483000" },
+    { command: "sleep 99999" },
+  );
+  assert(
+    atCeiling.timeout === 2_147_483,
+    `the developer knob's ceiling is accepted as ${2_147_483}s (got ${String(atCeiling.timeout)})`,
+  );
+
+  for (const over of ["2147483001", "2147483647"]) {
+    const out = await developer(
+      { PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS: over },
+      { command: "sleep 99999" },
+    );
+    assert(
+      !("timeout" in out),
+      `PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS="${over}" rounds to seconds Pi would refuse — no bound (got ${String(out.timeout)})`,
+    );
+  }
+
   const raised = await developer(
     { PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS: "90000" },
     { command: "sleep 99999" },
@@ -180,7 +204,7 @@ import { assert, exit as failureExit } from "./merge-guard-helpers.ts";
   await withEnv({ PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS: undefined }, async () => {
     assert(
       developerBashBoundSeconds() === DEVELOPER_BOUND,
-      `the developer knob's default is ${DEVELOPER_BOUND}s / 900000 ms (got ${String(developerBashBoundSeconds())})`,
+      `the developer knob's default is ${DEVELOPER_BOUND}s / 1500000 ms (got ${String(developerBashBoundSeconds())})`,
     );
   });
   // R2's other half: the warning for a value that is neither default nor valid
@@ -265,23 +289,29 @@ import { assert, exit as failureExit } from "./merge-guard-helpers.ts";
   const root = path.resolve(import.meta.dirname, "..", "..");
   const configuration = readFileSync(path.join(root, "docs", "configuration.md"), "utf8");
   assert(
-    /\| `PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS` \| `900000` \(15 min\)/.test(configuration),
-    "docs/configuration.md carries a row for PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS at 900000 (15 min)",
+    /\| `PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS` \| `1500000` \(25 min\)/.test(configuration),
+    "docs/configuration.md carries a row for PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS at 1500000 (25 min)",
   );
   assert(
     /PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS`[^\n]*split or background/i.test(configuration),
     "the developer knob's docs row tells the child to split or background a call that needs longer",
   );
   const troubleshooting = readFileSync(path.join(root, "docs", "troubleshooting.md"), "utf8");
+  // The developer paragraph is the ONLY place the troubleshooting entry can
+  // carry the knob's name, and the assertion reads that paragraph alone — so
+  // deleting it fails here rather than passing on the reviewer paragraph above
+  // it (which does not name the developer knob at all).
   const entry = troubleshooting
     .split("\n### ")
     .find((section) => section.startsWith("A review child stuck in one bash call"));
+  const developerParagraph = (entry ?? "")
+    .split("\n")
+    .find((line) => line.includes("PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS"));
   assert(
-    !!entry &&
-      entry.includes("PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS") &&
-      /developer/i.test(entry) &&
-      /PI_ENSEMBLE_DISPATCH_CAPS=0/.test(entry),
-    "docs/troubleshooting.md's stuck-bash entry now names the developer arm, its knob and its inertness",
+    !!developerParagraph &&
+      /developer/i.test(developerParagraph) &&
+      /PI_ENSEMBLE_DISPATCH_CAPS=0/.test(developerParagraph),
+    "docs/troubleshooting.md's stuck-bash entry keeps a developer paragraph naming its knob and its inertness",
   );
   const rolePrompt = readFileSync(path.join(root, "agents-base", "developer.md"), "utf8");
   assert(

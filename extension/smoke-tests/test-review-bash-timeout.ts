@@ -179,6 +179,30 @@ const floor = await reviewer(
 );
 assert(floor.timeout === 1, `the 1000 ms floor is accepted as 1s (got ${String(floor.timeout)})`);
 
+// The top of the accepted range, judged on the SECONDS the hook writes: Pi
+// re-expands `seconds * 1000` and throws past its own maximum, so the last
+// accepted ms count is the one that still rounds to a runnable second, and the
+// next whole ms count is out of range rather than a bound Pi would refuse (#2377).
+const atCeiling = await reviewer(
+  { PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: "2147483000" },
+  { command: "sleep 99999" },
+);
+assert(
+  atCeiling.timeout === 2_147_483,
+  `the ceiling itself is accepted as ${2_147_483}s (got ${String(atCeiling.timeout)})`,
+);
+
+for (const over of ["2147483001", "2147483647"]) {
+  const out = await reviewer(
+    { PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: over },
+    { command: "sleep 99999" },
+  );
+  assert(
+    !("timeout" in out),
+    `PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS="${over}" rounds to seconds Pi would refuse — no bound (got ${String(out.timeout)})`,
+  );
+}
+
 // The reader itself, so the documented default and the hook's cannot drift.
 await withEnv({ PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: undefined }, async () => {
   assert(

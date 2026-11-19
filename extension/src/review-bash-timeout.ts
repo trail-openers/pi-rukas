@@ -14,10 +14,10 @@
  * bound fired, there is no killCause, no parent timer and no process kill.
  *
  * TWO ROLES, ONE HANDLER, TWO KNOBS. The role is asked inside the body — the
- * same seam `developer-push-guard.ts` and `oo-rewrite-guard.ts` read it, so the
- * parent session (`PI_ENSEMBLE_ROLE` unset) stays untouched — and each role
- * reads only its own knob: `PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS` (600000) for
- * the reviewer roles, `PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS` (900000) for the
+ * same seam `developer-push-guard.ts` reads it, so the parent session
+ * (`PI_ENSEMBLE_ROLE` unset) stays untouched — and each role reads only its
+ * own knob: `PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS` (600000) for the reviewer
+ * roles, `PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS` (1500000) for the
  * developer. Neither knob can bound the other role's calls, and `ops`,
  * `explore`, the PM session and every other role get no bound at all. A call
  * that genuinely needs longer is the child's to split or background with its
@@ -29,9 +29,11 @@
  *
  * Every seam is read per call, so one environment decides for every process:
  * the harness-set role, the caps master switch that makes every other bound
- * inert, and the knob itself — a whole number of milliseconds of at least 1000
- * (`Number()` alone took `1e308`, a fraction, hex and a digit separator). An
- * invalid non-empty value means NO bound and warns, like the sibling review
+ * inert, and the knob itself — a whole number of milliseconds whose rounded
+ * seconds still fit Pi's bash ceiling (`Number()` alone took `1e308`, a
+ * fraction, hex and a digit separator, and a value just under the ms ceiling
+ * rounds past it). An invalid non-empty value means NO bound and warns, like
+ * the sibling review
  * knobs; empty or unset means the default. The developer reader has one
  * difference, and it is deliberate: `"0"` is NO bound with NO warning, because
  * `0` is how every other knob in this project spells "off" — a warning there
@@ -49,18 +51,24 @@ import { trace, traceWarn } from "./trace.ts";
  *  bound, inside the 30-min lens bound. */
 const DEFAULT_REVIEW_BASH_TIMEOUT_MS = 600_000;
 
-/** Fifteen minutes: above a developer's targeted smoke-test run or one tsc
- *  pass, and well inside the develop / lens-fix child bounds, so the call ends
+/** Twenty-five minutes: ABOVE the `timeout 1200` suite wrapper the developer
+ *  prompt tells the child to type, so that wrapper stays the bound that bites
+ *  for a suite shard and this one only catches a call that never returns at all
+ *  — and still well inside the develop / lens-fix child bounds, so the call ends
  *  and the child keeps its turn rather than the bound ending the dispatch. */
-const DEFAULT_DEVELOPER_BASH_TIMEOUT_MS = 900_000;
+const DEFAULT_DEVELOPER_BASH_TIMEOUT_MS = 1_500_000;
 
-/** Pi's bash ceiling for `timeout` (its MAX_TIMEOUT_MS / 1000): past it the tool
- *  rejects the value, so a knob asking for it gets no bound. A whole number of
- *  ms is required because `Number()` also takes a sign, fraction, exponent, hex
- *  and digit separators, none of which an operator types for a bound, and below
- *  a second there is no bound worth setting. The ceiling is stated in MS so the
- *  one range test reads in the knob's own unit; the return is in the SECONDS
- *  Pi's bash schema takes; undefined means no bound. */
+/** Pi's bash ceiling for `timeout` (its MAX_TIMEOUT_MS): past it the tool throws
+ *  `Invalid timeout: maximum is …` instead of running anything, so a knob asking
+ *  for it gets no bound. The knob is written as `Math.ceil(ms / 1000)` SECONDS
+ *  and Pi re-expands that as `seconds * 1000`, so the ceiling must be judged on
+ *  the written value: a whole number of ms can clear the ms ceiling while still
+ *  passing the ms test, and the child would get Pi's error rather than a bound.
+ *  A whole number of ms is required because `Number()` also takes a sign,
+ *  fraction, exponent, hex and digit separators, none of which an operator types
+ *  for a bound, and below a second there is no bound worth setting. The ceiling
+ *  is stated in MS so the one range test reads in the knob's own unit; the return
+ *  is in the SECONDS Pi's bash schema takes; undefined means no bound. */
 const MAX_BASH_TIMEOUT_MS = 2_147_483_000;
 const MIN_MILLISECONDS = 1000;
 const PLAIN_MILLISECONDS = /^\d+$/;
@@ -69,7 +77,8 @@ const PLAIN_MILLISECONDS = /^\d+$/;
  *  is the difference between the two knobs: `0` is how every other knob in this
  *  project spells "off", so the developer reader takes it as one silently, while
  *  the reviewer reader keeps its documented promise that `0` is one of the
- *  garbage values that means no bound. */
+ *  garbage values that means no bound — as does any value whose rounded seconds
+ *  would overshoot Pi's ceiling. */
 function boundSeconds(
   text: string,
   name: string,
@@ -80,11 +89,17 @@ function boundSeconds(
   if (zeroMeansOff && text === "0") return undefined;
   // One range test, not two: a value that is not a whole ms count is NaN and NaN fails this.
   const ms = PLAIN_MILLISECONDS.test(text) ? Number(text) : Number.NaN;
-  if (!(ms >= MIN_MILLISECONDS && ms <= MAX_BASH_TIMEOUT_MS)) {
+  // The ceiling is judged on the SECONDS actually written, not the ms read: Pi
+  // multiplies what it receives back by 1000 and throws past its own maximum.
+  const seconds = Number.isNaN(ms) ? Number.NaN : Math.ceil(ms / 1000);
+  // A whole ms count can still round UP past Pi's ceiling, so the test reads the
+  // written seconds: 2147483001 is a whole count under the ms ceiling yet writes
+  // 2147484s, which Pi multiplies back to a value it rejects.
+  if (!(ms >= MIN_MILLISECONDS && seconds * 1000 <= MAX_BASH_TIMEOUT_MS)) {
     traceWarn(`${name}=${text.slice(0, 40)} is not a whole ms count in range`);
     return undefined;
   }
-  return Math.ceil(ms / 1000);
+  return seconds;
 }
 
 export function reviewBashBoundSeconds(): number | undefined {

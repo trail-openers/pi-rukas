@@ -45,8 +45,10 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // of REVIEW_BASH_TIMEOUT_MS with its own default. Same child-side `tool_call`
   // hook, same never-raise rule, same Pi enforcement (nothing is killed). A
   // measured lean `specify` call sat 41 min until the step bound killed the step.
-  // `0` is the operator's opt-out and warns nothing.
-  ms("DEVELOPER_BASH_TIMEOUT_MS", 900_000),
+  // The default sits ABOVE the `timeout 1200` suite wrapper the developer prompt
+  // types, so that wrapper is the one that bites and this only catches a call
+  // that never returns. `0` is the operator's opt-out and warns nothing.
+  ms("DEVELOPER_BASH_TIMEOUT_MS", 1_500_000),
   dir("DIR", null),
   flag("DISABLE_EXTENSION_FORWARD", false),
   flag("DISABLE_SUBAGENT_GUARD", false),

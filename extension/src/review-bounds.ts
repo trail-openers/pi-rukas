@@ -92,9 +92,10 @@ export function isReviewerRole(role: string): boolean {
  *
  * Exact equality, and ONE owner: `adversarial-developer` is a reviewer role,
  * bounded at the reviewer knob, and any substring or `includes` match here
- * would clamp its bash call at the developer's bound instead. Every caller
- * that asks “is this a developer child?” goes through this predicate —
- * `developer-push-guard.ts` reads it rather than keeping its own literal — so
+ * would clamp its bash call at the developer's bound instead. Every in-child
+ * seam that reads `PI_ENSEMBLE_ROLE` to ask “is this a developer child?”
+ * goes through this predicate — `developer-push-guard.ts` reads it rather than
+ * keeping its own literal — so
  * a role cannot be bounded by one seam and exempted by another.
  */
 export function isDeveloperRole(role: string): boolean {
