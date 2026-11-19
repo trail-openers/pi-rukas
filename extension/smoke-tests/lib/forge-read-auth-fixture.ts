@@ -133,7 +133,7 @@ export async function callChildTool(
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
-    registerChildForgeReadTool(pi as never, "companion");
+    registerChildForgeReadTool(pi as never);
     const tool = registered.find((t) => t.name === "forge_read");
     if (!tool) return { text: "<no forge_read registered>", details: { registered: false } };
     const res = await tool.execute("call-1", args);

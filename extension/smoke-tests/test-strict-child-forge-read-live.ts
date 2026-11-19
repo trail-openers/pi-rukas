@@ -30,10 +30,13 @@
  *
  *   cd extension && bun run smoke-tests/test-strict-child-forge-read-live.ts
  *
- * The RED half: the duplicate-tool mutant of `registerChildForgeReadTool`
- * (`ownedByCompanion` returning `true` for both entry points) reproduces the
- * exit-1 load failure in arm 1's report — run it and read
- * `text="Error: Failed to load extension … Tool "forge_read" conflicts with …"`.
+ * The RED half: `lib/forge-read-duplicate-mutant.ts` restores the pre-#2382
+ * shape (both child entry points calling `registerChildForgeReadTool` beside the
+ * companion's own). The offline `test-child-forge-read-single-owner.ts` §5 loads
+ * that pair through the shipped registration and must count 2 where the shipped
+ * code counts 1; loaded into a REAL child through Pi's loader the same pair
+ * reproduces this file's exit-1 load error, which is why the live rows below
+ * assert a clean load and one broker read rather than trusting the comment.
  *
  * `test-reviewer-scratch-home-live.ts` sets `workCycleTrust: true` and is NOT
  * this test's substitute: that field is what the `/work` driver sets on its own
@@ -43,7 +46,9 @@
  * "widen" that file to strict; this file is the strict half.
  */
 
+import { ROLES } from "../src/roles.ts";
 import { spawnSpecialist } from "../src/spawn.ts";
+import { assert, exit } from "./lib/assert-rig.ts";
 
 // Deliberately live: the offline anti-leak guard would refuse this spawn.
 process.env.PI_ENSEMBLE_ALLOW_LIVE_SPAWN = "1";
@@ -66,13 +71,19 @@ if (
 
 const issueNumber = process.env.PI_ENSEMBLE_LIVE_ISSUE ?? "2382";
 
-let exit = 0;
-function assert(cond: boolean, msg: string): void {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${msg}`);
-    exit = 1;
-  }
+// The role prompt is read from `dist/prompts/standard/` by `spawnSpecialist`, and
+// that directory is gitignored — a worktree that has not been built has no prompt
+// to read, and the child would fail for a reason that is this harness's state, not
+// the code's. Judge it as a row (so the failure is visible in the tally) and stop
+// before the spawn, naming the fix.
+const promptBuilt = await Bun.file(ROLES.explore.promptFile).exists();
+assert(
+  promptBuilt,
+  `the explore role prompt exists at ${ROLES.explore.promptFile} — run \`bun run build\` from the repo root before this live test`,
+);
+if (!promptBuilt) {
+  console.error("✗ cannot dispatch: the prompt layer is not built");
+  process.exit(1);
 }
 
 // ── One strict-shaped explore child: loads, answers, reads the forge once ───
@@ -110,7 +121,10 @@ assert(
 assert(r.model !== undefined, "the strict child resolved a model");
 assert(!r.errorStop, `no provider errorStop (${r.errorStop?.message ?? ""})`);
 assert(r.ok, `the strict child exited 0 (got exit ${r.exitCode})`);
-assert((r.toolUses?.length ?? 0) > 0, `the child really called a tool (${r.toolUses?.length ?? 0})`);
+assert(
+  (r.toolUses?.length ?? 0) > 0,
+  `the child really called a tool (${r.toolUses?.length ?? 0})`,
+);
 assert(r.text.includes("DONE"), "the child reached its final reply");
 
 // The tool's identity: exactly one `forge_read`, and it answered with the
@@ -120,13 +134,11 @@ assert(r.text.includes("DONE"), "the child reached its final reply");
 const forgeResults = (r.toolResults ?? []).filter((x) => x.toolName === "forge_read");
 assert(
   forgeResults.length === 1,
-  `exactly one forge_read call landed in the child's roster (${forgeResults.length})`,
+  `one forge_read call landed in the child's roster (${forgeResults.length})`,
 );
 const forgeText = forgeResults.map((x) => x.text).join(" ");
 assert(
-  forgeResults.length === 1 &&
-    !forgeResults[0].isError &&
-    forgeText.includes(String(issueNumber)),
+  forgeResults.length === 1 && !forgeResults[0].isError && forgeText.includes(String(issueNumber)),
   `the one forge_read answered issue #${issueNumber} through the parent's broker (${JSON.stringify(
     forgeResults.map((x) => `${x.isError ? "ERR" : "ok"}:${x.text.slice(0, 120)}`),
   )})`,

@@ -449,6 +449,8 @@
     "smoke-tests/test-work-driver-verify-pytest-discovery.ts",
     "smoke-tests/lib/forge-read-off-arm.ts",
     "smoke-tests/lib/forge-read-child-pair.ts",
+    "smoke-tests/lib/forge-read-collector.ts",
+    "smoke-tests/lib/forge-read-duplicate-mutant.ts",
     "smoke-tests/test-forge-read-off-child-text.ts",
     "smoke-tests/test-forge-read-off.ts",
     "smoke-tests/test-forge-read-off-arm.ts",

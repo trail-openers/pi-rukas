@@ -19,13 +19,14 @@
  * less than the current set drops the `mcp__codebase_memory__*` tools. Each
  * child gets exactly one append, from the entry point that runs in its mode:
  *   - trust-mode children: `child-guards.ts`'s `session_start`;
- *   - strict/headless children: `registerSubagentGuard`'s `session_start`, whose
- *     registration sits ABOVE the sandbox/trust short-circuits — so it runs in
- *     every mode, including the sandbox and trust containers where the companion
- *     (and this guard's hook half) have stood down. The companion's own
- *     `session_start` is not one of these: under `PI_ENSEMBLE_SUBAGENT_MODE=1`
- *     it has already no-oped, which is why the two sites are mutually exclusive
- *     and neither is the other's backstop.
+ *   - strict/headless children: `registerSubagentGuard`'s `session_start`, which
+ *     runs in every mode (it sits ABOVE that function's sandbox/trust
+ *     short-circuits). The companion's own `session_start` is not one of these:
+ *     under `PI_ENSEMBLE_SUBAGENT_MODE=1` it has already no-oped, which is why
+ *     the two sites are mutually exclusive and neither is the other's backstop.
+ *     Registration is NOT symmetric with activation: the companion registers the
+ *     tool in every mode (§below), so a strict child's activation appends a name
+ *     the companion already put in the registry.
  *
  * Registration follows activation. The companion registers the tool through
  * `registerChildForgeReadTool`, which applies the same predicate activation
@@ -57,32 +58,6 @@ import { trace } from "./trace.ts";
 
 /** The tool name, exported so the tests and agents.json agree on one spelling. */
 export const FORGE_READ_TOOL = "forge_read";
-
-/**
- * Whether the child-guards companion OWNS `forge_read` for this process.
- *
- * The companion is the single owner in every mode (#2382): it is the one child
- * entry point that is always loaded, so it registers the tool unconditionally
- * and the forwarded full extension must not. The predicate has to distinguish
- * the two callers, and the argument does it — a registration is owned iff the
- * caller is the companion itself. It is an argument rather than ambient state
- * (a cwd or import-origin sniff) because "who is calling" is a fact the caller
- * knows and this module must not guess: `child-guards.ts` passes `"companion"`
- * and `registerSubagentGuard` passes `"forwarded-extension"`. The mode test is
- * the second half: outside a forwarded child (the parent session, or a
- * non-forwarded tool-only extension such as a lens reporter) nothing has
- * standing down for, so that caller registers as it always has.
- */
-export type ForgeReadRegistrationOwner = "companion" | "forwarded-extension";
-
-/** Whether this process is the child the driver forwarded pi-rukas into. */
-function inForwardedChild(): boolean {
-  return process.env.PI_ENSEMBLE_SUBAGENT_MODE === "1";
-}
-
-function ownedByCompanion(from: ForgeReadRegistrationOwner): boolean {
-  return from === "companion" || !inForwardedChild();
-}
 
 /** The env the child reads the parent's broker path from. */
 export const FORGE_READ_SOCKET_ENV = "PI_ENSEMBLE_FORGE_READ_SOCKET";
@@ -364,35 +339,18 @@ function requestForgeRead(
  * guard is on (`subagentGuardEnabled` — false in trust/sandbox mode and under
  * `PI_ENSEMBLE_DISABLE_SUBAGENT_GUARD=1`). A trust-mode child therefore gets the
  * tool from the companion alone, and a strict/headless child gets it from the
- * same place with the forwarded extension standing down — which is also what
- * `registerSubagentGuard`'s own codemode and guard-registration sites already
- * do under `PI_ENSEMBLE_SUBAGENT_MODE=1`. This function is the only path to the
- * registration, and the two callers are the two entry points:
+ * same place: the full extension registers no `forge_read` at all, because
+ * `registerSubagentGuard` — its only child entry point, reachable only under
+ * `PI_ENSEMBLE_SUBAGENT_MODE=1` (index.ts and permission-guard.ts both gate it
+ * on that variable) — never calls this function. The companion is therefore the
+ * sole caller, and this is the only path to the registration.
  *
- *   - `child-guards.ts` calls it with `"companion"` — it is always the owner;
- *   - `registerSubagentGuard` (the forwarded full extension) calls it with
- *     `"forwarded-extension"` and stands down here, so its extension registers
- *     no `forge_read`.
- *
- * The tool is byte-identical whichever entry point calls (this module holds the
- * one definition, and its handler dials `PI_ENSEMBLE_FORGE_READ_SOCKET`), so
- * "one owner" changes who registers, never what the model can call. The
- * availability predicate is the one `enableChildForgeRead` applies, so a tool
- * this child was registered for always has the socket that makes the call answer
- * something — and a child that cannot reach a broker is never given the tool.
+ * The availability predicate is the one `enableChildForgeRead` applies, so a
+ * tool this child was registered for always has the socket that makes the call
+ * answer something — and a child that cannot reach a broker is never given it.
  */
-export function registerChildForgeReadTool(
-  pi: ExtensionAPI,
-  // No default on purpose: a caller that does not name itself does not get the
-  // tool, which is the fail-closed direction now that a second registration is
-  // what kills a strict/headless child's load.
-  from: ForgeReadRegistrationOwner,
-): void {
+export function registerChildForgeReadTool(pi: ExtensionAPI): void {
   const role = process.env.PI_ENSEMBLE_ROLE;
-  if (!ownedByCompanion(from)) {
-    trace("child-guards: forge_read owned by the companion — forwarded extension stands down");
-    return;
-  }
   if (!forgeReadAvailableForRole(role)) {
     trace(`child-guards: forge_read not registered (role=${role ?? "<unset>"})`);
     return;

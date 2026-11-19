@@ -213,10 +213,10 @@ await withEnv(PIN_CHILD, async () => {
 
 // ============================================================
 // 4. NO-OP: PI_ENSEMBLE_SUBAGENT_MODE=1 → zero guard hooks registered. The
-//    tool is NOT part of the no-op: a strict child loads both this companion
-//    and the forwarded extension, and Pi de-duplicates `forge_read` by name, so
-//    registering it here too costs nothing and keeps the trust-mode child (no
-//    forwarded extension at all) from being the only child without the tool.
+//    tool is NOT part of the no-op: one owner per process (#2382) — the
+//    companion registers `forge_read` in every mode and the forwarded extension
+//    registers none, so a strict child loads both entry points and still counts
+//    exactly one.
 // ============================================================
 await withEnv(
   { ...PIN_FORGE_CHILD, PI_ENSEMBLE_SUBAGENT_MODE: "1" },
