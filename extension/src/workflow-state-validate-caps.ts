@@ -84,6 +84,8 @@ export const CAP_HIT_FIXED_LITERALS = [
   // terminalized as a handoff (not `step-failed:` — that prefix would read
   // as a mid-flight crash); the paths are preserved, never mutated.
   "repo-root-residue",
+  // The branch step found a remote branch of the issue this cycle did not push.
+  "stale-remote-branch",
   // #1396 round 3 — the residue pass could not read the worktree listing (a
   // bounded `git worktree list` that hung). A deliberate park terminalized as
   // a handoff: the alternative is the pass reporting "nothing to clean" over a

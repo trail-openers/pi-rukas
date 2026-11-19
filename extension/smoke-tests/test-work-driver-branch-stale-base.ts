@@ -49,6 +49,8 @@ import {
   mechanizedBranchSetup,
   reconcileExistingLocalBranch,
 } from "../src/work-driver-branch-mechanized.ts";
+import { recordPushedSha } from "../src/work-driver-push-lease.ts";
+import { scratchDir } from "../src/work-driver-workspace.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { commandOf } from "./lib/argv-shell.ts";
 import { realExec } from "./lib/exec-fake.ts";
@@ -283,6 +285,9 @@ try {
   //     incident shape), branch-reset event, no cap-hit.
   {
     const { repo, pushedSha, newSha } = await pushedAheadFixture("runbranch-pushed-ahead", "pushed work\n");
+    // The cycle's own push is recorded, as every driver push is; an unrecorded
+    // remote branch stops at stale-remote-branch (test-work-driver-stale-remote-branch.ts).
+    await recordPushedSha(scratchDir(repo, 844), BRANCH, pushedSha);
     const out = await e2eRun(repo);
     assert(out !== undefined, "runBranch does not throw for a fully-pushed ahead branch");
     const cap = out?.eventLog.find((e) => e.kind === "cap-hit");

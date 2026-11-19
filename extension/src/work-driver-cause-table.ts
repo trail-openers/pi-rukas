@@ -406,6 +406,13 @@ export const FIXED_CAP_CAUSE: Record<FixedCap, CapCause> = {
     action: "split the issue into smaller workstreams, then re-run `/work {issue} --restart`",
     kindDriven: true,
   },
+  // The remote branch may be someone's work: only a person can drop or adopt it.
+  "stale-remote-branch": {
+    cls: "environment",
+    reason: "the remote already has a branch of this issue that this cycle did not push",
+    action:
+      "look at the branch named in the evidence; if it is an abandoned earlier attempt, delete it on the remote (`git push origin --delete <branch>`) and re-run `/work {issue}`; if it holds work you want, open or update its PR by hand",
+  },
   "step-back-revise-spec": {
     cls: "issue",
     reason: "the step-back analysis found the spec underspecified",
