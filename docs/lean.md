@@ -421,10 +421,10 @@ set it owns the clock — then the `--timeout` flag, then the exported
 caller's word about THIS run and the budget is the host's default for all of them
 (`features.timeoutFlagPrecedence`); `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE=0` puts
 the exported budget back above the flag, which is the order this verb had before
-#2362. A value the reader does not honour (a typo, a non-positive budget) is unset
-rather than an arm, and the disagreement that does exist costs one `WARN` line
-naming both values and which won — printed once, where the run first persists its
-arm. Step work ends at
+#2362, and logs nothing at all — the switch at `"0"` writes no line for any row. A
+value the reader does not honour (a typo, a non-positive budget) is unset rather than
+an arm, and the disagreement that does exist costs one `WARN` line naming both values
+and which won — printed once, where the run first persists its arm. Step work ends at
 `deadline − PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`: the run starts no new step after
 that and ends `handed-back` at 10 with its document, the way `work` parks. The
 resolved absolute deadline is persisted on the run's state record (`deadlineMs`)
