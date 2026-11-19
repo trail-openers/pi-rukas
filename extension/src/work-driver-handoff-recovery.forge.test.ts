@@ -10,6 +10,8 @@
  * both presenters (chat + markdown, which share the decision) are covered.
  */
 
+import { readFileSync } from "node:fs";
+
 import { recoveryStepsForCap, requalifyLine } from "../src/work-driver-handoff-recovery.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
@@ -137,8 +139,8 @@ const allLines = (forge: "github" | "gitlab" | "unknown") =>
     (st) => st.lines,
   );
   assert(
-    gl.includes('glab issue edit 337 --description "<revised body>"'),
-    "gitlab: `glab issue edit --description` (glab's non-interactive edit needs a value)",
+    gl.includes('glab issue update 337 --description "<revised body>"'),
+    "gitlab: `glab issue update --description` (glab has no `issue edit`; the verb's non-interactive form needs a value)",
   );
 }
 
@@ -182,8 +184,39 @@ const allLines = (forge: "github" | "gitlab" | "unknown") =>
     (st) => st.lines,
   );
   assert(
-    gl.includes('/plan 337    # or: glab issue edit 337 --description "<revised body>"'),
+    gl.includes('/plan 337    # or: glab issue update 337 --description "<revised body>"'),
     "gitlab: the inline fallback names glab",
+  );
+}
+
+// ---- no shipped recovery string names a verb glab does not have
+
+// `glab issue` lists board/close/create/delete/list/note/reopen/subscribe/
+// unsubscribe/update/view and has never listed `edit`; the sibling suites
+// (`test-plan-round2-819.ts`, `test-handoff-plan-spec-evidence-819.ts`) assert the
+// same absence for the files they own. This one scans the whole shipped recovery
+// surface, so a hint at any call site — the file this suite renders, its cap table,
+// and the plan recipe — that regresses to `issue edit` is caught here rather than
+// only where a byte-for-byte assertion happens to look.
+{
+  const shipped = [
+    "work-driver-handoff-recovery.ts",
+    "work-driver-handoff-recovery-caps.ts",
+    "work-driver-handoff-recovery-commit-pr.ts",
+    "work-driver-handoff-recovery-plan.ts",
+    "work-driver-handoff-recovery-tree.ts",
+    "work-driver-handoff-recovery-worktree.ts",
+    "work-driver-handoff-recovery.chat.ts",
+    "work-driver-handoff-recovery.md.ts",
+  ].map((f) => readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8"));
+  assert(shipped.length === 8, "the recovery scan covers every handoff-recovery module");
+  assert(
+    shipped.every((s) => !s.includes("glab issue edit")),
+    "no shipped recovery string says `glab issue edit` (glab has no such subcommand)",
+  );
+  assert(
+    shipped.some((s) => s.includes("glab issue update")),
+    "the recovery surface does name the real verb, `glab issue update`",
   );
 }
 

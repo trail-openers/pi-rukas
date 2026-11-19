@@ -19,6 +19,14 @@
  * was run against. Nothing here depends on a flag newer than 1.130.0, whose
  * `--help` is where these sets were captured.
  *
+ * To reproduce the 1.89.0 live run: download that release's binary from
+ * `https://gitlab.com/gitlab-org/cli/-/releases/v1.89.0` (the `Linux_x86_64` /
+ * `Linux_arm64` tarball) into a scratch dir, extract it, and run the gate with
+ * that binary first on `PATH` —
+ * `PATH=<scratch>/bin:$PATH bun smoke-tests/test-glab-flags.ts`. The live arm
+ * reports SKIP rather than a pass when no glab is on `PATH`, so a run that did not
+ * have the 1.89.0 binary ahead of the host's glab did not check the floor.
+ *
  * `expectedNoteBodyFile` is the same single-source discipline for the one flag
  * glab has never had: the MR note verb takes the body as `-m/--message` and has no
  * file form, so the gate asserts the emitted `--body-file` is unknown against THAT
@@ -65,6 +73,11 @@ export const GLAB_FLAGS: Record<string, ReadonlySet<string>> = {
   "issue create": new Set(["-t", "--title", "-d", "--description", "-l", "--label"]),
   "issue list": new Set(["--search", "-A", "--all", "-O", "--output", "-P", "--per-page"]),
   "issue close": new Set<string>(),
+  // The recovery hint's issue-body edit. `glab issue` has no `edit` subcommand on
+  // either verified version — the verb is `issue update`, whose FLAGS block lists
+  // `-d/--description` (1.89.0 and 1.130.0 alike; 1.130.0 also lists
+  // `--description-file`, which no hint emits and so is not pinned here).
+  "issue update": new Set(["-d", "--description"]),
   "label list": new Set(["-F", "--output", "-p", "--page", "-P", "--per-page"]),
   api: new Set(["-X", "--method", "-H", "--header", "-f", "--raw-field", "--output"]),
   "ci trace": new Set<string>(),

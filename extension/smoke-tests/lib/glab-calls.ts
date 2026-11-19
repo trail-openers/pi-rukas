@@ -15,7 +15,8 @@
  * flag sets are split out: the 500-line limit).
  */
 import * as cmds from "../../src/forge-commands.ts";
-import { mergeEvidenceGlJobsCmd, mergeEvidenceGlPipelinesCmd } from "../../src/forge-commands-gl-evidence.ts";import { CI_WATCH_SHAPES } from "../../src/slow-notice-ci-wait.ts";
+import { mergeEvidenceGlJobsCmd, mergeEvidenceGlPipelinesCmd } from "../../src/forge-commands-gl-evidence.ts";
+import { CI_WATCH_SHAPES } from "../../src/slow-notice-ci-wait.ts";
 import { expectedNoteBodyFile } from "./glab-flags-pinned.ts";
 
 /** One row: the subcommand key into `GLAB_FLAGS` and the command text a shipped
@@ -203,6 +204,25 @@ const CALLS: GlabCall[] = [
     name: "issue close (recovery hint)",
     key: "issue close",
     argv: argvOf("glab issue close 42"),
+  },
+  {
+    // The handoff's `explore-needs-clarification` step 2 for GitLab: revise the
+    // issue body. From work-driver-handoff-recovery-caps.ts. `glab issue` has no
+    // `edit` subcommand — the verb that takes a body is `issue update`, whose help
+    // lists `-d/--description` on 1.89.0 and 1.130.0 alike — so this row is the
+    // gate's only look at that hint, and the reason it exists.
+    name: "issue update (recovery hint)",
+    key: "issue update",
+    argv: argvOf('glab issue update 42 --description "<revised body>"'),
+  },
+  {
+    // The handoff's `step-back-revise-spec` step 2 for GitLab: the inline fallback
+    // beside `/plan`. Same shipped string as the row above, different call site, so
+    // it gets its own row — a hint that regresses at one site must not be hidden by
+    // the other still matching. From work-driver-handoff-recovery-caps.ts.
+    name: "issue update (recovery hint, /plan fallback)",
+    key: "issue update",
+    argv: argvOf('glab issue update 42 --description "<revised body>"'),
   },
   {
     // The handoff's merge step for GitLab: squash-merge pinned to the reviewed

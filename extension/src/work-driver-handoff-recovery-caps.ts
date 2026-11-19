@@ -235,7 +235,7 @@ export function recoveryStepsForCap(
         lines: forgeLines(
           forge,
           [`gh issue edit ${issue}`],
-          [`glab issue edit ${issue} --description "<revised body>"`],
+          [`glab issue update ${issue} --description "<revised body>"`],
         ),
       },
       {
@@ -300,7 +300,7 @@ export function recoveryStepsForCap(
         lines: forgeLines(
           forge,
           [`/plan ${issue}    # or: gh issue edit ${issue}`],
-          [`/plan ${issue}    # or: glab issue edit ${issue} --description "<revised body>"`],
+          [`/plan ${issue}    # or: glab issue update ${issue} --description "<revised body>"`],
         ),
       },
       {
