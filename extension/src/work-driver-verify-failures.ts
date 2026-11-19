@@ -156,12 +156,19 @@ export {
 // failure-line vocabulary: the table's own entries and every sameness/extractor
 // reader (`sharesAssertion`, `extractSpecificAssertion`) and the evidence-anchor
 // walk (`work-driver-exec-error.ts`) must ask the SAME predicates, so they are
-// re-exported here from `work-driver-verify-rust.ts` like the marker vocabulary
-// above. The two name-correlated panic predicates travel together: one asks the
+// re-exported here like the marker vocabulary above — the three HEADER readers
+// from `work-driver-verify-header-leaf.ts` (the one file that spells a panic
+// header) and the stream-scanning predicates from `work-driver-verify-rust.ts`.
+// The two name-correlated panic predicates travel together: one asks the
 // QUOTE, its mirror asks the EXCUSE, and the two may never disagree about what
 // the stream said about a name. `rustPanicHeaderIn` is the ONE recognizer they
 // both ask, and `changePanicsAreBaseFailures` is that same excuse asked of every
 // failing test the change's own record reports, not of the record as a blob.
+export {
+  rustPanicHeaderIn,
+  rustPanicSamenessKey,
+  rustPanicTestName,
+} from "./work-driver-verify-header-leaf.ts";
 export {
   changePanicsAreBaseFailures,
   isCargoTargetSummaryLine,
@@ -169,9 +176,6 @@ export {
   isLocationlessCodeDiagnostic,
   panicCanExcuseChange,
   panicIsCapturedPrint,
-  rustPanicHeaderIn,
-  rustPanicSamenessKey,
-  rustPanicTestName,
 } from "./work-driver-verify-rust.ts";
 
 import { FAILED_MARKER_RE, isBareFailedMarker } from "./work-driver-verify-marker.ts";

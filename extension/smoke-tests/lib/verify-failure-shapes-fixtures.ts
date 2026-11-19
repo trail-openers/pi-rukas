@@ -116,9 +116,26 @@ export const NESSIE_TEST =
 export const RUST_PANIC_AT = "src/session/fastpath_tests.rs:91:5";
 export const RUST_PANIC_MESSAGE = "fast path took 101.409582ms, which is over the 100 ms bound";
 
-/** The panic header libtest prints for one failing test. */
+/** The panic header libtest prints for one failing test (the id-less form). */
 export function rustPanicHeader(test: string, at: string): string {
   return `thread '${test}' panicked at ${at}:`;
+}
+
+/**
+ * The SAME header carrying cargo's per-thread id — `thread 'tests::failing_unit'
+ * (2271626) panicked at src/lib.rs:34:9:` — which is what a current cargo prints
+ * on EVERY header (`main` and a pool worker included), per THREAD, so it differs
+ * between two runs of the same failure.
+ *
+ * A sibling of {@link rustPanicHeader}, not a replacement: the id-less builder
+ * keeps its exact output for the hosts that compose the historical (pre-1.73 and
+ * synthetic) spelling, and the id-bearing arms compose from THIS one so the id
+ * sits in one string in one file rather than in an inline literal a case can
+ * quietly drop — a fixture that forgot the id is a fixture the shipped dialect
+ * would not have had to parse.
+ */
+export function rustPanicHeaderWithId(test: string, at: string, id: number): string {
+  return `thread '${test}' (${id}) panicked at ${at}:`;
 }
 
 /** cargo's trailing target-level summary (names the TARGET, never a check). */
