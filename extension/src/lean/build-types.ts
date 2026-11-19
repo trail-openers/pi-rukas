@@ -50,9 +50,11 @@ export interface NormaliseReport {
    *  reason line has to be able to say it, since a commit built on a tree with no submodule in
    *  it is one no later run can reproduce. */
   submodules?: string;
-  /** The configured protected globs (`lean.protectedPaths`) that named no path of their own in
-   *  this fold's changed set, in the order the project wrote them, or `undefined` with no
-   *  configured list. An inert rule is the one way a protection rots silently, so the fold says
-   *  which were inert; it is never a refusal. */
-  protectedUnmatchedNote?: string;
+  /** The configured protected globs (`lean.protectedPaths`) and built-in paths that named no
+   *  path of their own in this fold's changed set, in the order the project wrote them, or
+   *  `undefined` with no configured list. An inert rule is the one way a protection rots
+   *  silently, so the fold says which were inert; it is never a refusal. Carried as the paths
+   *  themselves, not a pre-joined clause: the reason line owns the wording, and the budget
+   *  accumulator merges these across folds. */
+  protectedUnmatched?: string[];
 }
