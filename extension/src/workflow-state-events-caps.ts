@@ -248,6 +248,9 @@ export type WorkCapLiteral =
   // freshly-fetched origin/<mainline>; the ahead count is in the
   // cap suffix, the branch name is in `evidence`.
   | `branch-ahead:${string}`
+  // The remote already has a branch of this issue that this cycle did not push
+  // (work-driver-stale-remote-branch.ts); the branches are in `evidence`.
+  | "stale-remote-branch"
   // #753 — deferred worktree creation failed (dirty-leftover park).
   // Own literal so explainCap can give it a tailored sentence and the
   // handoff does NOT terminalize it as `aborted`.

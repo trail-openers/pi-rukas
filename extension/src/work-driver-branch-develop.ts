@@ -7,7 +7,11 @@
 import path from "node:path";
 import { execp as argvExecp } from "./exec.ts";
 import { trace } from "./trace.ts";
-import { BranchAheadError, mechanizedBranchSetup } from "./work-driver-branch-mechanized.ts";
+import {
+  BranchAheadError,
+  branchSlug,
+  mechanizedBranchSetup,
+} from "./work-driver-branch-mechanized.ts";
 import {
   netTimeoutBranchFailure,
   parseWorktreesBlock,
@@ -34,6 +38,7 @@ import { synthesizeDriverCompletion } from "./work-driver-events.ts";
 import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { findOpenPrForIssue, prPreflightEnabled } from "./work-driver-pr-preflight.ts";
 import { beginDispatch, clearDispatch } from "./work-driver-resume.ts";
+import { staleRemoteBranchCap, staleRemoteBranches } from "./work-driver-stale-remote-branch.ts";
 
 import {
   greenWorkstreamsFromInterruptedDevelop,
@@ -104,6 +109,10 @@ export async function stampCycleStartRef(ctx: CycleContext, state: WorkState): P
  * subagent reported a branch name unrelated to the issue. Now:
  * `git rev-parse --abbrev-ref HEAD` is the source of truth. If the
  * reported name disagrees, a plumb-report is emitted.
+ *
+ * Before any setup it stops on an open PR for the issue (`existing-pr-detected`)
+ * and then on a remote branch of the issue that this cycle did not push
+ * (`stale-remote-branch`, work-driver-stale-remote-branch.ts).
  */
 export async function runBranch(
   ctx: CycleContext,
@@ -142,6 +151,17 @@ export async function runBranch(
       });
     }
   }
+  // A remote branch of this issue that this cycle did not push would refuse the
+  // first push after a whole develop phase: stop now and name it.
+  const stale = await staleRemoteBranches(
+    execFnPre,
+    ctx.repoRoot,
+    salvageScratch,
+    ctx.issue,
+    branchSlug(activeIssuesOf(state), await cachedIssueTitle(state)),
+    state.pipelineState.baseSha,
+  );
+  if (stale.length > 0) return staleRemoteBranchCap(state, stale, now);
   // #730 — same-issue worktree residue BEFORE the mechanized setup (the
   // exact #540/#724 restart collision): adopts a clean leftover at the
   // cycle's own target path, preserves (salvage patch + durable tag) any

@@ -531,6 +531,7 @@ What `--restart` does:
 What `--restart` does not reset or check:
 
 - **The forge.** An open PR for the issue is not duplicated. Without `--continue-pr` the run stops at the branch step with the cap `existing-pr-detected` (`PI_ENSEMBLE_PR_PREFLIGHT=0` turns that check off). With [`--continue-pr`](#--continue-pr-for-hosts) the run continues that PR.
+- **Remote branches.** A branch of the issue on the remote that this cycle did not push stops the run at the branch step with the cap `stale-remote-branch`; nothing is deleted (see [troubleshooting.md](troubleshooting.md)). The cycle's own recorded push does not stop it.
 - **Worktrees and branches.** A leftover worktree with no uncommitted or unpushed work is recreated, and one that holds work is refused (see [troubleshooting.md](troubleshooting.md)).
 - **The park records.** A restart that parks again for the same reason, on the same issue text, links the earlier report instead of making a new one — for all three parks a cycle can reach twice (`intent-park`, `plan-spec-mismatch`, `existing-pr-detected`). A THIRD identical park is refused outright: see [Parks for hosts](#parks-for-hosts).
 - **Nothing about a live cycle.** `--restart` skips the check for another live process that owns the issue (that check is part of resuming). A host must never restart an issue it is still running; wait for the first run to exit.
