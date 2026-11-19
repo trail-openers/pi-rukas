@@ -196,8 +196,8 @@ for (const [tool, input] of directAllowed) {
   const trust = fakePi();
   childGuards(trust);
   assert(
-    (trust.handlers.tool_call ?? []).length === 10,
-    `D: trust mode: the eight mode-independent guards plus the fence and the #2200 deletion rule (got ${trust.handlers.tool_call?.length ?? 0}, want 10)`,
+    (trust.handlers.tool_call ?? []).length === 11,
+    `D: trust mode: the nine mode-independent guards plus the fence and the #2200 deletion rule (got ${trust.handlers.tool_call?.length ?? 0}, want 11)`,
   );
   const refusal = await toolCall(trust, {
     toolName: "write",
@@ -243,8 +243,8 @@ for (const [tool, input] of directAllowed) {
   const bare = fakePi();
   childGuards(bare);
   assert(
-    (bare.handlers.tool_call ?? []).length === 8,
-    "E: no root, writer role: the companion keeps its seven guards, no fence, and the #2200 deletion rule (which has no switch)",
+    (bare.handlers.tool_call ?? []).length === 9,
+    "E: no root, writer role: the companion keeps its eight guards, no fence, and the #2200 deletion rule (which has no switch)",
   );
   process.env.PI_ENSEMBLE_WRITE_ROOT = savedRoot;
 

@@ -8,6 +8,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerBroadcastKillGuard } from "./broadcast-kill-guard.ts";
 import { registerDeveloperPushGuard } from "./developer-push-guard.ts";
 import { execp } from "./exec.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
@@ -69,6 +70,11 @@ export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   // Before this block it was refused only through the agents.json verdict, which
   // trust-mode children never consult, so a /work child could rewrite a memory row.
   registerMemoryWriteGuard(pi);
+  // #2381 — a signal to every process of the uid (`kill … -1`, `pkill -u`, an
+  // interpreter's `killpg(1, …)`) is refused here too. A child runs as the operator's
+  // own uid with an unfenced bash, so nothing else stood between a reviewer's probe
+  // and the operator's whole session; no agent task needs a uid-wide signal.
+  registerBroadcastKillGuard(pi);
   // #1788 — a publish whose text carries a private term is refused here. The
   // repository is public and the check must run in the modes that are the
   // default, so it sits with the others rather than after them. This is its
