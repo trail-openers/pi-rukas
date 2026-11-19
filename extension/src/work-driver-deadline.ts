@@ -39,10 +39,11 @@
 
 import { notifyAgent } from "./agent-message.ts";
 import { noteCycleDeadline, runWithCycleClock } from "./cycle-deadline-clock.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { handoffDispatchTimeoutMs } from "./work-driver-handoff.ts";
 import { terminalReasonAtHandoff } from "./work-driver-terminal-reason.ts";
+import { timeoutFlagPrecedenceEnabled } from "./work-driver-timeout-flag-precedence-switch.ts";
 import { type WorkState, type WorkStep, appendEvent, persistCycle } from "./workflow-state.ts";
 
 const MINUTE_MS = 60_000;
@@ -85,6 +86,74 @@ export function flagBudgetMs(timeoutMs: number | undefined): CycleBudgetMs | und
   return timeoutMs === undefined ? undefined : (timeoutMs as CycleBudgetMs);
 }
 
+/** A budget the reader will honour: finite, positive, and non-empty. The reader traces a
+ *  malformed value itself; the warning asks only whether a USABLE env arm exists to
+ *  disagree with the flag, so an operator typo never claims a winner it did not weigh. */
+function usableBudgetMs(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  const v = Number(raw);
+  return Number.isFinite(v) && v > 0 ? v : undefined;
+}
+
+/** A deadline the reader will honour: an absolute epoch ms, not seconds, not a typo. */
+function usableDeadlineMs(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= EPOCH_MS_FLOOR ? v : undefined;
+}
+
+/** The two names the warning has to use verbatim: the flag is spelled as the caller typed
+ *  it and the env arms as the operator exported them, so a reader can grep for either. */
+const FLAG_NAME = "--timeout";
+const BUDGET = "PI_ENSEMBLE_CYCLE_BUDGET_MS";
+const ABSOLUTE = "PI_ENSEMBLE_CYCLE_DEADLINE";
+
+/**
+ * The one line an overridden `--timeout` costs. `flagBudgetMs` is the duration the verb
+ * parsed, `winner` the arm `resolveCycleDeadline` chose, and `what` the run the line is
+ * about. `resolveCycleDeadline` stays pure, so the caller that PERSISTS the answer is the
+ * one allowed to speak: the same disagreement re-read at ten step boundaries is ten
+ * warnings.
+ *
+ * It fires only on a DISAGREEMENT between the flag and an env value the reader honours
+ * (#2362 R4): with no env input, or an empty or malformed budget, an epoch in seconds, or
+ * a non-numeric deadline, the env arm is UNSET, the flag stands alone, and nothing logged.
+ */
+export function warnTimeoutFlagPrecedence(
+  env: Record<string, string | undefined>,
+  flagBudgetMs: number | undefined,
+  winner: number,
+  now: number,
+  what: string,
+): void {
+  if (flagBudgetMs === undefined) return;
+  const flagArm = now + flagBudgetMs;
+  const budget = usableBudgetMs(env.PI_ENSEMBLE_CYCLE_BUDGET_MS);
+  const abs = usableDeadlineMs(env.PI_ENSEMBLE_CYCLE_DEADLINE);
+  // The env arms carry their values in the units their own rows document — the budget a
+  // DURATION, the deadline an absolute epoch — and the line quotes them verbatim, so the
+  // operator reads back the numbers they set rather than a re-derivation of them.
+  const loser =
+    abs !== undefined && abs !== flagArm
+      ? `${ABSOLUTE}=${String(abs)}`
+      : budget !== undefined && now + budget !== flagArm
+        ? `${BUDGET}=${String(budget)}`
+        : undefined;
+  if (loser === undefined) return;
+  // The winner is whichever duration actually reached the run's arm, so the line cannot
+  // contradict the record: under `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE=0` the budget wins
+  // and the line must say the budget won.
+  const won =
+    abs !== undefined && abs !== flagArm
+      ? ABSOLUTE
+      : budget !== undefined && winner === now + budget
+        ? BUDGET
+        : FLAG_NAME;
+  traceWarn(
+    `${what}: ${FLAG_NAME}=${String(flagArm)} against ${loser} — ${won} wins (the run's deadline is ${String(winner)}); PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE=0 puts the exported budget back above the flag`,
+  );
+}
+
 /**
  * The deadline rules, applied to a caller's environment, the flag's arm, and the
  * one arm this run already persisted. `readCycleDeadline` is `work`'s entry point
@@ -94,13 +163,16 @@ export function flagBudgetMs(timeoutMs: number | undefined): CycleBudgetMs | und
  * second claim about a shape the writer owns — and because a caller that writes
  * the flag into the environment hands one run's budget to the whole process.
  *
- * Precedence, highest first: `PI_ENSEMBLE_CYCLE_DEADLINE` (an absolute epoch ms)
- * outranks everything; then `PI_ENSEMBLE_CYCLE_BUDGET_MS`, which the host exported
- * itself; then the `flagBudgetMs` duration a caller passed. Each of the two
- * durations resolves to an epoch ONCE, with the persisted arm winning while a
- * duration is still set — re-resolving it at every boundary (or on resume)
- * restarts the clock and never parks. A cleared env var clears the deadline's
- * env half: no env input and no flag, no deadline.
+ * Precedence, highest first: `PI_ENSEMBLE_CYCLE_DEADLINE` (an absolute epoch ms) always
+ * outranks everything — it is what a host that owns the clock said. Then, while
+ * `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE` is on (its shipped default), the `flagBudgetMs`
+ * duration a caller passed explicitly: `--timeout` is the caller's word about THIS run and
+ * the budget is the host's default for all of them. Then `PI_ENSEMBLE_CYCLE_BUDGET_MS`, a
+ * duration; at `"0"` the pre-#2362 order stands and the exported budget outranks the flag.
+ * Each of the two durations resolves to an epoch ONCE, with the persisted arm winning
+ * while a duration is still set — re-resolving it at every boundary (or on resume)
+ * restarts the clock and never parks. A cleared env var clears the deadline's env half:
+ * no env input and no flag, no deadline.
  *
  * A malformed value — including an epoch in seconds — is UNSET, traced, never a
  * failure: the deadline is an operator affordance, not a correctness gate.
@@ -131,10 +203,18 @@ export function resolveCycleDeadline(
       return undefined;
     }
   }
-  // The host's exported budget outranks the caller's flag, and a malformed one
-  // still traces: a budget that reads as an arm but is not a number is an
-  // operator typo worth one stderr line.
-  const duration = budget !== undefined && budget !== "" ? Number(budget) : flagBudgetMs;
+  // The caller's explicit flag outranks the host's exported budget while
+  // `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE` is on (its shipped default); at `"0"` the
+  // pre-#2362 order stands, where the exported budget outranks the flag. A malformed
+  // budget still traces either way: a budget that reads as an arm but is not a number is
+  // an operator typo worth one stderr line.
+  const budgetMs = usableBudgetMs(budget);
+  const duration =
+    budgetMs !== undefined && flagBudgetMs !== undefined && timeoutFlagPrecedenceEnabled()
+      ? flagBudgetMs
+      : budgetMs !== undefined
+        ? budgetMs
+        : flagBudgetMs;
   if (duration === undefined) return undefined;
   // The persisted absolute wins while a duration is set: re-resolving it at
   // every boundary (or on resume) would restart the clock and never park.

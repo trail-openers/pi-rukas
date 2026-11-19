@@ -12,7 +12,11 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { trace } from "../trace.ts";
-import { type CycleBudgetMs, flagBudgetMs } from "../work-driver-deadline.ts";
+import {
+  type CycleBudgetMs,
+  flagBudgetMs,
+  warnTimeoutFlagPrecedence,
+} from "../work-driver-deadline.ts";
 import { deadlineStopsSteps, leanDeadline } from "./deadline.ts";
 import { engineFacts } from "./engine-facts.ts";
 import {
@@ -74,9 +78,11 @@ export interface RunLeanOpts {
   /** Safety net for a table that loops on a bug of its own. Never a feature. */
   maxSteps?: number;
   /**
-   * The caller's whole-cycle arm as a DURATION resolved to an epoch once (`flagBudgetMs`): the
-   * lean verb's `--timeout <minutes>`. `PI_ENSEMBLE_CYCLE_DEADLINE` and
-   * `PI_ENSEMBLE_CYCLE_BUDGET_MS` both outrank it.
+   * The caller's whole-cycle arm as a DURATION resolved to an epoch once (`flagBudgetMs`):
+   * the lean verb's `--timeout <minutes>`. `PI_ENSEMBLE_CYCLE_DEADLINE` outranks it — that
+   * arm is a host's absolute word and it owns the clock — and with
+   * `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE=0` so does `PI_ENSEMBLE_CYCLE_BUDGET_MS`; on the
+   * shipped default the explicit flag outranks the host's exported budget.
    */
   budgetMs?: CycleBudgetMs;
 }
@@ -311,6 +317,12 @@ async function driveLoop(
   let iterations = 0;
   // The loop's current position, not the parameter: biome's noParameterAssign forbids reassigning.
   let run = initial;
+  // The instant the run armed its clock, kept for the one line that quotes the arms it
+  // weighed: both durations were added to THIS value, so a line built from a fresh
+  // `Date.now()` would name an arm the run never armed.
+  // Read ONCE and reused: the boundary's stop test, the step stamps and the warning's
+  // arms all answer to this instant, so one run has one clock.
+  const armedAt = now();
 
   while (run.result === undefined) {
     if (++iterations > maxSteps) {
@@ -325,6 +337,15 @@ async function driveLoop(
     if (deadline !== undefined && deadline !== run.deadlineMs) {
       run = { ...run, deadlineMs: deadline };
       drive.save(run);
+      // The disagreement is said HERE, once, where the arm is first persisted — never
+      // inside the pure reader, which every later boundary of the same run also calls.
+      warnTimeoutFlagPrecedence(
+        process.env,
+        opts.budgetMs,
+        deadline,
+        armedAt,
+        `work-lean #${opts.issue}`,
+      );
     }
     if (deadline !== undefined && deadlineStopsSteps(deadline, now(), state)) {
       // One call decides and performs the whole stop; `stopForDeadline`'s jsdoc is the contract.
