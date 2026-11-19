@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.93](https://github.com/trail-openers/pi-rukas/compare/v0.14.92...v0.14.93) (2026-11-19)
+
+
+### Bug Fixes
+
+* **forge:** treat approvals_left as optional on the GitLab MR reply ([#2397](https://github.com/trail-openers/pi-rukas/issues/2397)) ([b1fb615](https://github.com/trail-openers/pi-rukas/commit/b1fb61517fb681f6a0234c57af2055f256d947ec))
+
 ## [0.14.92](https://github.com/trail-openers/pi-rukas/compare/v0.14.91...v0.14.92) (2026-11-19)
 
 
