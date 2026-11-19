@@ -1,4 +1,7 @@
-/** #287 Part B — the ONLY path that writes to repoRoot. */
+/**
+ * #287 Part B — the ONLY path that writes to repoRoot. A create-mode push leases on the sha
+ * this cycle last pushed to the branch; every push records the new one (work-driver-push-lease.ts).
+ */
 
 import path from "node:path";
 import { trace } from "./trace.ts";
@@ -12,6 +15,7 @@ import { fastForwardOnto, rewindFastForward } from "./work-driver-integrate-ff.t
 import { sweepBeforeFollowupCheckout } from "./work-driver-integrate-sweep.ts";
 import { verifyIntegration } from "./work-driver-integrate-verify-step.ts";
 import { netRefProblem, runNetGit } from "./work-driver-net-git.ts";
+import { pushArgv, recordPushedSha } from "./work-driver-push-lease.ts";
 import { pushRefusalFromError } from "./work-driver-push-refusal.ts";
 import { restoreClaim, verifiedRestoreRoot } from "./work-driver-restore.ts";
 import type { VerifiedRestoreResult } from "./work-driver-restore.ts";
@@ -416,18 +420,18 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
       return { ok: true, workstreams: appliedWorkstreams, empty: false, ...names };
     }
 
-    // 5. Push.
+    // 5. Push; a create-mode rebuild leases on this cycle's last push (work-driver-push-lease.ts).
     const pushRefProblem = netRefProblem(branchName);
     if (pushRefProblem !== undefined) throw new Error(`push refused: ${pushRefProblem}`);
     try {
       await runNetGit(execFn, "git", {
         cwd: repoRoot,
-        argv: ["push", "-u", "origin", branchName],
+        argv: await pushArgv(opts.scratchDir, branchName, mode === "create" && !opts.fastForward),
       });
     } catch (err) {
       // #1439 — a push the FORGE refused is not environment variance. GitHub push
       // protection (GH013) / repository rules refuse the ref because of its CONTENT,
-      // and a non-fast-forward asks for a force-push the driver will not make; in
+      // and a non-fast-forward or failed lease means someone moved the branch; in
       // neither case can an ops child fix it locally. Named structurally so the
       // caller parks terminally instead of dispatching a fallback that only
       // rediscovers the refusal, and so the cause classifier blames the content the
@@ -441,7 +445,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
         return {
           ok: false,
           failure: "push-refused",
-          reason: `push refused by the remote for ${branchName}: ${refusal} ${claimFor(restore)}`,
+          reason: `push refused by the remote for ${branchName}:\n${refusal}\n${claimFor(restore)}`,
         };
       }
       throw err;
@@ -456,6 +460,7 @@ export async function integrate(execFn: ExecFn, opts: IntegrateOpts): Promise<In
     });
     const headSha = newHead.trim();
     trace(`work-driver: integrate — pushed ${branchName} @ ${headSha.slice(0, 8)}`);
+    await recordPushedSha(opts.scratchDir, branchName, headSha);
     if (headSha) {
       for (const id of appliedWorkstreams) {
         const wt = worktrees[id];

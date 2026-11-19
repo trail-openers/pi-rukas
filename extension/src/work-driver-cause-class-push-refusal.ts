@@ -13,6 +13,12 @@
  * the URLs GitHub printed, or change the fixtures so the content is never committed
  * (assemble a test secret from fragments at runtime).
  *
+ * #2393 — a MOVED branch is a different verdict. A non-fast-forward, `fetch first` or a
+ * failed lease (`stale info`) means the remote branch is not where the push expected it:
+ * an earlier push of this run, or someone else, moved it. Nothing was flagged, so the
+ * action is to look at the remote branch and retry, never to allow content. The class is
+ * `environment`: the remote's state, not the change and not the issue, stopped the push.
+ *
  * The evidence is the refusal itself: the `remote:` lines, allow-the-secret URLs
  * included, because those URLs ARE the operator's action. The verify command's own
  * failure list is not consulted — it is empty here, and a `push-refused` park whose
@@ -20,7 +26,7 @@
  */
 
 import type { CauseVerdict } from "./work-driver-cause-class.ts";
-import { isPushRefusal, pushRefusalEvidence } from "./work-driver-push-refusal.ts";
+import { isPushRefusal, pushRefusalEvidence, pushRefusalKind } from "./work-driver-push-refusal.ts";
 
 /** The caller's own evidence-bounding helper, injected so both sites share one binder. */
 export type EvidenceLines = (texts: readonly (string | undefined)[]) => string[];
@@ -41,6 +47,14 @@ export function pushRefusalVerdict(
       ? evidenceLines(sources)
       : evidenceLines([pushRefusalEvidence(refusal), ...sources]);
   const quote = refusal === undefined ? "" : ` — ${evidence[0] ?? ""}`;
+  if (pushRefusalKind(refusal) === "moved") {
+    return {
+      causeClass: "environment",
+      causeReason: `the forge refused the push because the remote branch moved (an earlier push of this run, or someone else, changed it), so nothing was published${quote}`,
+      causeEvidence: evidence,
+      userAction: `the remote branch moved: look at the remote branch (\`git fetch origin\` and \`git log\` the branch on origin), keep or drop the commits you find there, then re-run \`/work ${issue}\``,
+    };
+  }
   return {
     causeClass: "issue",
     causeReason: `the forge refused the push of this branch, so nothing was published and the verify command never judged this content${quote}`,

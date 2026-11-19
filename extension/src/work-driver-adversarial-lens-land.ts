@@ -24,6 +24,9 @@
  * handler already appended the terminal event and the caller returns the state;
  * `continued` means the arms ran (or there was nothing to land) and the caller
  * falls through to the rest of Step 5's tail.
+ *
+ * A push of the branch here records its sha for the next push's lease
+ * (work-driver-push-lease.ts).
  */
 
 import path from "node:path";
@@ -45,6 +48,8 @@ import { lensWorktree } from "./work-driver-lens-fix.ts";
 import { commitLensFixChanges } from "./work-driver-lens.ts";
 import { runNetGit } from "./work-driver-net-git.ts";
 import { endIfPrGone } from "./work-driver-pr-gone.ts";
+import { recordPushedBranch } from "./work-driver-push-lease.ts";
+import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 import type { ExecFn } from "./worktree.ts";
@@ -274,6 +279,10 @@ export async function landLensFix(
   if (result.committed && !result.pushed) {
     try {
       await runNetGit(execFn, "git push origin HEAD -q", { cwd: ctx.repoRoot });
+      if (psFix.branchName) {
+        const scratch = scratchDir(ctx.repoRoot, ctx.issue);
+        await recordPushedBranch(execFn, ctx.repoRoot, scratch, psFix.branchName);
+      }
     } catch (err) {
       // #1095: a timeout is non-blocking too, and its message names the cause
       // ("network git timed out"). The fix is then not on the PR, and the

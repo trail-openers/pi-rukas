@@ -23,7 +23,9 @@
  *   3. verify-failed:<step>     → verifyVerdict: the route is read from the
  *                                 structured origin, the markers above, and the
  *                                 extracted check lines
- *   4. every other cap          → its FIXED_CAP_CAUSE / TEMPLATE_CAP_CAUSE entry;
+ *   4. push-refused:<step>      → pushRefusalVerdict: push protection or a moved branch,
+ *                                 read from the refusal text
+ *   5. every other cap          → its FIXED_CAP_CAUSE / TEMPLATE_CAP_CAUSE entry;
  *                                 a kind-driven entry takes its class from the
  *                                 failed dispatch's failure kind (KIND_CLASS)
  *
@@ -435,6 +437,11 @@ export function causeVerdictOf(
   // template entry was calling the operator's own leftover a host suspend.
   const refusal = branchRefusalVerdictFor(state, cap, issue, evidenceLines);
   if (refusal !== undefined) return refusal;
+  // #2393 — the refusal text decides the verdict: content refused or the branch moved.
+  if (cap.startsWith("push-refused:")) {
+    const failures = state.pipelineState.verifyEvidence?.failures ?? [];
+    return pushRefusalVerdict(failures, lastCapHit(state, cap)?.evidence, issue, evidenceLines);
+  }
   const rule = capRuleOf(cap);
   if (rule === undefined || rule.cls === null) {
     return {

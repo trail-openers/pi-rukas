@@ -2,7 +2,8 @@
  * work-driver-adversarial-lensfix — the lens-fix integration of the adversarial
  * step (#287 Part C, #749, #797), moved VERBATIM out of work-driver-adversarial.ts
  * (AGENTS.md §12 file-size limit; #1114 needs the room). Called only from
- * `runAdversarial` on the approval that follows a lens-fix round.
+ * `runAdversarial` on the approval that follows a lens-fix round. A push of the
+ * branch here records its sha for the next push's lease (work-driver-push-lease.ts).
  */
 
 import { trace } from "./trace.ts";
@@ -16,6 +17,7 @@ import {
 } from "./work-driver-lens-fix-commit.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { isNetGitTimeout, netRefProblem, runNetGit } from "./work-driver-net-git.ts";
+import { recordPushedBranch } from "./work-driver-push-lease.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
 import type { PipelineState } from "./workflow-state-schema.ts";
 import { type WorkState, appendEvent } from "./workflow-state.ts";
@@ -142,6 +144,8 @@ async function handleNoCommittedFix(
             cwd: ctx.repoRoot,
             argv: ["push", "origin", branchName],
           });
+          const scratch = scratchDir(ctx.repoRoot, ctx.issue);
+          await recordPushedBranch(execFn, ctx.repoRoot, scratch, branchName);
         } catch (err) {
           // #1095 — keep the named timeout cause visible to the operator.
           pushFailure = isNetGitTimeout(err) ? err.message.slice(0, 200) : "push rejected";
