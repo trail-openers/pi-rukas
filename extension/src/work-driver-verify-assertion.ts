@@ -44,6 +44,7 @@ import {
   rustPanicSamenessKey,
   rustPanicTestName,
 } from "./work-driver-verify-failures.ts";
+import { stripRustPanicThreadIds } from "./work-driver-verify-header-leaf.ts";
 
 /**
  * #807 — the honest-absence sentinel. A tail with NO assertion-shaped line
@@ -391,6 +392,17 @@ export function extractSpecificAssertion(failureTail: string, stream: string): s
  * keeps the classic rule: exact containment, no normalisation — this gate
  * got tighter for #2341, and tightening it is the whole point of the fix.
  *
+ * BOTH operands of the containment are normalised, and that is the rule, not
+ * a nicety: a current cargo prints `thread '<test>' (2271626) panicked at …`,
+ * an OS thread id per THREAD, so it differs between two runs of the same
+ * failure. A key with the id stripped against raw haystack text that still
+ * carries it never contains each other — every base-excuse would miss while a
+ * key-only unit test stayed green. So `stripRustPanicThreadIds` is asked of
+ * the haystack exactly as the key asks it of the header, and the published
+ * quote (which the operator reads, and which names the thread the log is
+ * searched by) keeps the id: normalisation lives in this comparison and
+ * nowhere else.
+ *
  * #2341 fix wave (H2) — and the location-less identity-code dialect is refused
  * the same way the cargo target summaries are: two compile failures in
  * different files print the byte-identical `error[E0308]: …` (cargo puts the
@@ -407,5 +419,5 @@ export function sharesAssertion(consolidated: string, per: string): boolean {
     return false;
   }
   const key = rustPanicSamenessKey(per);
-  return key !== null && consolidated.includes(key);
+  return key !== null && stripRustPanicThreadIds(consolidated).includes(key);
 }
