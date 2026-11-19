@@ -69,6 +69,12 @@ async function main(): Promise<void> {
   // reader so both numbers come from a reader rather than from the test's own expectation.
   const on = process.env.ON_ARMS;
   const onArms: (number | null)[] = on === undefined ? [] : (JSON.parse(on) as (number | null)[]);
+  if (onArms.length !== 0 && onArms.length !== cases.length)
+    throw new Error(
+      `ON_ARMS has ${String(onArms.length)} entries but ${String(cases.length)} cases are captured: ` +
+        `a short list would fill the leading rows and leave the rest at the pre-fix arm, silently, ` +
+        `and the fixture would read as a complete capture of a run that did not happen.`,
+    );
   cases.forEach((c, i) => {
     if (onArms.length === cases.length) c.arms.on = onArms[i] ?? null;
   });

@@ -14,6 +14,7 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import { trace } from "../trace.ts";
 import {
   type CycleBudgetMs,
+  cycleDeadlineVerdict,
   flagBudgetMs,
   warnTimeoutFlagPrecedence,
 } from "../work-driver-deadline.ts";
@@ -317,12 +318,6 @@ async function driveLoop(
   let iterations = 0;
   // The loop's current position, not the parameter: biome's noParameterAssign forbids reassigning.
   let run = initial;
-  // The instant the run armed its clock, kept for the one line that quotes the arms it
-  // weighed: both durations were added to THIS value, so a line built from a fresh
-  // `Date.now()` would name an arm the run never armed.
-  // Read ONCE and reused: the boundary's stop test, the step stamps and the warning's
-  // arms all answer to this instant, so one run has one clock.
-  const armedAt = now();
 
   while (run.result === undefined) {
     if (++iterations > maxSteps) {
@@ -331,21 +326,28 @@ async function driveLoop(
     }
     const state = run.state;
     // Resolved BEFORE the handler test below so a run the clock stops says so in its own words
-    // rather than in `no handler for state …`.
-    const deadline =
-      drive.deadlineMs ?? leanDeadline(run.deadlineMs, now(), flagBudgetMs(opts.budgetMs));
+    // rather than in `no handler for state …`. ONE clock reading per resolve: the arm and the
+    // line that quotes the arms are both struck from it, so a line can never name an arm the
+    // run did not arm.
+    const at = now();
+    const flag = flagBudgetMs(opts.budgetMs);
+    // `drive.deadlineMs` is the arm this run ALREADY holds — a resume, or any boundary after
+    // the first — and a run that holds an arm has no disagreement left to report: R1 keeps the
+    // arm its first round persisted. The verdict is therefore asked only where the run is
+    // still un-armed, and it is the same object the reader answers from, so the line cannot
+    // contradict the record. It carries the run's arm (`resolved`) beside the flag's
+    // (`flagArm`), both struck at the one instant `at`.
+    const armed =
+      drive.deadlineMs === undefined && run.deadlineMs === undefined
+        ? cycleDeadlineVerdict(process.env, undefined, at, flag)
+        : undefined;
+    const deadline = drive.deadlineMs ?? leanDeadline(run.deadlineMs, at, flag);
     if (deadline !== undefined && deadline !== run.deadlineMs) {
       run = { ...run, deadlineMs: deadline };
       drive.save(run);
-      // The disagreement is said HERE, once, where the arm is first persisted — never
-      // inside the pure reader, which every later boundary of the same run also calls.
-      warnTimeoutFlagPrecedence(
-        process.env,
-        opts.budgetMs,
-        deadline,
-        armedAt,
-        `work-lean #${opts.issue}`,
-      );
+      // The disagreement is said HERE, once, where the arm is first persisted — never inside
+      // the pure reader, which every later boundary of the same run also calls.
+      warnTimeoutFlagPrecedence(armed, opts.budgetMs, `work-lean #${opts.issue}`);
     }
     if (deadline !== undefined && deadlineStopsSteps(deadline, now(), state)) {
       // One call decides and performs the whole stop; `stopForDeadline`'s jsdoc is the contract.

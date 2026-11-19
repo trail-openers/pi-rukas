@@ -237,6 +237,56 @@ for (const arm of ["1", "0"] as const) {
   );
 }
 {
+  // F3 — the line is said about what the READER honoured, not about what this file re-read
+  // from the env. `"1e3"` is a DURATION STRING whose numeric value is one second, while the
+  // OFF arm's reader turns the same env into the 60-minute arm the fixture's `3600000` row
+  // holds: a line that re-parsed the env and compared epochs would print an arm the run never
+  // held, or quote a duration the reader never weighed. What the line must carry is the arm
+  // THIS run got — the flag's own — and `--timeout` as the winner: the run was not cut, and
+  // the line says so with the numbers it actually honoured.
+  const { arm, warns } = await driveOnce({
+    name: "warn-tiny-budget",
+    issue: 2366,
+    env: { [BUDGET]: "1e3", [ABSOLUTE]: undefined, [SWITCH]: undefined },
+    budgetMs: FLAG,
+  });
+  assert(
+    arm !== undefined && arm - Date.now() > 160 * MINUTE_MS,
+    `(b2) a one-second exported budget does not cut --timeout 165 (arm is ${String(arm)})`,
+  );
+  assert(
+    warns.length === 1 && isPrecedenceWarning(warns[0] ?? ""),
+    `(b2) and the disagreement is still ONE line, said with the arm the reader honoured (got ${String(warns.length)}: ${JSON.stringify(warns)})`,
+  );
+  assert(
+    (warns[0] ?? "").includes(`${FLAG_NAME}=${String(arm)}`) &&
+      (warns[0] ?? "").includes("--timeout wins") &&
+      (warns[0] ?? "").includes(`the run's deadline is ${String(arm)}`),
+    `(b2) and the line names --timeout's OWN arm as both the flag's value and the deadline, never a re-derived one (got ${JSON.stringify(warns[0])})`,
+  );
+}
+{
+  // F3 — the `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE=0` remedy belongs to the BUDGET arm
+  // alone: the switch re-orders the flag against the exported budget and cannot move an
+  // absolute deadline, so the deadline's own line must not suggest that turning the knob
+  // would put the exported budget above the flag. `shapeOf` still requires the switch's name
+  // on every line (an operator reaching for the knob needs to see what it does to THIS row),
+  // so what is pinned here is that the deadline's line states what `=0` cannot do rather
+  // than quoting the budget's promise.
+  const earlier = Date.now() + 10 * MINUTE_MS;
+  const { warns } = await driveOnce({
+    name: "remedy-tail",
+    issue: 2367,
+    env: { [ABSOLUTE]: String(earlier), [BUDGET]: undefined, [SWITCH]: undefined },
+    budgetMs: FLAG,
+  });
+  assert(
+    warns.length === 1 &&
+      !warns[0]!.includes("puts the exported budget back above the flag"),
+    `(b2) and a line overridden by the absolute deadline offers no budget remedy (got ${String(warns.length)}: ${JSON.stringify(warns)})`,
+  );
+}
+{
   // R4 + "no disagreement logs nothing": every case where the values agree, or where
   // the env value is one the reader does not honour, stays silent.
   const silent: [string, Record<string, string | undefined>, number | undefined][] = [

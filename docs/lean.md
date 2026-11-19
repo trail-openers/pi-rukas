@@ -414,7 +414,17 @@ adds no policy of its own.
 **The caller's clock.** `--timeout <minutes>`, or `PI_ENSEMBLE_CYCLE_DEADLINE` /
 `PI_ENSEMBLE_CYCLE_BUDGET_MS` exported by the host, arms the same whole-cycle
 deadline `work` reads — one reader, so the two engines cannot disagree about what
-one environment means (`features.leanDeadline`). Step work ends at
+one environment means (`features.leanDeadline`). When more than one is set the
+ladder is fixed: `PI_ENSEMBLE_CYCLE_DEADLINE` first — it is absolute, and whoever
+set it owns the clock — then the `--timeout` flag, then the exported
+`PI_ENSEMBLE_CYCLE_BUDGET_MS`. The flag beats the budget because the flag is one
+caller's word about THIS run and the budget is the host's default for all of them
+(`features.timeoutFlagPrecedence`); `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE=0` puts
+the exported budget back above the flag, which is the order this verb had before
+#2362. A value the reader does not honour (a typo, a non-positive budget) is unset
+rather than an arm, and the disagreement that does exist costs one `WARN` line
+naming both values and which won — printed once, where the run first persists its
+arm. Step work ends at
 `deadline − PI_ENSEMBLE_HANDOFF_TIMEOUT_MS`: the run starts no new step after
 that and ends `handed-back` at 10 with its document, the way `work` parks. The
 resolved absolute deadline is persisted on the run's state record (`deadlineMs`)

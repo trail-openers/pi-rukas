@@ -22,7 +22,11 @@
  * pin silently disable the rule in the next.
  */
 
+/** The switch's env name, spelled in one place so the reader, the warning's remedy tail and
+ *  the host roster cannot drift apart on how the knob is written. */
+export const SWITCH = "PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE";
+
 /** Whether an explicit `--timeout` outranks the host's exported budget. */
 export function timeoutFlagPrecedenceEnabled(): boolean {
-  return process.env.PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE !== "0";
+  return process.env[SWITCH] !== "0";
 }

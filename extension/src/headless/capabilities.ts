@@ -31,7 +31,6 @@ import path from "node:path";
 import { GATE_SEVERITIES } from "../lean/gate-severities.ts";
 import { type ResourceReport, resourceReport } from "../resource-budget.ts";
 import { strictOptIn } from "../work-cycle-trust.ts";
-import { timeoutFlagPrecedenceEnabled } from "../work-driver-timeout-flag-precedence-switch.ts";
 import { AGENTS_MD_FLAGS } from "./agents-md.ts";
 import { INSTALL_ROOT, readBuildCommit, readBuildVersion } from "./build.ts";
 import { capVocabulary } from "./caps.ts";
@@ -160,12 +159,12 @@ export const HEADLESS_FEATURES = {
   /**
    * #2362 — on `work-lean`, an explicit `--timeout` outranks `PI_ENSEMBLE_CYCLE_BUDGET_MS`
    * (the caller's word about one run beats the host's exported default); `PI_ENSEMBLE_CYCLE_DEADLINE`
-   * still outranks both, and a resume keeps the arm its first round persisted. Read at
-   * answer time, so a build running `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE=0` — the pre-#2362
-   * order, and the one where an overridden flag cost nothing but a silent early park —
-   * publishes `false` instead of claiming a rule it does not apply.
+   * still outranks both, and a resume keeps the arm its first round persisted. A FEATURE the
+   * build ships, so it is a constant: the roster says what this build can do, and an operator
+   * who turns the rule off with `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE=0` is choosing the
+   * pre-#2362 order, not reporting that the build lacks the rule.
    */
-  timeoutFlagPrecedence: timeoutFlagPrecedenceEnabled(),
+  timeoutFlagPrecedence: true,
 } as const;
 
 export interface Capabilities {

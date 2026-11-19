@@ -9,15 +9,19 @@
  * to stderr, so an off arm that quietly gained a line, lost one, or named the wrong
  * winner is as red as one whose arm moved.
  *
- * Rows the switch does not re-order (the two arms agree) are untouched by the fix, so
- * their OFF arm stream is byte-identical to the capture. Rows it DOES re-order had no
- * line at the base commit and have exactly one now — and because the line's `won` is
- * decided by which duration actually reached the run's deadline, `"0"` restores both the
- * order AND its wording: the exported budget named as the winner. A line that still said
- * `--timeout wins` while handing the run the budget's arm would tell the operator the
- * opposite of what ran, and would read green under a substring assertion on the tail —
- * the tail names the budget whatever the loser was. That is why the expected line is
- * built whole and compared, not prodded with `includes`.
+ * EVERY row compares against the captured stream — `[]` at the base commit — because
+ * `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE=0` promises the tree with no switch back in full,
+ * and that tree wrote no line for an overridden flag. An off arm that prints one is a
+ * behaviour the promise never made, and the test does not get to author the line it
+ * expects back: the capture is the only source for what the off arm writes.
+ *
+ * The input set therefore covers the malformed budget spellings too (`"abc"`, `"-5"`,
+ * `"0"`, `"1e3"`, `" 60000 "`, `""`), each pinned to the arm AND the stderr the base
+ * reader produced for it. The base accepted or rejected a budget by its OWN predicate —
+ * a finite positive duration — and the off arm must inherit that predicate rather than
+ * re-deciding it with a "usable value" test of the fix's own: `"1e3"` is a finite
+ * positive duration and must arm one second on the off arm, and a spellings table kept
+ * by hand would silently differ from the base on exactly the row nobody thought to write.
  *
  * Clock-derived epochs are normalized into the fixture's own `t0` frame before the
  * comparison, so what is pinned is the line's SHAPE — which arms it names, which winner
@@ -81,16 +85,6 @@ try {
 }
 assert(golden !== undefined, `(e) the off-arm golden fixture is readable (${problem ?? "ok"})`);
 
-/** The one line the restored pre-#2362 ORDER costs: the exported budget named as both
- *  loser and winner, at the arm that order gives. */
-function expectOffLine(c: GoldenCase, arm: number | null, issue: number): string {
-  return (
-    `[pi-rukas] WARN work-lean #${String(issue)}: ${FLAG_NAME}=${String(golden!.t0 + Number(c.flag))}` +
-    ` against ${BUDGET}=${String(c.env[BUDGET])} — ${BUDGET} wins` +
-    ` (the run's deadline is ${String(arm)}); ${SWITCH}=0 puts the exported budget back above the flag`
-  );
-}
-
 /** Drive one combination and return its arm plus its whole stderr stream — through the
  *  ENGINE for rows the switch re-orders, so the stream compared is the one a run
  *  produces (the persist site's WARN line and all), and through the reader for rows it
@@ -102,6 +96,13 @@ async function observe(
   issue: number,
 ): Promise<{ arm: number | null; stderr: string[] }> {
   const { env, flag } = c;
+  // A row whose env budget the reader REJECTED arms the flag on either arm (the defect this
+  // file pins). The line for such a row is non-vacuous on the arms alone: the flag's arm is
+  // the same one the row's OFF arm holds, so a line naming the BUDGET as the winner — quoting
+  // a duration the reader threw away, at an arm the OFF row arms — matches this row's arm and
+  // must not pass. The row's `winner` is checked below by `shapeOf`, and the arms cannot tell
+  // the two apart, so the arm test is not the whole judgement here.
+  const malformed = flag !== null && env[BUDGET] !== undefined && Number(env[BUDGET]) <= 0;
   const { result: arm, lines } = await captureAll(async () => {
     let arm: number | null = null;
     await withEnv({ ...env, [SWITCH]: switchValue }, async () => {
@@ -131,11 +132,26 @@ async function observe(
       arm =
         r.run.deadlineMs === undefined
           ? null
-          : flag !== null && Math.abs(r.run.deadlineMs - (Date.now() + flag)) < 60_000
+          : // A row whose env budget the base reader REJECTED arms the flag on either arm
+            // (that is the defect this file pins), so the arm is read off the record, not
+            // back out of the env — otherwise a rejected budget would be re-read as a
+            // duration here and every malformed row would compare to an arm no run armed.
+            malformed && Math.abs(r.run.deadlineMs - (Date.now() + flag)) < 60_000
             ? T0 + flag
-            : env[ABSOLUTE] !== undefined
-              ? Number(env[ABSOLUTE])
-              : T0 + BUDGET_MS;
+            : flag !== null && Math.abs(r.run.deadlineMs - (Date.now() + flag)) < 60_000
+              ? T0 + flag
+              : env[ABSOLUTE] !== undefined
+                ? Number(env[ABSOLUTE])
+                : // A valid env budget arms the run from its OWN duration, not a shared
+                  // constant: the row's `1e3` and `" 60000 "` each arm a different epoch and
+                  // a single `BUDGET_MS` would collapse them and hide a row that got the
+                  // wrong budget's arm. Clock-tolerant for the same reason the rows above are.
+                  env[BUDGET] !== undefined &&
+                  Number.isFinite(Number(env[BUDGET])) &&
+                  Number(env[BUDGET]) > 0 &&
+                  Math.abs(r.run.deadlineMs - (Date.now() + Number(env[BUDGET]))) < 60_000
+                  ? T0 + Number(env[BUDGET])
+                  : T0 + BUDGET_MS;
     });
     return arm;
   });
@@ -157,14 +173,21 @@ async function observe(
 let nextIssue = 2400;
 
 for (const c of golden?.cases ?? []) {
-  const via = c.arms.on !== c.arms.off ? "engine" : "reader";
+  // Malformed-budget rows go through the ENGINE: what they must pin is that the whole
+  // RUN under a rejected budget armed the flag and said nothing, which the reader alone
+  // cannot show. Rows whose two arms agree through the reader stay on the reader.
+  const via =
+    c.arms.on !== c.arms.off ||
+    (c.flag !== null && c.env[BUDGET] !== undefined && Number(c.env[BUDGET]) <= 0)
+      ? "engine"
+      : "reader";
   const offIssue = nextIssue++;
   const off = await observe(c, "0", via, offIssue);
   assert(
     off.arm === c.arms.off,
     `(e) off arm resolves ${String(c.arms.off)} for ${JSON.stringify(c.env)} + flag ${String(c.flag)} (got ${String(off.arm)})`,
   );
-  const wantOff = c.arms.on === c.arms.off ? c.stderr : [expectOffLine(c, off.arm, offIssue)];
+  const wantOff = c.stderr;
   assert(
     JSON.stringify(off.stderr) === JSON.stringify(wantOff),
     `(e) and the OFF arm's whole stderr stream is byte-identical to the captured one for ${JSON.stringify(c.env)} + flag ${String(c.flag)} (got ${JSON.stringify(off.stderr)}, wanted ${JSON.stringify(wantOff)})`,

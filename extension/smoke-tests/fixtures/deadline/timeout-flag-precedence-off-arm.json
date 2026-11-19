@@ -57,6 +57,116 @@
         "off": null
       },
       "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "abc"
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": null,
+        "off": null
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "-5"
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": null,
+        "off": null
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "0"
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": null,
+        "off": null
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "1e3"
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": 1800009900000,
+        "off": 1800000001000
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": " 60000 "
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": 1800009900000,
+        "off": 1800000060000
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": ""
+      },
+      "flag": 9900000,
+      "arms": {
+        "on": 1800009900000,
+        "off": 1800009900000
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "abc"
+      },
+      "flag": null,
+      "arms": {
+        "on": null,
+        "off": null
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "0"
+      },
+      "flag": null,
+      "arms": {
+        "on": null,
+        "off": null
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": "1e3"
+      },
+      "flag": null,
+      "arms": {
+        "on": 1800000001000,
+        "off": 1800000001000
+      },
+      "stderr": []
+    },
+    {
+      "env": {
+        "PI_ENSEMBLE_CYCLE_BUDGET_MS": " 60000 "
+      },
+      "flag": null,
+      "arms": {
+        "on": 1800000060000,
+        "off": 1800000060000
+      },
+      "stderr": []
     }
   ]
 }
