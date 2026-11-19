@@ -10,6 +10,11 @@
  *      the push stays refused, and the cause says the branch moved, not push protection.
  *   3. The incident's own non-fast-forward text is classed as moved too.
  *   4. GH013 is still push protection, with the allow-the-content action.
+ *   5. A repository rule or branch protection (GH013 with no secret, GH006) is a refusal
+ *      of its own: it names the rule, never "allow the flagged content". A moved
+ *      branch's action is one that gets past the next push: the next commit-pr
+ *      rebuilds the branch from the base and leases on the recorded sha, so the person
+ *      deletes the remote branch and the record.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -78,7 +83,10 @@ function forge() {
     if (line === "git rev-parse HEAD") return { stdout: `${head}\n` };
     return { stdout: "" };
   };
-  return { remote, exec, setHead: (s: string) => (head = s) };
+  const setHead = (s: string) => {
+    head = s;
+  };
+  return { remote, exec, setHead };
 }
 
 function run(dir: string, exec: ReturnType<typeof forge>["exec"]) {
@@ -194,7 +202,7 @@ function parked(reason: string): WorkState {
     "remote:     * Push the commit again to allow the secret: https://github.com/o/r/security/secret_scanning/unblock-secret/3Kvj3Vlk",
     ` ! [remote rejected] ${BRANCH} -> ${BRANCH} (push declined due to repository rule violations)`,
   ].join("\n");
-  assert(pushRefusalKind(gh013) === "protection", "#2393: GH013 is still push protection");
+  assert(pushRefusalKind(gh013) === "secret", "#2393: GH013 is still push protection");
   assert(
     pushRefusalKind("fatal: could not read from remote repository") === undefined,
     "transport noise is neither",
@@ -203,6 +211,39 @@ function parked(reason: string): WorkState {
   assert(
     /allow the flagged content/i.test(verdict?.userAction ?? ""),
     "#2393: GH013 keeps the allow-the-flagged-content action",
+  );
+}
+
+// 5. A repository rule, branch protection, and the moved branch's way forward.
+{
+  const ruleset = [
+    `remote: error: GH013: Repository rule violations found for refs/heads/${BRANCH}.`,
+    "remote: Review all repository rules at https://github.com/o/r/rules?ref=refs%2Fheads%2Fx",
+    "remote: - Cannot force-push to this branch",
+    ` ! [remote rejected] ${BRANCH} -> ${BRANCH} (push declined due to repository rule violations)`,
+  ].join("\n");
+  const gh006 = [
+    `remote: error: GH006: Protected branch update failed for refs/heads/${BRANCH}.`,
+    "remote: error: Cannot force-push to this branch",
+    ` ! [remote rejected] ${BRANCH} -> ${BRANCH} (protected branch hook declined)`,
+  ].join("\n");
+  for (const [name, text] of [
+    ["a ruleset", ruleset],
+    ["branch protection (GH006)", gh006],
+  ] as const) {
+    assert(pushRefusalKind(text) === "rule", `${name} is a rule refusal`);
+    const v = causeForCycle(parked(text));
+    assert(
+      /rule|protection/i.test(v?.userAction ?? "") &&
+        !/flagged content|secret/i.test(`${v?.causeReason} ${v?.userAction}`),
+      `${name}: the action names the rule, not flagged content or secrets`,
+    );
+  }
+  const moved = causeForCycle(parked(` ! [rejected]        ${BRANCH} -> ${BRANCH} (stale info)`));
+  assert(
+    /git push origin --delete/.test(moved?.userAction ?? "") &&
+      /pushed\.json/.test(moved?.userAction ?? ""),
+    "a moved branch's action deletes the remote branch and the push record",
   );
 }
 

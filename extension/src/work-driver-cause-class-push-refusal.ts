@@ -16,8 +16,14 @@
  * #2393 — a MOVED branch is a different verdict. A non-fast-forward, `fetch first` or a
  * failed lease (`stale info`) means the remote branch is not where the push expected it:
  * an earlier push of this run, or someone else, moved it. Nothing was flagged, so the
- * action is to look at the remote branch and retry, never to allow content. The class is
- * `environment`: the remote's state, not the change and not the issue, stopped the push.
+ * action is never to allow content. The class is `environment`: the remote's state, not
+ * the change and not the issue, stopped the push. A plain re-run does not get past it:
+ * commit-pr rebuilds the branch from the base and leases on the sha in `pushed.json`
+ * (work-driver-push-lease.ts), which still does not match. The action therefore removes
+ * both, after the person saves what they want from the remote branch.
+ *
+ * A repository rule or branch protection (`rule`) flagged nothing either: the action
+ * names the rule, never the allow-the-secret URLs, which a rule refusal does not print.
  *
  * The evidence is the refusal itself: the `remote:` lines, allow-the-secret URLs
  * included, because those URLs ARE the operator's action. The verify command's own
@@ -47,12 +53,21 @@ export function pushRefusalVerdict(
       ? evidenceLines(sources)
       : evidenceLines([pushRefusalEvidence(refusal), ...sources]);
   const quote = refusal === undefined ? "" : ` — ${evidence[0] ?? ""}`;
-  if (pushRefusalKind(refusal) === "moved") {
+  const kind = pushRefusalKind(refusal);
+  if (kind === "moved") {
     return {
       causeClass: "environment",
       causeReason: `the forge refused the push because the remote branch moved (an earlier push of this run, or someone else, changed it), so nothing was published${quote}`,
       causeEvidence: evidence,
-      userAction: `the remote branch moved: look at the remote branch (\`git fetch origin\` and \`git log\` the branch on origin), keep or drop the commits you find there, then re-run \`/work ${issue}\``,
+      userAction: `the remote branch moved: ${movedBranchSteps(issue, "<branch>")}`,
+    };
+  }
+  if (kind === "rule") {
+    return {
+      causeClass: "issue",
+      causeReason: `a repository rule or branch protection on the forge refused the push of this branch, so nothing was published${quote}`,
+      causeEvidence: evidence,
+      userAction: `a repository rule or branch protection refused the push (the evidence names the rule): have a repository admin change the rule or exempt the branch, or change the work so it meets the rule, then re-run \`/work ${issue}\``,
     };
   }
   return {
@@ -61,4 +76,9 @@ export function pushRefusalVerdict(
     causeEvidence: evidence,
     userAction: `the forge refused the push (push protection / repository rules): either allow the flagged content via the URLs in the evidence, or change the issue/fixtures so the content is not committed (e.g. build test secrets from fragments at runtime), then re-run \`/work ${issue} --restart\``,
   };
+}
+
+/** What gets a moved branch's next push through; see the header. */
+export function movedBranchSteps(issue: number, branch: string): string {
+  return `look at the remote branch (\`git fetch origin\`, \`git log origin/${branch}\`) and push any commits you want to keep to another branch. Then delete the remote branch (\`git push origin --delete ${branch}\`, which closes a pull request open from it) and this cycle's push record (\`tmp/issue-${issue}/pushed.json\` in the repository the cycle ran in), and re-run \`/work ${issue}\``;
 }

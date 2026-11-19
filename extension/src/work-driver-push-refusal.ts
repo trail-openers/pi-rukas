@@ -16,8 +16,12 @@
  * remote refused its CONTENT (secret-shaped fixtures are the common case), and only an
  * operator can allow it or the fixtures can change.
  *
- * Two kinds of refusal, told apart by `pushRefusalKind`:
- *   - `protection`: GH013, push protection or a repository rule refused the CONTENT;
+ * Three kinds of refusal, told apart by `pushRefusalKind`:
+ *   - `secret`: push protection flagged secret-shaped CONTENT (GH013 with
+ *     `GITHUB PUSH PROTECTION`, and the allow-the-secret URLs);
+ *   - `rule`: a repository rule or branch protection refused the push with no secret
+ *     flagged (GH013 naming other rules, GH006, a `hook declined` ref). Only someone who
+ *     can change the rule, or a change that meets it, gets past it;
  *   - `moved`: the remote branch is not where the push expected it (`non-fast-forward`,
  *     `fetch first`, or `stale info` from a failed `--force-with-lease`). The branch
  *     moved, by an earlier push of this run or by someone else, and nothing was flagged.
@@ -35,13 +39,13 @@ import { redactThenBound } from "./text-flatten.ts";
 /**
  * The published markers of a server-side push refusal.
  *
- * `GH013` is GitHub push protection's error code; `push protection` and
- * `Repository rule violations` are the two prose lines GitHub prints with it (the
- * second appears even when a ruleset, not push protection, is what tripped). A moved
- * branch is matched on the parenthesised reason git prints on its `! [rejected]` line
- * (`(non-fast-forward)`, `(fetch first)`, `(stale info)`), never on `rejected` alone,
- * which a hundred unrelated git messages carry. Neither is a local retry: the driver
- * never force-pushes over a branch someone else moved, so both are an operator decision.
+ * `GH013` is GitHub's rule-violation code: push protection prints it with
+ * `GITHUB PUSH PROTECTION`, a ruleset with the rules it broke. `GH006` and
+ * `(protected branch hook declined)` are classic branch protection, and
+ * `(pre-receive hook declined)` a server hook. A moved branch is matched on the
+ * parenthesised reason git prints on its `! [rejected]` line (`(non-fast-forward)`,
+ * `(fetch first)`, `(stale info)`), never on `rejected` alone, which a hundred unrelated
+ * git messages carry. None is a local retry an ops child could make, so each parks.
  *
  * ANCHORED TO THE LINES THE FORGE WROTE. The pre-fix matcher tested the WHOLE concatenated
  * stream, so any line naming those tokens made the whole failure a refusal: a project's own
@@ -51,7 +55,8 @@ import { redactThenBound } from "./text-flatten.ts";
  * lines, and the rejected ref on `! [rejected]` / `! [remote rejected]` /
  * `error: failed to push some refs`. Only those lines may carry the verdict.
  */
-const PROTECTION_MARK = /GH013|push protection|repository rule violations/i;
+const SECRET_MARK = /push protection|push cannot contain secrets|unblock-secret/i;
+const RULE_MARK = /GH013|GH006|repository rule violations|hook declined/i;
 const MOVED_MARK = /non-fast-forward|\(fetch first\)|\(stale info\)/i;
 
 /** The line shapes git and the forge use to report a refused ref. */
@@ -75,15 +80,15 @@ export function isPushRefusal(text: string | undefined): boolean {
 }
 
 /**
- * Which refusal `text` reports, read from forge-authored lines only: `protection` when
- * any such line names GH013 / push protection / repository rules (the content is the
- * problem even if git also reports the ref rejected), else `moved` when one names a
- * non-fast-forward, `fetch first` or a stale lease, else `undefined`.
+ * Which refusal `text` reports, read from forge-authored lines only, first match wins:
+ * `secret` (push protection, which also prints GH013), `rule` (GH013, GH006, a declined
+ * hook), `moved` (a non-fast-forward, `fetch first` or a stale lease), else `undefined`.
  */
-export function pushRefusalKind(text: string | undefined): "protection" | "moved" | undefined {
+export function pushRefusalKind(text: string | undefined): "secret" | "rule" | "moved" | undefined {
   if (text === undefined || text.length === 0) return undefined;
   const forge = text.split("\n").filter((l) => FORGE_AUTHORED_LINE.test(l.trim()));
-  if (forge.some((l) => PROTECTION_MARK.test(l))) return "protection";
+  if (forge.some((l) => SECRET_MARK.test(l))) return "secret";
+  if (forge.some((l) => RULE_MARK.test(l))) return "rule";
   if (forge.some((l) => MOVED_MARK.test(l))) return "moved";
   return undefined;
 }
