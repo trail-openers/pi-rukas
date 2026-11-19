@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 /**
- * test-review-bash-timeout.ts — the #2140 per-call bash bound a reviewer child
- * carries, driven at the HOOK level through the child-guards fake-pi harness.
+ * test-review-bash-timeout.ts — the #2140 per-call bash bound a REVIEWER child
+ * carries, driven at the HOOK level through the child-guards fake-pi harness
+ * (shared with the #2377 developer arm, which lives in
+ * `test-developer-bash-timeout.ts`).
  *
  * What is under test is the mutation of `event.input.timeout`, not Pi's
  * enforcement of it: the hook lowers the timeout and Pi's own bash tool answers
@@ -14,42 +16,15 @@
  * handlers with `parentToolCallId` set, and it must be bounded like any other.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import childGuards from "../src/child-guards.ts";
 import { reviewBashBoundSeconds } from "../src/review-bash-timeout.ts";
 import { withEnv } from "./lib/env-scope.ts";
+import {
+  REVIEWER_BOUND as BOUND,
+  call,
+  reviewer,
+  throughFrozenInput,
+} from "./lib/bash-timeout-harness.ts";
 import { assert, exit as failureExit } from "./merge-guard-helpers.ts";
-import { makeFakePi } from "./test-child-guards-helpers.ts";
-
-/** The default bound, in the SECONDS Pi's bash schema takes. */
-const BOUND = 600;
-
-/**
- * Drive one tool call through the hooks the companion actually installs, with
- * the child environment pinned. Returns the (possibly mutated) input.
- */
-async function call(
-  env: Record<string, string | undefined>,
-  toolName: string,
-  input: Record<string, unknown> | null,
-  parentToolCallId?: string,
-): Promise<Record<string, unknown> | null> {
-  const fake = makeFakePi();
-  childGuards(fake as unknown as ExtensionAPI);
-  const event: Record<string, unknown> = { toolName, input };
-  if (parentToolCallId !== undefined) event.parentToolCallId = parentToolCallId;
-  await withEnv({ PI_ENSEMBLE_ROLE: "code-review-specialist", ...env }, async () => {
-    for (const h of fake.handlers.tool_call ?? []) await h(event, {});
-  });
-  return event.input as Record<string, unknown> | null;
-}
-
-/** A reviewer's bash call (the role both reviewer roles share the hook with). */
-const reviewer = (
-  env: Record<string, string | undefined>,
-  input: Record<string, unknown>,
-  parentToolCallId?: string,
-) => call(env, "bash", input, parentToolCallId);
 
 // ============================================================
 // 1. The bound is applied: nothing to clamp, and a too-large value clamped.
@@ -92,9 +67,11 @@ const reviewer = (
 }
 
 // ============================================================
-// 3. Role scoping: only reviewer roles are bounded, and no other tool is.
+// 3. Role scoping: only the two bounded roles are touched, and no other tool is.
+//    #2377 R1 — `developer` moved OUT of this loop into the bounded case below;
+//    ops, explore and the unset role (the PM session) stay untouched.
 // ============================================================
-for (const role of ["developer", "ops", undefined]) {
+for (const role of ["ops", "explore", undefined]) {
   const out = await call({ PI_ENSEMBLE_ROLE: role }, "bash", { command: "sleep 99999" });
   assert(
     !("timeout" in out),
@@ -202,6 +179,30 @@ const floor = await reviewer(
 );
 assert(floor.timeout === 1, `the 1000 ms floor is accepted as 1s (got ${String(floor.timeout)})`);
 
+// The top of the accepted range, judged on the SECONDS the hook writes: Pi
+// re-expands `seconds * 1000` and throws past its own maximum, so the last
+// accepted ms count is the one that still rounds to a runnable second, and the
+// next whole ms count is out of range rather than a bound Pi would refuse (#2377).
+const atCeiling = await reviewer(
+  { PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: "2147483000" },
+  { command: "sleep 99999" },
+);
+assert(
+  atCeiling.timeout === 2_147_483,
+  `the ceiling itself is accepted as ${2_147_483}s (got ${String(atCeiling.timeout)})`,
+);
+
+for (const over of ["2147483001", "2147483647"]) {
+  const out = await reviewer(
+    { PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: over },
+    { command: "sleep 99999" },
+  );
+  assert(
+    !("timeout" in out),
+    `PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS="${over}" rounds to seconds Pi would refuse — no bound (got ${String(out.timeout)})`,
+  );
+}
+
 // The reader itself, so the documented default and the hook's cannot drift.
 await withEnv({ PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: undefined }, async () => {
   assert(
@@ -260,24 +261,10 @@ await withEnv({ PI_ENSEMBLE_REVIEW_BASH_TIMEOUT_MS: undefined }, async () => {
   // A frozen object: the write neither throws nor blocks, and the call keeps
   // the shape the model wrote (an unbounded call beats a refused one).
   const frozen = Object.freeze({ command: "sleep 99999" }) as Record<string, unknown>;
-  const frozenFake = makeFakePi();
-  childGuards(frozenFake as unknown as ExtensionAPI);
-  let frozenResult: unknown;
-  let frozenThrew = false;
-  await withEnv({ PI_ENSEMBLE_ROLE: "code-review-specialist" }, async () => {
-    for (const h of frozenFake.handlers.tool_call ?? []) {
-      try {
-        frozenResult = await h({ toolName: "bash", input: frozen }, {});
-      } catch {
-        frozenThrew = true;
-      }
-    }
-  });
+  const frozenRun = await throughFrozenInput("code-review-specialist", frozen);
   assert(
-    !frozenThrew &&
-      (frozenResult as { block?: boolean } | undefined)?.block !== true &&
-      !("timeout" in frozen),
-    `a frozen input neither throws nor blocks (${JSON.stringify(frozenResult)})`,
+    !frozenRun.threw && !frozenRun.blocked && !("timeout" in frozen),
+    `a frozen input neither throws nor blocks (${JSON.stringify(frozenRun)})`,
   );
 }
 
