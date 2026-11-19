@@ -74,6 +74,7 @@ import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { frozenFromLog } from "./build.ts";
+import { protectedPathsOf } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { acceptanceSection, assertHeadIsVerified } from "./review-acceptance.ts";
 import { type StepStop, reviewBoundRecord, stepBound, unjudgedLenses } from "./review-bound.ts";
@@ -331,6 +332,10 @@ async function reviewPass(
       findings,
       issueBody,
       ...derivedArg(ctx.run),
+      // The project's own protected globs, from the one config read this step already
+      // made at the run's base sha — the same list `build`'s `fold(n)` hands both of its
+      // arms, so no fold of the run asks a different question than another.
+      protected: protectedPathsOf(config),
       gate: gateName,
       wave: "full",
       // The arm the tree's name carries: "a" when the findings came from the
@@ -352,7 +357,14 @@ async function reviewPass(
     // prints a 12-char prefix, and a host that has to check out what the fixer left
     // cannot clone a prefix.
     noteWave("fix", head);
-    fixDisclosure = fix.submodules ?? fixDisclosure;
+    // The fold's reverts ride the reason beside the submodule clause: the reason is the
+    // run record, the PR and the handoff, where a trace line is none of those.
+    fixDisclosure =
+      (fix.reverted === undefined || fix.reverted.length === 0
+        ? undefined
+        : `reverted: ${fix.reverted.join(", ")}`) ??
+      fix.submodules ??
+      fixDisclosure;
 
     // R2: the fixer pushed, so the head origin holds is one nobody has re-judged. A stop
     // here is `fixed` — not a handback (the fix is already on the branch) and not a `done`

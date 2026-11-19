@@ -16,6 +16,8 @@
 import type { execp } from "../exec.ts";
 import { validateTestDir, validateTestGlob } from "./config-test-location.ts";
 import { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
+import { protectedPathProblem } from "./protected-globs.ts";
+import { leanProtectedPathsEnabled } from "./protected-paths-switch.ts";
 import { SPEC_INTAKE_VALUES, type SpecIntake } from "./spec-intake-switch.ts";
 
 export interface Budget {
@@ -49,13 +51,22 @@ export interface WorkConfig {
     freezeCheck?: string;
   };
   budgets: Partial<Record<string, Budget>>;
-  /**
-   * How the run obtains its `pi-spec v1` contract. `require` (the shipped
-   * default) refuses an issue whose body carries no block; `derive` derives one
-   * inside the run. Read through `resolveSpecIntake`, which weighs the env above
-   * this field — the field is one input, never the last word.
-   */
-  lean?: { specIntake?: SpecIntake };
+  lean?: {
+    /**
+     * How the run obtains its `pi-spec v1` contract. `require` (the shipped
+     * default) refuses an issue whose body carries no block; `derive` derives one
+     * inside the run. Read through `resolveSpecIntake`, which weighs the env above
+     * this field — the field is one input, never the last word.
+     */
+    specIntake?: SpecIntake;
+    /**
+     * The project's OWN protected list: repo-relative gitignore-style globs whose
+     * paths the build and review-fix folds REVERT, the way they revert an edit to
+     * `.pi/`. Semantics and validity rules: `lean/protected-globs.ts`. Read here, at
+     * the run's base commit, and never again from the working tree.
+     */
+    protectedPaths?: string[];
+  };
 }
 
 /** A config that exists but cannot be read. Never collapsed into a default. */
@@ -74,6 +85,18 @@ export const TEST_RUNNER_PLACEHOLDER = "{file}";
  * `loadWorkConfig` deliberately does NOT interpolate it: the ref it passes to `gitShow` is a literal.
  */
 export const WORK_CONFIG_FILE = ".pi/work.json";
+
+/**
+ * The configured protected globs in the shape the fold wants: the list, or `undefined` for "no
+ * configured rule" — both the default and the off arm, so an absent field and
+ * `PI_ENSEMBLE_LEAN_PROTECTED_PATHS=0` reach the fold as one value. Lives here so every
+ * `normaliseBuild` caller hands the fold the SAME list, whichever fold of the run asks.
+ */
+export function protectedPathsOf(config?: WorkConfig): string[] | undefined {
+  if (!leanProtectedPathsEnabled()) return undefined;
+  const list = config?.lean?.protectedPaths;
+  return list === undefined || list.length === 0 ? undefined : [...list];
+}
 
 /** The executor seam: same signature as `execp`, injected so tests stay local. */
 export type ConfigExec = typeof execp;
@@ -271,6 +294,17 @@ function validate(obj: unknown): string | undefined {
       (typeof l.specIntake !== "string" || !SPEC_INTAKE_VALUES.includes(l.specIntake as SpecIntake))
     )
       return `.pi/work.json lean.specIntake must be one of ${SPEC_INTAKE_VALUES.join(", ")}`;
+    // Each entry is judged by the SAME module that later decides whether a path matches it,
+    // so a config cannot carry a pattern the fold reads as other than what the author meant
+    // — a typo'd entry is a rule that silently protects nothing, which this loader refuses.
+    if (l.protectedPaths !== undefined) {
+      if (!Array.isArray(l.protectedPaths))
+        return ".pi/work.json lean.protectedPaths must be an array of glob strings";
+      for (const entry of l.protectedPaths as unknown[]) {
+        const reason = protectedPathProblem(entry);
+        if (reason !== undefined) return reason;
+      }
+    }
   }
   if (o.budgets !== undefined) {
     if (typeof o.budgets !== "object" || o.budgets === null || Array.isArray(o.budgets))
@@ -360,14 +394,22 @@ export async function loadWorkConfig(
     // key is an own property of the parsed object, and spreading it would put it on the result
     // rather than refuse it.
     budgets: mergeBudgets(o.budgets),
-    // Built field by field for the same reason: `specIntake` is the only key the schema
-    // admits under `lean`, so nothing a file put beside it can ride onto the record.
+    // Built field by field for the same reason: the two keys below are all the schema
+    // admits under `lean`, and the glob list is copied rather than aliased to the parsed
+    // document a fold will later match against.
     ...(o.lean === undefined
       ? {}
       : {
           lean: {
             ...(typeof (o.lean as { specIntake?: unknown }).specIntake === "string"
               ? { specIntake: (o.lean as { specIntake: SpecIntake }).specIntake }
+              : {}),
+            ...(Array.isArray((o.lean as { protectedPaths?: unknown }).protectedPaths)
+              ? {
+                  protectedPaths: [
+                    ...(o.lean as { protectedPaths: readonly string[] }).protectedPaths,
+                  ],
+                }
               : {}),
           },
         }),

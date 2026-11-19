@@ -35,6 +35,7 @@ import {
   leanPreflightProbeContainEnabled,
 } from "../../src/lean/preflight-probe-switch.ts";
 import { leanReadyFactsOnLoadEnabled } from "../../src/lean/ready-facts-switch.ts";
+import { leanProtectedPathsEnabled } from "../../src/lean/protected-paths-switch.ts";
 import { leanResultGatesEnabled } from "../../src/lean/result-gates-switch.ts";
 import { leanReviewAcceptanceEnabled } from "../../src/lean/review-acceptance-switch.ts";
 import { leanReviewIncompleteCapEnabled } from "../../src/lean/review-incomplete-cap-switch.ts";
@@ -226,6 +227,11 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // the truth table, the docs row and the two-arm rebuild are pinned by
   // test-lean-ready-facts-on-load-switch.ts.
   ["PI_ENSEMBLE_LEAN_READY_FACTS_ON_LOAD", leanReadyFactsOnLoadEnabled],
+  // #2365 — the project's own `lean.protectedPaths` globs in the lean folds. The reader
+  // is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the
+  // truth table, the docs row, the fold's two arms and the built-in controls are pinned
+  // by test-lean-protected-paths.ts and test-lean-build-protected-paths-switch.ts.
+  ["PI_ENSEMBLE_LEAN_PROTECTED_PATHS", leanProtectedPathsEnabled],
   ["PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK", leanVerifiedHandbackEnabled],
   // The verified-handback rule. The reader is `v !== "0"`, so the gate's LIVE
   // loop (env deleted) pins "unset means on".

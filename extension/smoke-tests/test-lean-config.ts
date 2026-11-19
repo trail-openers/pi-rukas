@@ -15,8 +15,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { execp } from "../src/exec.ts";
 import type { Budget } from "../src/lean/config.ts";
@@ -40,36 +39,7 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
 
-/** A repo with one commit containing `.pi/` files, and the sha of that commit. */
-function makeRepo(files: Record<string, string>): {
-  repoRoot: string;
-  baseSha: string;
-  cleanup: () => void;
-} {
-  const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-config-"));
-  const env = {
-    ...process.env,
-    GIT_AUTHOR_NAME: "t",
-    GIT_AUTHOR_EMAIL: "t@e",
-    GIT_COMMITTER_NAME: "t",
-    GIT_COMMITTER_EMAIL: "t@e",
-    GIT_CONFIG_GLOBAL: "/dev/null",
-    GIT_CONFIG_SYSTEM: "/dev/null",
-  };
-  const g = (...args: string[]): string =>
-    execFileSync("git", args, { cwd: repoRoot, encoding: "utf8", env }).trim();
-  g("init", "-q", "-b", "main");
-  mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
-  for (const [rel, content] of Object.entries(files)) {
-    const target = path.join(repoRoot, rel);
-    mkdirSync(path.dirname(target), { recursive: true });
-    writeFileSync(target, content, "utf8");
-  }
-  g("add", "-A");
-  g("commit", "-q", "-m", "base");
-  const baseSha = g("rev-parse", "HEAD");
-  return { repoRoot, baseSha, cleanup: () => rmSync(repoRoot, { recursive: true, force: true }) };
-}
+import { makeRepo } from "./lib/lean-config-fixture.ts";
 
 const VALID = JSON.stringify(
   {
@@ -116,7 +86,10 @@ const VALID = JSON.stringify(
     assert(cfg.version === 1, "defaults carry version 1");
     assert(cfg.autoMerge === false, "no config means no auto-merge");
     assert(cfg.verify.full === undefined, "no verify-cmd means no full command");
-    assert(cfg.budgets.build?.minutes === DEFAULT_BUDGETS.build?.minutes, "defaults carry the build budget");
+    assert(
+      cfg.budgets.build?.minutes === DEFAULT_BUDGETS.build?.minutes,
+      "defaults carry the build budget",
+    );
     assert(cfg.budgets.ci?.minutes === DEFAULT_BUDGETS.ci?.minutes, "defaults carry the ci budget");
     assert(
       cfg.budgets.specify?.tokens === DEFAULT_BUDGETS.specify?.tokens,
@@ -251,7 +224,10 @@ for (const [name, content, expected] of invalidCases) {
     } catch (err) {
       thrown = err;
     }
-    assert(thrown instanceof LeanConfigError, "a __proto__ budget key is rejected with LeanConfigError");
+    assert(
+      thrown instanceof LeanConfigError,
+      "a __proto__ budget key is rejected with LeanConfigError",
+    );
     assert(
       thrown instanceof Error && thrown.message.includes("budgets.__proto__ is not a lean state"),
       'a __proto__ budget key names "budgets.__proto__ is not a lean state"',

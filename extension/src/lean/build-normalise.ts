@@ -47,6 +47,7 @@ import {
   porcelain,
 } from "./build-git.ts";
 import type { BuildExec, NormaliseReport } from "./build-types.ts";
+import { protectedGlobMatches } from "./protected-globs.ts";
 import { CaptureBudget, readOneDescriptor } from "./specify-capture.ts";
 import { resetWorktreeToBase, writeCaptured } from "./specify-reset.ts";
 import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
@@ -60,10 +61,37 @@ function isProtectedPath(rel: string): boolean {
   return canonicalProtectedPath(rel) || rel === ".gitmodules";
 }
 
+/**
+ * The fold's protected predicate: the built-in rule plus every configured glob the step handed
+ * in, built once per fold so the compiled patterns are shared by `classify`'s revert arm and
+ * `verifyCommit`'s leak filter — the two must agree, or a routine revert also throws as a leak.
+ * Configured entries match VERBATIM: `changedSet` and `commitDiff` print repo-relative paths
+ * with no `./` and no doubling, which is the spelling the config validator admits.
+ */
+function protectedPredicate(globs: readonly string[] | undefined): (rel: string) => boolean {
+  if (globs === undefined || globs.length === 0) return isProtectedPath;
+  return (rel) => isProtectedPath(rel) || globs.some((entry) => protectedGlobMatches(entry, rel));
+}
+
 /** The kept bytes and their modes, after classification. */
 interface Classified {
   captured: Map<string, { bytes: Buffer; exec: boolean }>;
   report: NormaliseReport;
+}
+
+/**
+ * The configured globs that named nothing of their own in `changed`, as one clause, or `undefined`
+ * when every glob bit. A glob that matched only a path the built-in list already reverts
+ * (`.pi/work.json` under `**\/*.json`) said nothing of its own, and a built-in path no glob matched
+ * was written for nothing: either belongs on the inert list, where a protection that quietly rotted
+ * becomes visible. Entries arrive validated by the loader, so a path lands here only when the
+ * project named no path for its rule.
+ */
+function inertNote(globs: readonly string[], changed: string[]): string | undefined {
+  const hits = (entry: string): boolean => changed.some((rel) => protectedGlobMatches(entry, rel));
+  const inert = globs.filter((entry) => !hits(entry));
+  for (const rel of changed) if (isProtectedPath(rel) && !inert.some(hits)) inert.push(rel);
+  return inert.length === 0 ? undefined : `protected paths matched nothing: ${inert.join(", ")}`;
 }
 
 /**
@@ -76,6 +104,8 @@ function classify(
   changed: string[],
   frozen: Record<string, string>,
   budget: CaptureBudget,
+  isProtected: (rel: string) => boolean,
+  globs: readonly string[] | undefined,
 ): Classified {
   const captured = new Map<string, { bytes: Buffer; exec: boolean }>();
   const report: NormaliseReport = {
@@ -85,12 +115,14 @@ function classify(
     removed: [],
     deleted: [],
   };
+  if (globs !== undefined && globs.length > 0)
+    report.protectedUnmatchedNote = inertNote(globs, changed);
   for (const rel of changed) {
     if (frozen[rel] !== undefined) {
       report.restored.push(rel);
       continue;
     }
-    if (isProtectedPath(rel)) {
+    if (isProtected(rel)) {
       report.reverted.push(rel);
       continue;
     }
@@ -142,8 +174,19 @@ export async function normaliseBuild(opts: {
   issue: number;
   /** The aggregate capture ceiling; the default is the production one. */
   budget?: CaptureBudget;
+  /**
+   * The project's own protected globs (`.pi/work.json` `lean.protectedPaths`), already
+   * resolved by `protectedPathsOf` — so the switch's off arm and an absent field are one
+   * value here. Every caller resolves the list ONCE per step, from the config it read at the
+   * run's base sha, and hands the SAME list to every fold. A changed path matching one is
+   * REVERTED and reported in `reverted` exactly as a built-in protected path is, and is never
+   * reported as leaked: both arms below ask the same predicate.
+   */
+  protected?: readonly string[];
 }): Promise<NormaliseReport> {
   const { exec, wt, repoRoot, branch, headBefore, frozen } = opts;
+
+  const isProtected = protectedPredicate(opts.protected);
 
   // 1 + 2 + 3. All reads, before any write.
   if (!(await headDescendsFrom(exec, wt, headBefore)))
@@ -155,14 +198,17 @@ export async function normaliseBuild(opts: {
     await changedSet(exec, wt, headBefore),
     frozen,
     opts.budget ?? new CaptureBudget(),
+    isProtected,
+    opts.protected,
   );
 
   // 4. RESET — child commits, staging, untracked files, ignore tricks and the dependency links all
   //    go; frozen and protected files come back exactly as at `headBefore`; provisioning rebuilds what
-  //    the clean removed. What the reset's submodule pass could not supply is kept on the report: a
-  //    fold that restored a tree with no submodule in it is a fold whose commit cannot be reproduced.
+  //    the clean removed.
   let submoduleNotes: readonly SubmoduleNote[] = [];
   try {
+    // What the reset's submodule pass could not supply is kept on the report: a fold that
+    // restored a tree with no submodule in it is a fold whose commit cannot be reproduced.
     submoduleNotes = await resetWorktreeToBase(exec, wt, headBefore, branch);
     report.submodules = submoduleNoteClause(submoduleNotes);
   } catch (err) {
@@ -258,7 +304,7 @@ export async function normaliseBuild(opts: {
     "make the build commit",
   );
 
-  await verifyCommit(exec, wt, headBefore, frozen, report);
+  await verifyCommit(exec, wt, headBefore, headBefore, frozen, report, isProtected);
   return report;
 }
 
@@ -266,13 +312,21 @@ export async function normaliseBuild(opts: {
  * Prove the commit the step just made: parent is `headBefore`; no frozen or protected path is in its
  * diff; the tree is clean; every frozen blob at the new head hashes to its record. Each check throws
  * rather than reporting, because the caller's next step merges whatever this returns.
+ *
+ * `diffBase` is the sha the leak filter ranges from, and it is NOT always `headBefore`: the fold has
+ * just reset the tree, so the only paths this fold could have written are the ones it captured, and a
+ * protected path already present in `headBefore` is not one of them. Ranging from the commit the fold
+ * itself sat on (its parent, or `headBefore` when no commit was made) is what keeps the check about
+ * THIS fold's writing rather than about bytes the branch already held when the step began.
  */
 async function verifyCommit(
   exec: BuildExec,
   wt: string,
+  diffBase: string,
   headBefore: string,
   frozen: Record<string, string>,
   report: NormaliseReport,
+  isProtected: (rel: string) => boolean,
 ): Promise<void> {
   // Whole SHAs compared as full strings: a prefix match would pass a fork. Reading `HEAD^` also proves
   // HEAD moved — a fold that made no commit has an unreadable parent here.
@@ -283,8 +337,8 @@ async function verifyCommit(
       `the build commit's parent is ${parent || "unreadable"}, not ${headBefore}`,
     );
 
-  report.files = await commitDiff(exec, wt, headBefore, newHead);
-  const leaked = report.files.filter((p) => frozen[p] !== undefined || isProtectedPath(p));
+  report.files = await commitDiff(exec, wt, diffBase, newHead);
+  const leaked = report.files.filter((p) => frozen[p] !== undefined || isProtected(p));
   if (leaked.length > 0)
     throw new BuildInfraError(`the build commit contains untouchable path(s) ${leaked.join(", ")}`);
 
