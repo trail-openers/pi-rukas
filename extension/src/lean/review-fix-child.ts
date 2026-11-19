@@ -80,12 +80,24 @@ export async function runFixer(
  * commits away. `branch: ""` resets DETACHED (this tree owns none); the frozen
  * refusal is `build`'s one spare — its reset restores an EDITED frozen path either
  * way, so the throw guards a wave that never answered its findings.
+ *
+ * The configured protected globs ride in on `opts` rather than being read here: the step has
+ * already paid for that read, through the seam a test (and a resume) controls.
  */
 export async function foldFix(
   deps: ReviewDeps,
   ctx: HandlerCtx,
   wt: string,
-  opts: { head: string; frozen: Record<string, string>; attempt: number; rows: DispatchUsageRow[] },
+  opts: {
+    head: string;
+    frozen: Record<string, string>;
+    attempt: number;
+    rows: DispatchUsageRow[];
+    /** The project's configured protected globs, from the step's base-commit config. */
+    protected?: readonly string[];
+    /** Filled with what the fold reverted, for the step's reason line. */
+    disclosure: { reverted: string[] };
+  },
 ): Promise<string> {
   const at = (await gitQuiet(deps.exec, wt, ["rev-parse", "HEAD"]))?.stdout ?? "";
   const head = at.trim();
@@ -99,7 +111,9 @@ export async function foldFix(
     frozen: opts.frozen,
     attempt: opts.attempt,
     issue: ctx.issue,
+    protected: opts.protected,
   });
+  opts.disclosure.reverted = [...report.reverted];
   if (report.restored.length > 0)
     throw new ReviewInfraError(
       `the fix round changed the frozen acceptance contract: ${report.restored.join(", ")}`,

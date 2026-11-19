@@ -51,10 +51,11 @@ import { dispatchBuilder } from "./build-dispatch.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
+import { budgetFoldAccumulator, failingClause, foldClauses, keptClause } from "./build-reasons.ts";
 import type { BuildDispatch, BuildExec } from "./build-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import type { WorkConfig } from "./config.ts";
-import { loadWorkConfig } from "./config.ts";
+import { loadWorkConfig, protectedPathsOf } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { MAX_BUILD_ATTEMPTS } from "./machine.ts";
@@ -73,7 +74,7 @@ import {
   budgetVerdictWithRows,
   readDispatched,
 } from "./step-budget.ts";
-import { clipList, joinNotes } from "./text-fence.ts";
+import { joinNotes } from "./text-fence.ts";
 
 /** The re-entry reason the child is given, clipped so a log dump cannot bloat a prompt. */
 const REENTRY_CLIP = 4096;
@@ -279,6 +280,9 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     // The round the prompt and the commit subject name.
     attempt: n,
     issue,
+    // The project's own protected globs, read once with the config above, so this step's two
+    // folds cannot disagree about what is untouchable.
+    protected: protectedPathsOf(config),
   });
   const reentry = reentryFromLog(ctx.steps);
   const added = addedByChallengeFromLog(ctx.steps);
@@ -286,6 +290,8 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   // The wait note of a provider fault this visit sat out, folded into the reason
   // of whichever verdict this visit records (empty joins to nothing).
   let waitedMs = 0;
+  // What this visit's ceiling-stopped folds reverted, and which configured globs named no path.
+  const budgetFold = budgetFoldAccumulator();
   const waitNote = () => (waitedMs > 0 ? providerWaitNote(waitedMs) : "");
   const rows: DispatchUsageRow[] = [];
   let toolUses: unknown[] = [];
@@ -379,20 +385,18 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       ceiling: deps.captureCeiling,
       ...(deps.blockedTimeoutMs === undefined ? {} : { timeoutMs: deps.blockedTimeoutMs }),
     });
-    // The line the step log, handback and the retry's prompt all read (R3/R5).
+    budgetFold.note(kept);
+    // The line the step log, handback and the retry's prompt all read (R3/R5): this visit's own
+    // clauses plus the fold's account from `build-reasons.ts`, whose module holds BOTH of this
+    // step's reason lists so a disclosure cannot reach one arm and miss the other.
     const verdict: Outcome = {
       ...budgetVerdictWithRows("build", read.stop, rows),
       reason: joinNotes([
         budgetSentence("build", read.stop),
         ...(atCap ? [`after ${String(dispatchedBefore + tries + 1)} build attempts`] : []),
-        failing.length === 0 ? "" : `still failing: ${clipList(failing, LIST_CLIP)}`,
-        kept.files.length === 0 ? "" : `kept ${String(kept.files.length)} file(s)`,
-        // #2319 Resolution 4: the disclosure is folded into EACH of the build step's outcomes, and
-        // a ceiling-stopped fold is one of them — its reason is composed here rather than by the
-        // `ok` arm's list, so folding it into only that list would leave this verdict silent
-        // about a commit built on a tree with nothing at that path. The handback and the retry's
-        // prompt both read this line.
-        kept.submodules ?? "",
+        failingClause(failing),
+        keptClause(kept.files),
+        ...budgetFold.clauses(kept),
         waitNote(),
       ]),
     };
@@ -437,18 +441,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     kind: "ok",
     reason: joinNotes([
       `${String(report.files.length)} file(s) changed`,
-      report.restored.length > 0 ? `restored: ${report.restored.join(", ")}` : "",
-      report.reverted.length > 0 ? `reverted: ${report.reverted.join(", ")}` : "",
-      report.removed.length > 0
-        ? `removed: ${report.removed.map((r) => `${r.path} (${r.why})`).join(", ")}`
-        : "",
-      report.deleted.length > 0 ? `deleted: ${report.deleted.join(", ")}` : "",
-      // Said in the fold's own reason, not only in the trace: the commit this step made
-      // was built against a tree with no submodule at that path, so a reader judging the
-      // commit needs to know the tree it came from was incomplete. The clause names every
-      // kind but `seeded`, including `failure` — git itself refused the pass, which is as
-      // much a caveat on this commit as a submodule this step could not find locally.
-      report.submodules ?? "",
+      ...foldClauses(report),
       waitNote(),
     ]),
     dispatches: rows,

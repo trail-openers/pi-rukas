@@ -14,6 +14,9 @@
  *   (b) a fixer that edits a frozen test / a protected path -> refused or reverted, named
  *   (c) a fixer that changes nothing -> CAUSE_NO_CHANGE, unchanged
  *   (d) a fixer that commits its own work -> unchanged
+ *   (e) a fixer that edits a path matching a CONFIGURED `lean.protectedPaths` glob ->
+ *       reverted like a built-in, named in the step reason, and absent from origin —
+ *       and the same edit KEPT with `PI_ENSEMBLE_LEAN_PROTECTED_PATHS=0`
  *
  * Every case drives the whole step, so each refusal is read off origin: what the
  * wave pushed (or failed to push) is the claim, not what a helper returned.
@@ -22,6 +25,10 @@
  */
 
 import { existsSync } from "node:fs";
+import { defaultConfig } from "../src/lean/config.ts";
+import { sha256 } from "../src/lean/specify-proof.ts";
+import { withEnv } from "./lib/env-scope.ts";
+import { put } from "./lib/lean-build-fixture.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   BRANCH,
@@ -39,9 +46,7 @@ import {
   runStep as run,
   setup,
 } from "./lib/lean-review-fixtures.ts";
-import { put } from "./lib/lean-build-fixture.ts";
 import { ctxFor } from "./lib/lean-review-fixtures.ts";
-import { sha256 } from "../src/lean/specify-proof.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -65,11 +70,24 @@ function frozenCtx(repoRoot: string, baseSha: string) {
 /**
  * A wave the gate buys once and the re-review then clears. `write` acts as the
  * fixer: whatever it leaves in `spec.cwd` is what the fold has to answer for.
+ *
+ * `protectedPaths` is the project's OWN list as its `.pi/work.json` would name it.
+ * It rides the step's config read — `loadConfig` is the seam the step already uses
+ * at the run's base sha — so a case states the project's rule rather than a fold's
+ * private idea of one.
  */
-const deps = (write: (cwd: string) => void) =>
+const deps = (write: (cwd: string) => void, protectedPaths?: string[]) =>
   depsWith({
     adversarial: rejectsThenClears("1. the finding the fixer must answer"),
     lens: async (a) => lensRoundFor(a, "APPROVED", []),
+    ...(protectedPaths === undefined
+      ? {}
+      : {
+          loadConfig: async () => ({
+            ...defaultConfig(),
+            lean: { protectedPaths },
+          }),
+        }),
     dispatch: async (spec) => {
       write(spec.cwd as string);
       return result({ role: FIXER_ROLE });
@@ -78,7 +96,9 @@ const deps = (write: (cwd: string) => void) =>
 
 /** `git log --format=%s base..ref` — the subjects the branch gained. */
 const subjects = (repoRoot: string, base: string, ref: string): string[] =>
-  git(repoRoot, "log", "--format=%s", `${base}..${ref}`).split("\n").filter((s) => s !== "");
+  git(repoRoot, "log", "--format=%s", `${base}..${ref}`)
+    .split("\n")
+    .filter((s) => s !== "");
 
 // ── (a) a fixer that edits and never commits is captured by the driver ───────
 {
@@ -127,11 +147,18 @@ const blob = (repoRoot: string, ref: string, rel: string): string =>
 {
   const frozenArm = async (write: (wt: string) => void) => {
     const { repoRoot, baseSha } = makeRepo();
-    const head = await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 5;\n" });
+    const head = await setup({
+      repoRoot,
+      baseSha,
+      branch: BRANCH,
+      feature: "export const f = 5;\n",
+    });
     const { threw } = await run(frozenCtx(repoRoot, baseSha), deps(write));
     return { repoRoot, head, threw, origin: git(repoRoot, "rev-parse", `origin/${BRANCH}`) };
   };
-  const cheated = await frozenArm((wt) => put(wt, "tests/AC1.test.ts", "// rewrote the contract\n"));
+  const cheated = await frozenArm((wt) =>
+    put(wt, "tests/AC1.test.ts", "// rewrote the contract\n"),
+  );
   assert(
     cheated.threw !== undefined &&
       /frozen acceptance contract/.test(cheated.threw.message) &&
@@ -162,7 +189,10 @@ const blob = (repoRoot: string, ref: string, rel: string): string =>
 {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 3;\n" });
-  const { threw } = await run(frozenCtx(repoRoot, baseSha), deps(() => {}));
+  const { threw } = await run(
+    frozenCtx(repoRoot, baseSha),
+    deps(() => {}),
+  );
   assert(
     threw !== undefined && threw.message.includes(CAUSE_NO_CHANGE),
     `(c) a fixer that left neither a commit nor any edit still names the no-change cause (${threw?.message})`,
@@ -191,6 +221,93 @@ const blob = (repoRoot: string, ref: string, rel: string): string =>
     gained.length === 1 && gained[0] === "fix: own",
     `(d) and it is the CHILD's commit on the branch, unfolded (got ${JSON.stringify(gained)})`,
   );
+}
+
+// ── (e) the CONFIGURED globs reach the fix fold too, and the switch takes them out ──
+//
+// `build`'s two arms have their own suite (`test-lean-protected-paths.ts`); this is
+// the third `normaliseBuild` caller. A project that names `angular.json` in
+// `.pi/work.json` means it in every fold: a fixer that edited it and had the edit
+// KEPT would put the very file the project protects onto the merged branch, with the
+// build step's rule never having been asked. The two arms below are the whole scope
+// claim of `PI_ENSEMBLE_LEAN_PROTECTED_PATHS` — configured globs in, built-ins and
+// everything else untouched — driven through the real step so the claim is about what
+// reaches origin, not about what a helper returned.
+{
+  // The built-in edit is the control inside each arm: it must be reverted whatever
+  // the switch says, so an arm that reverted nothing could not pass both assertions.
+  const write = (wt: string) => {
+    put(wt, "fix-uncommitted.ts", "export const fixed = true;\n");
+    put(wt, "angular.json", '{ "scripts": { "lied": true } }\n');
+    put(wt, "src/theme/deep/x.css", "body { color: red }\n");
+    put(wt, ".pi/work.json", '{"verify":{"test":"sh {file}"}}\n');
+  };
+  const GLOBS = ["angular.json", "theme/"];
+
+  const arm = async (switchOff: boolean) => {
+    const { repoRoot, baseSha } = makeRepo();
+    const head = await setup({
+      repoRoot,
+      baseSha,
+      branch: BRANCH,
+      feature: "export const f = 6;\n",
+    });
+    const driven = await run(frozenCtx(repoRoot, baseSha), deps(write, GLOBS));
+    return {
+      repoRoot,
+      head,
+      ...driven,
+      origin: git(repoRoot, "rev-parse", `origin/${BRANCH}`),
+      files: git(repoRoot, "show", "--name-only", "--format=", `origin/${BRANCH}`)
+        .split("\n")
+        .filter((p) => p !== ""),
+    };
+  };
+
+  const on = await arm(false);
+  assert(
+    on.threw === undefined && on.outcome?.kind === "fixed",
+    `(e) the wave completes with a configured path among the fixer's edits (${on.threw?.message ?? `kind ${String(on.outcome?.kind)}`})`,
+  );
+  assert(
+    !on.files.includes("angular.json") && !on.files.some((p) => p.startsWith("src/theme/")),
+    `(e) the configured-glob edits never reached origin — the fold reverted them as it reverts a built-in (got ${JSON.stringify(on.files)})`,
+  );
+  assert(
+    on.files.includes("fix-uncommitted.ts"),
+    `(e) while the fixer's real work is still integrated (got ${JSON.stringify(on.files)})`,
+  );
+  assert(
+    (on.outcome?.reason ?? "").includes("reverted: ") &&
+      (on.outcome?.reason ?? "").includes("angular.json") &&
+      (on.outcome?.reason ?? "").includes("src/theme/deep/x.css") &&
+      (on.outcome?.reason ?? "").includes(".pi/work.json"),
+    `(e) and the step's own reason names every revert, configured and built-in alike (got ${on.outcome?.reason})`,
+  );
+
+  // The off arm: the SAME config, the SAME fixer, the env the only difference. The
+  // configured paths survive and the built-in does not — which is the byte-identity
+  // claim of R5 read as behaviour rather than as a string comparison.
+  await withEnv({ PI_ENSEMBLE_LEAN_PROTECTED_PATHS: "0" }, async () => {
+    const off = await arm(true);
+    assert(
+      off.threw === undefined && off.outcome?.kind === "fixed",
+      `(e) with the switch off the wave still completes (${off.threw?.message ?? `kind ${String(off.outcome?.kind)}`})`,
+    );
+    assert(
+      off.files.includes("angular.json") && off.files.some((p) => p.startsWith("src/theme/")),
+      `(e) the configured paths are KEPT with the switch off — the pre-field fold (got ${JSON.stringify(off.files)})`,
+    );
+    assert(
+      !off.files.includes(".pi/work.json"),
+      `(e) and the BUILT-IN is still reverted — the switch reaches the configured list and nothing else (got ${JSON.stringify(off.files)})`,
+    );
+    assert(
+      (off.outcome?.reason ?? "").includes("reverted: .pi/work.json") &&
+        !(off.outcome?.reason ?? "").includes("angular.json"),
+      `(e) and the reason names only the built-in (got ${off.outcome?.reason})`,
+    );
+  });
 }
 
 cleanupRoots();
