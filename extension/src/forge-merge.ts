@@ -9,7 +9,9 @@
  *
  * GitLab: no single mergeStateStatus — it is composed from
  * `detailed_merge_status` (a finite enum), `has_conflicts`,
- * `blocking_discussions_resolved`, and `approvals_left`:
+ * `blocking_discussions_resolved`, and `approvals_left` — the last optional:
+ * the single-MR reply does not carry it, and pending approvals reach us through
+ * the status as `not_approved` (see {@link composeGlReadiness}):
  *
  *   - `mergeable`                          → CLEAN
  *   - `checking`, `unchecked`, `preparing`,
@@ -119,7 +121,9 @@ export interface GlMrFields {
  *
  * Pure and total — the CLI is the caller's concern (forge.ts passes the
  * `glab api /projects/:id/merge_requests/:iid` row). Every input must be
- * present AND typed; a missing field is a failure, not an assumption.
+ * present AND typed; a missing field is a failure, not an assumption — except
+ * `approvals_left`, which the single-MR reply has never carried: absent or null
+ * is skipped, and a value of any other type is still malformed.
  *
  * The status decides (`GL_STATUS_TO_READINESS`) and the three cross-checks can
  * only ever make the answer more conservative or refuse it outright: a CLEAN
@@ -186,13 +190,24 @@ export function composeGlReadiness(mr: GlMrFields): { readiness: MergeReadiness;
     throw new ForgeFieldError("blocking_discussions_resolved", "glab mr view");
   }
 
-  if (typeof mr.approvals_left === "number") {
+  if (mr.approvals_left === undefined || mr.approvals_left === null) {
+    // Optional. The single-MR reply (`glab mr view`, and the same payload over
+    // `glab api /projects/:id/merge_requests/:iid`) has never carried this
+    // number — it lives on `/merge_requests/:iid/approvals` — so requiring it
+    // failed EVERY real MR closed at `ci`. `detailed_merge_status` is the
+    // authoritative field, and pending approvals already reach us through it as
+    // `not_approved`, DIRTY. A present number stays a cross-check below, able to
+    // refuse a CLEAN it contradicts; a present non-number is malformed there.
+  } else if (typeof mr.approvals_left === "number") {
     if (mr.approvals_left > 0 && readiness === "CLEAN") {
       // Pending approvals block the merge regardless of the status.
       throw new Error(`forge mapping: approvals_left=${mr.approvals_left} overrides ${status}`);
     }
     parts.push(`approvals_left=${mr.approvals_left}`);
   } else {
+    // Present but not a number is a malformed reply, not an absent field: the
+    // difference is what a reader goes and fixes. (The other two cross-checks
+    // stay required — the API does send them on this endpoint.)
     throw new ForgeFieldError("approvals_left", "glab mr view");
   }
 
@@ -375,8 +390,11 @@ async function safeGhChecks(
  * The single API call is `glab api /projects/:id/merge_requests/:iid`
  * (the same payload `glab mr view` returns, via the REST door so the
  * caller can add fields explicitly). `detailed_merge_status`,
- * `has_conflicts`, `blocking_discussions_resolved`, and `approvals_left`
- * must all be present and typed, or the call fails.
+ * `has_conflicts` and `blocking_discussions_resolved` must all be present and
+ * typed, or the call fails. `approvals_left` is the optional cross-check: the
+ * single-MR reply has never carried it (it lives on
+ * `/merge_requests/:iid/approvals`), so absence is skipped and only a value of
+ * the wrong type is malformed — see {@link composeGlReadiness}.
  *
  * CI checks on GitLab are the MR's open pipeline jobs. This read does NOT
  * fetch them: it answers the merge question, and the jobs are the pipeline

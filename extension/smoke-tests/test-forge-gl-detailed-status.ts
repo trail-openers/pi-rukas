@@ -28,12 +28,15 @@ import { VerifyInfraError } from "../src/lean/verify-types.ts";
 import { assert, check, forgeExitCode } from "./lib/forge-harness.ts";
 
 /** One MR row with every cross-check field answered consistently-clean, so the
- *  only variable in a case is the status the forge reported. */
+ *  only variable in a case is the status the forge reported. The builder does
+ *  NOT answer `approvals_left` unless a case asks it to: the single-MR reply has
+ *  never carried the key, so the exhaustive per-value table is driven by the
+ *  shape the API really sends (the absent/null arms are pinned by
+ *  `test-forge-gl-approvals-optional.ts`). */
 const row = (status: string, over: Record<string, unknown> = {}) => ({
   detailed_merge_status: status,
   has_conflicts: false,
   blocking_discussions_resolved: true,
-  approvals_left: 0,
   state: "opened",
   ...over,
 });
@@ -241,6 +244,15 @@ async function main() {
         composed.detail.includes(status),
         `detail does not name the value: ${composed.detail}`,
       );
+      // The cross-checks the row DOES answer appear in the detail; `approvals_left`
+      // is not one of them any more (the single-MR reply does not carry it), so a
+      // `approvals_left=` fragment here is a value nobody sent.
+      assert(
+        composed.detail.includes("has_conflicts=") &&
+          composed.detail.includes("blocking_discussions_resolved=") &&
+          !composed.detail.includes("approvals_left"),
+        `detail: ${composed.detail}`,
+      );
     });
   }
   // The mapping itself is what the fail-closed arm cannot tell a lie about: a
@@ -314,6 +326,9 @@ async function main() {
     const msg = throwsWith(row("mergeable", { approvals_left: 2 }));
     assert(msg !== undefined && msg.includes("approvals_left"), `wrong: ${msg}`);
   });
+  // The absent/null arms — the shape `glab mr view` really answers with, across
+  // the mapped statuses — are the subject of `test-forge-gl-approvals-optional.ts`;
+  // what stays here is the cross-check the composition still owes a number.
 
   // ── `mergeable` with consistent cross-checks is a real CLEAN ────────────
   console.log("mergeable composes CLEAN:");

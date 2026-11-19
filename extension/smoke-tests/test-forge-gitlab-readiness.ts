@@ -77,11 +77,20 @@ async function main() {
     detailed_merge_status: "discussions_not_resolved",
     blocking_discussions_resolved: false,
   }, { ok: false });
-  await readinessCase("readiness fails closed (approvals_left missing)", (() => {
+  // The single-MR reply has never carried `approvals_left` (that number lives on
+  // `/merge_requests/:iid/approvals`), so its absence is the NORMAL reply, not a
+  // malformed one — the case this line replaced demanded the key and therefore
+  // failed every real MR closed. Its absence is CLEAN; a value that is present
+  // but not a number is still refused naming the field.
+  await readinessCase("readiness CLEAN (mergeable, no approvals_left in the reply)", (() => {
     const m = { ...GL_MR };
     delete (m as Record<string, unknown>).approvals_left;
     return m;
-  })(), { ok: false, reasonIncludes: "approvals_left" });
+  })(), { ok: true, readiness: "CLEAN" });
+  await readinessCase("readiness fails closed (approvals_left present but not a number)", {
+    ...GL_MR,
+    approvals_left: "0",
+  }, { ok: false, reasonIncludes: "approvals_left" });
   await readinessCase("readiness fails closed (unmapped detailed_merge_status)", {
     ...GL_MR,
     detailed_merge_status: "brand_new_state",
