@@ -289,9 +289,28 @@ for (const arm of ["1", "0"] as const) {
 {
   // R4 + "no disagreement logs nothing": every case where the values agree, or where
   // the env value is one the reader does not honour, stays silent.
+  // The equal row is driven through the ENGINE, not the pure reader: the env budget and the
+  // flag are the SAME duration, so both arms resolve the same epoch, the run persists that one
+  // arm, and the persist site has nothing to report. The reader alone cannot show it — the
+  // line is the persist site's, and only the engine writes it.
+  {
+    const { arm, warns } = await driveOnce({
+      name: "silent-equal",
+      issue: 2368,
+      env: { [BUDGET]: String(165 * MINUTE_MS), [ABSOLUTE]: undefined, [SWITCH]: undefined },
+      budgetMs: FLAG,
+    });
+    assert(
+      arm !== undefined && arm - Date.now() > 160 * MINUTE_MS,
+      `(b2) budget equal to the flag: the run armed the flag's own epoch (arm is ${String(arm)})`,
+    );
+    assert(
+      warns.length === 0,
+      `(b2) budget equal to the flag: the two arms resolve the same epoch, so the persist site says nothing (got ${String(warns.length)}: ${JSON.stringify(warns)})`,
+    );
+  }
   const silent: [string, Record<string, string | undefined>, number | undefined][] = [
     ["no env at all", {}, undefined],
-    ["budget equal to the flag", { [BUDGET]: String(165 * MINUTE_MS) }, undefined],
     ["absolute equal to the flag", { [ABSOLUTE]: String(T0 + 165 * MINUTE_MS) }, undefined],
     ["empty budget", { [BUDGET]: "" }, undefined],
     ["malformed budget", { [BUDGET]: "abc" }, undefined],

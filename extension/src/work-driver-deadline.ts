@@ -110,18 +110,24 @@ export interface PrecedenceVerdict {
   winner: PrecedenceWinner;
   resolved: number;
   flagArm: number;
+  /** The instant both arms were struck — the same `now` the winner was decided at — carried so
+   *  the line can compare the env arm's epoch `now + envWeighed` against the flag's own without
+   *  re-reading the env. */
+  now: number;
   envWeighed: number | undefined;
   switchOn: boolean;
 }
 
-/** The ladder's answer. `winner` is the arm whose duration the run got; `envWeighed` is the
- *  reader's own word that an env arm it HONOURED was in play beside the flag (`undefined`
- *  where none was — a typo, a non-positive budget, no budget at all, which is what keeps a
- *  value the reader threw away from ever being named as an arm it never weighed). */
+/** The ladder's answer — the same shape one field narrower than `PrecedenceVerdict`, and
+ *  `cycleDeadlineVerdict` adds only `resolved`/`flagArm`. `winner` is the arm whose duration the
+ *  run got; `envWeighed` is the reader's own word that an env arm it HONOURED was in play beside
+ *  the flag (`undefined` where none was — a typo, a non-positive budget, no budget at all, which
+ *  is what keeps a value the reader threw away from ever being named as an arm it weighed). */
 interface Precedence {
   winner: PrecedenceWinner;
   deadline: number;
   envWeighed: number | undefined;
+  now: number;
   /** The switch state the reader saw when it chose `winner`. Carried through the verdict so
    *  the warning never reads `process.env` independently of the resolution that chose the arm. */
   switchOn: boolean;
@@ -139,7 +145,8 @@ interface Precedence {
  * re-derivation of it: a budget the reader rejects (`abc`, `-5`, `0`, `""`) is UNSET and the
  * flag arms the run on either arm, while `1e3` and `" 60000 "` are durations the reader honours
  * and so still win the off arm. `winner === "flag"` is therefore only ever reachable on the ON
- * arm, which is the single test the line needs for "nothing overrode the caller".
+ * arm, and it names the one case where the caller did NOT get the duration they asked for; where
+ * the two durations are equal there is nothing to report (see `warnTimeoutFlagPrecedence`).
  */
 function precedence(
   env: Record<string, string | undefined>,
@@ -155,7 +162,7 @@ function precedence(
     if (Number.isFinite(v) && v >= EPOCH_MS_FLOOR)
       // The absolute arm outranks the flag with or without the switch, so its line is not a
       // switch row: the knob does not move it, and the remedy tail says exactly that.
-      return { winner: "deadline", deadline: v, envWeighed: v, switchOn };
+      return { winner: "deadline", deadline: v, envWeighed: v, now, switchOn };
     trace(
       Number.isFinite(v) && v > 0
         ? `work-driver: ${ABSOLUTE}=${abs} looks like epoch SECONDS — it must be epoch ms; ignored`
@@ -171,6 +178,7 @@ function precedence(
           winner: "flag",
           deadline: now + flag,
           envWeighed: undefined,
+          now,
           switchOn,
         };
   const duration = Number(raw);
@@ -181,19 +189,21 @@ function precedence(
     // when one was set but rejected. Returning undefined keeps `resolveCycleDeadline` null.
     return undefined;
   }
-  // The only input combination the knob can move: both durations real. At `"0"` this returns
-  // the base's answer — the budget's arm — and `switchOn` false is what keeps the row silent.
+  // Both durations real: at `"0"` this returns the base's answer — the budget's arm — and
+  // `switchOn` false is what keeps the row silent.
   if (flag !== undefined && switchOn)
     return {
       winner: "flag",
       deadline: now + flag,
       envWeighed: duration,
+      now,
       switchOn,
     };
   return {
     winner: "budget",
     deadline: now + duration,
     envWeighed: duration,
+    now,
     switchOn,
   };
 }
@@ -205,11 +215,13 @@ function precedence(
  * answer is the one allowed to speak: the same disagreement re-read at ten step boundaries is
  * ten warnings.
  *
- * It fires only where an env arm the reader honoured beat the flag: with no env input, or an
- * env value the reader does not honour, the flag stands alone and nothing is logged (#2362
- * R4). And it fires only on the ON arm: at `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE=0` the switch
- * logs NOTHING, whatever the winner — the switch's promise is the tree with no switch back,
- * and that tree wrote no line for an overridden flag, whichever arm it honoured.
+ * It fires only where an env arm the reader honoured beat the flag: with no env input, with an
+ * env value the reader does not honour, or where the flag's arm and the env arm are one epoch
+ * (the exported budget is the very duration `--timeout` carries, so nothing was overridden and
+ * the remedy would change nothing), nothing is logged (#2362 R4). And it fires only on the ON
+ * arm: at `PI_ENSEMBLE_TIMEOUT_FLAG_PRECEDENCE=0` the switch logs NOTHING, whatever the winner —
+ * the switch's promise is the tree with no switch back, and that tree wrote no line for an
+ * overridden flag, whichever arm it honoured.
  *
  * The `=0` tail says what the knob does to THIS row: on the budget rows it puts the exported
  * budget back above the flag; it never moves an absolute deadline, which outranks the flag on
@@ -233,7 +245,13 @@ export function warnTimeoutFlagPrecedence(
     // deadline's win is silent here too, even though the knob does not move that arm: on the
     // off arm the operator chose the env's order, and a line would be behaviour the promise
     // never made.
-    !armed.switchOn
+    !armed.switchOn ||
+    // The env's arm IS the flag's arm. An exported budget carrying the very duration `--timeout`
+    // does (`PI_ENSEMBLE_CYCLE_BUDGET_MS=9900000` with `--timeout 165`) resolves BOTH arms to one
+    // epoch, so the run holds what the caller asked for and the `=0` remedy would put back a
+    // budget already worth that arm. `envWeighed` alone cannot tell that from a real override, so
+    // the test compares the two epochs this verdict struck at its one instant `now`.
+    (armed.envWeighed !== undefined && armed.now + armed.envWeighed === armed.flagArm)
   )
     return;
   // Each arm is quoted in the unit its own docs row documents — the budget a DURATION, the
@@ -320,6 +338,7 @@ export function cycleDeadlineVerdict(
     resolved: keeps ? persisted : armed.deadline,
     flagArm: flagBudgetMs === undefined ? armed.deadline : now + flagBudgetMs,
     envWeighed: armed.envWeighed,
+    now: armed.now,
     switchOn: armed.switchOn,
   };
 }
