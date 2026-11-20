@@ -32,8 +32,17 @@ export const ORIGIN_ROOTS: string[] = [];
  *   this feature gated on.
  * - `"fast-forward"` — origin's branch at `HEAD~1`, so the push is a fast-forward
  *   rather than a rewrite.
+ * - `"own-publish"` — origin's branch at the sha the run's PRIOR publish step recorded
+ *   as `publishedHead`, with this run's newer head sitting on top of it. The shape a
+ *   `ci` red → `build` → `verify` → `publish` round actually meets: origin holds exactly
+ *   what this run last wrote, and the new head descends from it.
  */
-export type OriginStale = boolean | "stale-branch" | "fast-forward" | "descendants-reach";
+export type OriginStale =
+  | boolean
+  | "stale-branch"
+  | "fast-forward"
+  | "descendants-reach"
+  | "own-publish";
 
 /** Commit one file in `dir` and return the new head. */
 export function commitFile(dir: string, name: string, text: string, msg: string): string {
@@ -60,7 +69,9 @@ export function seedForeignOrigin(opts: {
   writeFileSync(path.join(other, "foreign.ts"), "export const foreign = 1;\n");
   git(other, "add", "-A");
   git(other, "commit", "-q", "-m", "foreign work");
-  git(other, "push", "-q", "origin", `HEAD:refs/heads/${opts.branch}`);
+  // Forced: a foreign tip shares no history with whatever the branch already holds,
+  // and a case may plant this shape on top of another seed.
+  git(other, "push", "-q", "--force", "origin", `HEAD:refs/heads/${opts.branch}`);
 }
 
 /**
@@ -71,6 +82,30 @@ export function seedForeignOrigin(opts: {
  */
 export function seedFastForwardOrigin(opts: { wt: string; branch: string }): void {
   git(opts.wt, "push", "-q", "origin", `HEAD~1:refs/heads/${opts.branch}`);
+}
+
+/**
+ * Origin's branch is left at `priorHead` — the commit the run's PRIOR publish step
+ * recorded as `publishedHead` — while the worktree has moved on to a newer head that
+ * descends from it.
+ *
+ * This is the shape the field report describes and no other seeder builds: every
+ * other shape plants origin at a commit of the NEW head (`fast-forward`,
+ * `descendants-reach`) or at work this run never made (`true`, `stale-branch`,
+ * `originForeign`). Only here does origin hold exactly the sha this run last wrote,
+ * so the own-PR exemption is judged against a branch nobody else has touched.
+ *
+ * `priorHead` is pushed, never `update-ref`'d: a push is what carries the objects
+ * into the bare origin, so the later push of the new head can actually reach them.
+ * Returns the sha origin now holds, which is what the case asserts the lease binds to.
+ */
+export function seedOwnPublishOrigin(opts: {
+  wt: string;
+  branch: string;
+  priorHead: string;
+}): string {
+  git(opts.wt, "push", "-q", "origin", `${opts.priorHead}:refs/heads/${opts.branch}`);
+  return opts.priorHead;
 }
 
 /**

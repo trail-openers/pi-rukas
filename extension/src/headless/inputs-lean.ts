@@ -92,6 +92,18 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // lean/handback-report-bound-switch.ts; the bound itself is `handoffReportBoundMs()`
   // in lean/engine-report.ts — `handoffAllowanceMs()` plus REPORT_BOUND_HEADROOM_RATIO.
   flag("LEAN_REPORT_BOUND", true),
+  // #2416 — `publish` re-pushes to the PR its OWN run opened, instead of handing back.
+  // A red `ci` routes the run back into `publish` with origin holding the sha its own
+  // last publish wrote and the forge's one unsettled row being the PR that publish made;
+  // the lease check refused on any unsettled row, so the round always ended at exit 10.
+  // On, the step compares origin's ref against the newest decided `publish`'s
+  // `publishedHead`/`prUrl` and the forge's rows, and pushes only when origin still holds
+  // that sha, it is an ANCESTOR of the head (so nothing is rewritten), and the single
+  // unsettled row is this branch's own PR. `0` restores the pre-fix refusal byte for
+  // byte — same origin read, one `prList`, no `merge-base` call. `isSettled` stays
+  // fail-closed on either arm. The reader is `leanRepublishOwnPrEnabled` in
+  // lean/republish-own-pr-switch.ts; the check itself is lean/publish-republish.ts.
+  flag("LEAN_REPUBLISH_OWN_PR", true),
   // The gate events on the host's result document (`issues[].gates`). `"0"` writes the
   // document exactly as it read before the object existed — no key, no placeholder — which
   // is what makes the object safe to ship on by default. Unset or any other value leaves

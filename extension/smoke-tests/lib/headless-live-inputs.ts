@@ -34,8 +34,9 @@ import {
   leanPreflightProbeCollectableEnabled,
   leanPreflightProbeContainEnabled,
 } from "../../src/lean/preflight-probe-switch.ts";
-import { leanReadyFactsOnLoadEnabled } from "../../src/lean/ready-facts-switch.ts";
 import { leanProtectedPathsEnabled } from "../../src/lean/protected-paths-switch.ts";
+import { leanReadyFactsOnLoadEnabled } from "../../src/lean/ready-facts-switch.ts";
+import { leanRepublishOwnPrEnabled } from "../../src/lean/republish-own-pr-switch.ts";
 import { leanResultGatesEnabled } from "../../src/lean/result-gates-switch.ts";
 import { leanReviewAcceptanceEnabled } from "../../src/lean/review-acceptance-switch.ts";
 import { leanReviewIncompleteCapEnabled } from "../../src/lean/review-incomplete-cap-switch.ts";
@@ -56,8 +57,11 @@ import { loopDetectorEnabled } from "../../src/loop-detector.ts";
 import { roundCapMergeEnabled } from "../../src/merge-guard-round-cap.ts";
 import { pendingShutdownBoundMs } from "../../src/pending-jobs-signal.ts";
 import { planCacheTtlMs } from "../../src/plan-investigation-cache.ts";
+import {
+  developerBashBoundSeconds,
+  reviewBashBoundSeconds,
+} from "../../src/review-bash-timeout.ts";
 import { adversarialChildBoundMs, reviewSkillReadCap } from "../../src/review-bounds.ts";
-import { developerBashBoundSeconds, reviewBashBoundSeconds } from "../../src/review-bash-timeout.ts";
 import { lensFixBoundMs, reviewCapMs, reviewWallClockMs } from "../../src/review-budget.ts";
 import { transcriptRetentionDays } from "../../src/runs-retention.ts";
 import { autoSteerEnabled } from "../../src/slow-notice.ts";
@@ -81,7 +85,6 @@ import { integrationVerifyTimeoutMs } from "../../src/work-driver-commit-title.t
 import { convergeGateEnabled } from "../../src/work-driver-converge.ts";
 import { protectedPathsEnabled } from "../../src/work-driver-doctrine.ts";
 import { transientRetryEnabled } from "../../src/work-driver-failure-taxonomy.ts";
-import { timeoutFlagPrecedenceEnabled } from "../../src/work-driver-timeout-flag-precedence-switch.ts";
 import {
   burstThresholdSeconds,
   providerRetryFloorMs,
@@ -108,6 +111,7 @@ import { policyJudgeEnabled } from "../../src/work-driver-policy.ts";
 import { prPreflightEnabled } from "../../src/work-driver-pr-preflight.ts";
 import { resumeEnabled, sessionReattachEnabled } from "../../src/work-driver-resume.ts";
 import { stepNoticeThresholdMs } from "../../src/work-driver-step-notice.ts";
+import { timeoutFlagPrecedenceEnabled } from "../../src/work-driver-timeout-flag-precedence-switch.ts";
 import { verifyTimeoutMs } from "../../src/work-driver-verify-budget.ts";
 import { verifyPytestDisabled } from "../../src/work-driver-verify-cmd.ts";
 import { verifyCommandCriteriaEnabled } from "../../src/work-driver-verify-develop-command-criteria.ts";
@@ -201,6 +205,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_COLLECTABLE", leanPreflightProbeCollectableEnabled],
   ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN", leanPreflightProbeContainEnabled],
   ["PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD", leanHandbackNoHeadRecordEnabled],
+  // #2416 — re-push to the PR this run's own `publish` opened. The reader is
+  // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on".
+  ["PI_ENSEMBLE_LEAN_REPUBLISH_OWN_PR", leanRepublishOwnPrEnabled],
   // The routed deadline report's wall. The reader is `v !== "0"`, so the LIVE loop
   // (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_REPORT_BOUND", leanReportBoundEnabled],

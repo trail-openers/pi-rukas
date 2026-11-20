@@ -39,6 +39,7 @@ import { netGitEnv } from "../../src/work-driver-net-git.ts";
 import { gitTestEnv, writeCloneMainlineRef } from "./git-test-env.ts";
 import { originHead } from "./lean-publish-asserts.ts";
 import { type FakeForge, fakeForge, fakePr, prWithState } from "./lean-publish-forge.ts";
+import { TEST_FILE_CONTENT as TEST, logFor, priorPublishStep } from "./lean-publish-log.ts";
 import {
   ORIGIN_ROOTS,
   type OriginStale,
@@ -46,8 +47,11 @@ import {
   seedFastForwardOrigin,
   seedForeignOrigin,
   seedOneCommitStaleOrigin,
+  seedOwnPublishOrigin,
   seedStaleOrigin,
 } from "./lean-publish-origin.ts";
+import type { PublishRemoteSeeds } from "./lean-publish-remote-seeds.ts";
+import type { PublishSeams } from "./lean-publish-seams.ts";
 import { git, sha } from "./lean-verify-fixture.ts";
 
 export { originHead } from "./lean-publish-asserts.ts";
@@ -58,9 +62,6 @@ export type { FakeForge } from "./lean-publish-forge.ts";
  * builders create. Shared array so every test's cleanup sweep removes them all.
  */
 export const ROOTS: string[] = ORIGIN_ROOTS;
-
-/** The acceptance test the run froze, committed at HEAD. */
-const TEST = "#!/bin/sh\nexit 0\n";
 
 /** The default contract: two test criteria, each with one frozen file. */
 export function defaultSpec(): PiSpec {
@@ -74,7 +75,7 @@ export function defaultSpec(): PiSpec {
   };
 }
 
-export interface PublishOpts {
+export interface PublishOpts extends PublishSeams, PublishRemoteSeeds {
   issue: number;
   /** The contract the issue body carries. */
   spec?: PiSpec;
@@ -86,102 +87,9 @@ export interface PublishOpts {
   commitAfterVerify?: boolean;
   /** Counters the run carries (a `draft` flag from the gate). */
   draft?: boolean;
-  /**
-   * Origin already holds a commit of ANOTHER repo on the branch — work this run
-   * never made and has no history with. The step must never report `ok` over it
-   * (see the case in `test-lean-publish-remote.ts`).
-   */
-  originForeign?: boolean;
-  /**
-   * Origin already holds ANOTHER commit of this repo on the run's branch — the
-   * stale-branch shapes a rerun of a lean issue meets. See `OriginStale` in
-   * `lean-publish-origin.ts` for what each name builds.
-   */
-  originStale?: OriginStale;
-  /**
-   * Seed origin's branch at the run's HEAD before the step runs, so the push
-   * path is genuinely skipped. Each `runPublish` builds its own temp repo, so
-   * the honest "origin already holds this head" case cannot be two runs of the
-   * same issue — it needs the ref seeded.
-   */
-  originAtHead?: boolean;
-  /**
-   * Move origin's branch ref BETWEEN the step's `ls-remote` read and its push —
-   * the race a lease exists to catch. The push must fail rather than overwrite.
-   * The case also passes `noPush`: the race is the moment just before the push,
-   * and a setup push would have moved the ref once already.
-   */
-  moveRemoteDuringPush?: boolean;
-  /**
-   * Do not push this run's head at the end of setup, so origin's run branch is
-   * absent when the step looks and the step's own push is the only write. For the
-   * cases that must observe it: a refusal that has to happen BEFORE any push, a
-   * stubbed push report, a lease that has to fail.
-   */
-  noPush?: boolean;
-  /**
-   * Report every PR row's `state` as something outside the `PullRequestState`
-   * union — the seam for `mapPrListReply`'s `state: ""` row and for an adapter
-   * that hands back `"open"`/`"Open"`. The publish step's open-PR check must
-   * refuse on all of them.
-   */
-  stateOver?: string;
+
   /** The fake forge's open PRs; `undefined` means "load none". */
   openPrs?: NormalizedPullRequest[];
-  /** Make `prView` reject, so the step cannot read a reused PR's draft state. */
-  viewThrows?: boolean;
-  /**
-   * What `prView` reports for a REUSED PR, overriding the `openPrs` row. The
-   * list reply the real CLI gives carries no `isDraft`, so a case that means
-   * "the PR is ready" without teaching the step that the list answers says it
-   * here, on the only reply that can.
-   */
-  viewIsDraft?: Record<string, boolean>;
-  /** Make `prDraft` reject, so a reused PR cannot be put back to draft. */
-  draftThrows?: boolean;
-  /** Make `prView` reject for these PR numbers only (the read-back after a re-draft). */
-  viewThrowsFor?: number[];
-  /**
-   * What `prView` reports for a number AFTER the step asked to draft it — the
-   * seam for a forge that accepted `prDraft` and left the PR ready. A number the
-   * map does not carry keeps the state the PR itself reports.
-   */
-  afterDraft?: Record<number, boolean | undefined>;
-  /**
-   * What `prView` reports for the PR the step CREATES — the seam for a forge
-   * that made a draft and reports it ready (`gh pr create --json` carries no
-   * `isDraft`, so the create reply never answers and the step must ask).
-   */
-  afterCreate?: Record<number, boolean | undefined>;
-  /**
-   * Answer one git call before the fixture's own executor sees it — the seam for
-   * a case that must control a push's porcelain output. Return `undefined` to
-   * let the call through.
-   */
-  execOver?: (
-    cmd: string,
-    opts?: Parameters<PublishDeps["exec"]>[1],
-  ) => Promise<{ stdout: string; stderr?: string }> | undefined;
-  /**
-   * What `git push` prints, reported by the fake INSTEAD of running the real
-   * push — the seam for a case that must control the porcelain, e.g. a rejection
-   * printed over a ref origin actually holds.
-   */
-  pushPorcelain?: string;
-  /** Make `prList` reject. */
-  listThrows?: boolean;
-  /** A branch name to force onto the run (an unsafe ref, for the handback case). */
-  branch?: string;
-  /**
-   * Set `core.sshCommand` in the fixture repo before the step runs — the seam
-   * for a push env that must honour the repo's own ssh selection (a deploy key
-   * chosen with `git config core.sshCommand`, which an env-only `netGitEnv()`
-   * lookup silently skips).
-   */
-  sshCommand?: string;
-  /** Check out a worktree whose branch differs from the run's (a state file that
-   *  names the mainline while the tree sits on its own lean ref). */
-  worktreeBranch?: string;
   /** The verify step to log; omit for a run that never reached a verdict. */
   verify?: { kind: "green" | "red"; head?: string; reason?: string } | undefined;
   /**
@@ -197,6 +105,11 @@ export interface PublishOpts {
   commandCriteria?: Record<string, string>;
   /** Extra steps appended to the log. */
   extraSteps?: Step[];
+  /**
+   * Check out a worktree whose branch differs from the run's (a state file that
+   *  names the mainline while the tree sits on its own lean ref).
+   */
+  worktreeBranch?: string;
   /** Seams a case replaces: the approved spec and its check child. */
   depsOver?: Partial<PublishDeps>;
 }
@@ -216,46 +129,10 @@ export interface PublishRun {
   leaseArg?: string;
   /** The sha origin's run branch held after a stale seed, before the step ran. */
   seededSha?: string;
-}
-
-/** The step log a run carries when it reaches publish with a green gate. */
-function logFor(issue: number, o: PublishOpts, head: string): Step[] {
-  const steps: Step[] = [
-    { key: `${issue}:ready:0`, state: "ready", startedAt: 1, outcome: { kind: "ok" } },
-    {
-      key: `${issue}:specify:0`,
-      state: "specify",
-      startedAt: 2,
-      outcome: {
-        kind: "ok",
-        frozen: { "tests/AC1-retry.test.sh": sha(TEST), "tests/AC2-bound.test.sh": sha(TEST) },
-        tests: { AC1: ["tests/AC1-retry.test.sh"], AC2: ["tests/AC2-bound.test.sh"] },
-      },
-    },
-    {
-      key: `${issue}:build:0`,
-      state: "build",
-      startedAt: 3,
-      outcome: { kind: "ok", reason: "1 file(s) changed" },
-    },
-  ];
-  if (o.verify !== undefined) {
-    steps.push({
-      key: `${issue}:verify:0`,
-      state: "verify",
-      startedAt: 4,
-      outcome: {
-        kind: o.verify.kind,
-        ...(o.verify.reason === undefined ? {} : { reason: o.verify.reason }),
-        ...(o.verify.kind === "green" ? { verifiedHead: o.verify.head ?? head } : {}),
-        ...(o.commandCriteria === undefined ? {} : { commandCriteria: o.commandCriteria }),
-        ...(o.preexistingFailures === undefined
-          ? {}
-          : { preexistingFailures: o.preexistingFailures }),
-      },
-    });
-  }
-  return [...steps, ...(o.extraSteps ?? [])];
+  /** The head the run's PRIOR publish recorded and origin still holds (republish cases). */
+  priorHead?: string;
+  /** The worktree's branch name — a republish case needs it to name the ref it asserts on. */
+  branch?: string;
 }
 
 /** Build the repo, the worktree and the ctx, then run the step. */
@@ -300,9 +177,61 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   writeFileSync(path.join(wt, "tests/AC2-bound.test.sh"), TEST, { mode: 0o755 });
   commitFile(wt, "src.ts", "export const retry = () => 1;\n", "feat: implement the retry helper");
   commitFile(wt, "backoff.ts", "export const cap = 3;\n", "feat: bound the backoff");
+
+  // The republish shape: the run's PRIOR publish pushed what the tree held up to here,
+  // and the CI-fix commit below is the newer thing `publish` is now being asked to put
+  // on top of it. `priorPublish.head` must be the sha this records — a case whose
+  // record named some other sha would be testing a fixture, not the step.
+  // The sha the run's PRIOR publish recorded, computed HERE rather than supplied: a
+  // case cannot make the step's record disagree with the tree the record claims, which
+  // is the way a republish fixture would otherwise pass by construction. The case names
+  // the PR URL it expects on origin's row; the sha is this fixture's fact, not the
+  // case's invention.
+  const priorHead = o.priorPublish === undefined ? undefined : git(wt, "rev-parse", "HEAD");
+  if (o.priorPublish !== undefined && o.graftForeignHead === true) {
+    // The head publish is about to push must NOT descend from what the run published.
+    // It is built in a scratch repo with no shared history and grafted onto the run
+    // branch, so origin still holds the run's own recorded sha while HEAD sits on
+    // someone else's line — git's definitive "not a fast-forward" for the ancestry read.
+    const scratch = mkdtempSync(path.join(tmpdir(), "lean-publish-foreign-"));
+    ROOTS.push(scratch);
+    git(scratch, "init", "-q", "-b", "foreign");
+    git(scratch, "remote", "add", "origin", origin);
+    writeFileSync(path.join(scratch, "ci-fix.ts"), "export const ciFix = 1;\n");
+    git(scratch, "add", "-A");
+    git(scratch, "commit", "-q", "-m", "fix: the ci fix, on history this run never made");
+    const foreign = git(scratch, "rev-parse", "HEAD");
+    // The objects have to be IN this clone before its branch can name them.
+    git(wt, "fetch", "-q", scratch, "refs/heads/foreign:refs/heads/lean-foreign-head");
+    git(wt, "update-ref", `refs/heads/${checkout}`, foreign, git(wt, "rev-parse", "HEAD"));
+    git(wt, "reset", "-q", "--hard", foreign);
+  } else if (o.priorPublish !== undefined)
+    commitFile(wt, "ci-fix.ts", "export const ciFix = 1;\n", "fix: what the red ci named");
+
+  // `head` is what the green `verify` in the log names as its subject, so it must be
+  // read BEFORE anything a case adds on top of it. `commitAfterVerify` is the knob that
+  // asks "what if the head moved after the gate was green?": committing that file above
+  // this line would fold it into `head`, make `verifiedHead` equal the pushed head by
+  // construction, and disarm the step's "HEAD moved since verify" refusal — the case
+  // would then pass by testing nothing. Same reason `dirty` is written below: a stray
+  // file has to survive to the moment the step reads the tree.
   const head = git(wt, "rev-parse", "HEAD");
 
+  if (o.commitAfterVerify === true) {
+    writeFileSync(path.join(wt, "later.ts"), "export const later = 1;\n");
+    git(wt, "add", "-A");
+    git(wt, "commit", "-q", "-m", "feat: a commit nobody verified");
+  }
+
   if (o.originStale === "fast-forward") seedFastForwardOrigin({ wt, branch });
+  if (o.originStale === "own-publish") {
+    if (o.priorPublish === undefined)
+      throw new Error(
+        'originStale "own-publish" needs priorPublish: origin must sit at the sha the run recorded',
+      );
+    if (priorHead === undefined) throw new Error("own-publish needs priorPublish");
+    seedOwnPublishOrigin({ wt, branch, priorHead });
+  }
   if (o.originStale === true || o.originStale === "descendants-reach")
     seedStaleOrigin({
       origin,
@@ -316,8 +245,18 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   // What origin holds once the stale shape is planted: the sha the lease must bind
   // to. Read back from origin rather than returned by the seeders, because origin
   // is the only thing the step's `ls-remote` will see.
-  const seededSha = o.originStale === undefined ? undefined : originHead(origin, branch);
+  const seeded =
+    o.originStale === undefined && o.priorPublish === undefined
+      ? undefined
+      : originHead(origin, branch);
+  // The shape must have actually landed, or a case about a branch at the run's own
+  // last-pushed sha would be measuring a branch that is simply absent.
+  const seededSha = o.priorPublish !== undefined ? priorHead : seeded;
   if (o.originForeign === true) seedForeignOrigin({ origin, branch });
+  // `originForeign` is a SECOND shape on top of the one `originStale`/`priorPublish`
+  // planted: it force-moves the ref to a commit from an unrelated repo, which is how a
+  // case asks "origin holds something other than the sha the run recorded". The forced
+  // form is required — the foreign tip shares no history with what is already there.
   if (o.originAtHead === true) git(wt, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
   // Setup pushes THIS run's head onto the run's branch only for a first run, the
   // shape where the step's honest answer is `already on origin` and no write is
@@ -332,18 +271,28 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   const setupPushesHead =
     o.noPush !== true &&
     o.originStale === undefined &&
+    o.priorPublish === undefined &&
     o.originForeign !== true &&
     o.originAtHead !== true;
   if (setupPushesHead) git(wt, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
 
+  // Written, never committed: the step refuses a dirty tree, so the stray file has to
+  // still be there when it looks.
   if (o.dirty === true) writeFileSync(path.join(wt, "stray.txt"), "uncommitted\n");
-  if (o.commitAfterVerify === true) {
-    writeFileSync(path.join(wt, "later.ts"), "export const later = 1;\n");
-    git(wt, "add", "-A");
-    git(wt, "commit", "-q", "-m", "feat: a commit nobody verified");
-  }
 
-  const steps = logFor(issue, o, head);
+  const steps = [
+    ...logFor(issue, o, head),
+    ...(o.priorPublish === undefined
+      ? []
+      : priorPublishStep(issue, o.priorPublish, priorHead ?? "")),
+  ];
+  if (o.overwritePublishOutcome !== undefined) {
+    const idx = steps.map((st) => st.state).lastIndexOf("publish");
+    if (idx < 0) throw new Error("overwritePublishOutcome needs a priorPublish record to rewrite");
+    const entry = steps[idx];
+    if (entry === undefined) throw new Error("overwritePublishOutcome: no publish step");
+    steps[idx] = { ...entry, outcome: o.overwritePublishOutcome as unknown as Outcome };
+  }
   const run: LeanRun = {
     ...createRun({
       issue,
@@ -370,12 +319,13 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     now: () => 9,
   };
 
+  const seededRows = (o.openPrs ?? []).map((pr) =>
+    o.stateOver === undefined
+      ? pr
+      : prWithState(pr.number, pr.url, pr.headRefName ?? "", o.stateOver),
+  );
   const forge = fakeForge({
-    prs: (o.openPrs ?? []).map((pr) =>
-      o.stateOver === undefined
-        ? pr
-        : prWithState(pr.number, pr.url, pr.headRefName ?? "", o.stateOver),
-    ),
+    prs: seededRows,
     listThrows: o.listThrows === true,
     viewThrows: o.viewThrows === true,
     ...(o.viewIsDraft === undefined
@@ -431,11 +381,15 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     }
     return rows;
   };
+  if (o.forgeOver !== undefined) Object.assign(forge, o.forgeOver);
   const spec = o.spec ?? defaultSpec();
   /** The env every git child ran with, so a case can assert on the push's. */
   const seenEnvs: NodeJS.ProcessEnv[] = [];
   const seen: { leaseArg?: string } = {};
-  const deps: PublishDeps = {
+  const base: PublishDeps = {
+    // The recorder's own executor is installed below, once this object exists for it to
+    // forward to; without one the step gets the executor written here.
+    //
     // The production seam's env decision is applied HERE rather than inside
     // `publishDeps()` — the fixture injects its own executor, so a push env the
     // fixture never forwarded would be a guarantee no test can observe. Same
@@ -443,7 +397,7 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     // env supplied by the caller) — INCLUDING the cwd argument, which is what
     // lets the repo's `core.sshCommand` take part in the precedence. Omitting it
     // here would make the fixture observe a different env than production builds.
-    exec: async (cmd, opts) => {
+    exec: (async (cmd, opts) => {
       // The lease is recorded before any override, so a case that substitutes the
       // push still observes the argument the step rendered.
       if (cmd === "git" && opts?.argv?.includes("push") === true)
@@ -465,20 +419,39 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
         (cmd === "git" || cmd.startsWith("git ") ? netGitEnv(gitTestEnv(), cwd) : gitTestEnv());
       seenEnvs.push(env);
       return execp(cmd, { ...opts, env, cwd });
-    },
+    }) as PublishDeps["exec"],
     fetchBody: async () => o.body ?? renderPiSpec(spec),
-    forge: async () => forge,
+    forge: async () => (o.execRecorder === undefined ? forge : o.execRecorder.forge(seededRows)),
     issueSpec: async () => undefined,
     specBlock: async () => {
       throw new Error("the fixture has no spec block");
     },
     ...o.depsOver,
   };
+  // The recorder is installed with the object above, so it sees each call exactly as
+  // the step made it and forwards to the executor written here: a spy, not a stub —
+  // origin still decides every ref the cases assert on.
+  // The recorder is installed once the base executor exists, so it can forward to it
+  // and still see each call exactly as the step made it. `as unknown as`: the recorder is
+  // one function and `VerifyExec` is declared as an intersection of two overloads whose
+  // answer types differ in optionality only — the cast carries no behaviour, and the
+  // wrapper returns an answer for every call it forwards.
+  const deps: PublishDeps =
+    o.execRecorder === undefined
+      ? base
+      : {
+          ...base,
+          exec: o.execRecorder.wrapExec(base) as unknown as PublishDeps["exec"],
+        };
   const { publishOutcome } = await import("../../src/lean/publish.ts");
   // Read at spread time, not built now: `shared` is constructed BEFORE the step
   // runs, so a field captured here would always be undefined.
-  const shared = { repoRoot, wt, head, origin, forge, gitEnvs: seenEnvs };
-  const observed = () => ({ leaseArg: seen.leaseArg, seededSha });
+  const shared = { repoRoot, wt, head, origin, forge, branch, gitEnvs: seenEnvs };
+  const observed = () => ({
+    leaseArg: seen.leaseArg,
+    seededSha,
+    ...(o.priorPublish === undefined ? {} : { priorHead }),
+  });
   try {
     return {
       outcome: await publishOutcome(ctx, deps),
