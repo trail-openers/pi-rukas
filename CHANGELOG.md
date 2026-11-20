@@ -8,6 +8,16 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.95](https://github.com/trail-openers/pi-rukas/compare/v0.14.94...v0.14.95) (2026-11-20)
+
+
+### Bug Fixes
+
+* **lean:** bound the protected-path glob matcher and tidy its disclosures ([#2408](https://github.com/trail-openers/pi-rukas/issues/2408)) ([d8d0ce3](https://github.com/trail-openers/pi-rukas/commit/d8d0ce35bef8ccf5f2ff357d35e5da6f90f662c6))
+* **lean:** let publish push to the run's own PR after a red ci ([#2420](https://github.com/trail-openers/pi-rukas/issues/2420)) ([d6bfe4f](https://github.com/trail-openers/pi-rukas/commit/d6bfe4f6eebbd246370da006708ebde1e66c892d))
+* **review:** continue a lean review fixer cut off at the output-token limit ([#2419](https://github.com/trail-openers/pi-rukas/issues/2419)) ([341e632](https://github.com/trail-openers/pi-rukas/commit/341e6325a0875fda7bf99f2a596e4819c34f7688))
+* **sandbox:** judge the Dockerfile vipune smoke by exit status, not any stderr ([#2422](https://github.com/trail-openers/pi-rukas/issues/2422)) ([bcfafd7](https://github.com/trail-openers/pi-rukas/commit/bcfafd7765cf3f318e72a5adb3d0fb969ba8ceec))
+
 ## [0.14.94](https://github.com/trail-openers/pi-rukas/compare/v0.14.93...v0.14.94) (2026-11-19)
 
 
