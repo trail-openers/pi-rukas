@@ -243,21 +243,17 @@ export function continuationReplyText(rawStdout: string): string {
   return last;
 }
 
-/** The role's system prompt, written the way `spawnSpecialist` does, so the resumed child is
+/** The fixer's system prompt, written the way `spawnSpecialist` does, so the resumed child is
  *  configured like the child it continues. The temp DIRECTORY travels with the file because the
- *  caller owns its removal. A role with no prompt entry cannot reach here at all: the gate in
- *  `spawnDeveloperContinuationChild` admits exactly {@link FIXER_ROLE}, and the read failing on a
- *  role that IS the fixer's is an fs fault the catch reports, not a role question. */
+ *  caller owns its removal. The role is not a parameter: the gate in `spawnDeveloperContinuationChild`
+ *  admits exactly {@link FIXER_ROLE}, which is also what narrows the roster lookup below. */
 async function writeRolePromptFileFor(): Promise<{ dir: string; promptFile: string }> {
-  const role = FIXER_ROLE;
-  // The gate above admits exactly this role, so the roster entry exists by the same proof the prompt
-  // file is read under. `ROLES` is keyed by `RoleName`, and this is the one place that proof is stated.
   const roleDef: (typeof ROLES)[RoleName] = ROLES[FIXER_ROLE];
   const fs = await import("node:fs/promises");
   const os = await import("node:os");
   const path = await import("node:path");
   const systemPrompt = await fs.readFile(roleDef.promptFile, "utf8");
-  return writeReaskPromptFile(role, systemPrompt, os.tmpdir(), path.join);
+  return writeReaskPromptFile(FIXER_ROLE, systemPrompt, os.tmpdir(), path.join);
 }
 
 /**
@@ -312,15 +308,12 @@ export async function spawnDeveloperContinuationChild(
     );
     return { ok: false, reason: "unverified-role" };
   }
-  // The same pre-spawn check `spawnSpecialistInner` makes before it builds its argv (#926, the #893
-  // reporter-preflight pattern): this child's argv names the guard companion, so a missing companion
-  // has to be a NAMED dispatch failure rather than a resumed child running with none of the
-  // mode-independent guards. The check itself THROWS, exactly as it does on the spawn path, and the
-  // name it throws with is the operator's diagnosis; here it is caught and turned into the
-  // `spawn-failed` outcome this module's contract keeps, because its caller is a review step that
-  // must not be ended by a wedged install. That is why the line is traced with `traceWarn` and not
-  // `trace`: the outcome on its own cannot tell a missing companion from any other preparation fault,
-  // and an outcome whose cause is invisible is the silence this repo's gates refuse to read as a pass.
+  // The same pre-spawn check `spawnSpecialistInner` makes before it builds its argv: this child's
+  // argv names the guard companion, so a missing companion has to be a NAMED dispatch failure rather
+  // than a resumed child running with none of the mode-independent guards. It THROWS there; here the
+  // caller is a review step that must not be ended by a wedged install, so it is caught into the
+  // `spawn-failed` outcome this module's contract keeps — and traced with `traceWarn`, because an
+  // outcome alone cannot tell a missing companion from any other preparation fault.
   try {
     preflightChildGuards();
   } catch (err) {
