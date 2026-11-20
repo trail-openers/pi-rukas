@@ -69,18 +69,14 @@ say(
 // substring `onnxruntime`, so a filter that drops any line merely mentioning it passes on
 // the affinity case and reintroduces the failure #2343 guards against. The literals are
 // here, not in the Dockerfile, because the step judges them and the gate supplies them.
-// The benign warning is kept in BOTH shapes onnxruntime writes it — the cpu probe's
-// early-warning path writes it bare, the logger path prefixes it with the timestamp and
-// `[W:onnxruntime:…]` category — because only the numeric tail is common to the two, and a
-// pattern tuned to one shape silently fails the build on the other.
+// The benign warning is the bare line the cpu probe writes: the failing publish-image run's own
+// stderr carried no logger prefix at all, so a pattern that required one would leave the build
+// broken. Anything else that mentions `onnxruntime` — the affinity line below — is residue.
 const CPUID_TAIL = "onnxruntime cpuid_info warning: Unknown CPU vendor. cpuinfo_vendor value: 0";
-// The logger prefix exactly as the coloured fixture above carries it, split out so the arms
-// below can build the logger-prefixed shape (with and without ANSI) from one literal.
-const CPUID_PREFIX = "2026-11-20 10:11:02.123456 [W:onnxruntime:Default, cpu_info.cc:118 cpuid_info]";
-// The joined-error line's own prefix, so its timestamp differs from the benign line's and a
-// pattern anchored to one literal timestamp could not pass for the wrong reason.
+// The joined-error line's own prefix, so a pattern anchored to the warning alone could not pass
+// for the wrong reason on a line that carries its own report.
 const ERROR_PREFIX = "E:onnxruntime, default_allocator.cc:42 Load model from /home/vscode/.cache/huggingface/hub/model.onnx";
-const CPUID = `\x1b[0;93m${CPUID_PREFIX} ${CPUID_TAIL}\x1b[0m`;
+const CPUID = `\x1b[0;93m${CPUID_TAIL}\x1b[0m`;
 const AFFINITY = "\x1b[1;31m[E:onnxruntime:Default, env.cc:374 ThreadMain] pthread_setaffinity_np failed : Operation not permitted (22)\x1b[0m";
 // The shape the actual failing publish-image run wrote (`gh run view` of run 44717094942:
 // `onnxruntime cpuid_info warning: Unknown CPU vendor. cpuinfo_vendor value: 0`, with no
@@ -141,9 +137,13 @@ say(run({ stderr: CPUID.replace(/\x1b\[[0-9;]*m/g, "") }) === 0, "smoke step pas
 say(run({ stderr: CPUID_BARE }) === 0, "smoke step passes on the bare cpu-probe warning exactly as the failing publish-image run wrote it");
 say(run({ stderr: CPUID_TAIL.replace(/value: 0$/, "value: 12") }) === 0, "smoke step passes on the warning whatever enum value the probe reports");
 say(run({ stderr: CPUID_TAIL.replace(/value: 0$/, "value: 00") }) === 0, "smoke step passes on the warning with a zero-padded enum value");
-// The logger-prefixed shape written with no ANSI colouring at all: the coloured arm above
-// strips its escapes, so without this one the bare logger line is never run.
-say(run({ stderr: `${CPUID_PREFIX} ${CPUID_TAIL}` }) === 0, "smoke step passes on the logger-prefixed warning without ANSI escapes");
+// The HIGH finding: the logger closes a record with a bare `\x1b[0m`, and after the ANSI strip
+// that line is nothing but whitespace, so a residue test that counts it as content fails a
+// perfectly good image. Blank (and whitespace-only) lines left by the strip are no residue;
+// a real error line is residue even when blank lines surround it.
+say(run({ stderr: `${CPUID_TAIL}\n\x1b[0m` }) === 0, "smoke step passes when a stderr line is only an ANSI escape and the strip leaves it blank");
+say(run({ stderr: `\x1b[0m\n\x1b[1;33m   \x1b[0m` }) === 0, "smoke step passes when every stderr line is only ANSI escapes and spaces");
+say(run({ stderr: `\n${CPUID_TAIL}\n\nsomething else complained\n\n` }) !== 0, "smoke step still fails on a real error line surrounded by blank lines");
 say(run({ stderr: AFFINITY }) !== 0, "smoke step still fails on an onnxruntime pthread_setaffinity_np line");
 say(run({ stderr: "something else complained" }) !== 0, "smoke step fails on any other stderr line");
 say(run({ stderr: `${CPUID}\n${AFFINITY}` }) !== 0, "smoke step fails when the benign warning travels with an affinity line");
@@ -169,21 +169,16 @@ for (const [what, line] of [
 // The same quoting lines appended to real, passing vipune output: the exit is 0 and the search
 // hit is present, so only the residue rule can catch these.
 say(run({ stderr: `${CPUID}\n${MODEL_LOAD}\n${EMBED_ZERO}\n${PYBIND}` }) !== 0, "smoke step fails on model errors quoting the warning even alongside benign stderr and a passing hit");
-// R10, the BOTH-ENDS rule. onnxruntime's logger terminates a record with an ANSI reset, so a
+// R10, the BOTH-ENDS rule. The logger terminates a record with an ANSI reset, so a
 // real error and the benign warning can reach the stderr file joined on ONE line: the error's
 // text, then `\x1b[0m`, then the warning. After the ANSI strip the line ENDS in the warning, so
 // a pattern anchored only at the end matches the whole line, leaves zero bytes of residue, and
 // a broken-model image publishes with a green smoke step. Anchoring the drop at the start as
-// well — a line consisting only of the warning, optionally behind onnxruntime's own logger
-// prefix — is what makes that line survive.
+// well — a line consisting only of the warning — is what makes that line survive.
 const ERROR_JOINED_TO_WARNING = `${ERROR_PREFIX} failed: Segfault at 0x7f4a2c1b3d00\x1b[0m${CPUID_TAIL}`;
 say(
   run({ stderr: ERROR_JOINED_TO_WARNING }) !== 0,
   "smoke step fails when a real error is joined to the benign warning on one line by an ANSI reset (an end-anchored-only drop deletes the whole line)",
-);
-say(
-  run({ stderr: `${CPUID_PREFIX} ${CPUID_TAIL}\x1b[0m` }) === 0,
-  "smoke step passes when the logger-prefixed warning is followed by a trailing ANSI reset",
 );
 
 // R1: exit status decides, so a broken vipune cannot hide behind an empty stderr. The
@@ -217,15 +212,14 @@ say(mutantCode === 0, `canary: the masked mutant accepts that same vipune, so th
 
 // Structural half of the same rule: the drop must be anchored at BOTH ends of the line — a
 // leading anchor so a joined error survives the ANSI strip, a trailing one so a line that merely
-// QUOTES the warning is kept — and it must require the numeric vendor tail and the whole phrase,
-// because the two ways onnxruntime writes this warning (bare from the cpu probe, logger-prefixed
-// from the default logger) share only that tail. Dropping either anchor is the substring drop
-// that published a broken model, and it is not a comment away from shipping again — so the
-// shipped arm is pinned, not just exercised. The logger prefix is matched loosely (a leading
-// `2026-…` run, never `.*`), so the pin cannot be satisfied by a permissive pattern.
+// QUOTES the warning is kept — and it must require the numeric vendor tail and the whole phrase.
+// Dropping either anchor is the substring drop that published a broken model, and it is not a
+// comment away from shipping again — so the shipped arm is pinned, not just exercised. The
+// pattern is the bare warning only: nothing in it may be a hard-coded logger prefix, which is
+// why the anchor is the whole line rather than a prefix alternative.
 say(
-  body.some((l) => /grep -E -v '\^\(2026-11-20 [^)]*cpuid_info] \)\?onnxruntime cpuid_info warning: Unknown CPU vendor\\\. cpuinfo_vendor value: \[0-9\]\+\$'/.test(l)),
-  "smoke step's filter is anchored at both ends of the line and requires the numeric vendor tail (not a substring drop)",
+  body.some((l) => /grep -E -v '\^onnxruntime cpuid_info warning: Unknown CPU vendor\\\. cpuinfo_vendor value: \[0-9\]\+\$'/.test(l)),
+  "smoke step's filter is anchored at both ends of the line, requires the numeric vendor tail, and carries no hard-coded logger prefix (not a substring drop)",
 );
 // The benign line the failing publish-image run ACTUALLY wrote, byte for byte
 // (`gh run view 44717094942 --log-failed`; the `18.64` in that log is buildx's step timer, so
@@ -266,8 +260,8 @@ say(mutantQuote === 0, `canary: the substring-drop mutant accepts that same stde
 // mutation here; it rewrites one line and one line only, which is what makes the shipped guard
 // observable rather than assumed.
 const unguarded = dockerfile.replace(
-  /sed 's\/\\x1b\\\[\[0-9;\]\*m\/\/g' "\$d\/err" >"\$d\/clean" \|\| \{ echo "vipune smoke: stderr unreadable" >&2; exit 1; \};/,
-  'sed \'s/\\x1b\\[[0-9;]*m//g\' "$d/err" >"$d/clean" || true;',
+  /sed 's\/\\x1b\\\[\[0-9;\]\*m\/\/g;\/\^\[\[:space:\]\]\*\$\/d' "\$d\/err" >"\$d\/clean" \|\| \{ echo "vipune smoke: stderr unreadable" >&2; exit 1; \};/,
+  'sed \'s/\\x1b\\[[0-9;]*m//g;/^[[:space:]]*$/d\' "$d/err" >"$d/clean" || true;',
 );
 say(
   unguarded !== dockerfile && extractBody(unguarded).some((l) => /"\$d\/clean" \|\| true;/.test(l)),
