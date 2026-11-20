@@ -112,6 +112,12 @@ const badProtectedPaths: Array<[string, unknown, string]> = [
   // leading wildcard is retried at every offset the doublestar absorbs. Refused by position, and the
   // refusal names the segment so the author knows which one to move.
   ["wildcard in a segment ahead of a doublestar", ["*/**/*/**/qq"], "in the segment `*`"],
+  // The mirror of that row: the wildcard sits BETWEEN the two doublestars, so the entry's first
+  // segment is the `**` and a check that only looks forward from it sees nothing. Same counts, same
+  // length, 0.8–2.7 s per non-matching path — and the bare-wildcard spelling of the same slot stays
+  // admitted (see the accepted row below), which is what makes this a positional bound rather than a
+  // ban on wildcards.
+  ["wildcard in a segment between two doublestars", ["**/*q*/**/qq"], "in the segment `*q*`"],
 ];
 
 for (const [name, entries, expected] of badProtectedPaths) {
@@ -154,6 +160,10 @@ for (const [name, entries, expected] of badProtectedPaths) {
           "a?c.ts",
           "package*.json",
           "a/**/b/**/*e*e",
+          // The bare-wildcard spelling of the slot the refusal above refuses when the segment is
+          // WIDENED: a lone `*` between two doublestars is one `[^/]*` the doublestar swallows, so it
+          // starts no retry and is legal — and it is the shape a project actually writes.
+          "**/*/**/generated",
         ],
       },
     }),
@@ -161,7 +171,7 @@ for (const [name, entries, expected] of badProtectedPaths) {
   try {
     const cfg = await loadWorkConfig(execp, repoRoot, baseSha);
     assert(
-      cfg.lean?.protectedPaths?.length === 5,
+      cfg.lean?.protectedPaths?.length === 6,
       `wildcards are legal in a protected-path entry, up to the ceilings (got ${JSON.stringify(cfg.lean?.protectedPaths)})`,
     );
   } finally {

@@ -26,6 +26,15 @@ import { protectedGlobMatches } from "../../src/lean/protected-globs.ts";
  *  wildcards backtracks, so this is the one cost a project's own config file can choose. */
 const SLOW_CEILING_MS = 50;
 
+/** How many timed passes each row makes per probe, of which the WORST decides the verdict.
+ *  A single pass is a coin flip against this ceiling on a loaded host: the same entry on the same
+ *  path measured 12 ms and 52 ms minutes apart while another team's timed trials shared the machine,
+ *  which is a gate that reports a confident wrong answer in both directions. Repeating and taking the
+ *  maximum removes the fluke in the direction that matters (a real regression is caught on any pass)
+ *  while the ceiling's headroom over the measured worst case (~13 ms against 50 ms) keeps a merely
+ *  busy host from turning the row red. */
+const TIMED_PASSES = 3;
+
 /** The same characters as a COLUMN of 400 one-character segments. Kept because a doublestar's
  *  cost does turn on the number of segment splits a path offers for the DEPTH-refused shapes
  *  below — it is where a three-doublestar entry pays, and why the load-time ceiling is a count of
@@ -149,6 +158,10 @@ const SLOW_ACCEPTED: Array<[string, string, RowExpectation]> = [
   ["1 doublestar ahead of a 3-wildcard tail", "**/*q*r?s", DENSE_REFUSED],
   // Both doublestars behind one literal, where a run of them multiplies fastest at its top end.
   ["2 doublestars behind one literal", "a/**/**/b", DENSE_REFUSED],
+  // The bare wildcard BETWEEN two doublestars — the shape the mirror refusal has to exempt, because
+  // a lone `*` is one `[^/]*` the doublestar beside it swallows whole. Priced here so that if the
+  // exemption ever stops being cheap the gate says so, rather than a config review finding it out.
+  ["bare wildcard segment between two doublestars", "**/*/**/sub", DENSE_REFUSED],
   // The realistic rules a project actually writes, timed on the same probes so a future ceiling
   // change that would price them out shows up here rather than in a config review. Each sits at
   // three wildcards or fewer, which is where every rule in the field lives.
@@ -169,9 +182,17 @@ export function runSlowShapeCases(): number {
     let worst = 0;
     let worstProbe = "";
     for (const [probeName, probe, probeKind] of PROBES) {
-      const started = performance.now();
-      const hit = protectedGlobMatches(pattern, probe);
-      const ms = performance.now() - started;
+      // Repeated passes, worst kept: one pass on a shared host is noise, and the verdict has to be
+      // the entry's cost rather than the machine's mood. The matcher caches its regex per entry, so
+      // every pass after the first measures backtracking alone — the cost this ceiling is for.
+      let ms = 0;
+      let hit = false;
+      for (let pass = 0; pass < TIMED_PASSES; pass++) {
+        const started = performance.now();
+        hit = protectedGlobMatches(pattern, probe);
+        const elapsed = performance.now() - started;
+        if (elapsed > ms) ms = elapsed;
+      }
       // The two over-limit probes are answered PROTECTED whatever the entry, so they are timed but
       // assert nothing. On the rest the answer is whatever the row STATES for that probe: a row
       // that must match and does not is as wrong as one that must refuse and does, because the

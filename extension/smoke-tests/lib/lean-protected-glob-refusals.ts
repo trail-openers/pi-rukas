@@ -14,10 +14,12 @@
  *     from the entry directly (the same source `compiled()` builds): on the legal 4,095-character
  *     dense path they cost 769 ms to 6.3 s, where the admitted four-wildcard shapes cost 12–26 ms.
  *   - **POSITION** — the bound no count expresses. Every entry here sits AT or BELOW all four
- *     ceilings and still costs seconds, because the wildcard is written in FRONT of a doublestar
- *     segment: that doublestar absorbs any number of segments, so the wildcard is retried at every
- *     offset it absorbs and pays for the whole length of the path on top of its depth. The loader
- *     refuses these via `wildcardAheadOfDoublestar` in `protected-globs.ts`, which names the segment.
+ *     ceilings and still costs seconds, because the wildcard is written BESIDE a doublestar segment
+ *     with only literals between: that doublestar absorbs any number of segments, so the wildcard is
+ *     retried at every offset it absorbs and pays for the whole length of the path on top of its
+ *     depth. Two spellings pay — a wildcard BEFORE the first doublestar, and one wedged BETWEEN two
+ *     of them — and the loader refuses both via `wildcardBesideDoublestar` in `protected-globs.ts`,
+ *     which names the segment.
  */
 import { protectedPathProblem } from "../../src/lean/protected-globs.ts";
 
@@ -36,10 +38,14 @@ import { protectedPathProblem } from "../../src/lean/protected-globs.ts";
  *  ceiling is what makes that shape affordable; it is an entry past the total count all the same,
  *  and the total-wildcard refusal is what the loader returns.
  *
- *  The third group is POSITION rather than count: the three rows opening it cost 2.8 s, 2.9 s and
- *  1.4 s on the legal dense path at FOUR wildcards and TWO doublestars, and the fourth costs 88 ms
- *  on a shape the DEPTH ceiling cannot see — its doublestar run normalises to a single segment, so
- *  it is one segment clear of that ceiling. A refusal by count admits all four.
+ *  The third group is POSITION rather than count: each entry carries FOUR or fewer wildcards, TWO or
+ *  fewer doublestar segments and nineteen characters — inside every count — and each costs seconds on
+ *  the path the filesystem can actually hold. Four of them put the wildcard BEFORE the first doublestar;
+ *  the fourth of those spells its doublestar run as two adjacent doublestars deliberately, so
+ *  normalisation collapses them to one segment and the entry reaches the position check clear of the
+ *  depth ceiling — which is why only position catches it. The last four are the MIRROR: the wildcard
+ *  sits BETWEEN the two doublestars, where the entry's first segment is itself the doublestar and a
+ *  rule that only looks forward from it sees nothing. The refusal names the segment either way.
  */
 export const SLOW_REFUSED: Array<[string, string]> = [
   ["3 doublestars with one-character segments", "?/**/?/**/?/**/?x"],
@@ -75,6 +81,18 @@ export const SLOW_REFUSED: Array<[string, string]> = [
   ["A prefixed wildcard ahead of two doublestars", "q*/**/*/**/qq"],
   ["A wildcard-and-literal ahead of two doublestars", "*q/**/*/**/qq"],
   ["A 2-wildcard segment ahead of a collapsed doublestar run and a literal tail", "*q*/**/**/qq"],
+  // The mirror family, which the positional rule used to read only one way round: the wildcard sits
+  // BETWEEN the two doublestar segments rather than in front of both, so the entry's FIRST segment
+  // is the doublestar and the ahead-of check saw nothing to object to. Same four wildcards, same two
+  // doublestars, same nineteen characters — and 800 ms to 2.7 s on the legal dense path, because the
+  // wildcard between two `(?:[^/]*[/])*` runs carries a length term for each of them and the tail
+  // literal (two `q`s) is one the dense path never satisfies at any offset. These are the rows that
+  // falsified the module's measured claim that four wildcards bounded the worst admitted entry at
+  // 26 ms, and the ones a project reaches by writing a wildcard mid-pattern with a literal tail.
+  ["A 2-wildcard segment between two doublestars and a literal tail", "**/*q*/**/qq"],
+  ["A widened segment between two doublestars and a 3-literal tail", "**/*q*/**/qqq"],
+  ["A wildcard-with-literal between two doublestars and a literal tail", "**/*q/**/qq"],
+  ["A prefixed wildcard between two doublestars and a literal tail", "**/q*/**/qq"],
 ];
 
 /** Refusals whose MESSAGE has to carry the fix, not just the complaint. The doublestar-ceiling
@@ -94,9 +112,14 @@ export const REFUSAL_TEXT: Array<[string, string, string]> = [
     "src/**/test/**",
   ],
   [
-    "wildcard-ahead-of-doublestar refusal names the offending segment",
+    "wildcard-beside-doublestar refusal names the offending segment",
     "q*/**/*/**/qq",
     "in the segment `q*`",
+  ],
+  [
+    "the mirror refusal names the segment BETWEEN the doublestars",
+    "**/*q*/**/qq",
+    "in the segment `*q*`",
   ],
 ];
 

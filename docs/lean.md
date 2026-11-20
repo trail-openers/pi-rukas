@@ -332,14 +332,16 @@ means defaults.** An invalid file is *not* defaulted: it raises
   path that does *not* match to the power of its `**` count AND like that path's
   length to the power of its total wildcard count, so past those the cost
   of a non-match is chosen by a project's own config file. Every rule a project
-  actually writes sits at three wildcards or under. **A `*`/`?` in a segment that comes
-  before a `**` segment is refused by shape, whatever its counts** — that wildcard is
-  retried at every offset the `**` in front of it can absorb, so its cost carries a
-  length term on top of the depth term, and the counts cannot see position: a
-  nineteen-character entry at every ceiling cost ~2.8 s on the longest legal path.
-  The refusal names the segment; a leading `**` itself is allowed, and so is a
+  actually writes sits at three wildcards or under. **A `*`/`?` beside a `**` segment with only
+  literals between them is refused by shape, whatever its counts** — that wildcard is
+  retried at every offset the neighbouring `**` can absorb, so its cost carries a
+  length term on top of the depth term, and the counts cannot see position: entries at every ceiling
+  cost ~2.8 s (ahead of the first `**`) and 0.8–2.7 s (wedged between two of them) on the longest
+  legal path. The refusal names the segment; a leading `**` itself is allowed, and so is a
   wildcard after the last one, which is where `src/**/*.vue` and `**/*.lock` put
-  them. `dir/**/` is refused as
+  them, and a **bare** `*` or `?` as a whole segment is allowed beside a `**` — one `[^/]*` the
+  doublestar swallows whole, starting no retry of its own, which is what keeps `**/*/**/dir`
+  at ~13 ms where the same rule with `*q*` in that slot costs 800 ms. `dir/**/` is refused as
   the same rule as `dir/**` written twice: the `**` already takes everything under
   `dir` and the trailing `/` then asks for one more segment below that, so the
   refusal points at `dir/**` — the spelling that says what it means. `*`, `?` and `**` are

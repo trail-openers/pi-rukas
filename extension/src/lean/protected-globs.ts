@@ -30,15 +30,20 @@
  * compiled (a spelling change only, never a meaning change), and four counts of the normalised
  * entry are capped: 256 characters, two `**` SEGMENTS, four `*`/`?` wildcards in one segment, and
  * four wildcards in TOTAL (a `**` segment counting one). Counts are blind to WHERE a wildcard sits,
- * and position decides what a shape costs: a `*` or `?` in a segment that PRECEDES a `**` segment has
- * a doublestar on its left — the thing that lets the matcher retry it at every offset — and no
- * literal to stop it, so a path that does not match pays a LENGTH term for the leading wildcard on
- * top of a DEPTH term for the doublestars behind it. Such a segment is refused by shape, not by
- * count. A leading doublestar itself is allowed, and so is a wildcard after the LAST one, which is
+ * and position decides what a shape costs. A wildcard has to be retried at every offset a `**` can
+ * absorb, so the expensive place for one is ADJACENT to a doublestar with no literal between: a
+ * segment that PRECEDES the first `**`, or one wedged between two `**` segments with nothing but
+ * literals on one side of it, pays a LENGTH term for itself on top of a DEPTH term for the
+ * doublestars beside it. Both are refused by shape, not by count ({@link wildcardBesideDoublestar}).
+ * A leading doublestar itself is allowed, and so is a wildcard after the LAST one, which is
  * what the rules a project writes actually say — a leading doublestar, then the wildcard in the tail
- * (a sources pattern, a lockfile pattern, a framework extension).
- * The rows of `test-lean-protected-globs.ts` are the matcher's contract; the caps and that refusal
- * are the entry's.
+ * (a sources pattern, a lockfile pattern, a framework extension). A bare `*` or `?` SEGMENT is
+ * allowed on either side of a doublestar even between two of them: it is a single `[^/]*` the
+ * doublestar swallows whole, so it carries no retry of its own, and it is what makes the bare
+ * segment between two doublestars cost 12 ms where the same slot with a widened wildcard costs
+ * 800 ms.
+ * The rows of `test-lean-protected-globs.ts` are the matcher's contract; the caps and those
+ * refusals are the entry's.
  *
  * The other half of that bound is the INPUT, and it belongs to the filesystem rather than the
  * config: {@link SEGMENT_CEILING} and {@link PATH_CEILING}. A path past either cannot exist on
@@ -71,24 +76,64 @@ const DEPTH_STAR_CEILING = 2;
 /** How many `*` and `?` one SEGMENT of an entry may carry after normalisation. */
 const SEGMENT_WILDCARD_CEILING = 4;
 
-/** A `*`/`?` segment with a `**` segment in front of it, on the normalised entry — the one shape no
- *  count bounds, so the entry is refused by shape rather than priced. Position is what matters, not
- *  the total: the shape this refuses and the shape one `**` earlier admits carry the same four
- *  wildcards and the same two doublestars, and the first costs about three seconds on the legal
- *  4,095-character path where the second costs 12 ms. The reason is what a `**` compiles to — "any
- *  number of whole segments" — so a wildcard written AHEAD of one has to be retried at every offset
- *  that doublestar can absorb, with no literal to reject the run early, and each of those retries
- *  carries the length of the path. A leading doublestar itself is allowed (nothing sits in front of
- *  it), and so is a wildcard after the LAST one — a trailing wildcard is anchored at the end of the
- *  path, which is where a rule means it. */
-function wildcardAheadOfDoublestar(entry: string): string | undefined {
+/** A wildcard written beside a doublestar with nothing to stop it, on the normalised entry — the one
+ *  shape no count bounds, so the entry is refused by shape rather than priced. What a `**` compiles
+ *  to is "any number of whole segments", so a wildcard NEXT TO one is retried at every offset that
+ *  doublestar can absorb and each retry carries the length of the path; counts cannot see position,
+ *  and position is what decides the cost. Two spellings pay, and both are refused:
+ *
+ *    - a wildcard in a segment that comes BEFORE the first doublestar — the leading-wildcard
+ *      spelling costs about three seconds on the legal 4,095-character path where the same rule
+ *      written the other way round costs 12 ms;
+ *    - a wildcard in a segment that sits BETWEEN two doublestar segments — the mirror image of the
+ *      first, whose wildcard carries a length term for the doublestar on each side rather than only
+ *      the one behind it, measured at 800 ms to 2.7 s on the same path.
+ *
+ *  A wildcard the doublestars cannot reach stays admitted: after the LAST `**` it is anchored at the
+ *  end of the path, which is where a rule means it. And a BARE `*`/`?` SEGMENT never pays, wherever
+ *  it sits: it is one `[^/]*` that the doublestar beside it swallows whole, so it starts no retry of
+ *  its own — measured, the bare-wildcard-between-doublestars shape costs 12 ms and 13 ms on the
+ *  longest legal path where the same shapes with a widened wildcard in that slot cost 800 ms and
+ *  850 ms. So a bare wildcard segment between two doublestars is what makes the vendored-tree
+ *  pattern the shape a project writes, and the literal the wildcard has to reject is what makes the
+ *  widened-segment spelling the shape it must not.
+ *
+ *  Returns the first offending segment, which the refusal quotes back. */
+function wildcardBesideDoublestar(entry: string): string | undefined {
   const segments = entrySegments(normaliseEntry(entry)).segments;
   const first = segments.indexOf(DEPTH_STAR_TEXT);
   if (first < 0) return undefined;
   for (const segment of segments.slice(0, first)) {
     for (const c of segment) if (c === "*" || c === "?") return segment;
   }
+  const last = segments.lastIndexOf(DEPTH_STAR_TEXT);
+  if (last === first) return undefined;
+  const middle = segments.slice(first + 1, last);
+  for (let i = 0; i < middle.length; i++) {
+    const segment = middle[i] as string;
+    if (segment === DEPTH_STAR_TEXT || isBareWildcardSegment(segment)) continue;
+    let wildcard = false;
+    for (const c of segment) if (c === "*" || c === "?") wildcard = true;
+    if (!wildcard) continue;
+    // Exempt only when a bare wildcard (or another doublestar) already stands between this segment
+    // and the doublestar on EACH side, because that is the shape where neither doublestar has to
+    // retry anything of this segment's.
+    const leftAbsorbed = middle.slice(0, i).some(isAbsorbingSegment);
+    const rightAbsorbed = middle.slice(i + 1).some(isAbsorbingSegment);
+    if (leftAbsorbed && rightAbsorbed) continue;
+    return segment;
+  }
   return undefined;
+}
+
+/** A segment that is exactly one `*` or exactly one `?` — a single `[^/]*` with no literal in it. */
+function isBareWildcardSegment(segment: string): boolean {
+  return segment === "*" || segment === "?";
+}
+
+/** A segment that absorbs what sits beside it whole: a doublestar, or a bare single wildcard. */
+function isAbsorbingSegment(segment: string): boolean {
+  return segment === DEPTH_STAR_TEXT || isBareWildcardSegment(segment);
 }
 
 /** How many wildcards an entry may carry over ALL its segments after normalisation, each `**`
@@ -330,11 +375,11 @@ export function protectedPathProblem(entry: unknown): string | undefined {
   if (totalWildcards > TOTAL_WILDCARD_CEILING)
     return `${where} entry \`${entry}\` has ${String(totalWildcards)} wildcards in total (each "**" segment counting one), over the ${String(TOTAL_WILDCARD_CEILING)} this matcher will backtrack over — the cost of a path that does not match grows with its LENGTH to that power, so the rule needs fewer wildcards, or a literal to anchor on`;
   // The refusal no count can express, because a count is blind to position and position is what
-  // decides the cost: the same wildcards behind the doublestars instead of in front of them are
-  // admitted, and stay under the timing ceiling (see `SLOW_ACCEPTED` in the shapes lib).
-  const ahead = wildcardAheadOfDoublestar(entry);
-  if (ahead !== undefined)
-    return `${where} entry \`${entry}\` has a "*"/"?" in the segment \`${ahead}\`, which comes before a "**" segment — a wildcard in front of a "**" is retried at every offset that "**" can absorb, so a path that does not match costs by its LENGTH on top of its DEPTH; write the rule the other way round, with the wildcard after the "**" (a leading "**" itself is allowed, so \`**/${ahead}\` is the usual spelling of the same idea)`;
+  // decides the cost: the same wildcards after the LAST doublestar are admitted, and stay under the
+  // timing ceiling (see `SLOW_ACCEPTED` in the shapes lib).
+  const beside = wildcardBesideDoublestar(entry);
+  if (beside !== undefined)
+    return `${where} entry \`${entry}\` has a "*"/"?" in the segment \`${beside}\`, which sits beside a "**" segment with only literals between them — a wildcard next to a "**" is retried at every offset that "**" can absorb, so a path that does not match costs by its LENGTH on top of its DEPTH; write the rule so the wildcard lands after the "**" (a leading "**" itself is allowed, so \`**/${beside}\` is the usual spelling of the same idea, and a bare \`*\` or \`?\` segment beside a "**" is fine)`;
   // `dir/**/` is the same rule as `dir/**` written a second way: the doublestar already names
   // everything under `dir`, so the trailing `/` asks for one more segment below what already
   // takes everything. Refuse the spelling rather than let two ways of saying one thing read as
