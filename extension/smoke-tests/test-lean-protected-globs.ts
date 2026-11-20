@@ -5,10 +5,8 @@
  * means. Rows that look "obvious" and are wrong are called out where they sit.
  */
 import { protectedGlobMatches } from "../src/lean/protected-globs.ts";
-import {
-  runSlowShapeCases,
-  SLOW_CASE_COUNT,
-} from "./lib/lean-protected-glob-shapes.ts";
+import { REFUSAL_CASE_COUNT, runRefusalCases } from "./lib/lean-protected-glob-refusals.ts";
+import { SLOW_CASE_COUNT, runSlowShapeCases } from "./lib/lean-protected-glob-shapes.ts";
 
 export const CASES: Array<[string, string, boolean]> = [
   // A single-segment pattern is a basename and matches at any depth.
@@ -136,12 +134,14 @@ export function runCases(): void {
       );
     }
   }
-  // What a match and a non-match COST, and which spellings the loader must refuse outright, is the
-  // other half of this contract and lives in lib/lean-protected-glob-shapes.ts.
+  // What a match and a non-match COST is the other half of this contract and lives in
+  // lib/lean-protected-glob-shapes.ts; what the loader must REFUSE outright, and what its refusal
+  // has to say, is the third and lives in lib/lean-protected-glob-refusals.ts.
   failures += runSlowShapeCases();
+  failures += runRefusalCases();
   if (failures > 0) {
     console.error(
-      `${failures} of ${String(CASES.length + SLOW_CASE_COUNT)} protected-glob cases failed`,
+      `${failures} of ${String(CASES.length + SLOW_CASE_COUNT + REFUSAL_CASE_COUNT)} protected-glob cases failed`,
     );
     process.exit(1);
   }

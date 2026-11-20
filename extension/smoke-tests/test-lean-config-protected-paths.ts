@@ -107,6 +107,11 @@ const badProtectedPaths: Array<[string, unknown, string]> = [
   // and the trailing slash then asks for one segment more beneath that. Refused, and pointed at
   // the spelling that works.
   ["doublestar then trailing slash", ["theme/**/"], "the same rule as `theme/**`"],
+  // A wildcard in a segment that comes BEFORE a `**` segment: within every count (four wildcards,
+  // two doublestars, nineteen characters) and seconds on a path the filesystem can hold, because the
+  // leading wildcard is retried at every offset the doublestar absorbs. Refused by position, and the
+  // refusal names the segment so the author knows which one to move.
+  ["wildcard in a segment ahead of a doublestar", ["*/**/*/**/qq"], "in the segment `*`"],
 ];
 
 for (const [name, entries, expected] of badProtectedPaths) {
