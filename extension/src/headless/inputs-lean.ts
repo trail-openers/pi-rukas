@@ -28,6 +28,16 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // no-head handback's record. Readers in lean/deadline-handback.ts and
   // lean/verified-handback-switch.ts.
   flag("LEAN_DEADLINE_HANDBACK", true),
+  // A review fixer whose last turn ended at the model's output-token limit with no edit made is
+  // continued ONCE, in its own session, in its own tree behind the same write fence, before the wave
+  // is judged "produced no change". The detector reads the child's own recorded `stopReason` and its
+  // own recorded tool calls, never its prose; a kill cause, a fired budget, or a result that cannot
+  // say either way takes today's path. `0` restores today's behaviour byte for byte — no detection,
+  // no continuation, and the no-change cause, the handback body and the headless `failure.message`
+  // unchanged. The continuation is one extra fixer cost row inside the same wave; no bound, budget or
+  // token cap changes. The reader is `leanFixerTruncationReaskEnabled` in
+  // fixer-truncation.ts.
+  flag("LEAN_FIXER_TRUNCATION_REASK", true),
   // The publishable-branch guard's fail-closed arm: a mainline neither the clone
   // nor origin will name refuses the push instead of passing it. The reader is
   // `leanGuardFailClosed` in lean/guard-fail-closed-switch.ts.

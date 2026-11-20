@@ -7,11 +7,11 @@
  * still reachable from production. Adding a module to this list is the whole
  * of registering it; the assertions live in the test.
  *
- * The review-ledger / merge-guard group lives in
- * `seams-registry-merge-ledger.ts` and is spread back into `SEAMS` below, so
- * consumers see a single identical table whichever file an entry was added to.
+ * Entries grouped by subsystem live in their own `seams-registry-<group>.ts` and are spread
+ * back into `SEAMS` below, so one table is what every consumer sees however it was added.
  */
 
+import { SEAMS_CONTINUATION, type SeamLocator } from "./seams-registry-locate.ts";
 import { SEAMS_MERGE_LEDGER } from "./seams-registry-merge-ledger.ts";
 import { SEAMS_SPAWN_CONFIG } from "./seams-registry-spawn-config.ts";
 
@@ -39,6 +39,8 @@ export interface Seam {
    * still exists, which is the reachability claim the canary cannot make.
    */
   selfCall?: { symbol: string; by: string };
+  /** See `SeamLocator`: how a seam whose caller sits in a subdirectory is judged. */
+  locate?: SeamLocator;
 }
 
 export const SEAMS: Seam[] = [
@@ -246,6 +248,7 @@ export const SEAMS: Seam[] = [
   },
   ...SEAMS_MERGE_LEDGER,
   ...SEAMS_SPAWN_CONFIG,
+  ...SEAMS_CONTINUATION,
   {
     // #1019 — the pi binary version probe. The probe half (getPiResolutionInfo)
     // used to ship with no production caller, so its PATH-source / older-than-

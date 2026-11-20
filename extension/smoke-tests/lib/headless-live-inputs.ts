@@ -26,6 +26,7 @@ import { forgeReadOffGuardEnabled } from "../../src/forge-read-off-switch.ts";
 import { glabMrCreateArgvEnabled } from "../../src/gl-mr-create-switch.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
 import { leanDeadlineHandbackEnabled } from "../../src/lean/deadline-handback.ts";
+import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { leanGuardFailClosed } from "../../src/lean/guard-fail-closed-switch.ts";
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
 import { leanReportBoundEnabled } from "../../src/lean/handback-report-bound-switch.ts";
@@ -253,6 +254,10 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // the truth table, the four-arm matrix and the off arm's golden are pinned by
   // test-headless-work-lean-review-incomplete-cap-switch.ts.
   ["PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP", leanReviewIncompleteCapEnabled],
+  // The truncated-fixer continuation: its default is pinned here, its truth table by
+  // `test-lean-review-fix-reask-pure.ts` and its off arm by
+  // `test-lean-review-fixer-truncation-off-arm.ts`.
+  ["PI_ENSEMBLE_LEAN_FIXER_TRUNCATION_REASK", leanFixerTruncationReaskEnabled],
   // #2255 — the publishable-branch guard's fail-closed arm. The reader is `v !== "0"`,
   // so the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_GUARD_FAIL_CLOSED", leanGuardFailClosed],

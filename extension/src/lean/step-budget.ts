@@ -38,6 +38,11 @@ export interface BudgetOpts {
 /**
  * The cost of one dispatch, as the dispatching steps record it. `usage` is the child's report;
  * `role`/`ms`/`ok` are what the step observed.
+ *
+ * `stopReason` is the child's OWN last-turn stop reason, so a record shows a cut child after the
+ * session file is gone: a review fixer that ran out of output tokens is otherwise indistinguishable
+ * in the step log from one that finished its work and chose not to edit. Recording is not behaviour —
+ * it is NOT behind the truncation-reask switch, so the field is present on both arms of that knob.
  */
 export interface DispatchUsageRow {
   role: string;
@@ -46,6 +51,9 @@ export interface DispatchUsageRow {
   usage: DispatchUsage;
   /** The disposable tree a fixer worked in, when this row IS a fixer's. */
   runId?: FixRunId;
+  /** The last assistant turn's stop reason, as the child's replay recorded it. Absent when nobody
+   *  recorded one — which is not the same fact as the turn having ended cleanly. */
+  stopReason?: string;
 }
 
 /**
@@ -232,6 +240,7 @@ export function dispatchUsageRow(result: DispatchResult): DispatchUsageRow {
     ms: result.ms ?? 0,
     ok: result.ok && result.killCause === undefined && result.errorStop === undefined,
     usage: result.usage ?? zeroDispatchUsage(),
+    ...(typeof result.stopReason === "string" ? { stopReason: result.stopReason } : {}),
   };
 }
 

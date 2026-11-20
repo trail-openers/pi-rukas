@@ -163,6 +163,25 @@ export interface DispatchResult {
     message?: string;
   };
   /**
+   * The LAST assistant turn's `stopReason`, recorded for every stop rather than
+   * only the `"error"` arm `errorStop` covers.
+   *
+   * The field exists because a child cut off at its output/reasoning-token cap
+   * is otherwise indistinguishable from one that finished: Pi ends the turn with
+   * `stopReason: "length"`, the process still exits 0, and `ok` stays true — so
+   * a reader that judges a child by its exit code reads a truncated child as a
+   * completed one. `"length"` is the value that matters today; the union is
+   * Pi's, so a new reason reaches a reader as a string it does not recognise
+   * rather than as `"end_turn"`.
+   *
+   * **Absent is not `"end_turn"`.** A result rebuilt from disk, or one a caller
+   * synthesised, carries no replay to read the reason out of, and a reader must
+   * be able to tell "nobody recorded one" from "the turn ended cleanly" — so
+   * this field is optional and its absence is its own answer. The reason is
+   * read from the child's own replayed messages, never from its prose.
+   */
+  stopReason?: "stop" | "length" | "tool_use" | "error" | "aborted" | (string & {});
+  /**
    * #79 — set only on the synthesized adversarial-loop infra result: how many
    * reviewer children in a row died on this same provider error before the
    * loop stopped re-spawning. ≥2 tells every outer retry layer that the

@@ -4,23 +4,30 @@
  * lifetime seam that put its creation and destruction in `review-tree.ts`.
  */
 
-import path from "node:path";
+import {
+  continuationBoundMs,
+  continuationPrompt,
+  continuationRow,
+  fixerWasTruncated,
+} from "../fixer-truncation.ts";
 import type { DispatchResult } from "../types.ts";
 import { normaliseBuild } from "./build-normalise.ts";
+import { leanChildOpts } from "./child-opts.ts";
 import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { type ReviewFixArgs, fixPrompt } from "./review-deps.ts";
+import { type ReviewFixArgs, fixPrompt, fixWriteFence } from "./review-deps.ts";
 import { FIX_BOUND_MS, type FixRunId, ReviewInfraError } from "./review.ts";
 import type { ReviewDeps } from "./review.ts";
 import { gitQuiet } from "./specify-reset.ts";
-import type { BudgetFired, DispatchUsageRow } from "./step-budget.ts";
+import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 import { FIXER_ROLE, dispatchUsageRow } from "./step-budget.ts";
 
-/** One fixer, and the row it cost. */
+/** One fixer, and the row it cost. The result comes back for the one reader that can still use it —
+ *  `fixer-truncation.ts`, which asks whether this child was cut off before it wrote anything. */
 export async function runFixer(
   deps: ReviewDeps,
   opts: ReviewFixArgs & { rows: DispatchUsageRow[]; worktreeRunId: FixRunId },
-): Promise<void> {
+): Promise<DispatchResult> {
   let result: DispatchResult;
   // `arms` is `opts.budget.opts` with `childBoundMs` out of the object AND its type,
   // so no spread re-supplies it and wins over `FIX_BOUND_MS` (as in `review-deps.ts`).
@@ -34,17 +41,9 @@ export async function runFixer(
         childBoundMs: Math.min(FIX_BOUND_MS, budgetBoundMs ?? Number.POSITIVE_INFINITY),
         // The fixer is a developer with a worktree and a contract, so it gets the
         // same fence `build`'s builder gets: without one a fixer could write
-        // anywhere the process can. Same scratch shape as `BuildDispatch`.
-        writeFence: {
-          root: opts.worktree,
-          repo: opts.repoRoot,
-          scratch: path.join(
-            path.dirname(opts.worktree),
-            "..",
-            "tmp",
-            `lean-${String(opts.issue)}`,
-          ),
-        },
+        // anywhere the process can. Same scratch shape as `BuildDispatch`, and the
+        // SAME expression the truncated continuation is fenced by (`fixWriteFence`).
+        writeFence: fixWriteFence(opts.worktree, opts.repoRoot, opts.issue),
         // The budget's other arms — the abort the turns/tokens levers fire, the hook
         // that fires it, and `budgetTurns` for the progress steer. Only
         // `childBoundMs` was taken out, so the spread cannot re-supply it.
@@ -67,9 +66,61 @@ export async function runFixer(
   const fired = opts.budget.fired(result);
   if (fired !== undefined) {
     opts.stop.fired = fired;
-    return;
+    return result;
   }
   throwIfDispatchFailed(result, ReviewInfraError, "the fix child failed: ", opts.rows);
+  return result;
+}
+
+/**
+ * The truncated fixer's SECOND child: the judgement, the ask, and the row it cost.
+ *
+ * The detector (`fixerWasTruncated`) is pure and the ask is not; only the detector's `true` answer
+ * pays for a child. It runs BEFORE the fold, which commits the child's bytes and then destroys the
+ * tree. The row is billed on BOTH arms and BEFORE the outcome is read — a continuation that died still
+ * spent tokens — in the same shape `runFixer` bills its first child, so neither site un-bills its
+ * child. The return is the wave's one-shot answer: a FAILED continuation was still one that was tried.
+ */
+export async function askTruncatedFixer(
+  deps: ReviewDeps,
+  opts: {
+    fixer: DispatchResult;
+    budget: BudgetArms;
+    /** The ceiling's verdict, if the step's own budget had already stopped this wave. */
+    fired: BudgetFired | undefined;
+    issue: number;
+    findings: string;
+    worktree: string;
+    repoRoot: string;
+    rows: DispatchUsageRow[];
+    worktreeRunId: FixRunId;
+    /** The run's permission stamp, threaded from `ReviewDeps.headless` by the step (see
+     *  `leanChildOpts` / `DeveloperContinuationFn.workCycleTrust`). A continuation that omitted it
+     *  would be born permission-denied on exactly the arm where its parent fixer ran trusted. */
+    workCycleTrust?: boolean;
+  },
+): Promise<boolean> {
+  const truncated = (
+    await fixerWasTruncated(opts.fixer, {
+      seam: deps.continueSession !== undefined,
+      budgetFired: opts.fired !== undefined,
+    })
+  ).truncated;
+  const seam = deps.continueSession;
+  if (truncated !== true || seam === undefined) return false;
+  const transcript = opts.fixer.transcriptPath;
+  if (typeof transcript !== "string" || transcript === "") return false;
+  const outcome = await seam({
+    transcriptPath: transcript,
+    role: opts.fixer.role,
+    cwd: opts.worktree,
+    writeFence: fixWriteFence(opts.worktree, opts.repoRoot, opts.issue),
+    boundMs: continuationBoundMs(opts.budget, FIX_BOUND_MS),
+    prompt: continuationPrompt(opts.issue, opts.findings),
+    ...(opts.workCycleTrust === undefined ? {} : { workCycleTrust: opts.workCycleTrust }),
+  });
+  opts.rows.push(continuationRow(outcome, opts.fixer.role, opts.worktreeRunId));
+  return true;
 }
 
 /**

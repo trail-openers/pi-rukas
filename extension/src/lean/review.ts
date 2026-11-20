@@ -68,6 +68,7 @@
  * and the run's cause reads `no transition for review + "budget"`.
  */
 
+import { truncatedFixerOutputTokens } from "../fixer-truncation.ts";
 import { isCarried } from "../lens-review-types.ts";
 import type { runLensReview } from "../lens-review.ts";
 import { traceWarn } from "../trace.ts";
@@ -80,7 +81,8 @@ import { acceptanceSection, assertHeadIsVerified } from "./review-acceptance.ts"
 import { type StepStop, reviewBoundRecord, stepBound, unjudgedLenses } from "./review-bound.ts";
 import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
-import { derivedArg, fixRound, noteFixDisclosure, reviewedHead } from "./review-git.ts";
+import { derivedArg, noteFixDisclosure, reviewedHead } from "./review-git.ts";
+import { fixRound } from "./review-integrate.ts";
 import {
   fixRunId,
   fixRunIdFromLog,
@@ -352,7 +354,17 @@ async function reviewPass(
     // else's push. Held before the head moves, because after it the pre-fix head is not
     // recoverable from anything but this binding.
     const preFixHead = review.head;
-    head = await assertFixAdvanced(review.head, fix.head, rows);
+    // A fixer cut off at the output-token limit before it wrote anything had ONE continuation
+    // spent on it (see `fixer-truncation.ts`); the wave's own record says whether, and the reason
+    // line says so too, so a wave that fixed nothing after a truncation reads differently from one
+    // whose fixer read everything and changed nothing. With the switch at `0` the flag is never set
+    // and this is today's reason, byte for byte.
+    head = await assertFixAdvanced(
+      review.head,
+      fix.head,
+      rows,
+      fix.truncated === true ? { outputTokens: truncatedFixerOutputTokens(rows) } : undefined,
+    );
     // The wave pushed, so its head is a fact the record has to carry: the reason line
     // prints a 12-char prefix, and a host that has to check out what the fixer left
     // cannot clone a prefix.

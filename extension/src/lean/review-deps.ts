@@ -21,8 +21,10 @@
  *   ledger can bind to a commit rather than to a string this step handed over.
  */
 
+import path from "node:path";
 import { ADVERSARIAL_FINDING_RULE } from "../adversarial-prompts.ts";
 import { runAdversarialLoop } from "../adversarial.ts";
+import { spawnDeveloperContinuationChild } from "../developer-session-continuation.ts";
 import { execp } from "../exec.ts";
 import type { LensReviewSummary, Severity } from "../lens-review-format.ts";
 import { cappedSuffix } from "../lens-review-render.ts";
@@ -191,6 +193,11 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         ...leanChildOpts(headless),
       }),
     fetchIssueBody,
+    // A truncated fixer's second turn, on its own session, in its own tree. One prompt, no deck row,
+    // no steer seam — the resumed child is the same developer continuing a thought, not a second
+    // opinion (see `developer-session-continuation.ts`). The fence and the cwd travel in as arguments
+    // from `fixRound`, which owns the tree, so no caller can widen either from here.
+    continueSession: spawnDeveloperContinuationChild,
     // The bound stop's disclosure, through the same forge adapter every other lean
     // post uses, so the body meets the public-text check every other comment meets.
     prComment: async (repoRoot, prNumber, body) => {
@@ -356,6 +363,24 @@ export interface ReviewFixArgs {
 
 /** The largest tree or branch name this step will print into a brief. */
 const NAME_MAX_CHARS = 200;
+
+/**
+ * The fixer's write fence: the tree it was dispatched to, the repo that owns it, and the run's scratch
+ * dir. ONE expression rather than a literal at each call site, because the child and its truncated
+ * continuation must be fenced to the same three paths — and a hand-built copy at the second site is
+ * one that can drift its `scratch` while still passing every assertion that reads `root`.
+ */
+export function fixWriteFence(
+  worktree: string,
+  repoRoot: string,
+  issue: number,
+): { root: string; repo: string; scratch: string } {
+  return {
+    root: worktree,
+    repo: repoRoot,
+    scratch: path.join(path.dirname(worktree), "..", "tmp", `lean-${String(issue)}`),
+  };
+}
 
 export function fixPrompt(opts: ReviewFixArgs): string {
   // Every value below that did not originate in this file goes through `promptText`:

@@ -51,6 +51,41 @@ closes `— N other frozen file(s) not run`. That is a cost bound, not a verdict
 files — a contract where every file hangs would otherwise pay the full bound once per file,
 and the reason says the same thing about all of them either way.
 
+### Symptom: a lean run hands back with `review fix produced no change`
+
+**Symptom:** a lean run reaches `review`, pays for its fixer, and hands back at exit 10 with
+`review fix produced no change: the fix wave left the branch at <sha12> — it fixed nothing, and
+re-reviewing an identical commit is a pass the run should not be given`. The gates had real findings,
+the fixer ran, and the branch never moved.
+
+**Cause:** the wave bought exactly one fixer, and it came back having changed nothing the step can
+prove. The step's predicate reads two heads out of git — the commit the gates reviewed and the one the
+wave left — and an unchanged head is never a pass: re-reviewing a commit identical to the one a gate
+just read would certify a head nobody looked at twice. What kind of nothing it was is told by the rest
+of the line, and the two arms need opposite responses:
+
+- **plain cause, nothing appended** — the fixer ended its turn normally with no edit and no commit. It
+  read everything and answered nothing, or declined every finding. Read its transcript under
+  `~/.pi/agent/ensemble-runs/<date>/` before deciding anything: a fixer that declined findings as
+  contradicting the issue is a spec problem, not a model problem.
+- **`— the fixer's last turn was cut off at the output-token limit (<n> tokens) before any edit, and
+  one continuation changed nothing`** — the child hit its provider's output cap on the turn that was
+  going to make the edits. The step already gave it one more turn in the same session, in the same
+  tree, and the head still did not move. The token count is the child's own recorded output, so the
+  line distinguishes a provider cap from an early stop.
+
+**Fix:** for the truncation arm, the model's output ceiling is the thing at its limit, and this harness
+never raises it — that ceiling belongs to the model and its provider configuration, and neither
+`budgets.review` nor `PI_ENSEMBLE_LENS_FIX_BOUND_MS` has any effect on it. The useful move is to make
+the wave smaller: a single fixer handed a dozen findings is the shape that runs out, so narrow the
+issue's scope, or re-run — the finding list is the same and a second attempt is not guaranteed to
+truncate in the same place. To take the continuation out altogether (returning every arm to the
+behaviour before it, cause line included), set `PI_ENSEMBLE_LEAN_FIXER_TRUNCATION_REASK=0`; the cost
+row still records each child's stop reason either way, so the record keeps showing a cut child. For the
+plain arm, the handoff names the findings that bought the wave — if a finding is genuinely unfixable
+inside the issue's scope, that is an issue-body correction (`gh issue edit <n> --body-file`), and the
+run is restarted rather than resumed.
+
 ### Symptom: a lean run hands back with `frozen contract defective: <cmd> fails on frozen file <path>`
 
 **Symptom:** a lean run's `verify` step ends it as `handler error at verify: frozen
