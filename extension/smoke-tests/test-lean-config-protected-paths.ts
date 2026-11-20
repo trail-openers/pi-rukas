@@ -136,8 +136,9 @@ for (const [name, entries, expected] of badProtectedPaths) {
 {
   // The wildcard rules of `verify.testGlob` deliberately do NOT carry over: a
   // protected-path entry IS a glob, so `*`, `?` and `**` are all legal here. The doublestar
-  // count is at its ceiling (2) and the widest segment at its own (4) — the most the loader
-  // admits, and the shapes the timing rows of `test-lean-protected-globs.ts` must keep cheap.
+  // count is at its ceiling (2) and the widest segment at its own (4), with the total wildcard
+  // count at its ceiling (4) — the most the loader admits on all three counts at once, and the
+  // shape the timing rows of `test-lean-protected-globs.ts` must keep cheap.
   const { repoRoot, baseSha, cleanup } = makeRepo({
     ".pi/work.json": JSON.stringify({
       version: 1,
@@ -147,7 +148,7 @@ for (const [name, entries, expected] of badProtectedPaths) {
           "**/theme/**",
           "a?c.ts",
           "package*.json",
-          "a/**/b/**/*e*f?g*h",
+          "a/**/b/**/*e*e",
         ],
       },
     }),

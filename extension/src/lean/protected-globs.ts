@@ -24,10 +24,13 @@
  * What the regex costs is bounded by what {@link protectedPathProblem} admits, not by the
  * compiler: a regex over unbounded wildcards backtracks, and a few doublestars in front of
  * an anchored tail turn a NON-matching path into a cost that grows with its depth — like depth
- * to the power of the doublestar count. So the entry is normalised before it is compiled (a
- * spelling change only, never a meaning change), and three counts of the normalised entry are
- * capped: 256 characters, two `**` SEGMENTS, and four `*`/`?` wildcards in one segment. The
- * rows of `test-lean-protected-globs.ts` are the matcher's contract; the caps are the entry's.
+ * to the power of the doublestar count, and like the LENGTH of the path raised to the power of the
+ * entry's TOTAL wildcard count: the segment ceiling alone leaves a leading-doublestar entry free
+ * to spend a second on one legal 4,095-character path. So the entry is normalised before it is
+ * compiled (a spelling change only, never a meaning change), and four counts of the normalised
+ * entry are capped: 256 characters, two `**` SEGMENTS, four `*`/`?` wildcards in one segment, and
+ * four wildcards in TOTAL (a `**` segment counting one). The rows of `test-lean-protected-globs.ts`
+ * are the matcher's contract; the caps are the entry's.
  *
  * The other half of that bound is the INPUT, and it belongs to the filesystem rather than the
  * config: {@link SEGMENT_CEILING} and {@link PATH_CEILING}. A path past either cannot exist on
@@ -59,6 +62,15 @@ const DEPTH_STAR_CEILING = 2;
 
 /** How many `*` and `?` one SEGMENT of an entry may carry after normalisation. */
 const SEGMENT_WILDCARD_CEILING = 4;
+
+/** How many wildcards an entry may carry over ALL its segments after normalisation, each `**`
+ *  SEGMENT counting one. The two ceilings above bound the DEPTH a shape can multiply by; this one
+ *  bounds the LENGTH it multiplies over — the cost of a non-match grows like the length of the
+ *  path raised to this count. Measured on the legal 4,095-character path of 255-character dense
+ *  segments: at four the worst admitted entry costs 26 ms, at five 769 ms and at six 6.3 s, so the
+ *  ceiling sits at the largest count with a measured worst case — four. Every rule a project
+ *  actually writes sits at three or under. */
+const TOTAL_WILDCARD_CEILING = 4;
 
 /** Linux NAME_MAX: how long one segment can be on disk, so a longer one is not a path git ever
  *  reported and its regex cost is not a cost this matcher can be asked to pay. */
@@ -104,24 +116,28 @@ function normaliseEntry(entry: string): string {
 }
 
 /**
- * The entry's two cost counts, on its {@link normaliseEntry} spelling — so a run of stars that
+ * The entry's three cost counts, on its {@link normaliseEntry} spelling — so a run of stars that
  * compiles to one `[^/]*` cannot be charged twice, nor a redundant doublestar charged as two.
- * `[doublestar segments, widest single segment]`.
+ * `[doublestar segments, widest single segment, wildcards over all segments]`, the last counting a
+ * `**` segment as one: it is the exponent the length of a non-matching path is raised to.
  */
-function entryCost(entry: string): [number, number] {
+function entryCost(entry: string): [number, number, number] {
   const segments = entrySegments(normaliseEntry(entry)).segments;
   let depthStars = 0;
   let segmentWildcards = 0;
+  let totalWildcards = 0;
   for (const segment of segments) {
     if (segment === DEPTH_STAR_TEXT) {
       depthStars += 1;
+      totalWildcards += 1;
       continue;
     }
     let wildcards = 0;
     for (const c of segment) if (c === "*" || c === "?") wildcards += 1;
+    totalWildcards += wildcards;
     if (wildcards > segmentWildcards) segmentWildcards = wildcards;
   }
-  return [depthStars, segmentWildcards];
+  return [depthStars, segmentWildcards, totalWildcards];
 }
 
 /** The pattern spelling that {@link DEPTH_STAR} is the regex source of. */
@@ -262,12 +278,13 @@ export function protectedPathProblem(entry: unknown): string | undefined {
     return `${where} entry \`${entry}\` must not contain a doubled slash (one trailing slash, to name a directory, is the exception)`;
   // What the entry is spelled like decides what the matcher pays, and the matcher pays in
   // backtracking: a few doublestars in front of an anchored tail make a path that does NOT
-  // match cost more the deeper that path is. The three counts are taken on the NORMALISED
+  // match cost more the deeper that path is, and a wildcard total past the ceiling makes it
+  // cost more the LONGER that path is. The four counts are taken on the NORMALISED
   // entry, so a redundant `**` or a doubled `*` cannot be charged twice, and the entry that
   // is refused is the entry that would have been compiled.
   if (entry.length > ENTRY_CEILING)
     return `${where} entry \`${entry.slice(0, 60)}…\` is ${String(entry.length)} characters long, over the ${String(ENTRY_CEILING)}-character ceiling for one pattern`;
-  const [depthStars, segmentWildcards] = entryCost(entry);
+  const [depthStars, segmentWildcards, totalWildcards] = entryCost(entry);
   if (depthStars > DEPTH_STAR_CEILING) {
     // A leading doublestar is the usual reason an entry is one over the ceiling, and the prefix
     // asks only for segments IN FRONT of the rest — which a repo-relative path already satisfies
@@ -282,6 +299,8 @@ export function protectedPathProblem(entry: unknown): string | undefined {
   }
   if (segmentWildcards > SEGMENT_WILDCARD_CEILING)
     return `${where} entry \`${entry}\` has ${String(segmentWildcards)} "*"/"?" wildcards in one segment, over the ${String(SEGMENT_WILDCARD_CEILING)} this matcher will backtrack over`;
+  if (totalWildcards > TOTAL_WILDCARD_CEILING)
+    return `${where} entry \`${entry}\` has ${String(totalWildcards)} wildcards in total (each "**" segment counting one), over the ${String(TOTAL_WILDCARD_CEILING)} this matcher will backtrack over — the cost of a path that does not match grows with its LENGTH to that power, so the rule needs fewer wildcards, or a literal to anchor on`;
   // `dir/**/` is the same rule as `dir/**` written a second way: the doublestar already names
   // everything under `dir`, so the trailing `/` asks for one more segment below what already
   // takes everything. Refuse the spelling rather than let two ways of saying one thing read as

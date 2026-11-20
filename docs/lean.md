@@ -325,11 +325,14 @@ means defaults.** An invalid file is *not* defaulted: it raises
   leading `!`, a doubled slash, or any shell metacharacter or invisible / control /
   zero-width / bidi character — the invisible class is `\p{Cf}` (the format
   characters, TAGS block included) plus the controls, NEL and the line/paragraph
-  separators. A pattern is a rule, not a document, so three counts are
-  capped too: 256 characters, two `**` segments, and four `*`/`?` wildcards in one
-  segment — the matcher is a compiled regex whose cost grows like the depth of a
-  path that does *not* match to the power of its `**` count, so past those the cost
-  of a non-match is chosen by a project's own config file. `dir/**/` is refused as
+  separators. A pattern is a rule, not a document, so four counts are
+  capped too: 256 characters, two `**` segments, four `*`/`?` wildcards in one
+  segment, and **four wildcards in total** across all segments (each `**` counting
+  one) — the matcher is a compiled regex whose cost grows like the depth of a
+  path that does *not* match to the power of its `**` count AND like that path's
+  length to the power of its total wildcard count, so past those the cost
+  of a non-match is chosen by a project's own config file. Every rule a project
+  actually writes sits at three wildcards or under. `dir/**/` is refused as
   the same rule as `dir/**` written twice: the `**` already takes everything under
   `dir` and the trailing `/` then asks for one more segment below that, so the
   refusal points at `dir/**` — the spelling that says what it means. `*`, `?` and `**` are
