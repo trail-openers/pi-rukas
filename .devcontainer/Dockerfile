@@ -246,14 +246,34 @@ RUN set -e; HF_HUB_DISABLE_XET=1 hf download \
 # this variable itself and sets no affinity for an explicit count. One thread
 # also keeps concurrent vipune calls inside a container's CPU limit.
 ENV ORT_INTRA_OP_NUM_THREADS=1
-# Smoke: a vipune call writes only its own output. Any stderr fails the build.
+# Smoke: exit status decides. A non-zero `vipune add` or `vipune search` fails
+# the build whatever it printed — a vipune that cannot load its model exits 101
+# with empty stderr, so an empty-stderr check alone would pass a broken image.
+# stderr is judged too, and one line is tolerated: under QEMU emulation the
+# onnxruntime cpu probe cannot read the vendor id and warns on every call.
+# The filter strips ANSI escapes, then drops only a line that IS that warning,
+# matched at both ends on its complete text — the bare
+# `onnxruntime cpuid_info warning: Unknown CPU vendor. cpuinfo_vendor value: <n>`,
+# the number being the enum the probe could not resolve. The leading anchor is as
+# load-bearing as the trailing one: an error and the warning can arrive joined on
+# ONE line behind an ANSI reset, and an end-only anchor then matches that whole line
+# and deletes the error with it. A substring drop is worse still — a line that merely
+# QUOTES the warning, a model-load failure or a pybind rethrow among them, carries
+# that text inside its own report and would be deleted anyway, so a broken-model image
+# publishes. Lines left empty by the ANSI strip are no residue: the logger closes a
+# record with a bare `\x1b[0m` and that is not an error. Anything else fails.
+# The search hit is grepped from the unfiltered stdout file, after the stderr
+# judgement, so filtering can never mask a search that found nothing.
 # `timeout` (coreutils, Essential on the Ubuntu base) bounds each call: a hung
 # vipune exits 124, which the `|| f=1` path reports like any other failure
 # instead of stalling the image build in silence.
 RUN d="$(mktemp -d)"; export VIPUNE_DATABASE_PATH="$d/smoke.db"; f=; \
     timeout 60 vipune add "image smoke" >/dev/null 2>"$d/err" || f=1; \
     timeout 60 vipune search "image smoke" --json >"$d/out" 2>>"$d/err" || f=1; \
-    if [ -s "$d/err" ] || [ -n "$f" ]; then cat "$d/err" >&2; echo "vipune smoke: failed or wrote stderr" >&2; exit 1; fi; \
+    if [ -n "$f" ]; then cat "$d/err" >&2; echo "vipune smoke: vipune exited non-zero" >&2; exit 1; fi; \
+    sed 's/\x1b\[[0-9;]*m//g;/^[[:space:]]*$/d' "$d/err" >"$d/clean" || { echo "vipune smoke: stderr unreadable" >&2; exit 1; }; \
+    grep -E -v '^onnxruntime cpuid_info warning: Unknown CPU vendor\. cpuinfo_vendor value: [0-9]+$' "$d/clean" >"$d/rest" || true; \
+    if [ -s "$d/rest" ]; then cat "$d/err" >&2; echo "vipune smoke: unexpected stderr" >&2; exit 1; fi; \
     grep -q '"image smoke"' "$d/out" || { echo "vipune smoke: search did not find the memory" >&2; exit 1; }; \
     rm -rf "$d"
 # No `if [ -d ]` guard: the pre-fetch step guarantees the cache exists, so a missing
