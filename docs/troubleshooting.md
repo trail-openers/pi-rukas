@@ -1298,7 +1298,7 @@ hands it to a `pre-push` hook, and it prints locations, never terms.
 
 **Symptom:** Running `./install.sh` on a fresh host (or after `docker system prune`) takes 10-30 minutes. Output shows `cargo install vipune`, `cargo install double-o`, `npm install -g ...`, the Rust toolchain compiling.
 
-**Cause:** You're on an `install.sh` from before #219 — pre-#219 the script always built the image locally. Post-#219 it pulls a pre-built multi-arch image from `ghcr.io/trail-openers/pi-rukas:latest` (built + published on every merge to main).
+**Cause:** You're on an `install.sh` from before #219 — pre-#219 the script always built the image locally. Post-#219 it pulls a pre-built multi-arch image from `ghcr.io/trail-openers/pi-rukas:latest`, which publish-image rebuilds on every merge to main — but a build that fails leaves `latest` on its previous image rather than publishing anything, so `latest` can be older than the merge you expect (see the next entry).
 
 **Fix:** Pull the latest pi-rukas repo + rerun install.
 
@@ -1309,6 +1309,14 @@ cd ~/.config/opencode/pi-rukas && git pull && ./install.sh
 The pull should finish in ~10-20s on broadband. If it falls back to a local build, see the next entry.
 
 PR: [#219](https://github.com/trail-openers/pi-rukas/pull/219)
+
+### `ghcr.io/trail-openers/pi-rukas:latest` is stale — installs pull an old image
+
+**Symptom:** A fresh `./install.sh` pulls an image that lacks something recent — `docker run --rm ghcr.io/trail-openers/pi-rukas:latest vipune --version` (or `pip show`, or any file you expect) says it predates the merge you installed from. On GitHub, the `publish-image` runs for those merges are red, while the `gate` job beside them is green.
+
+**Cause:** publish-image pushes only when its build succeeds, and the image build is one step of that job. Any step before the push failing — the vipune build smoke among them — leaves `latest` on the last good image, and every install keeps pulling that one. A green `gate` says nothing about this: the gate never builds the image.
+
+**Fix:** Read the failing job, not the gate: Actions → `publish-image` → the latest red run → `Build and push`. Buildx prints the failing `RUN` and the container's own stderr under it, which names the step. A local `docker build -f .devcontainer/Dockerfile .devcontainer` on the same commit reproduces a build-side failure without waiting for CI, and is the check to run before merging a Dockerfile change. Fix the step, merge, and confirm the next publish-image run is green on **both** architectures before treating `latest` as current — an amd64-only success still leaves `latest` unchanged.
 
 ### `docker pull ghcr.io/trail-openers/pi-rukas:latest` returns `denied`
 
@@ -1478,7 +1486,7 @@ PR: [#205](https://github.com/trail-openers/pi-rukas/pull/205)
 
 **Cause:** vipune sets no thread count, so onnxruntime sizes its pool to the host's physical cores and pins each thread to one. In a container limited by a cgroup cpuset most of those CPUs are not the container's, and each pin fails. A CPU quota alone (`docker run --cpus`) does not trigger it.
 
-**Fix:** The image sets `ORT_INTRA_OP_NUM_THREADS=1`, which onnxruntime reads itself; an explicit count sets no affinity. Its build smoke step fails on any vipune stderr. It applies to every onnxruntime program in the container, so product code that needs more threads sets its own count. Outside the image, including images that build vipune from their own recipe, export the same variable. If you see it inside `pi-rukas`, your image predates this: `./install.sh` to refresh.
+**Fix:** The image sets `ORT_INTRA_OP_NUM_THREADS=1`, which onnxruntime reads itself; an explicit count sets no affinity. Its build smoke step judges vipune by exit status and treats stderr as an error except for onnxruntime's `cpuid_info warning: Unknown CPU vendor` line, which QEMU emulation makes unavoidable — so an affinity line reaching that step still fails the build, and a vipune that exits non-zero fails it whatever it printed. It applies to every onnxruntime program in the container, so product code that needs more threads sets its own count. Outside the image, including images that build vipune from their own recipe, export the same variable. If you see it inside `pi-rukas`, your image predates this: `./install.sh` to refresh.
 
 ### "fd not found. Downloading..." / "ripgrep not found. Downloading..." at startup
 
