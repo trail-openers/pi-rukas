@@ -81,7 +81,8 @@ import { acceptanceSection, assertHeadIsVerified } from "./review-acceptance.ts"
 import { type StepStop, reviewBoundRecord, stepBound, unjudgedLenses } from "./review-bound.ts";
 import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
-import { derivedArg, fixRound, noteFixDisclosure, reviewedHead } from "./review-git.ts";
+import { derivedArg, noteFixDisclosure, reviewedHead } from "./review-git.ts";
+import { fixRound } from "./review-integrate.ts";
 import {
   fixRunId,
   fixRunIdFromLog,

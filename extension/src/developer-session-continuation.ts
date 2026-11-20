@@ -18,7 +18,8 @@
  *
  * What makes the child a follow-up rather than a new dispatch, stated as rules:
  *
- * - the SAME role, so the same prompt file, the same model resolution and the same tool roster;
+ * - the SAME role, so the same prompt file, the same model resolution and the same tool roster — and
+ *   that role has to be {@link FIXER_ROLE}, which is the only role a lean fix wave dispatches;
  * - the same write fence, so a resumed child cannot write where the fenced one could not;
  * - `cwd` = the tree the first child ran in — a child that resumes the session but starts in the
  *   parent's directory edits a checkout nobody will integrate;
@@ -42,9 +43,10 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { writeReaskPromptFile } from "./adversarial-verdict-reask-child.ts";
 import { forgeReadChildEnv } from "./child-forge-env.ts";
-import { childGuardsArgs } from "./child-guards.ts";
+import { childGuardsArgs, preflightChildGuards } from "./child-guards.ts";
 import { CHILD_ROLE_ENV, childRoleEnvEnabled, childRoleEnvValue } from "./child-role-env.ts";
 import { scrubGitLocation } from "./git-env.ts";
+import { FIXER_ROLE } from "./lean/step-budget.ts";
 import { resolveModel } from "./models.ts";
 import { getPiInvocation } from "./pi-binary-resolve.ts";
 import { excludeToolsFor } from "./role-tools.ts";
@@ -52,7 +54,7 @@ import { ROLES, type RoleName } from "./roles.ts";
 import { groupSpawnOpts, killProcessTree, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
 import { withOperatorConfigGuard } from "./spawn-operator-config.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { DispatchUsage } from "./types.ts";
 import { workCycleTrustEnabled } from "./work-cycle-trust.ts";
 import type { WriteFence } from "./write-fence-contract.ts";
@@ -67,7 +69,10 @@ export const CONTINUATION_SOURCE_TAG = "developer-session-continuation";
  *  `no-answer` is a child that ran and said nothing. */
 export type ContinuationFailure =
   | "no-session"
-  | "no-role"
+  /** A role this module must not run a child for. One arm, on purpose: the only way to reach a
+   *  child here is the fixer's own role, so "known role but not the fixer's" and "not a role at all"
+   *  are the same refusal and are not two facts an operator decides differently. */
+  | "unverified-role"
   | "spawn-failed"
   | "timeout"
   | "no-answer";
@@ -239,14 +244,15 @@ export function continuationReplyText(rawStdout: string): string {
 }
 
 /** The role's system prompt, written the way `spawnSpecialist` does, so the resumed child is
- *  configured like the child it continues. A role with no prompt file of its own is not a role a
- *  step can continue, and gets nothing — the caller reads that as "no continuation". The temp
- *  DIRECTORY travels with the file because the caller owns its removal. */
-async function writeRolePromptFileFor(
-  role: string,
-): Promise<{ dir: string; promptFile: string } | undefined> {
-  const roleDef = ROLES[role as RoleName];
-  if (roleDef === undefined) return undefined;
+ *  configured like the child it continues. The temp DIRECTORY travels with the file because the
+ *  caller owns its removal. A role with no prompt entry cannot reach here at all: the gate in
+ *  `spawnDeveloperContinuationChild` admits exactly {@link FIXER_ROLE}, and the read failing on a
+ *  role that IS the fixer's is an fs fault the catch reports, not a role question. */
+async function writeRolePromptFileFor(): Promise<{ dir: string; promptFile: string }> {
+  const role = FIXER_ROLE;
+  // The gate above admits exactly this role, so the roster entry exists by the same proof the prompt
+  // file is read under. `ROLES` is keyed by `RoleName`, and this is the one place that proof is stated.
+  const roleDef: (typeof ROLES)[RoleName] = ROLES[FIXER_ROLE];
   const fs = await import("node:fs/promises");
   const os = await import("node:os");
   const path = await import("node:path");
@@ -292,12 +298,40 @@ export async function spawnDeveloperContinuationChild(
   // Absent or unreadable, and the session holds nothing to continue: the caller's answer is today's
   // outcome, not a fresh child started in ignorance of what the first one read.
   if (!existsSync(args.transcriptPath)) return { ok: false, reason: "no-session" };
+  // THE ROLE GATE, FIRST and outside the guard: a role string that is not the fixer's is not a
+  // continuation this module may run for, and nothing below it — no model resolution, no prompt file,
+  // no operator-config window, no child — gets reached. The step hands this the role the fixer
+  // REPORTED, and `DispatchResult.role` is a field of a child-authored record: a child that said it
+  // ran as `code-review-specialist` would otherwise resume its session with the developer's write
+  // tools and the developer's fence, which is the exclusion strip in `continuationChildArgs` doing
+  // the opposite of what it is there for. The refusal is traced with the role named, so a wave log
+  // says WHO was refused rather than that something was.
+  if (args.role !== FIXER_ROLE) {
+    trace(
+      `${CONTINUATION_SOURCE_TAG}: refused the continuation — role "${args.role}" is not ${FIXER_ROLE}`,
+    );
+    return { ok: false, reason: "unverified-role" };
+  }
+  // The same pre-spawn check `spawnSpecialistInner` makes before it builds its argv (#926, the #893
+  // reporter-preflight pattern): this child's argv names the guard companion, so a missing companion
+  // has to be a NAMED dispatch failure rather than a resumed child running with none of the
+  // mode-independent guards. The check itself THROWS, exactly as it does on the spawn path, and the
+  // name it throws with is the operator's diagnosis; here it is caught and turned into the
+  // `spawn-failed` outcome this module's contract keeps, because its caller is a review step that
+  // must not be ended by a wedged install. That is why the line is traced with `traceWarn` and not
+  // `trace`: the outcome on its own cannot tell a missing companion from any other preparation fault,
+  // and an outcome whose cause is invisible is the silence this repo's gates refuse to read as a pass.
+  try {
+    preflightChildGuards();
+  } catch (err) {
+    traceWarn(`${CONTINUATION_SOURCE_TAG}: ${err instanceof Error ? err.message : String(err)}`);
+    return { ok: false, reason: "spawn-failed" };
+  }
   const choice = resolveModel(args.role);
   return withOperatorConfigGuard(args.role, async () => {
     let promptDir: string | undefined;
     try {
-      const written = await writeRolePromptFileFor(args.role);
-      if (written === undefined) return { ok: false, reason: "no-role" };
+      const written = await writeRolePromptFileFor();
       promptDir = written.dir;
       const invocation = getPiInvocation(
         continuationChildArgs({

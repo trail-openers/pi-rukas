@@ -50,11 +50,13 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
     },
     canary: {
       symbol: "fixerWasTruncated",
-      importer: "lean/review-git.ts",
+      importer: "lean/review-fix-child.ts",
     },
     locate: (source: { name: string; text: string }) => ({
       // The one file that turns a truncated fixer into a second child — the arm that pays for it.
-      production: source.name === "lean/review-git.ts",
+      // `review-fix-child.ts`: the detector and the ask are one function, in the file that already owns
+      // the fixer's dispatch.
+      production: source.name === "lean/review-fix-child.ts",
       importsSeam: /from "\.\.\/fixer-truncation\.ts"/.test(source.text),
     }),
   },

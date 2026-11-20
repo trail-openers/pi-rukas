@@ -21,9 +21,10 @@
  *       turn, so the first child's own closing text and its 16 384-token turn must never be mistaken
  *       for the continuation's; and a stream that carried no final assistant turn yields no usage, so
  *       the row costs zero rather than a guessed number
- *   (5) the failure arms, each with its own reason: no session file, a role with no prompt file, a
- *       child that printed nothing, a child the bound ended — and the one that must NOT be a pass, a
- *       child that exited non-zero
+ *   (5) the failure arms, each with its own reason: no session file, a child that printed nothing, a
+ *       child the bound ended — and the one that must NOT be a pass, a child that exited non-zero
+ *   (5b) the two pre-spawn refusals: a guard companion that cannot be resolved, and a role that is not
+ *       the fixer's — each with no child spawned, and the role refusal traced with the role named
  *   (6) the bound handed to the child never exceeds the fixer's own ceiling
  *
  *
@@ -34,8 +35,8 @@
  * or reads a model's output.
  */
 
-import type { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -50,91 +51,18 @@ import { continuationBoundMs } from "../src/fixer-truncation.ts";
 import { KILL_GRACE_MS } from "../src/spawn-kill.ts";
 import { FIX_BOUND_MS } from "../src/lean/review.ts";
 import type { BudgetArms } from "../src/lean/step-budget.ts";
+import {
+  FENCE,
+  agentEnd,
+  child,
+  disposables,
+  scratch,
+} from "./lib/lean-continuation-child.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { cleanupRoots } from "./lib/lean-review-fixtures.ts";
 
 const { assert, failures } = makeAssert();
-
-const ROOTS: string[] = [];
-const scratch = (name: string): string => {
-  const dir = mkdtempSync(join(tmpdir(), "lean-continuation-"));
-  ROOTS.push(dir);
-  const file = join(dir, name);
-  writeFileSync(file, '{"type":"user","message":"the fixer read this"}\n');
-  return file;
-};
-
-/** The fence and tree one case hands the child. */
-const FENCE = {
-  root: "/run/.worktrees/lean-7-fix-a-full-0-1700000000000",
-  repo: "/run",
-  scratch: "/run/tmp/issue-7",
-} as const;
-
-/** A child that answers one `agent_end` and exits 0. */
-function child(
-  events: unknown[],
-  opts: {
-    exitCode?: number;
-    onSpawn?: (argv: string[], env: Record<string, string | undefined>, cwd?: string) => void;
-  } = {},
-): {
-  spawn: typeof spawn;
-  seen: () => { argv: string[]; env: Record<string, string | undefined>; cwd?: string };
-} {
-  let seen: { argv: string[]; env: Record<string, string | undefined>; cwd?: string } = {
-    argv: [],
-    env: {},
-  };
-  return {
-    seen: () => seen,
-    spawn: ((
-      _cmd: string,
-      argv: string[],
-      o?: { env?: Record<string, string | undefined>; cwd?: string },
-    ) => {
-      seen = { argv, env: o?.env ?? {}, cwd: o?.cwd };
-      opts.onSpawn?.(argv, o?.env ?? {}, o?.cwd);
-      const stdout = new PassThrough();
-      const stdin = new PassThrough();
-      queueMicrotask(() => {
-        for (const e of events)
-          (stdout as unknown as { write: (s: string) => void }).write(`${JSON.stringify(e)}\n`);
-        (stdout as unknown as { end: () => void }).end();
-      });
-      // The child reads its one prompt and then goes; `end()` on the caller's side is what lets it exit.
-      stdin.on("data", () => undefined);
-      const proc = {
-        stdout,
-        stderr: new PassThrough(),
-        stdin,
-        kill: () => true,
-        on: (event: string, cb: (arg: never) => void) => {
-          if (event === "exit") queueMicrotask(() => cb((opts.exitCode ?? 0) as never));
-          return proc;
-        },
-      } as unknown as ChildProcessWithoutNullStreams;
-      return proc;
-    }) as typeof spawn,
-  };
-}
-
-const agentEnd = (over: {
-  text?: string;
-  stopReason?: string;
-  usage?: Record<string, unknown>;
-}): unknown => ({
-  type: "agent_end",
-  messages: [
-    {
-      role: "assistant",
-      ...(over.stopReason === undefined ? {} : { stopReason: over.stopReason }),
-      content: [{ type: "text", text: over.text ?? "" }],
-      ...(over.usage === undefined ? {} : { usage: over.usage }),
-    },
-  ],
-});
 
 const baseArgs = (transcriptPath: string) => ({
   transcriptPath,
@@ -177,7 +105,7 @@ const baseArgs = (transcriptPath: string) => ({
   const reviewerArgv = continuationChildArgs({
     transcriptPath: transcript,
     role: "adversarial-developer",
-    promptFile: "/tmp/p.md",
+    promptFile: join(tmpdir(), "unused-prompt.md"),
   });
   assert(
     reviewerArgv.includes("--exclude-tools"),
@@ -434,20 +362,12 @@ const baseArgs = (transcriptPath: string) => ({
 
 // ── (5) THE FAILURE ARMS, EACH NAMED ──────────────────────────────────────────
 {
-  const missing = join(ROOTS[0] ?? tmpdir(), "does-not-exist.json");
+  const missing = join(disposables[0] ?? tmpdir(), "does-not-exist.json");
   assert(existsSync(missing) === false, "(5) precondition: the session file is absent");
   const a = await spawnDeveloperContinuationChild(baseArgs(missing), { spawn: child([]).spawn });
   assert(
     a.ok === false && a.reason === "no-session",
     `(5) a missing session file is “no-session” — no child is started in ignorance of what the first one read (${JSON.stringify(a)})`,
-  );
-  const b = await spawnDeveloperContinuationChild(
-    { ...baseArgs(scratch("fixer-session-5.json")), role: "not-a-role" },
-    { spawn: child([]).spawn },
-  );
-  assert(
-    b.ok === false && b.reason === "no-role",
-    `(5) a role with no prompt file is “no-role” (${JSON.stringify(b)})`,
   );
   const c = await spawnDeveloperContinuationChild(baseArgs(scratch("fixer-session-6.json")), {
     spawn: child([{ type: "agent_end", messages: [{ role: "assistant", content: [] }] }]).spawn,
@@ -493,6 +413,6 @@ const baseArgs = (transcriptPath: string) => ({
 }
 
 
-for (const dir of ROOTS) rmSync(dir, { recursive: true, force: true });
+for (const dir of disposables) rmSync(dir, { recursive: true, force: true });
 cleanupRoots();
 process.exit(failures());

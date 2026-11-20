@@ -4,10 +4,15 @@
  * lifetime seam that put its creation and destruction in `review-tree.ts`.
  */
 
-import type { ContinuationOutcome } from "../developer-session-continuation.ts";
-import { continuationBoundMs, continuationPrompt, continuationRow } from "../fixer-truncation.ts";
+import {
+  continuationBoundMs,
+  continuationPrompt,
+  continuationRow,
+  fixerWasTruncated,
+} from "../fixer-truncation.ts";
 import type { DispatchResult } from "../types.ts";
 import { normaliseBuild } from "./build-normalise.ts";
+import { leanChildOpts } from "./child-opts.ts";
 import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { type ReviewFixArgs, fixPrompt, fixWriteFence } from "./review-deps.ts";
@@ -68,24 +73,36 @@ export async function runFixer(
 }
 
 /**
- * The truncated fixer's continuation, and the row it cost.
+ * The truncated fixer's SECOND child: the judgement, the ask, and the row it cost.
  *
- * Lives beside `runFixer` because the row is the same shape built the same way: the fixer's role, the
- * fix tree's identity, and whatever the child reported. Keeping the two billing sites together is
- * what stops one of them from drifting — the wave that billed its first child and silently un-billed
- * its second would report a truncated fix as a one-child one, which is the under-billing #1930 shipped
- * with. Returns whether the continuation ran, so `fixRound` folds either way.
+ * The detector (`fixerWasTruncated`) is pure and the ask is not, and the split is the point: the
+ * judgement (kill, then budget, then the recorded stop reason, then the tool-call record) is the
+ * load-bearing rule, and only its `true` answer pays for a child. It runs BEFORE the fold: `foldFix`
+ * commits what the child left and `removeWorktree` then destroys the tree, so a continuation asked
+ * for after either would be writing into bytes nobody will read. The seam and the session file are
+ * re-checked here rather than trusted from the detector, since either can be absent on a result the
+ * detector vouched for.
+ *
+ * The row is billed on BOTH arms and BEFORE the outcome is read: a continuation that died or was
+ * bound still spent tokens, and a row that went missing with the failure is how a wave loses its
+ * second child. It is the same shape `runFixer` builds, from the fixer's role, the fix tree's
+ * identity and whatever the child reported, and the two sites sit together so neither un-bills its
+ * child.
+ *
+ * Returns the wave's one-shot answer: a continuation that FAILED is still one that was tried, so the
+ * reason line must be able to say a second child was paid for.
  */
-export async function runFixerContinuation(
+export async function askTruncatedFixer(
   deps: ReviewDeps,
   opts: {
-    result: DispatchResult;
+    fixer: DispatchResult;
     budget: BudgetArms;
-    fixerBoundMs: number;
+    /** The ceiling's verdict, if the step's own budget had already stopped this wave. */
+    fired: BudgetFired | undefined;
     issue: number;
     findings: string;
     worktree: string;
-    writeFence: { root: string; repo: string; scratch: string };
+    repoRoot: string;
     rows: DispatchUsageRow[];
     worktreeRunId: FixRunId;
     /** The run's permission stamp, threaded from `ReviewDeps.headless` by the step (see
@@ -93,29 +110,28 @@ export async function runFixerContinuation(
      *  would be born permission-denied on exactly the arm where its parent fixer ran trusted. */
     workCycleTrust?: boolean;
   },
-): Promise<{ ran: true; outcome: ContinuationOutcome } | { ran: false }> {
+): Promise<boolean> {
+  const truncated = (
+    await fixerWasTruncated(opts.fixer, {
+      seam: deps.continueSession !== undefined,
+      budgetFired: opts.fired !== undefined,
+    })
+  ).truncated;
   const seam = deps.continueSession;
-  if (seam === undefined) return { ran: false };
-  const transcript = opts.result.transcriptPath;
-  if (typeof transcript !== "string" || transcript === "") return { ran: false };
+  if (truncated !== true || seam === undefined) return false;
+  const transcript = opts.fixer.transcriptPath;
+  if (typeof transcript !== "string" || transcript === "") return false;
   const outcome = await seam({
     transcriptPath: transcript,
-    role: opts.result.role,
+    role: opts.fixer.role,
     cwd: opts.worktree,
-    writeFence: opts.writeFence,
-    boundMs: continuationBoundMs(opts.budget, opts.fixerBoundMs),
+    writeFence: fixWriteFence(opts.worktree, opts.repoRoot, opts.issue),
+    boundMs: continuationBoundMs(opts.budget, FIX_BOUND_MS),
     prompt: continuationPrompt(opts.issue, opts.findings),
     ...(opts.workCycleTrust === undefined ? {} : { workCycleTrust: opts.workCycleTrust }),
   });
-  // Billed on BOTH arms and BEFORE the outcome is read: a continuation that died or was bound still
-  // spent tokens, and a row that went missing with the failure is how a wave loses its second child.
-  opts.rows.push(continuationRow(outcome, opts.result.role, opts.worktreeRunId));
-  // The outcome travels back on the `ran: true` arm, and the one-shot guarantee lives in the CALLER
-  // (the `truncated` flag in `fixRound`), not here: a continuation that FAILED is still a
-  // continuation that was tried, so swallowing it into `ran: false` would cost the wave's reason
-  // line the clause that says a second child was ever paid for — and the wave would read, to an
-  // operator, exactly like a fixer nobody re-asked.
-  return { ran: true, outcome };
+  opts.rows.push(continuationRow(outcome, opts.fixer.role, opts.worktreeRunId));
+  return true;
 }
 
 /**
