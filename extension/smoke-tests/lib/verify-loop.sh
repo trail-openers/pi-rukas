@@ -311,7 +311,8 @@ fi
 # outright (#2426), because host_job_count answers 2 below 8 CPUs and ubuntu-latest
 # has 4, so the flag would have left the CI gate at the shipped default while
 # looking green. It lives here rather than as an inline expansion in
-# .pi/verify-cmd for a historical reason: until #1764 phase 2 the review-accept guard (#1125) modelled shell
+# .pi/verify-cmd for a historical reason: until #1764 phase 2 the review-accept
+# guard (#1125) modelled shell
 # semantics, and its A5 arm (`armVerifyLoop`) admitted `bash …/verify-loop.sh`
 # only when every word after the script was `--digest` or a test path, and
 # `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf …)}"` was neither. The guard is
