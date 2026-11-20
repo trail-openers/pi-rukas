@@ -19,8 +19,11 @@
  *      lookup fails sizes DOWN to 2, never up.
  *   2. An explicit PI_ENSEMBLE_VERIFY_TEST_JOBS wins over the host — with the
  *      flag passed and a 12-CPU stub, the operator's 1 is what runs.
- *   3. No flag → the shipped default of 2 regardless of the host, which is the
- *      CI shape (.github/workflows/ci.yml passes no flag).
+ *   3. No flag → the shipped default of 2 regardless of the host. This is the
+ *      default-invocation shape (AGENTS.md §1's pre-push run, and any caller that
+ *      names neither a flag nor the variable) — it is NOT CI: `.github/workflows/ci.yml`
+ *      pins its own pool width through the step's `env:` and the width gate there is
+ *      `test-ci-verify-loop-jobs.ts`.
  *   4. The flag is not mistaken for a test path in any position, and a flag
  *      with no files is still a usage error rather than a vacuous pass.
  *
@@ -160,13 +163,19 @@ function runSet(
   // "default" is the ceiling the shipped value gives when the host was never
   // asked — a literal, not a number scraped from somewhere, because that is the
   // width run_pool receives in that branch (VERIFY_TEST_JOBS=2 from the parse).
-  const width = hostNote ? hostNote[1] : clampNote ? "2" : "default";
+  // `?? ""` because the group only participates when the pattern matched: an empty
+  // capture is a host that printed no number, which is judged as "no trace" by the
+  // `hostNote ?` below, never as a width.
+  const width = hostNote ? (hostNote[1] ?? "") : clampNote ? "2" : "default";
   const windows: Array<[number, number]> = [];
   for (const f of readdirSync(recordDir)) {
     if (!f.endsWith(".tsv")) continue;
     const parts = readFileSync(path.join(recordDir, f), "utf-8").trim().split("\t").map(Number);
     if (parts.length === 2 && parts.every((x) => Number.isFinite(x))) {
-      windows.push([parts[0], parts[1]]);
+      // The two `Number`s the fixture wrote; `parts` is `number | undefined` per
+      // index under `noUncheckedIndexedAccess`, which the length check above already
+      // rules out — the `??` states that to the compiler rather than casting it.
+      windows.push([parts[0] ?? 0, parts[1] ?? 0]);
     }
   }
   // Sweep: +1 on each start, -1 on each finish; the running max is the peak
@@ -304,6 +313,7 @@ try {
   }
 
   // --- Case 3: without the flag the shipped default holds on the same big host.
+  // (CI is not this case — its step names the width in `env:`; see the jsdoc.)
   {
     const plain = runSet(N_NARROW, freshRecordDir(), { flag: false, cpus: "12" });
     assert(plain.status === 0, `case 3: the no-flag run exits 0 (got ${plain.status})`);
@@ -313,7 +323,7 @@ try {
     );
     assert(
       plain.overlap === 2,
-      `case 3: no flag keeps the pool at the shipped 2 on a 12-CPU host — the CI shape (peak overlap ${plain.overlap}, want 2)`,
+      `case 3: no flag keeps the pool at the shipped 2 on a 12-CPU host — the default-invocation shape (peak overlap ${plain.overlap}, want 2)`,
     );
     // The ceiling, not just the achieved overlap: the host must never have been
     // consulted at all (no `host_job_count` trace, no clamp naming a host number)

@@ -55,5 +55,7 @@ jobs:
 
       - name: Offline smoke tests
         working-directory: extension
+        env:
+          PI_ENSEMBLE_VERIFY_TEST_JOBS: "4"
         run: |
           bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts
