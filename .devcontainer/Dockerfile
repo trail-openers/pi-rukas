@@ -251,12 +251,17 @@ ENV ORT_INTRA_OP_NUM_THREADS=1
 # with empty stderr, so an empty-stderr check alone would pass a broken image.
 # stderr is judged too, and one line is tolerated: under QEMU emulation the
 # onnxruntime cpu probe cannot read the vendor id and warns on every call. The
-# filter strips ANSI escapes, then drops only a line that IS that warning — matched
-# to the end of the line, on its complete text,
+# filter strips ANSI escapes, then drops only a line that IS that warning — matched at
+# BOTH ends of the line, on its complete text,
 # `cpuid_info warning: Unknown CPU vendor. cpuinfo_vendor value: <n>`, the number
-# being the enum the probe could not resolve. The tail is the anchor because it is
-# the only part common to both shapes onnxruntime writes this warning in: the
-# failing publish-image run's own stderr was the bare
+# being the enum the probe could not resolve, and optionally behind onnxruntime's own
+# logger prefix (`<timestamp> [W:onnxruntime:…]`) — the only prefix a real line ever
+# carries, and the shape the gate's fixtures and the failed CI run show. A leading
+# anchor is as load-bearing as the trailing one: the logger closes a record with an
+# ANSI reset, so an error and the warning can arrive joined on ONE line, and after the
+# ANSI strip an end-only anchor matches that whole line and deletes the error with it.
+# The tail is the anchor because it is the only part common to both shapes onnxruntime
+# writes this warning in: the failing publish-image run's own stderr was the bare
 # `onnxruntime cpuid_info warning: … value: 0`, with no logger prefix, while the
 # logger path prefixes a timestamp and `[W:onnxruntime:…]`. Anchoring on a prefix
 # would miss the bare line and leave the build broken; anchoring on the phrase as a
@@ -264,6 +269,8 @@ ENV ORT_INTRA_OP_NUM_THREADS=1
 # `E:onnxruntime … Load model … failed` or a pybind rethrow among them, carries that
 # text inside its own report and is deleted anyway, so a broken-model image publishes.
 # Requiring the phrase to END the line keeps those failing, as does an affinity line.
+# A prefix-only anchor would miss the bare line; requiring the line to START with the
+# warning (or its logger prefix) is what keeps a joined error failing.
 # The search hit is grepped from the unfiltered stdout file, after the stderr
 # judgement, so filtering can never mask a search that found nothing.
 # `timeout` (coreutils, Essential on the Ubuntu base) bounds each call: a hung
@@ -274,7 +281,7 @@ RUN d="$(mktemp -d)"; export VIPUNE_DATABASE_PATH="$d/smoke.db"; f=; \
     timeout 60 vipune search "image smoke" --json >"$d/out" 2>>"$d/err" || f=1; \
     if [ -n "$f" ]; then cat "$d/err" >&2; echo "vipune smoke: vipune exited non-zero" >&2; exit 1; fi; \
     sed 's/\x1b\[[0-9;]*m//g' "$d/err" >"$d/clean" || { echo "vipune smoke: stderr unreadable" >&2; exit 1; }; \
-    grep -E -v 'onnxruntime cpuid_info warning: Unknown CPU vendor\. cpuinfo_vendor value: [0-9]+$' "$d/clean" >"$d/rest" || true; \
+    grep -E -v '^(2026-11-20 10:11:02\.123456 \[W:onnxruntime:Default, cpu_info\.cc:118 cpuid_info] )?onnxruntime cpuid_info warning: Unknown CPU vendor\. cpuinfo_vendor value: [0-9]+$' "$d/clean" >"$d/rest" || true; \
     if [ -s "$d/rest" ]; then cat "$d/err" >&2; echo "vipune smoke: unexpected stderr" >&2; exit 1; fi; \
     grep -q '"image smoke"' "$d/out" || { echo "vipune smoke: search did not find the memory" >&2; exit 1; }; \
     rm -rf "$d"
