@@ -17,7 +17,18 @@ concurrency:
 # publish-image.yml look at: it needs every shard and the static checks, so the
 # required check name and the workflow-run conclusion are what they were when
 # this was one job. The static checks (type-check, lint) are cheap and are NOT
-# sharded — they run once, in `static-checks`, which the shards wait on.
+# sharded — they run once, in `static-checks`. The shards do NOT wait on them:
+# `smoke` has no `needs`, so the shards start beside the static checks instead
+# of behind them, and a static-check failure still fails the required check
+# because `quality-gate` needs both.
+#
+# Each shard builds the prompts itself (`Build per-role system prompts` below,
+# the same step `static-checks` runs). `dist/prompts/` is gitignored and is not
+# shared between jobs, so a shard whose runner had no build would read a `dist/`
+# that does not exist: the prompt gates would fail outright or fall back to
+# their source-file branch and report a pass they never measured. `jq` is
+# installed for the same reason here as in `static-checks` — build.sh needs it
+# and a shard, unlike that job, cannot borrow its dependency.
 jobs:
   static-checks:
     runs-on: ubuntu-latest
@@ -63,15 +74,16 @@ jobs:
         run: bun run check
 
   smoke:
-    needs: static-checks
     strategy:
       # One shard's failure must not cancel its siblings: GitHub reports a
       # cancelled job as a not-passing required check, which parks the cycle
       # with no diagnosis of what actually broke.
       fail-fast: false
       matrix:
-        # The shard index. A shard that enumerated no files fails its own step,
-        # so a shard key that matches nothing can never read as a pass.
+        # The shard index — a 0-based position, which is what the split below
+        # answers (`(NR-1) % 4 == s` on the sorted list, i.e. index % 4). A shard
+        # that enumerated no files fails its own step, so a shard key that
+        # matches nothing can never read as a pass.
         shard: [0, 1, 2, 3]
     runs-on: ubuntu-latest
     steps:
@@ -81,12 +93,19 @@ jobs:
         with:
           bun-version: 1.3.13
 
+      - name: Install jq (build.sh dependency)
+        run: |
+          if ! command -v jq >/dev/null; then sudo apt-get install -y jq; fi
+
       - uses: actions/cache@v6
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('extension/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-
+
+      - name: Build per-role system prompts
+        run: bun run build
 
       - name: Install extension deps
         working-directory: extension
@@ -103,7 +122,7 @@ jobs:
           # cannot be shared between differently-named steps.
           SHARD: ${{ matrix.shard }}
         run: |
-          files=$(ls smoke-tests/test-*.ts | grep -v -- '-live[.]ts$' | LC_ALL=C sort | awk -v s="$SHARD" 'NR % 4 == s')
+          files=$(ls smoke-tests/test-*.ts | grep -v -- '-live[.]ts$' | LC_ALL=C sort | awk -v s="$SHARD" '(NR-1) % 4 == s')
           [ -n "$files" ] || { echo "shard $SHARD enumerated no offline smoke tests — refusing to pass an empty shard" >&2; exit 1; }
           echo "shard $SHARD: $(printf '%s\n' $files | wc -l) offline smoke test file(s)"
           bash smoke-tests/lib/verify-loop.sh $files

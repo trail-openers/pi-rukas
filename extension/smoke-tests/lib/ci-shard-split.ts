@@ -32,21 +32,24 @@ export function matrixShardKeys(text: string): number[] | null {
   return null;
 }
 
-/** Read the modulus out of the workflow's awk split expression, `NR % 4 == s`. */
+/** Read the modulus out of the workflow's awk split expression, `(NR-1) % 4 == s`.
+ * The `\b` before NR matters: the workflow comments and the test's own canary
+ * labels name the 1-based form (`NR % 4`) to say what the split is NOT, and an
+ * unanchored pattern would read the first of those as the shipped rule. */
 export function splitModulus(text: string): number | null {
-  const m = /\bawk\b[^\n]*'NR\s*%\s*([0-9]+)\s*==\s*s'/.exec(text);
+  const m = /\bawk\b[^\n]*'\(NR-1\)\s*%\s*([0-9]+)\s*==\s*s'/.exec(text);
   return m ? Number(m[1]) : null;
 }
 
 /**
  * The shard assignment of a sorted list under a modulus: index k (0-based) of
- * the sorted offline list belongs to shard `(k + 1) % modulus`, which is awk's
- * `NR % 4 == s` over the same list. A caller passes a mutated modulus to ask
+ * the sorted offline list belongs to shard `k % modulus`, which is awk's
+ * `(NR-1) % 4 == s` over the same list. A caller passes a mutated modulus to ask
  * what a different rule would have done.
  */
 export function shardsOf(sorted: readonly string[], modulus: number): string[][] {
   const shards: string[][] = Array.from({ length: modulus }, () => [] as string[]);
-  sorted.forEach((file, i) => shards[(i + 1) % modulus]?.push(file));
+  sorted.forEach((file, i) => shards[i % modulus]?.push(file));
   return shards;
 }
 

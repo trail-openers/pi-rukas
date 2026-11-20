@@ -4,11 +4,11 @@
  * exactly one of CI's 4 shards.
  *
  * `.github/workflows/ci.yml` runs the offline suite as a 4-way matrix. Each
- * shard re-enumerates the suite at run time and keeps the files whose 1-based
- * sorted line number mod 4 equals its shard index:
+ * shard re-enumerates the suite at run time and keeps the files whose 0-based
+ * index in the sorted offline list mod 4 equals its shard index:
  *
  *   ls smoke-tests/test-*.ts | grep -v -- '-live[.]ts$' | LC_ALL=C sort \
- *     | awk -v s="$SHARD" 'NR % 4 == s'
+ *     | awk -v s="$SHARD" '(NR-1) % 4 == s'
  *
  * The failure mode this guards is a VACUOUS GREEN: a shard whose split matches
  * nothing has no files to fail, and the shell guard that refuses an empty shard
@@ -181,8 +181,8 @@ const mutations: Array<[string, string[][], string, "fail" | "differ"]> = [
     OFF,
     "fail",
   ],
-  // The split read 0-based where the workflow reads 1-based: `idx % 4 == s`
-  // instead of `NR % 4 == s`. Over a suite whose length is a multiple of the
+  // The split read 1-based where the workflow reads 0-based: `NR % 4 == s`
+  // instead of `(NR-1) % 4 == s`. Over a suite whose length is a multiple of the
   // width that shift is a permutation — every file still runs exactly once, so
   // the omission/overlap arms are silent by construction (an early version of
   // this case passed for exactly that reason). What it changes is WHICH shard
@@ -190,8 +190,8 @@ const mutations: Array<[string, string[][], string, "fail" | "differ"]> = [
   // the shipped one": a reader blind to that would call a mis-based split
   // correct. Measured on the suite as it stands, every shard's list differs.
   [
-    "an off-by-one index base (`idx % 4` where the workflow is `NR % 4`)",
-    Array.from({ length: N }, (_, i) => offline.filter((_, k) => k % N === i)),
+    "an off-by-one index base (`NR % 4` where the workflow is `(NR-1) % 4`)",
+    Array.from({ length: N }, (_, i) => offline.filter((_, k) => (k + 1) % N === i)),
     OFF,
     "differ",
   ],
@@ -283,6 +283,25 @@ assert(
 // The width readers, judged on mutants of the shipped text — never on the file.
 // A reader that fell back to a default when the shape was unreadable would keep
 // this gate green through exactly the edit it exists to catch.
+const AWK_SPLIT_PREFIX = "awk -v s=\"$SHARD\" '";
+
+/** Rewrite the awk split expression on the line the workflow actually runs, and
+ * only there — asserted to have applied, so a mutant that matched nothing (or
+ * matched a comment instead) is a red rather than a canary that judged the
+ * shipped text and called it a mutation. */
+function mutateAwkSplit(text: string, replacement: string): string {
+  const at = text.indexOf(AWK_SPLIT_PREFIX);
+  if (at < 0) throw new Error(`the workflow no longer runs \`${AWK_SPLIT_PREFIX}\``);
+  const start = at + AWK_SPLIT_PREFIX.length;
+  const end = text.indexOf("')", start);
+  const current = text.slice(start, end);
+  if (current !== "(NR-1) % 4 == s")
+    throw new Error(`the shipped awk split is ${JSON.stringify(current)}, not the pinned form`);
+  const mutated = `${text.slice(0, start)}${replacement}${text.slice(end)}`;
+  if (mutated === text) throw new Error(`the ${JSON.stringify(replacement)} mutant did not apply`);
+  return mutated;
+}
+
 const widthMutants: Array<[string, string, number[] | null, number | null]> = [
   [
     "shard keys narrowed to 3",
@@ -297,7 +316,25 @@ const widthMutants: Array<[string, string, number[] | null, number | null]> = [
     mod,
   ],
   ["the shard key list deleted", workflow.replace("        shard: [0, 1, 2, 3]\n", ""), null, mod],
-  ["the awk modulus changed to 3", workflow.replace("NR % 4 == s", "NR % 3 == s"), shardKeys, 3],
+  [
+    "the awk modulus changed to 3",
+    mutateAwkSplit(workflow, "(NR-1) % 3 == s"),
+    shardKeys,
+    3,
+  ],
+  // The index base is a checkable property only because this reader is asked
+  // about it: revert the workflow to the 1-based form and the reader answers
+  // null rather than reporting the modulus it was supposed to be reading.
+  // Both mutations target the awk LINE, not a bare `replace` over the whole
+  // file: the split's spelling also appears in this file's and the workflow's
+  // prose, and the first match of a whole-file replace is a comment — a canary
+  // that edited prose and still "passed" would be judging nothing.
+  [
+    "the split reverted to the 1-based form",
+    mutateAwkSplit(workflow, "NR % 4 == s"),
+    shardKeys,
+    null,
+  ],
 ];
 for (const [label, text, wantKeys, wantMod] of widthMutants) {
   const gotKeys = matrixShardKeys(text);
