@@ -90,7 +90,12 @@ interface Classified {
  * belongs to no config.
  */
 function inertGlobs(globs: readonly string[], changed: string[]): string[] | undefined {
-  const hits = (entry: string): boolean => changed.some((rel) => protectedGlobMatches(entry, rel));
+  // A built-in path cannot make a configured glob count as having bitten: if the only changed path
+  // a glob names is one the shipped rule already reverts, the project's rule said nothing of its
+  // own, and that is exactly the rot this list exists to expose. The built-ins are filtered out of
+  // the evidence rather than added to the disclosure — see the note above.
+  const itsOwn = changed.filter((rel) => !isProtectedPath(rel));
+  const hits = (entry: string): boolean => itsOwn.some((rel) => protectedGlobMatches(entry, rel));
   const inert = globs.filter((entry) => !hits(entry));
   return inert.length === 0 ? undefined : inert;
 }
