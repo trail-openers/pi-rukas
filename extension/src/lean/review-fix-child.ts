@@ -88,20 +88,13 @@ export async function runFixerContinuation(
     writeFence: { root: string; repo: string; scratch: string };
     rows: DispatchUsageRow[];
     worktreeRunId: FixRunId;
+    /** The run's permission stamp, threaded from `ReviewDeps.headless` by the step (see
+     *  `leanChildOpts` / `DeveloperContinuationFn.workCycleTrust`). A continuation that omitted it
+     *  would be born permission-denied on exactly the arm where its parent fixer ran trusted. */
+    workCycleTrust?: boolean;
   },
-): Promise<{ ran: true; outcome?: ContinuationOutcome } | { ran: false }> {
+): Promise<{ ran: true; outcome: ContinuationOutcome } | { ran: false }> {
   const seam = deps.continueSession;
-  // The outcome comes back on EVERY arm, and the one-shot guarantee lives in the CALLER (a
-  // `truncated` flag in `fixRound`), not here: a continuation that failed is still a continuation
-  // that was tried, and `fixRound` must not ask twice, so swallowing the failure into `ran: false`
-  // would cost the wave's reason line the clause that says a second child was ever paid for — and
-  // the wave would read, to an operator, exactly like a fixer nobody re-asked.
-  const asked = (
-    outcome: ContinuationOutcome | undefined,
-  ): { ran: true; outcome?: ContinuationOutcome } => ({
-    ran: true,
-    ...(outcome === undefined ? {} : { outcome }),
-  });
   if (seam === undefined) return { ran: false };
   const transcript = opts.result.transcriptPath;
   if (typeof transcript !== "string" || transcript === "") return { ran: false };
@@ -112,11 +105,17 @@ export async function runFixerContinuation(
     writeFence: opts.writeFence,
     boundMs: continuationBoundMs(opts.budget, opts.fixerBoundMs),
     prompt: continuationPrompt(opts.issue, opts.findings),
+    ...(opts.workCycleTrust === undefined ? {} : { workCycleTrust: opts.workCycleTrust }),
   });
   // Billed on BOTH arms and BEFORE the outcome is read: a continuation that died or was bound still
   // spent tokens, and a row that went missing with the failure is how a wave loses its second child.
   opts.rows.push(continuationRow(outcome, opts.result.role, opts.worktreeRunId));
-  return asked(outcome);
+  // The outcome travels back on the `ran: true` arm, and the one-shot guarantee lives in the CALLER
+  // (the `truncated` flag in `fixRound`), not here: a continuation that FAILED is still a
+  // continuation that was tried, so swallowing it into `ran: false` would cost the wave's reason
+  // line the clause that says a second child was ever paid for — and the wave would read, to an
+  // operator, exactly like a fixer nobody re-asked.
+  return { ran: true, outcome };
 }
 
 /**

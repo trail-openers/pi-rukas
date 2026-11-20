@@ -22,6 +22,16 @@
  * - the same write fence, so a resumed child cannot write where the fenced one could not;
  * - `cwd` = the tree the first child ran in — a child that resumes the session but starts in the
  *   parent's directory edits a checkout nobody will integrate;
+ * - **the run's own permission stamp**, carried in as `workCycleTrust` by the caller that owns the
+ *   run's mode, and turned into the child env here exactly as `spawnSpecialist` does through
+ *   `applyChildPermissionEnv` (`PI_ENSEMBLE_TRUST_MODE=1`, and no inherited broker socket). This is
+ *   why it is a value threaded from the run and never a process-global read here: an earlier shape
+ *   of the lean stamp remembered the mode on the process, so a second run in one host inherited the
+ *   first's trust;
+ * - **the same kill semantics as the fixer**, which `spawnSpecialist` gives its review children
+ *   through `processGroup: true`: the child leads its own group and every kill goes through
+ *   `killProcessTree`, so the bound's SIGTERM reaches the grandchild its `bash` tool started rather
+ *   than orphaning it in the fix tree;
  * - ONE prompt and then stdin closes: no deck row, no steer seam, no skill, no forwarded extension.
  *
  * `sessionFn` is the seam a test drives; production is {@link spawnDeveloperContinuationChild},
@@ -33,15 +43,18 @@ import { existsSync } from "node:fs";
 import { writeReaskPromptFile } from "./adversarial-verdict-reask-child.ts";
 import { forgeReadChildEnv } from "./child-forge-env.ts";
 import { childGuardsArgs } from "./child-guards.ts";
+import { CHILD_ROLE_ENV, childRoleEnvEnabled, childRoleEnvValue } from "./child-role-env.ts";
 import { scrubGitLocation } from "./git-env.ts";
 import { resolveModel } from "./models.ts";
 import { getPiInvocation } from "./pi-binary-resolve.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLES, type RoleName } from "./roles.ts";
+import { groupSpawnOpts, killProcessTree, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
 import { withOperatorConfigGuard } from "./spawn-operator-config.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 import type { DispatchUsage } from "./types.ts";
+import { workCycleTrustEnabled } from "./work-cycle-trust.ts";
 import type { WriteFence } from "./write-fence-contract.ts";
 
 /** The trace tag for every line this module writes — an operator reading a log decides from it
@@ -93,6 +106,10 @@ export type DeveloperContinuationFn = (args: {
   writeFence: WriteFence;
   boundMs: number;
   prompt: string;
+  /** The run's permission stamp, threaded from the caller that owns the run's mode (see
+   *  `leanChildOpts`). Absent means no stamp, which is what an interactive run carries and what a
+   *  harness with no mode to speak of gets; it is never inferred from the environment here. */
+  workCycleTrust?: boolean;
 }) => Promise<ContinuationOutcome>;
 
 /** The LAST `agent_end`'s final assistant turn's `stopReason`, or undefined when the stream carried
@@ -247,7 +264,10 @@ async function writeRolePromptFileFor(
  * a continuation that lost the fence would be the #1655 hole reopened through the one dispatch path
  * that does not go through `spawnSpecialist`. `withOperatorConfigGuard` wraps the window for the
  * same reason the reattach path wraps its own spawn — this child runs outside `spawnSpecialist`, so
- * it guards its own operator-config window.
+ * it guards its own operator-config window. The two remaining things `spawnSpecialist` owns for a
+ * review child — the permission stamp and the process-group kill — are threaded in as arguments
+ * here (`workCycleTrust`, and `spawn-kill.ts` inside `runContinuationChild`), which is what keeps
+ * this dispatch path from being the one that could write anywhere the process can and die alone.
  *
  * Every failure is an OUTCOME, never a throw: the caller is a review step already deciding whether
  * its wave changed anything, and an exception from a wedged temp root would end the step where the
@@ -261,6 +281,8 @@ export async function spawnDeveloperContinuationChild(
     writeFence: WriteFence;
     boundMs: number;
     prompt: string;
+    /** See `DeveloperContinuationFn.workCycleTrust`. */
+    workCycleTrust?: boolean;
   },
   // The one outside-world call the child needs, injected for the same reason every other one is: a
   // case asserts what the resumed child was HANDED (its argv, its env, its fence) and answers it with
@@ -303,7 +325,14 @@ export async function spawnDeveloperContinuationChild(
 async function runContinuationChild(
   command: string,
   argv: string[],
-  args: { role: string; cwd: string; writeFence: WriteFence; boundMs: number; prompt: string },
+  args: {
+    role: string;
+    cwd: string;
+    writeFence: WriteFence;
+    boundMs: number;
+    prompt: string;
+    workCycleTrust?: boolean;
+  },
   deps: { spawn?: typeof spawn },
 ): Promise<ContinuationOutcome> {
   const childEnv = forgeReadChildEnv(process.env, args.role);
@@ -312,7 +341,23 @@ async function runContinuationChild(
   childEnv.PI_ENSEMBLE_WRITE_ROOT = args.writeFence.root;
   childEnv.PI_ENSEMBLE_WRITE_REPO = args.writeFence.repo;
   childEnv.PI_ENSEMBLE_WRITE_SCRATCH = args.writeFence.scratch;
-  childEnv.PI_ENSEMBLE_ROLE = args.role;
+  // The role stamp, asked through the same helper the spawn path uses — verbatim, and gated on the
+  // same switch. An empty role would leave the key absent, which the child-side guards read as "no
+  // role judged anything" rather than as some default role.
+  const stamped = childRoleEnvValue(args.role);
+  if (childRoleEnvEnabled() && stamped !== undefined) childEnv[CHILD_ROLE_ENV] = stamped;
+  // The run's permission stamp, applied the way `applyChildPermissionEnv` applies it to a
+  // `spawnSpecialist` child. A headless lean run's fixer is trusted through the /work-cycle stamp
+  // (`isParentInTrustMode()` is false with no UI and the strict opt-in set), and this child resumes
+  // that same fixer's edits — a stamp it did not carry would leave the second turn permission-denied
+  // while the first ran free, which is the divergence `leanChildOpts` exists to prevent. Gated on
+  // the same operator opt-in (`workCycleTrustEnabled`), so `PI_ENSEMBLE_STRICT_PERMISSIONS=1` still
+  // refuses it; there is deliberately no broker socket on this path, so an inherited one must not
+  // survive into a trusted child.
+  if (workCycleTrustEnabled(args.workCycleTrust)) {
+    childEnv.PI_ENSEMBLE_TRUST_MODE = "1";
+    Reflect.deleteProperty(childEnv, "PI_ENSEMBLE_PERM_SOCKET");
+  }
   scrubGitLocation(childEnv);
   // Same non-interactive git pins the spawn path stacks — a continuation child that reached a
   // credential prompt or an editor would wait for a TTY it does not have.
@@ -321,6 +366,9 @@ async function runContinuationChild(
   childEnv.GIT_TERMINAL_PROMPT = "0";
   childEnv.GIT_PAGER = "cat";
   const startedAt = Date.now();
+  // The same group decision the fixer's dispatch made (`processGroup: true` at the review seam),
+  // through the one predicate and the one spawn-options helper `spawnSpecialist` uses.
+  const leadsGroup = leadsProcessGroup(true);
   const child = (deps.spawn ?? spawn)(command, argv, {
     // The tree the first child ran in, never this process's directory: a resumed child that starts
     // outside the fix tree edits a checkout the step will never integrate.
@@ -328,7 +376,16 @@ async function runContinuationChild(
     shell: false,
     stdio: ["pipe", "pipe", "pipe"],
     env: childEnv,
+    ...groupSpawnOpts(leadsGroup),
   });
+  // Recorded before any kill can land, so every kill below (and the runner's group reaper) signals
+  // the tree rather than the leader alone. Two guards, both about a handle this function does not
+  // own: a child with no pid cannot lead a group, and `registerChild` also arms an `exit` listener,
+  // so a handle that cannot carry one must not turn a continuation into a failed dispatch. A fake
+  // that cannot lead a group is what `leadsProcessGroup` already answers for at every kill site.
+  if (leadsGroup && child.pid !== undefined && typeof child.once === "function") {
+    registerChild(child, true);
+  }
   attachStdinErrorGuard(child.stdin, CONTINUATION_SOURCE_TAG);
   const stdoutChunks: Buffer[] = [];
   let stdoutSize = 0;
@@ -362,19 +419,15 @@ async function runContinuationChild(
       if (done) return;
       done = true;
       clearTimeout(timer);
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        /* best effort */
-      }
+      // The group, not just the leader — see `spawn-kill.ts`: `child.kill()` signals the leader
+      // alone, and a `bash` grandchild left alive keeps writing into the fix tree this step is about
+      // to fold and delete. The escalation grace is `killProcessTree`'s own.
+      killProcessTree(child);
       resolve(r);
     };
     const timer = setTimeout(() => {
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        /* best effort */
-      }
+      // SIGTERM to the whole group first, exactly as the fixer's bound ends its child.
+      killProcessTree(child);
       finish({ timedOut: true });
     }, args.boundMs);
     child.on("exit", () => finish({ timedOut: false }));

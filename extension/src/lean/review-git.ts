@@ -35,6 +35,7 @@ import { netRefProblem } from "../work-driver-net-git.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { frozenMatches } from "./build-git.ts";
+import { leanChildOpts } from "./child-opts.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { ReviewWave } from "./review-args.ts";
 import { type ReviewFixArgs, fixWriteFence } from "./review-deps.ts";
@@ -264,6 +265,7 @@ export async function fixRound(
     // budget, then the recorded stop reason, then the tool-call record) is the load-bearing rule, and
     // only its `true` answer pays for a child. `runFixerContinuation` re-checks the seam and the
     // session file, since either can be absent on a result the detector vouched for.
+    const childOpts = leanChildOpts(deps.headless);
     const wasTruncated =
       (
         await fixerWasTruncated(fixer, {
@@ -282,6 +284,11 @@ export async function fixRound(
           writeFence: fixWriteFence(wt, ctx.repoRoot, ctx.issue),
           rows: opts.rows,
           worktreeRunId: `${String(opts.runId)}-${treeSuffix}` as FixRunId,
+          // The stamp the run's OWN dispatch sites carry — threaded from `reviewDeps`'s
+          // `leanChildOpts(headless)`, never re-derived here. The continuation resumes that child's
+          // session and its edits integrate, so it must run under the same permission shape it does;
+          // see `leanChildOpts` for why the mode is threaded and never remembered.
+          workCycleTrust: childOpts.workCycleTrust,
         })
       : { ran: false as const };
     // The wave's one-shot answer: `ran` says a second child was asked for, `outcome` says what it
@@ -303,14 +310,6 @@ export async function fixRound(
     await removeWorktree(deps, ctx.repoRoot, wt);
   }
 }
-
-/**
- * The fixer's write fence — owned by `review-deps.ts`, the module that builds the fixer's brief, so
- * the child and its continuation can be fenced by ONE expression. `runFixer` is the only other
- * builder of this shape and it keeps its own literal for the §12 file-size cap; a second expression
- * of the same three fields is what lets a `scratch` drift while every test that reads `root` stays
- * green.
- */
 
 /**
  * The fixer's commits, moved onto the run's branch and pushed.

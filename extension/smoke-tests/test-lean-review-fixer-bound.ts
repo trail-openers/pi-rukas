@@ -26,6 +26,10 @@
  *       child that exited non-zero
  *   (6) the bound handed to the child never exceeds the fixer's own ceiling
  *
+ *
+ *   (7) is a SIBLING FILE: the fixer's own dispatch (its clamped bound and its write fence, asserted
+ *       on the options `deps.dispatch` received) is `test-lean-review-fixer-own-dispatch.ts`.
+ *
  * The child is spawned through the injected `spawn` seam, so nothing here starts a pi, spends a token,
  * or reads a model's output.
  */
@@ -43,9 +47,12 @@ import {
   spawnDeveloperContinuationChild,
 } from "../src/developer-session-continuation.ts";
 import { continuationBoundMs } from "../src/fixer-truncation.ts";
+import { KILL_GRACE_MS } from "../src/spawn-kill.ts";
 import { FIX_BOUND_MS } from "../src/lean/review.ts";
 import type { BudgetArms } from "../src/lean/step-budget.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
+import { withEnv } from "./lib/env-scope.ts";
+import { cleanupRoots } from "./lib/lean-review-fixtures.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -204,6 +211,155 @@ const baseArgs = (transcriptPath: string) => ({
     env.GIT_TERMINAL_PROMPT === "0" && env.GIT_EDITOR === "true",
     "(2) and git stays non-interactive — a child that reached a credential prompt or an editor would wait for a TTY it does not have",
   );
+  // The permission stamp. A headless lean run's FIXER is trusted through the /work-cycle stamp, and
+  // this child resumes that fixer's session and its edits integrate — a continuation that ran while
+  // its parent was trusted is the divergence `leanChildOpts` exists to prevent, and the one this
+  // dispatch path can get wrong silently, since it never goes through `spawnSpecialist`.
+  //
+  // Both arms pin the parent's shape: the marker is a UNION of two reasons
+  // (`isParentInTrustMode()` OR the requested stamp) and the host running this may itself be
+  // trusted, so the thing asserted is the one this seam controls.
+  const PINS = {
+    PI_ENSEMBLE_SANDBOX_MODE: undefined,
+    PI_ENSEMBLE_TRUST_MODE: undefined,
+    PI_ENSEMBLE_STRICT_PERMISSIONS: undefined,
+  } as const;
+  const baseEnv = child([agentEnd({ text: "done", stopReason: "end_turn" })]);
+  await withEnv(PINS, async () => {
+    await spawnDeveloperContinuationChild(baseArgs(scratch("fixer-session-2b.json")), {
+      spawn: baseEnv.spawn,
+    });
+  });
+  assert(
+    baseEnv.seen().env.PI_ENSEMBLE_TRUST_MODE === undefined,
+    `(2) a parent that is NOT trusted and requests no stamp gives the child no trust marker — the default is not trusted (got ${String(
+      baseEnv.seen().env.PI_ENSEMBLE_TRUST_MODE,
+    )})`,
+  );
+  const stampedEnv = child([agentEnd({ text: "done", stopReason: "end_turn" })]);
+  let stamped: ContinuationOutcome;
+  await withEnv(PINS, async () => {
+    stamped = await spawnDeveloperContinuationChild(
+      { ...baseArgs(scratch("fixer-session-2c.json")), workCycleTrust: true },
+      { spawn: stampedEnv.spawn },
+    );
+  });
+  assert(
+    stamped!.ok === true,
+    `(2) precondition: the stamped continuation ran (${JSON.stringify(stamped!)})`,
+  );
+  assert(
+    stampedEnv.seen().env.PI_ENSEMBLE_TRUST_MODE === "1",
+    `(2) the run's stamp reaches the resumed child as PI_ENSEMBLE_TRUST_MODE=1 even under a strict parent — the same way a headless cycle's fixer is trusted (got ${String(
+      stampedEnv.seen().env.PI_ENSEMBLE_TRUST_MODE,
+    )})`,
+  );
+  assert(
+    stampedEnv.seen().env.PI_ENSEMBLE_PERM_SOCKET === undefined,
+    "(2) and a trust child carries no inherited broker socket — the parent's broker is not this child's",
+  );
+  // The strict opt-in outranks the REQUEST — the gate that keeps a lean run from being the one way
+  // past PI_ENSEMBLE_STRICT_PERMISSIONS=1. Here the parent is strict by opt-in, so neither reason
+  // applies and the marker stays off.
+  const refused = child([agentEnd({ text: "done", stopReason: "end_turn" })]);
+  await withEnv(
+    { ...PINS, PI_ENSEMBLE_STRICT_PERMISSIONS: "1" },
+    async () => {
+      await spawnDeveloperContinuationChild(
+        { ...baseArgs(scratch("fixer-session-2d.json")), workCycleTrust: true },
+        { spawn: refused.spawn },
+      );
+    },
+  );
+  assert(
+    refused.seen().env.PI_ENSEMBLE_TRUST_MODE === undefined,
+    `(2) and the strict opt-in refuses the stamp here exactly as it does for a driver child (got ${String(
+      refused.seen().env.PI_ENSEMBLE_TRUST_MODE,
+    )})`,
+  );
+  assert(
+    stampedEnv.seen().env.PI_ENSEMBLE_WRITE_ROOT === FENCE.root,
+    "(2) and a stamped child is still fenced — the trust marker does not widen what it may write",
+  );
+}
+
+// ── (2b) THE KILL REACHES THE GROUP, AND THE GROUP DECISION IS RECORDED ──────
+//
+// The fixer's dispatch sets `processGroup: true`, so its bound's SIGTERM signals the tree. A
+// continuation that killed only its leader would orphan a `bash` grandchild still writing into the
+// fix tree this step is about to fold and delete — and nothing else on this path reports it.
+{
+  const signals: string[] = [];
+  const listeners: Array<(arg: unknown) => void> = [];
+  const transcript = scratch("fixer-session-group.json");
+  const stdout = new PassThrough();
+  const proc: Record<string, unknown> = {
+    stdout,
+    // A real pid and NO exitCode/signalCode: the group path is taken only for a child
+    // `registerChild` recorded as one, and a fake without a pid would take the leader-only path and
+    // leave the assertion below passing with the group wiring deleted.
+    pid: 4242,
+    exitCode: null,
+    signalCode: null,
+    stderr: new PassThrough(),
+    stdin: new PassThrough(),
+    kill: (sig?: string) => {
+      signals.push(`leader:${String(sig)}`);
+      return true;
+    },
+    // Neither `exit` nor `error` is EVER fired: this child HANGS, which is the only way the bound's
+    // kill runs at all. The listeners are still retained (an `EventEmitter` throws an unhandled
+    // `error` with none, answering `spawn-failed` and skipping the bound), and `once` exists as it
+    // does on a real handle — `registerChild` arms the group reaper through it, and a handle without
+    // it would silently opt out of the group policy the assertion below is about.
+    on: (event: string, cb: (arg: unknown) => void) => {
+      if (event === "exit" || event === "error" || event === "close") listeners.push(cb);
+      return proc;
+    },
+    once: (event: string, cb: (arg: unknown) => void) => {
+      listeners.push(cb);
+      return proc;
+    },
+  };
+  // The group path signals via `process.kill(-pid)`, which cannot reach a fake; recording it is what
+  // distinguishes a group kill from a leader kill, so the call is captured rather than trusted.
+  const realKill = process.kill;
+  const groupSignals: string[] = [];
+  (process as unknown as { kill: (p: number, s?: string) => boolean }).kill = (
+    pid: number,
+    sig?: string,
+  ) => {
+    if (pid < 0) groupSignals.push(`group:${pid}:${String(sig)}`);
+    return true;
+  };
+  let out: ContinuationOutcome;
+  try {
+    out = await spawnDeveloperContinuationChild(
+      { ...baseArgs(transcript), boundMs: 20 },
+      { spawn: (() => proc) as never },
+    );
+    // The SIGKILL escalation is a grace-period timer, so give it its window before reading.
+    await new Promise((resolve) => setTimeout(resolve, KILL_GRACE_MS + 120));
+  } finally {
+    (process as unknown as { kill: typeof realKill }).kill = realKill;
+  }
+  assert(
+    out.ok === false && out.reason === "timeout",
+    `(2b) a child the bound ended answers the timeout arm (${JSON.stringify(out)})`,
+  );
+  assert(
+    groupSignals.some((s) => s.includes("SIGTERM")) &&
+      groupSignals.some((s) => s.includes("SIGKILL")),
+    `(2b) the bound SIGTERMs then SIGKILLs the WHOLE GROUP through killProcessTree — the fixer's dispatch sets processGroup:true for exactly this, and a leader-only kill orphaned the bash grandchild still writing into the tree about to be folded (group ${JSON.stringify(
+      groupSignals,
+    )}, leader ${JSON.stringify(signals)})`,
+  );
+  assert(
+    groupSignals.every((s) => s.includes("-4242")),
+    `(2b) and the signal went to this child's own group, not a bare pid (${JSON.stringify(
+      groupSignals,
+    )})`,
+  );
 }
 
 // ── (3) CWD — the tree, not this process's directory ──────────────────────────
@@ -336,5 +492,7 @@ const baseArgs = (transcriptPath: string) => ({
   );
 }
 
+
 for (const dir of ROOTS) rmSync(dir, { recursive: true, force: true });
+cleanupRoots();
 process.exit(failures());

@@ -31,11 +31,11 @@
  * `ReviewDeps.continueSession`), the fold, or the integration. This file decides whether to ask and
  * what to say; `review-git.ts`'s `fixRound` owns the tree the answer lands in.
  *
- * It lives OUTSIDE `src/lean/` on purpose (AGENTS.md §6): every function here is pure — the switch,
- * the judgement, the bound, the prompt and the cost row — so the whole decision is one leaf module
- * that the step consults and the pure suite drives, with no step import to break. `src/lean/` is held
- * under a 26 000-line cap by an offline test, and this decision's evidence lives in its prose: prose
- * does not earn that cap, a module that can be a leaf does.
+ * It lives OUTSIDE `src/lean/` because of its place in the graph, not its length: it imports only
+ * pure leaves out of `src/lean/` (`step-budget.ts`'s types and `FIXER_ROLE`, `text-fence.ts`) and is
+ * imported by three files inside it, so it sits BELOW the step, at the dispatch layer — the same
+ * seam `adversarial-verdict-reask-constants.ts` occupies. That is what lets the pure suite drive the
+ * whole decision with no step import to break and no git in sight.
  */
 
 import type { ContinuationOutcome } from "./developer-session-continuation.ts";
@@ -128,8 +128,11 @@ export function fixerWasTruncated(
   // whose replay carried none is a child whose writes nobody saw, so it is not vouchable as
   // write-free and gets no continuation.
   const observed = result.observedToolCalls;
-  if (observed !== undefined && result.toolUses.length === 0 && observed > 0)
-    return notTruncated("wrote");
+  // The writer's contract (`reconcileObservedCounts`, spawn-support.ts) sets that field ONLY for an
+  // empty replay beside a positive live count, so `observed > 0` alone is the whole test; the two
+  // other conditions are not restated here because a reader could not tell a defensive belt from a
+  // writer whose contract changed and silently turned this arm off.
+  if (observed !== undefined && observed > 0) return notTruncated("wrote");
   if (madeWriteCall(result.toolUses)) return notTruncated("wrote");
   return { truncated: true, outputTokens: result.usage?.output ?? 0 };
 }
@@ -179,14 +182,20 @@ export function continuationRow(
  * on both arms, so a `developer` row IS a child whose cut this reason may name. Scanning backwards
  * would land on the continuation, which is the child that was NOT cut — quoting it would tell an
  * operator a number belonging to a different turn. The truncated child is the FIRST fixer row of the
- * wave, and the continuation (when there was one) is the row after it. A wave that billed no fixer row
- * — which cannot happen on the arm that reaches here, and the reason a missing one answers zero rather
- * than guessing — names zero, the honest "nobody observed any" the row's own default gives.
+ * wave, and the continuation (when there was one) is the row after it.
+ *
+ * The no-fixer-row arm should be unreachable — `truncated` is only ever set for a wave that paid for
+ * a fixer and billed it — so it is disclosed rather than silently printed: a `(0 tokens)` on the
+ * operator's surface would be a statement about a child this step never saw, and a trace line is the
+ * only way to tell that from a child that really spent nothing.
  */
 export function truncatedFixerOutputTokens(rows: DispatchUsageRow[]): number {
   for (const row of rows) {
     if (row.role === FIXER_ROLE) return row.usage.output;
   }
+  traceWarn(
+    `fixer-truncation: the reason names a cut but the wave billed no ${FIXER_ROLE} row — the token count is reported as zero`,
+  );
   return 0;
 }
 
