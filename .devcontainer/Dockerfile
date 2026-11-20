@@ -250,12 +250,22 @@ ENV ORT_INTRA_OP_NUM_THREADS=1
 # the build whatever it printed — a vipune that cannot load its model exits 101
 # with empty stderr, so an empty-stderr check alone would pass a broken image.
 # stderr is judged too, and one line is tolerated: under QEMU emulation the
-# onnxruntime cpu probe cannot read the vendor id and warns
-# `cpuid_info warning: Unknown CPU vendor` on every call. The filter strips ANSI
-# escapes, then drops only lines carrying both `onnxruntime` and that warning;
-# any other stderr still fails, an affinity line among them. The search hit is
-# grepped from the unfiltered stdout file, after the stderr judgement, so
-# filtering can never mask a search that found nothing.
+# onnxruntime cpu probe cannot read the vendor id and warns on every call. The
+# filter strips ANSI escapes, then drops only a line that IS that warning — matched
+# to the end of the line, on its complete text,
+# `cpuid_info warning: Unknown CPU vendor. cpuinfo_vendor value: <n>`, the number
+# being the enum the probe could not resolve. The tail is the anchor because it is
+# the only part common to both shapes onnxruntime writes this warning in: the
+# failing publish-image run's own stderr was the bare
+# `onnxruntime cpuid_info warning: … value: 0`, with no logger prefix, while the
+# logger path prefixes a timestamp and `[W:onnxruntime:…]`. Anchoring on a prefix
+# would miss the bare line and leave the build broken; anchoring on the phrase as a
+# SUBSTRING is the worse error — a line that merely QUOTES the warning, an
+# `E:onnxruntime … Load model … failed` or a pybind rethrow among them, carries that
+# text inside its own report and is deleted anyway, so a broken-model image publishes.
+# Requiring the phrase to END the line keeps those failing, as does an affinity line.
+# The search hit is grepped from the unfiltered stdout file, after the stderr
+# judgement, so filtering can never mask a search that found nothing.
 # `timeout` (coreutils, Essential on the Ubuntu base) bounds each call: a hung
 # vipune exits 124, which the `|| f=1` path reports like any other failure
 # instead of stalling the image build in silence.
@@ -263,7 +273,8 @@ RUN d="$(mktemp -d)"; export VIPUNE_DATABASE_PATH="$d/smoke.db"; f=; \
     timeout 60 vipune add "image smoke" >/dev/null 2>"$d/err" || f=1; \
     timeout 60 vipune search "image smoke" --json >"$d/out" 2>>"$d/err" || f=1; \
     if [ -n "$f" ]; then cat "$d/err" >&2; echo "vipune smoke: vipune exited non-zero" >&2; exit 1; fi; \
-    sed 's/\x1b\[[0-9;]*m//g' "$d/err" | grep -E -v 'onnxruntime.*cpuid_info warning: Unknown CPU vendor' >"$d/rest" || true; \
+    sed 's/\x1b\[[0-9;]*m//g' "$d/err" >"$d/clean" || { echo "vipune smoke: stderr unreadable" >&2; exit 1; }; \
+    grep -E -v 'onnxruntime cpuid_info warning: Unknown CPU vendor\. cpuinfo_vendor value: [0-9]+$' "$d/clean" >"$d/rest" || true; \
     if [ -s "$d/rest" ]; then cat "$d/err" >&2; echo "vipune smoke: unexpected stderr" >&2; exit 1; fi; \
     grep -q '"image smoke"' "$d/out" || { echo "vipune smoke: search did not find the memory" >&2; exit 1; }; \
     rm -rf "$d"

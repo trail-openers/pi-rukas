@@ -1312,7 +1312,7 @@ PR: [#219](https://github.com/trail-openers/pi-rukas/pull/219)
 
 ### `ghcr.io/trail-openers/pi-rukas:latest` is stale — installs pull an old image
 
-**Symptom:** A fresh `./install.sh` pulls an image that lacks something recent — `docker run --rm ghcr.io/trail-openers/pi-rukas:latest vipune --version` (or `pip show`, or any file you expect) says it predates the merge you installed from. On GitHub, the `publish-image` runs for those merges are red, while the `gate` job beside them is green.
+**Symptom:** A fresh `./install.sh` pulls an image that lacks something recent — `docker run --rm ghcr.io/trail-openers/pi-rukas:latest vipune --version`, or `pip3 show huggingface_hub`, or any file you expect, says it predates the merge you installed from. On GitHub, the `publish-image` runs for those merges are red, while the `gate` job beside them is green.
 
 **Cause:** publish-image pushes only when its build succeeds, and the image build is one step of that job. Any step before the push failing — the vipune build smoke among them — leaves `latest` on the last good image, and every install keeps pulling that one. A green `gate` says nothing about this: the gate never builds the image.
 
@@ -1486,7 +1486,7 @@ PR: [#205](https://github.com/trail-openers/pi-rukas/pull/205)
 
 **Cause:** vipune sets no thread count, so onnxruntime sizes its pool to the host's physical cores and pins each thread to one. In a container limited by a cgroup cpuset most of those CPUs are not the container's, and each pin fails. A CPU quota alone (`docker run --cpus`) does not trigger it.
 
-**Fix:** The image sets `ORT_INTRA_OP_NUM_THREADS=1`, which onnxruntime reads itself; an explicit count sets no affinity. Its build smoke step judges vipune by exit status and treats stderr as an error except for onnxruntime's `cpuid_info warning: Unknown CPU vendor` line, which QEMU emulation makes unavoidable — so an affinity line reaching that step still fails the build, and a vipune that exits non-zero fails it whatever it printed. It applies to every onnxruntime program in the container, so product code that needs more threads sets its own count. Outside the image, including images that build vipune from their own recipe, export the same variable. If you see it inside `pi-rukas`, your image predates this: `./install.sh` to refresh.
+**Fix:** The image sets `ORT_INTRA_OP_NUM_THREADS=1`, which onnxruntime reads itself; an explicit count sets no affinity. Its build smoke step judges vipune by exit status and treats stderr as an error except for onnxruntime's `cpuid_info warning: Unknown CPU vendor. cpuinfo_vendor value: <n>` line, which QEMU emulation makes unavoidable — the tolerance is the whole line, so an error that merely quotes that warning is still an error, and an affinity line reaching that step still fails the build, as does a vipune that exits non-zero whatever it printed. It applies to every onnxruntime program in the container, so product code that needs more threads sets its own count. Outside the image, including images that build vipune from their own recipe, export the same variable. If you see it inside `pi-rukas`, your image predates this: `./install.sh` to refresh.
 
 ### "fd not found. Downloading..." / "ripgrep not found. Downloading..." at startup
 

@@ -69,8 +69,19 @@ say(
 // substring `onnxruntime`, so a filter that drops any line merely mentioning it passes on
 // the affinity case and reintroduces the failure #2343 guards against. The literals are
 // here, not in the Dockerfile, because the step judges them and the gate supplies them.
-const CPUID = "\x1b[0;93m2026-11-20 10:11:02.123456 [W:onnxruntime:Default, cpu_info.cc:118 cpuid_info] onnxruntime cpuid_info warning: Unknown CPU vendor. cpuinfo_vendor value: 0\x1b[0m";
+// The benign warning is kept in BOTH shapes onnxruntime writes it — the cpu probe's
+// early-warning path writes it bare, the logger path prefixes it with the timestamp and
+// `[W:onnxruntime:…]` category — because only the numeric tail is common to the two, and a
+// pattern tuned to one shape silently fails the build on the other.
+const CPUID_TAIL = "onnxruntime cpuid_info warning: Unknown CPU vendor. cpuinfo_vendor value: 0";
+const CPUID = `\x1b[0;93m2026-11-20 10:11:02.123456 [W:onnxruntime:Default, cpu_info.cc:118 cpuid_info] ${CPUID_TAIL}\x1b[0m`;
 const AFFINITY = "\x1b[1;31m[E:onnxruntime:Default, env.cc:374 ThreadMain] pthread_setaffinity_np failed : Operation not permitted (22)\x1b[0m";
+// The shape the actual failing publish-image run wrote (`gh run view` of run 44717094942:
+// `onnxruntime cpuid_info warning: Unknown CPU vendor. cpuinfo_vendor value: 0`, with no
+// `[W:…]` prefix — the `18.64` in the log is buildx's own step timer, not the container's
+// bytes). This is the line the filter MUST drop: a pattern anchored on `[W:` does not match
+// it, and the build stays broken.
+const CPUID_BARE = CPUID_TAIL;
 
 const scratch = mkdtempSync(path.join(tmpdir(), "vipune-smoke-gate-"));
 let counter = 0;
@@ -118,9 +129,36 @@ const run = (opts: { stderr?: string; rc?: number; hit?: boolean } = {}): number
 say(run() === 0, "smoke step passes on a quiet vipune that finds the memory");
 say(run({ stderr: CPUID }) === 0, "smoke step passes when the only stderr is the benign onnxruntime cpuid_info warning (ANSI-coloured)");
 say(run({ stderr: CPUID.replace(/\x1b\[[0-9;]*m/g, "") }) === 0, "smoke step passes on the same warning without its ANSI escapes");
+// The shape the failing CI run actually wrote. Split from the coloured arm above on purpose:
+// a filter that anchors on the `[W:…]` logger prefix passes that arm and fails this one, and
+// a merged assertion would hide the re-break.
+say(run({ stderr: CPUID_BARE }) === 0, "smoke step passes on the bare cpu-probe warning exactly as the failing publish-image run wrote it");
+say(run({ stderr: CPUID_TAIL.replace(/value: 0$/, "value: 12") }) === 0, "smoke step passes on the warning whatever enum value the probe reports");
 say(run({ stderr: AFFINITY }) !== 0, "smoke step still fails on an onnxruntime pthread_setaffinity_np line");
 say(run({ stderr: "something else complained" }) !== 0, "smoke step fails on any other stderr line");
 say(run({ stderr: `${CPUID}\n${AFFINITY}` }) !== 0, "smoke step fails when the benign warning travels with an affinity line");
+// R9, the exact-line rule. A drop that tests only for the two substrings also deletes a real
+// onnxruntime failure that QUOTES the warning, and a broken-model image then publishes. Each
+// of these is genuine stderr that contains the warning's text but is NOT that warning: the line
+// carries its own report after the phrase, which is what a whole-line pattern leaves behind and
+// a substring drop would erase. (A line that merely ENDS in the phrase is indistinguishable from
+// the warning itself, so no pattern can drop one and keep the other — these fixtures put content
+// after it, which is where the two rules actually disagree and the only shape worth pinning.)
+const MODEL_LOAD = `E:onnxruntime, default_allocator.cc:42 Load model from /home/vscode/.cache/huggingface/hub/model.onnx failed: Protobuf parsing failed. ${CPUID_TAIL} while loading the embedding model`;
+const EMBED_ZERO = `E:onnxruntime, tokenizer.cc:88 Embedding model returned zero vector for "image smoke", see cpuid_info warning: Unknown CPU vendor then a hard failure`;
+const PYBIND = `terminate called after throwing an instance of 'onnxruntime::OnnxRuntimeException' what(): Load model failed: ${CPUID_TAIL} in Session::Load`;
+const TYPED = `${CPUID_TAIL} and then the model loader died`;
+for (const [what, line] of [
+  ["a model-load failure that quotes the warning", MODEL_LOAD],
+  ["an embedding failure that quotes the warning", EMBED_ZERO],
+  ["a pybind rethrow that quotes the warning", PYBIND],
+  ["the warning with anything after its numeric tail", TYPED],
+] as const) {
+  say(run({ stderr: line }) !== 0, `smoke step fails on ${what} (a substring drop would delete it and publish a broken image)`);
+}
+// The same quoting lines appended to real, passing vipune output: the exit is 0 and the search
+// hit is present, so only the residue rule can catch these.
+say(run({ stderr: `${CPUID}\n${MODEL_LOAD}\n${EMBED_ZERO}\n${PYBIND}` }) !== 0, "smoke step fails on model errors quoting the warning even alongside benign stderr and a passing hit");
 // R1: exit status decides, so a broken vipune cannot hide behind an empty stderr. The
 // measured no-model failure exits 101 having written nothing at all.
 say(run({ stderr: "", rc: 101 }) !== 0, "smoke step fails when vipune exits non-zero with empty stderr (the no-model case)");
@@ -149,6 +187,67 @@ const realCode = run({ stderr: "", rc: brokenRc });
 const mutantCode = runBody(extractBody(masked), { stderr: "", rc: brokenRc });
 say(realCode !== 0, `canary: the shipped step rejects a vipune that exits ${brokenRc} with empty stderr (got ${realCode})`);
 say(mutantCode === 0, `canary: the masked mutant accepts that same vipune, so the judgement above is what rejects it (got ${mutantCode})`);
+
+// Structural half of the same rule: the drop must be anchored to the end of the line, and the
+// two ways onnxruntime writes this warning (bare from the cpu probe, logger-prefixed from the
+// default logger) share only the numeric tail. A pattern that omits the tail or drops the `$`
+// anchor is the substring drop that published a broken model, and it is not a comment away from
+// shipping again — so the shipped arm is pinned, not just exercised.
+say(
+  body.some((l) => /grep -E -v 'onnxruntime cpuid_info warning: Unknown CPU vendor\\\. cpuinfo_vendor value: \[0-9\]\+\$'/.test(l)),
+  "smoke step's filter is anchored to the end of the line and requires the numeric vendor tail (not a substring drop)",
+);
+// The benign line the failing publish-image run ACTUALLY wrote, byte for byte
+// (`gh run view 44717094942 --log-failed`; the `18.64` in that log is buildx's step timer, so
+// the container wrote no prefix). It is the one line the step must tolerate: drop the tail and
+// this fails the build, which is the original #2418 outage, and this row is the one that catches
+// it without a QEMU emulator to reproduce on.
+say(CPUID_BARE === "onnxruntime cpuid_info warning: Unknown CPU vendor. cpuinfo_vendor value: 0", "gate fixture: the benign literal is the failing run's stderr line verbatim");
+
+// Canary pair for the stderr filter. The pre-fix step dropped any line merely CONTAINING
+// `onnxruntime` and the warning; on the quoting-error fixtures above that filter deletes every
+// byte of stderr, the residue test sees an empty file, and a broken-model image publishes. The
+// mutant is that substring drop, substituted into the shipped body; it must PASS the quoting
+// fixture while the shipped step fails it. Both sides are named, because a single-line "the
+// filter is tight" assertion is exactly the assertion that reads green when nothing ran.
+const substringDrop = dockerfile.replace(
+  /grep -E -v 'onnxruntime cpuid_info warning: Unknown CPU vendor\\\. cpuinfo_vendor value: \[0-9\]\+\$'/,
+  "grep -E -v 'onnxruntime.*cpuid_info warning: Unknown CPU vendor'",
+);
+const dropMutantBody = extractBody(substringDrop);
+say(
+  dropMutantBody.length === body.length &&
+    dropMutantBody.some((l) => l.includes("'onnxruntime.*cpuid_info warning: Unknown CPU vendor'")) &&
+    !body.some((l) => l.includes("'onnxruntime.*cpuid_info warning: Unknown CPU vendor'")),
+  "canary fixture: the substring-drop mutant rewrote exactly the filter arm and nothing else",
+);
+const realQuote = run({ stderr: MODEL_LOAD });
+const mutantQuote = runBody(dropMutantBody, { stderr: MODEL_LOAD });
+say(realQuote !== 0, `canary: the shipped step fails on a model error that quotes the warning (got ${realQuote})`);
+say(mutantQuote === 0, `canary: the substring-drop mutant accepts that same stderr, so the shipped pattern is what rejects it (got ${mutantQuote})`);
+
+// The filter must not be silently skipped: if the ANSI strip cannot read the stderr file, a form
+// that swallowed the failure would hand `grep` empty input, leave `$d/rest` empty, and the step
+// would read "no residue" as "no stderr" — publishing a broken image on an I/O error. Under the
+// image's shell the pipeline's own status cannot tell those apart (measured: `sed` failing inside
+// `sed … | grep -E -v …` still leaves exit 1 and an empty residue file, exactly the benign case),
+// so the strip runs as its own command and its status is guarded. Deleting that guard is the
+// mutation here; it rewrites one line and one line only, which is what makes the shipped guard
+// observable rather than assumed.
+const unguarded = dockerfile.replace(
+  /sed 's\/\\x1b\\\[\[0-9;\]\*m\/\/g' "\$d\/err" >"\$d\/clean" \|\| \{ echo "vipune smoke: stderr unreadable" >&2; exit 1; \};/,
+  'sed \'s/\\x1b\\[[0-9;]*m//g\' "$d/err" >"$d/clean" || true;',
+);
+say(
+  unguarded !== dockerfile && extractBody(unguarded).some((l) => /"\$d\/clean" \|\| true;/.test(l)),
+  "canary fixture: the unguarded-sed mutant rewrote exactly the filter's read guard",
+);
+say(
+  extractBody(unguarded).filter((l, i) => l !== body[i]).length === 1,
+  "canary: the unguarded-sed mutant differs from the shipped step in the read guard alone",
+);
+
+rmSync(scratch, { recursive: true, force: true });
 
 if (fails.length) process.exit(1);
 console.log("dockerfile-vipune-smoke gate: PASS");
