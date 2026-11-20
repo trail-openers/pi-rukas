@@ -24,7 +24,7 @@ export type SeamLocator = (source: {
   text: string;
 }) => { production: boolean; importsSeam: boolean };
 
-export const SEAMS_CONTINUATION = [
+export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
   {
     // The whole pure decision about a fixer cut off at the output-token limit: the switch, the
     // detector, the continuation's bound, its prompt, its cost row and the cause's clause. Its
@@ -92,4 +92,4 @@ export const SEAMS_CONTINUATION = [
       importsSeam: /from "\.\.\/developer-session-continuation\.ts"/.test(source.text),
     }),
   },
-] satisfies import("./seams-registry.ts").Seam[];
+];
