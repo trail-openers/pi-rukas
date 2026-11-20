@@ -16,7 +16,10 @@
  *      refused with its URL, and the push ALWAYS carries a lease bound to the sha
  *      that read returned — so a rewrite is legitimate only because it was bound to
  *      an observed sha and survived the PR check; success is decided afterwards by
- *      reading origin again, never by parsing porcelain;
+ *      reading origin again, never by parsing porcelain. The one unsettled row this
+ *      run opened itself may be exempted — but only against all three reads at once
+ *      (origin's ref, this run's own step log, and the forge's rows), in
+ *      `publish-republish.ts`, behind `PI_ENSEMBLE_LEAN_REPUBLISH_OWN_PR`.
  *   5. the forge is asked for an OPEN PR on the branch FIRST and only then told to
  *      create one. A `prList` that throws aborts the step: creating without looking
  *      is how a resumed run opens a second PR for the same work.
@@ -41,6 +44,7 @@ import { challengeBudgetFromLog, publishBody } from "./publish-body.ts";
 import { type PublishDeps, PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
 import type { PublishForge } from "./publish-deps.ts";
 import { createdDraftState, reusedDraftState } from "./publish-draft.ts";
+import { listOpenPrs, ownPublishRecord, pushLeaseTarget } from "./publish-republish.ts";
 import { specFor, specSource } from "./spec-for.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
@@ -183,10 +187,6 @@ async function pushHead(
   );
 }
 
-/** States that are not under review, and therefore do not hold a rewrite back. */
-const SETTLED_STATES: readonly string[] = ["CLOSED", "MERGED"];
-const isSettled = (s: unknown) => typeof s === "string" && SETTLED_STATES.includes(s.toUpperCase());
-
 /** Reuse an open PR on the branch, or create one. Never both. */
 async function openPr(
   f: PublishForge,
@@ -214,57 +214,6 @@ async function openPr(
 /** A PR title is one line, and the issue's problem statement is not. */
 function oneLineTitle(problem: string): string {
   return oneLine(problem, 72);
-}
-
-/**
- * The forge's open PRs for `branch`, or infrastructure. The list is scoped by
- * `sourceBranch`, so every row in it is a row about THIS branch.
- *
- * Looking and failing is not the same as finding nothing: pushing or creating
- * without the answer is how a resumed run rewrites a branch under review, or ends
- * up with two PRs for one issue.
- */
-async function listOpenPrs(f: PublishForge, branch: string): Promise<NormalizedPullRequest[]> {
-  const open = await f.prList({ state: "open", sourceBranch: branch }).catch((err: unknown) => {
-    throw new PublishInfraError(
-      `could not list open PRs for ${branch}: ${(err as Error)?.message ?? String(err)}`,
-    );
-  });
-  return open ?? [];
-}
-
-/**
- * What origin's branch points at, as the lease's expected value: `""` when the ref is
- * absent, `head` when it already matches (the push is then skipped).
- *
- * Any OTHER sha means this step is about to rewrite a branch, so it first asks the
- * forge whether that branch is under review — and the check FAILS CLOSED: the list
- * was asked for THIS branch, so ANY row it returns blocks unless its state positively
- * reads CLOSED or MERGED once uppercased, whatever its `headRefName`. A lowercase
- * `"open"`, an empty string or a missing head branch must refuse, not read as "no PR":
- * `mapPrListReply` in `forge-list.ts` synthesises `state: ""` for a forge that
- * answered with one bare number, and an exact `=== "OPEN"` comparison would
- * force-push over a branch somebody is reviewing.
- */
-async function pushLeaseTarget(
-  deps: PublishDeps,
-  f: PublishForge,
-  wt: string,
-  head: string,
-  branch: string,
-): Promise<string> {
-  // The ref is read first and the forge is asked second, so the lease is bound to
-  // the value the forge check was about. A move after this read fails the lease
-  // at push time, which is the window the lease exists to close.
-  const remote = (await remoteBranchSha(deps, wt, branch)) ?? "";
-  if (remote === "" || remote === head) return remote;
-  // Not having looked is no licence to rewrite a branch somebody may be reading.
-  const blocking = (await listOpenPrs(f, branch)).find((pr) => !isSettled(pr.state));
-  if (blocking !== undefined)
-    throw new PublishInfraError(
-      `refusing to rewrite ${branch}: the forge returned an unsettled PR row (${blocking.url || "(no URL returned)"})`,
-    );
-  return remote;
 }
 
 /**
@@ -333,7 +282,18 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
   // a no-op it cannot verify.
   if (f === undefined)
     throw new PublishInfraError(`no forge adapter: cannot check ${branch} is in review`);
-  const remote = await pushLeaseTarget(deps, f, wt, head, branch);
+  // The record of the run's OWN last push (its newest DECIDED publish) travels to the
+  // lease check as data: the exemption it can grant is read against origin, the step
+  // log and the forge's row list together, never from this record alone.
+  const remote = await pushLeaseTarget(
+    deps,
+    f,
+    wt,
+    head,
+    branch,
+    () => remoteBranchSha(deps, wt, branch),
+    ownPublishRecord(ctx.steps),
+  );
   const wrote = remote !== head;
   if (wrote) await pushHead(deps, wt, head, branch, remote);
   // From here on the head is OUTSIDE the clone. Every refusal below is a

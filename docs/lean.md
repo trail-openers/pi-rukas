@@ -690,6 +690,41 @@ unchanged. The whole rule is behind `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (off ar
 (default on; only `0` puts the leading `+` back and drops `--atomic`, byte for byte,
 restoring the pre-fix push argv exactly).
 
+### Republishing to the PR the run's own `publish` opened
+
+A red `ci` routes a lean run back through `build` and `verify` into `publish` again —
+and there the step finds origin holding the sha its own previous attempt wrote, with
+the forge's single unsettled row for the branch being the PR that same attempt created.
+The lease check read one of those two facts ("an unsettled row exists") and refused, so
+every CI-fix round ended in a handback at exit 10 and a human pushed the commit by hand.
+
+`pushLeaseTarget` (`lean/publish-republish.ts`) now compares three sources before it
+calls a row somebody else's: origin's ref for the branch, the `publishedHead` and
+`prUrl` the run's newest DECIDED `publish` recorded, and the forge's rows for the
+branch. The push goes when all three agree the branch is this run's own — origin still
+holds exactly the recorded `publishedHead`; that sha is an ANCESTOR of the head being
+pushed, so the move adds commits and rewrites none (`git merge-base --is-ancestor`);
+and the forge answers exactly ONE unsettled row whose url is the recorded `prUrl` and
+whose `headRefName` is this branch. It is a re-push, not a re-open: the PR is reused and
+its body re-attested. The push remains `--force-with-lease=<branch>:<sha read before the
+forge was asked>`, so a move in that window is refused by the lease rather than
+overwritten.
+
+Each side of the comparison fails closed on its own: a record missing `publishedHead` or
+`prUrl`, a forge listing two unsettled rows, a row whose url or head branch is not this
+run's, and a head that does not descend from origin's all keep the old refusal. So does
+an ancestry read that cannot answer — a `PublishInfraError` naming the branch and what
+git said, never a silent "no" and never a silent "yes". **The reading of PR state is not
+this knob's**: `isSettled` stays fail-closed, so a row whose state the forge did not
+answer is unsettled and blocks the push on either arm.
+
+Behind `PI_ENSEMBLE_LEAN_REPUBLISH_OWN_PR` (default on; only the literal `0` off, read
+at call time), whose off arm restores the pre-fix check byte for byte — same origin read,
+one `prList`, the same refusal text, and no `merge-base` call at all. Pinned by
+`test-lean-publish-republish-own-pr.ts` (the exemption and every refusal beside it),
+`test-lean-republish-own-pr-off-arm.ts` (the `"0"` arm's call sequence, against a
+literal transcription of the pre-fix body) and `test-lean-republish-own-pr-switch.ts`.
+
 ### The publishable-branch guard, and the mainline it refuses against
 
 All three sites that force-push the run's branch — `publish`, the review step's fix
