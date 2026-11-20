@@ -17,6 +17,7 @@
  * once per step, never per round (see `ReviewDeps.reviewThreshold`).
  */
 
+import type { DeveloperContinuationFn } from "../developer-session-continuation.ts";
 import type { LensReviewSummary, Severity } from "../lens-review-format.ts";
 import type { Finding, LensRunResult } from "../lens-review-types.ts";
 import type { runLensReview } from "../lens-review.ts";
@@ -186,6 +187,18 @@ export interface ReviewDeps {
    * that cannot carry the fence can only enforce it by not dispatching.
    */
   dispatch: BuildDispatch;
+  /**
+   * A second prompt on a developer child's own session, for the step that paid for the first turn
+   * and got a truncated one back (see `developer-session-continuation.ts`).
+   *
+   * Injected like every other outside world here, so a case can assert what the resumed child was
+   * actually handed — its session file, its tree, its fence — rather than what the step intended to
+   * hand it. Production is `spawnDeveloperContinuationChild`; a test that means "the continuation
+   * never happened" returns an outcome whose `ok` is false, which is the arm the step answers with
+   * today's handback. Absent means the surface does not exist, and a truncated fixer then takes
+   * today's path rather than a fresh child started in ignorance of what the first one read.
+   */
+  continueSession?: DeveloperContinuationFn;
   fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
   loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
   /**

@@ -373,6 +373,7 @@
     "smoke-tests/lib/opcfg-entry-cases.ts",
     "smoke-tests/lib/opcfg-readback-cases.ts",
     "smoke-tests/lib/seams-registry-spawn-config.ts",
+    "smoke-tests/lib/seams-registry-locate.ts",
     "smoke-tests/lib/review-changed-lines-fixture.ts",
     "smoke-tests/test-review-findings-code-changed-arm.ts",
     "smoke-tests/test-AC1-code-changed-not-reported.ts",

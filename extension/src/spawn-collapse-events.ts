@@ -206,6 +206,18 @@ export function collapseEvents(
       ? { reason: "error", message: lastAssistant.errorMessage }
       : undefined;
 
+  // The final turn's stop reason, recorded for EVERY stop and not only the
+  // `"error"` arm above. A child cut off at its output-token cap ends with
+  // `"length"` and still exits 0, so `ok` stays true and nothing downstream can
+  // tell a finished child from a truncated one — which is how a review fixer that
+  // ran out of tokens mid-thought came back as "the fix produced no change". It
+  // is carried verbatim rather than normalised: an absent reason means there was
+  // no assistant turn to read one off (or no replay at all), and a reader must be
+  // able to tell that from the turn having ended cleanly, so `"length"` and `"stop"
+  // "end_turn"` cannot be collapsed into one default.
+  const finalStopReason =
+    typeof lastAssistant?.stopReason === "string" ? lastAssistant.stopReason : undefined;
+
   // Construct the text field. For thinking-only output, use a clear message
   // that distinguishes this case from actual "no output".
   const resolvedText = thinkingOnly ? NO_TEXT_PLACEHOLDER : text || stderr || "(no output)";
@@ -223,6 +235,7 @@ export function collapseEvents(
     provider,
     api,
     errorStop,
+    ...(finalStopReason === undefined ? {} : { stopReason: finalStopReason }),
     thinkingOnly,
   };
 }

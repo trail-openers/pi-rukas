@@ -24,6 +24,24 @@ import { CAUSE_NO_CHANGE } from "./review-waves.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
+ * The clause naming a fixer whose last turn was cut at the output-token limit, appended to the
+ * no-change cause when the wave spent its ONE continuation and the head still did not move.
+ *
+ * It is a SUFFIX rather than a different cause, and `CAUSE_NO_CHANGE` stays the sentence's head, for
+ * two reasons: the cause is matched on all three surfaces that print it (this throw, the handback's
+ * cause line, the headless `failure.message`), so a reader keyed on the existing phrase must keep
+ * finding it; and the token count is the fact an operator needs in order to tell a model that hit its
+ * provider's cap from a fixer that read everything and decided to change nothing. The clause sits at
+ * the END of a cause this step's own renderer clips from the end, so it is short by construction and
+ * pinned inside the kept span by the truncation suite.
+ */
+export function truncationClause(outputTokens: number): string {
+  return ` — the fixer's last turn was cut off at the output-token limit (${String(
+    outputTokens,
+  )} tokens) before any edit, and one continuation changed nothing`;
+}
+
+/**
  * The head a fix wave must have produced, or a throw naming why it did not.
  *
  * Three refusals, in the order a reader needs them: no head at all, the same
@@ -38,6 +56,10 @@ export async function assertFixAdvanced(
   before: string,
   after: string | undefined,
   rows: DispatchUsageRow[],
+  /** The cut this wave named, or `undefined` for a wave whose fixer simply changed nothing. Present
+   *  only when the fixer's recorded stop reason was `"length"` with no write call AND the wave spent
+   *  its continuation; a wave that never asked gets today's sentence, byte for byte. */
+  truncated?: { outputTokens: number },
 ): Promise<string> {
   // An integration that returned neither a head nor a stop is not a round that
   // worked; it is a step that cannot say what it did, and `""` would compare
@@ -49,7 +71,9 @@ export async function assertFixAdvanced(
     );
   if (after === before)
     throw new ReviewInfraError(
-      `${CAUSE_NO_CHANGE}: the fix wave left the branch at ${before.slice(0, 12)} — it fixed nothing, and re-reviewing an identical commit is a pass the run should not be given`,
+      `${CAUSE_NO_CHANGE}: the fix wave left the branch at ${before.slice(0, 12)} — it fixed nothing, and re-reviewing an identical commit is a pass the run should not be given${
+        truncated === undefined ? "" : truncationClause(truncated.outputTokens)
+      }`,
       rows,
     );
   if (!isFullCommitSha(after))

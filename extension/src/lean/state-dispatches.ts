@@ -101,6 +101,10 @@ export function isRunId(value: unknown): boolean {
   return typeof value === "string" && FIX_RUN_ID.test(value);
 }
 
+/** How long a recorded stop reason may be. Pi's vocabulary is a handful of short words; the bound is
+ * there because the value came out of a child's replay, not because a real one reaches it. */
+const STOP_REASON_MAX = 40;
+
 /** Is this value a usage row of the shape `DispatchUsage` describes? */
 function isUsageRow(value: unknown): boolean {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -148,6 +152,11 @@ export function dispatchesProblem(value: unknown): string | undefined {
     // puts a resumed attempt onto the tree its crashed self left matches on this field.
     if (row.runId !== undefined && !isRunId(row.runId))
       return `outcome dispatches[${String(i)}].runId must be a decimal epoch-millisecond string`;
+    // `stopReason` is optional, and optional the way the child's field is: a row that recorded none
+    // carries no key, so an empty value on the record would read as "the child stopped" to a reader
+    // comparing against `"length"`. The same silence-is-never-a-pass rule as `role`.
+    if (row.stopReason !== undefined && !isLine(row.stopReason, STOP_REASON_MAX))
+      return `outcome dispatches[${String(i)}].stopReason must be a short printable single line`;
   }
   return undefined;
 }
@@ -181,6 +190,7 @@ export function validatedDispatches(value: unknown): DispatchUsageRow[] {
         ...(u.toolErrors === undefined ? {} : { toolErrors: u.toolErrors as number }),
       },
       ...(row.runId === undefined ? {} : { runId: row.runId as DispatchUsageRow["runId"] }),
+      ...(typeof row.stopReason === "string" ? { stopReason: row.stopReason } : {}),
     });
   }
   return out;

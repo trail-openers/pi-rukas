@@ -36,8 +36,9 @@ import { provisionWorktree } from "../worktree-provision.ts";
 import { frozenMatches } from "./build-git.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { ReviewWave } from "./review-args.ts";
-import type { ReviewFixArgs } from "./review-deps.ts";
-import { foldFix, runFixer } from "./review-fix-child.ts";
+import { type ReviewFixArgs, fixWriteFence } from "./review-deps.ts";
+import { foldFix, runFixer, runFixerContinuation } from "./review-fix-child.ts";
+import { fixerWasTruncated } from "./review-fix-reask.ts";
 import {
   type FixArm,
   closeFixTrees,
@@ -47,7 +48,7 @@ import {
   restoredSentence,
 } from "./review-tree.ts";
 import type { ReviewDeps } from "./review.ts";
-import { type FixRunId, ReviewInfraError } from "./review.ts";
+import { FIX_BOUND_MS, type FixRunId, ReviewInfraError } from "./review.ts";
 import { gitQuiet, resetWorktreeToBase } from "./specify-reset.ts";
 import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
@@ -179,6 +180,10 @@ type FixRoundOutcome = {
   stop?: BudgetFired;
   submodules?: string;
   reverted?: string[];
+  /** The fixer's last turn ended at the output-token limit with no edit made, and the wave spent its
+   *  ONE continuation on it. Names the cut on the step's reason line so a wave that fixed nothing
+   *  after a truncation reads differently from one whose fixer simply did nothing. */
+  truncated?: boolean;
 };
 
 /**
@@ -229,7 +234,7 @@ export async function fixRound(
   );
   const stop: { fired?: BudgetFired } = {};
   try {
-    await runFixer(deps, {
+    const fixer = await runFixer(deps, {
       issue: ctx.issue,
       wave: opts.wave,
       gate: opts.gate,
@@ -249,20 +254,63 @@ export async function fixRound(
     });
     // The ceiling's verdict first, so the fold below cannot capture a partial child.
     if (stop.fired !== undefined) return { stop: stop.fired };
+    // A fixer cut off at the output-token limit before it wrote anything gets ONE more turn in its
+    // own session, in its own tree, before this wave is judged for what it changed — see
+    // `review-fix-reask.ts` for why the kill and the budget are read before the stop reason, and
+    // why this fires at most once per wave. It runs BEFORE the fold: `foldFix` commits what the
+    // child left and `removeWorktree` (below) then destroys the tree, so a continuation asked for
+    // after either would be writing into bytes nobody will read.
+    // The detector is pure and the ask is not, and the split is the point: the judgement (kill, then
+    // budget, then the recorded stop reason, then the tool-call record) is the load-bearing rule, and
+    // only its `true` answer pays for a child. `runFixerContinuation` re-checks the seam and the
+    // session file, since either can be absent on a result the detector vouched for.
+    const wasTruncated =
+      (
+        await fixerWasTruncated(fixer, {
+          seam: deps.continueSession !== undefined,
+          budgetFired: stop.fired !== undefined,
+        })
+      ).truncated === true;
+    const continuation = wasTruncated
+      ? await runFixerContinuation(deps, {
+          result: fixer,
+          budget: opts.budget,
+          fixerBoundMs: FIX_BOUND_MS,
+          issue: ctx.issue,
+          findings: opts.findings,
+          worktree: wt,
+          writeFence: fixWriteFence(wt, ctx.repoRoot, ctx.issue),
+          rows: opts.rows,
+          worktreeRunId: `${String(opts.runId)}-${treeSuffix}` as FixRunId,
+        })
+      : { ran: false as const };
+    // The wave's one-shot answer: `ran` says a second child was asked for, `outcome` says what it
+    // said back. Both are needed — the reason line distinguishes "re-asked, still nothing" from
+    // "never re-asked", and only `ran` can do that after a failed continuation.
+    const truncated = continuation.ran === true ? { ran: true as const } : { ran: false as const };
     // The fold's reverts reach the caller's reason line through this box: `foldFix`'
     // signature stays the head it advanced to.
     const disclosure: { reverted: string[] } = { reverted: [] };
-    return await integrate(deps, ctx, {
+    const integrated = await integrate(deps, ctx, {
       gateRead: opts.head,
       fixHead: await foldFix(deps, ctx, wt, { ...opts, disclosure }),
       frozen: opts.frozen,
       rows: opts.rows,
       disclosure,
     });
+    return continuation.ran === true ? { ...integrated, truncated: true } : integrated;
   } finally {
     await removeWorktree(deps, ctx.repoRoot, wt);
   }
 }
+
+/**
+ * The fixer's write fence — owned by `review-deps.ts`, the module that builds the fixer's brief, so
+ * the child and its continuation can be fenced by ONE expression. `runFixer` is the only other
+ * builder of this shape and it keeps its own literal for the §12 file-size cap; a second expression
+ * of the same three fields is what lets a `scratch` drift while every test that reads `root` stays
+ * green.
+ */
 
 /**
  * The fixer's commits, moved onto the run's branch and pushed.

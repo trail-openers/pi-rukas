@@ -117,7 +117,7 @@ import type { LensRound, ReviewDeps, ReviewWave } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
 import type { LeanRun, Outcome, ReviewBoundRecord } from "./state.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
-import { armBudget, budgetFor } from "./step-budget.ts";
+import { FIXER_ROLE, armBudget, budgetFor } from "./step-budget.ts";
 
 /** The fixer's wall clock, the shape the other steps pass as `childBoundMs`. */
 export const FIX_BOUND_MS = 20 * 60_000;
@@ -352,7 +352,17 @@ async function reviewPass(
     // else's push. Held before the head moves, because after it the pre-fix head is not
     // recoverable from anything but this binding.
     const preFixHead = review.head;
-    head = await assertFixAdvanced(review.head, fix.head, rows);
+    // A fixer cut off at the output-token limit before it wrote anything had ONE continuation
+    // spent on it (see `review-fix-reask.ts`); the wave's own record says whether, and the reason
+    // line says so too, so a wave that fixed nothing after a truncation reads differently from one
+    // whose fixer read everything and changed nothing. With the switch at `0` the flag is never set
+    // and this is today's reason, byte for byte.
+    head = await assertFixAdvanced(
+      review.head,
+      fix.head,
+      rows,
+      fix.truncated === true ? { outputTokens: truncatedFixerOutputTokens(rows) } : undefined,
+    );
     // The wave pushed, so its head is a fact the record has to carry: the reason line
     // prints a 12-char prefix, and a host that has to check out what the fixer left
     // cannot clone a prefix.
@@ -473,4 +483,23 @@ async function reviewPass(
     // An unscoped `-fix-` match would tear down a concurrent attempt's live tree.
     await closeFixTrees(deps, ctx, attempt, runId);
   }
+}
+
+/** The output tokens the wave's fixer reported, read off the rows the wave billed rather than kept in
+ *  a closure: `runFixer` appends the fixer's row on both arms, so the newest `developer` row IS the
+ *  child whose cut this reason names. A wave that billed no fixer row — which cannot happen on the
+ *  arm that reaches here, and the reason a missing one answers zero rather than guessing — names
+ *  zero, the honest "nobody observed any" the row's own default gives. */
+/**
+ * The token count the truncation clause quotes: the CUT child's own output, not the wave's largest.
+ *
+ * Scanning backwards would land on the continuation, which is the child that was NOT cut — quoting it
+ * would tell an operator a number belonging to a different turn. The truncated child is the FIRST
+ * fixer row of the wave, and the continuation (when there was one) is the row after it.
+ */
+function truncatedFixerOutputTokens(rows: DispatchUsageRow[]): number {
+  for (const row of rows) {
+    if (row.role === FIXER_ROLE) return row.usage.output;
+  }
+  return 0;
 }

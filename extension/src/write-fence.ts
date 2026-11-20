@@ -39,6 +39,32 @@ import {
 const WRITE_TOOLS = new Set(["write", "edit", "multiedit"]);
 
 /**
+ * Did this child's replay record a call that changes files?
+ *
+ * The step asks it of a fixer whose last turn was cut off, to tell "ran out of tokens before
+ * touching anything" from "ran out after doing the work and never committed it" — and the answer
+ * comes from the calls the child's own session recorded, never from its prose.
+ *
+ * The name is read off the call block and is NOT parsed: a `toolCall` whose `name` is anything else
+ * (a shell that ran `sed -i`, a codemode script that wrote through the fs API) is not a write-class
+ * call by this predicate, and the caller reads a false answer as "nothing was written" — which
+ * costs a truncated child the extra turn it needed and nothing else. That is the direction the
+ * caller can survive; the other direction, a wave judged fixed on a child that edited nothing, is
+ * git's to refuse.
+ *
+ * Unknown is not none here: `toolUses` is empty for a child killed mid-flight, so the caller also
+ * asks `observedToolCalls` and treats a result that cannot say as un-vouchable.
+ */
+export function madeWriteCall(toolUses: readonly unknown[]): boolean {
+  for (const call of toolUses) {
+    if (typeof call !== "object" || call === null) continue;
+    const name = (call as { name?: unknown }).name;
+    if (typeof name === "string" && WRITE_TOOLS.has(name)) return true;
+  }
+  return false;
+}
+
+/**
  * The path Pi's write tools actually open: a leading `@` is stripped and `~` /
  * `~/` expand to the home directory (Pi's expandPath). The fence must judge
  * this value, not the raw argument, or `~/x` and `@../../x` pass as in-tree names.

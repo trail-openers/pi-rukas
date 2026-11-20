@@ -117,9 +117,14 @@ for (const seam of [...SEAMS, ...SEAMS_1454]) {
 
   /** Production sources: everything under src/ except the seam itself. */
   const production = allFiles.filter((f) => f.name !== seam.file);
-  const importers = production.filter((f) =>
-    new RegExp(`from "\\./${seam.file.replace(".ts", "\\.ts")}"`).test(f.text),
-  );
+  // A seam whose production caller lives in a subdirectory classifies candidates itself, against
+  // the recursive corpus: the flat scan sees only files directly under src/, so a caller at
+  // src/lean/x.ts is invisible to a basename comparison and its import spells ../<seam>.ts.
+  const importers = seam.locate
+    ? allSources.filter((f) => seam.locate(f).importsSeam)
+    : production.filter((f) =>
+        new RegExp(`from "\\./${seam.file.replace(".ts", "\\.ts")}"`).test(f.text),
+      );
   assert(
     importers.length > 0,
     `has ${importers.length} production importer(s): ${importers.map((i) => i.name).join(", ") || "NONE"}`,
@@ -157,10 +162,17 @@ for (const seam of [...SEAMS, ...SEAMS_1454]) {
     `no stale pending entries${stale.length ? ` — now wired, remove: ${stale.join(", ")}` : ""}`,
   );
 
-  const importer = production.find((f) => f.name === seam.canary.importer);
+  // The registry's canary is qualified the way the flat importer checks are matched: a bare
+  // basename beside the seam that owns it, or a subdirectory path for a seam that names one.
+  const qualified = seam.canary.importer.includes("/")
+    ? seam.canary.importer
+    : `${seam.file}:${seam.canary.importer}`;
+  const caller = seam.locate
+    ? allSources.find((f) => seam.locate(f).production)
+    : production.find((f) => `${seam.file}:${f.name}` === qualified);
   assert(
-    importer !== undefined && new RegExp(`\\b${seam.canary.symbol}\\b`).test(importer.text),
-    `canary: ${seam.canary.importer} still calls ${seam.canary.symbol}`,
+    caller !== undefined && new RegExp(`\\b${seam.canary.symbol}\\b`).test(caller.text),
+    `canary: ${qualified} still calls ${seam.canary.symbol}`,
   );
 
   // #1454 — a symbol only its own module calls (the claims read filter, the
