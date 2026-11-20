@@ -89,6 +89,35 @@ const badProtectedPaths: Array<[string, unknown, string]> = [
   ["negation entry", ["!src/x.ts"], 'must not start with "!"'],
   ["backslash entry", ["src\\x.ts"], "plain repo-relative glob"],
   ["zero-width entry", ["src\u200b/x.ts"], "invisible"],
+  // The invisible class is `\p{Cf}`, not an enumerated range list. An override (U+202A–U+202E) or
+  // an isolate (U+2066–U+2069) reads as the entry the author meant and matches nothing, and so
+  // does a TAGS-block character (U+E0001–U+E007F) — the class the range list never carried.
+  ["bidi override entry", ["src\u202e/x.ts"], "invisible"],
+  ["bidi isolate entry", ["src\u2066/x.ts"], "invisible"],
+  ["tags block entry", ["src\u{E0021}/x.ts"], "invisible"],
+  // The cost bounds. The matcher is a compiled regex, so these are the shapes that make a path
+  // which does NOT match cost seconds — the loader refuses them by count, quoting the entry.
+  ["over-long entry", [`${"a".repeat(300)}/**/*.ts`], "characters long"],
+  ["too many doublestars", ["a/**/b/**/c/**/d/**/e/**/f"], '"**" segments'],
+  // The shape a length bound cannot catch: nineteen characters, and 49 s on a 400-segment path
+  // that never matches, because the cost is (depth)^(doublestar count).
+  ["doublestars between one-character segments", ["?/**/?/**/?/**/?x"], '"**" segments'],
+  ["too many wildcards in one segment", ["src/*a*b*c*d*e.ts"], 'wildcards in one segment'],
+  // `dir/**/` is `dir/**` written twice: the doublestar already takes everything under `dir`
+  // and the trailing slash then asks for one segment more beneath that. Refused, and pointed at
+  // the spelling that works.
+  ["doublestar then trailing slash", ["theme/**/"], "the same rule as `theme/**`"],
+  // A wildcard in a segment that comes BEFORE a `**` segment: within every count (four wildcards,
+  // two doublestars, nineteen characters) and seconds on a path the filesystem can hold, because the
+  // leading wildcard is retried at every offset the doublestar absorbs. Refused by position, and the
+  // refusal names the segment so the author knows which one to move.
+  ["wildcard in a segment ahead of a doublestar", ["*/**/*/**/qq"], "in the segment `*`"],
+  // The mirror of that row: the wildcard sits BETWEEN the two doublestars, so the entry's first
+  // segment is the `**` and a check that only looks forward from it sees nothing. Same counts, same
+  // length, 0.8–2.7 s per non-matching path — and the bare-wildcard spelling of the same slot stays
+  // admitted (see the accepted row below), which is what makes this a positional bound rather than a
+  // ban on wildcards.
+  ["wildcard in a segment between two doublestars", ["**/*q*/**/qq"], "in the segment `*q*`"],
 ];
 
 for (const [name, entries, expected] of badProtectedPaths) {
@@ -117,18 +146,33 @@ for (const [name, entries, expected] of badProtectedPaths) {
 
 {
   // The wildcard rules of `verify.testGlob` deliberately do NOT carry over: a
-  // protected-path entry IS a glob, so `*`, `?` and `**` are all legal here.
+  // protected-path entry IS a glob, so `*`, `?` and `**` are all legal here. The doublestar
+  // count is at its ceiling (2) and the widest segment at its own (4), with the total wildcard
+  // count at its ceiling (4) — the most the loader admits on all three counts at once, and the
+  // shape the timing rows of `test-lean-protected-globs.ts` must keep cheap.
   const { repoRoot, baseSha, cleanup } = makeRepo({
     ".pi/work.json": JSON.stringify({
       version: 1,
-      lean: { protectedPaths: ["src/**", "**/theme/**", "a?c.ts", "package*.json"] },
+      lean: {
+        protectedPaths: [
+          "src/**",
+          "**/theme/**",
+          "a?c.ts",
+          "package*.json",
+          "a/**/b/**/*e*e",
+          // The bare-wildcard spelling of the slot the refusal above refuses when the segment is
+          // WIDENED: a lone `*` between two doublestars is one `[^/]*` the doublestar swallows, so it
+          // starts no retry and is legal — and it is the shape a project actually writes.
+          "**/*/**/generated",
+        ],
+      },
     }),
   });
   try {
     const cfg = await loadWorkConfig(execp, repoRoot, baseSha);
     assert(
-      cfg.lean?.protectedPaths?.length === 4,
-      `wildcards are legal in a protected-path entry (got ${JSON.stringify(cfg.lean?.protectedPaths)})`,
+      cfg.lean?.protectedPaths?.length === 6,
+      `wildcards are legal in a protected-path entry, up to the ceilings (got ${JSON.stringify(cfg.lean?.protectedPaths)})`,
     );
   } finally {
     cleanup();

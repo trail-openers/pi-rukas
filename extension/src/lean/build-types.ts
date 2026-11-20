@@ -53,6 +53,9 @@ export interface NormaliseReport {
   /** The configured protected globs (`lean.protectedPaths`) that named no path of their own in
    *  this fold's changed set, in the order the project wrote them, or `undefined` with no
    *  configured list. An inert rule is the one way a protection rots silently, so the fold says
-   *  which were inert; it is never a refusal. */
-  protectedUnmatchedNote?: string;
+   *  which were inert; it is never a refusal. Built-in paths are deliberately absent: the
+   *  built-in list is the shipped rule rather than one the project wrote. Carried as the paths
+   *  themselves, not a pre-joined clause: the reason line owns the wording, and the budget
+   *  accumulator merges these across folds. */
+  protectedUnmatched?: string[];
 }

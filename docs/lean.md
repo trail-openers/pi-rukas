@@ -323,13 +323,38 @@ means defaults.** An invalid file is *not* defaulted: it raises
   **Validity** — an entry is refused at load with `LeanConfigError`, which quotes
   it: absolute, a `..` or `.` segment, empty or whitespace-padded, a backslash, a
   leading `!`, a doubled slash, or any shell metacharacter or invisible / control /
-  zero-width / bidi character. `*`, `?` and `**` are legal, so `verify.testGlob`'s
-  stricter rules deliberately do not carry over — this field *is* a glob.
+  zero-width / bidi character — the invisible class is `\p{Cf}` (the format
+  characters, TAGS block included) plus the controls, NEL and the line/paragraph
+  separators. A pattern is a rule, not a document, so four counts are
+  capped too: 256 characters, two `**` segments, four `*`/`?` wildcards in one
+  segment, and **four wildcards in total** across all segments (each `**` counting
+  one) — the matcher is a compiled regex whose cost grows like the depth of a
+  path that does *not* match to the power of its `**` count AND like that path's
+  length to the power of its total wildcard count, so past those the cost
+  of a non-match is chosen by a project's own config file. Every rule a project
+  actually writes sits at three wildcards or under. **A `*`/`?` beside a `**` segment with only
+  literals between them is refused by shape, whatever its counts** — that wildcard is
+  retried at every offset the neighbouring `**` can absorb, so its cost carries a
+  length term on top of the depth term, and the counts cannot see position: entries at every ceiling
+  cost ~2.8 s (ahead of the first `**`) and 0.8–2.7 s (wedged between two of them) on the longest
+  legal path. The refusal names the segment; a leading `**` itself is allowed, and so is a
+  wildcard after the last one, which is where `src/**/*.vue` and `**/*.lock` put
+  them, and a **bare** `*` or `?` as a whole segment is allowed beside a `**` — one `[^/]*` the
+  doublestar swallows whole, starting no retry of its own, which is what keeps `**/*/**/dir`
+  at ~13 ms where the same rule with `*q*` in that slot costs 800 ms. `dir/**/` is refused as
+  the same rule as `dir/**` written twice: the `**` already takes everything under
+  `dir` and the trailing `/` then asks for one more segment below that, so the
+  refusal points at `dir/**` — the spelling that says what it means. `*`, `?` and `**` are
+  otherwise legal, so `verify.testGlob`'s stricter rules deliberately do not carry
+  over — this field *is* a glob.
   **An entry that matches nothing is accepted**, not refused: a rule for a file the
   project has not written yet is a rule someone meant. It is *disclosed* rather than
   accepted silently — the build step's reason carries
-  `protected paths matched nothing: <entries>` for the globs that named no changed
-  path, because that is the one way a protection can rot without anyone noticing.
+  `protected paths matched nothing: <entries>` for the **configured** globs that
+  named no changed path, because that is the one way a protection can rot without
+  anyone noticing. Built-in paths are not on that list: the built-in list is the
+  shipped rule rather than one the project wrote, and a built-in path the child
+  touched is already named in the `reverted:` clause.
   **The residual, stated plainly:** configured globs take part in lean's `build`
   and review-fix folds *only*. `--allow-protected`, the develop protected-path gate
   and the merge protected-path gate keep the built-in list, so a configured glob is
