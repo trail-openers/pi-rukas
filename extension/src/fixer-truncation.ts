@@ -39,6 +39,7 @@
  */
 
 import type { ContinuationOutcome } from "./developer-session-continuation.ts";
+import { STOP_REASON_MAX, isCount, isLine, isMeasure } from "./lean/state-dispatches.ts";
 import { type BudgetArms, type DispatchUsageRow, FIXER_ROLE } from "./lean/step-budget.ts";
 import { fenceText } from "./lean/text-fence.ts";
 import { traceWarn } from "./trace.ts";
@@ -145,6 +146,15 @@ export function fixerWasTruncated(
  * answered no final turn has no usage to report and costs zero, the same reading `dispatchUsageRow`
  * gives a child that never started — an unrecorded number is unknown, not a small one. `ok` follows
  * the child's own verdict: a failure outcome is not a child that finished.
+ *
+ * Every value the CHILD authored is normalised on the way in — each token count through the loader's
+ * `isCount`, `cost` and `ms` through its `isMeasure`, and the stop reason through its `isLine` at its
+ * `STOP_REASON_MAX` — so the writer refuses exactly what `state-dispatches.ts` refuses, with one
+ * definition of each rule. Not belt-and-braces: the loader `continue`s past a row it cannot parse
+ * rather than rejecting the array, so one unparseable field deletes the WHOLE row silently. A child
+ * that reported a malformed usage figure or a blank stop reason would thereby erase the record that a
+ * second child was paid for, which is the #1930 under-billing shape arriving by the other door.
+ * Normalising at the row boundary means no child-authored value can make its own row unrecordable.
  */
 export function continuationRow(
   outcome: {
@@ -156,23 +166,60 @@ export function continuationRow(
   role: string,
   runId: DispatchUsageRow["runId"],
 ): DispatchUsageRow {
+  // `ms` is child-authored like the counts, so it is normalised by the same rule: the loader's
+  // `isMeasure` narrows it here rather than `dispatchesProblem` refusing the row further down.
+  const ms = outcome.ms;
   return {
     role,
-    ms: outcome.ms ?? 0,
+    ms: isMeasure(ms) ? ms : 0,
     ok: outcome.ok === true,
-    usage: outcome.usage ?? {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      turns: 0,
-      toolCalls: 0,
-      toolErrors: 0,
-    },
+    usage: normaliseUsage(outcome.usage),
     runId,
-    ...(typeof outcome.stopReason === "string" ? { stopReason: outcome.stopReason } : {}),
+    ...(isStopReason(outcome.stopReason) ? { stopReason: outcome.stopReason } : {}),
   };
+}
+
+/** Is this a stop reason the record may carry? The loader's OWN `isLine` at the loader's OWN bound —
+ *  restating either here would be two definitions of the same rule, and this module's job is to refuse
+ *  exactly what `dispatchesProblem` refuses. A non-string, an empty value, one padded with space, one
+ *  holding a control character, or one past the bound is no reason at all — and an empty value on the
+ *  record would read as "the child stopped" to a reader comparing against `"length"`. `value` is typed
+ *  `unknown` and the guard is written out rather than delegated to `isLine`, which answers `boolean`,
+ *  so the caller keeps the narrowed value instead of a cast. */
+function isStopReason(value: unknown): value is string {
+  return typeof value === "string" && isLine(value, STOP_REASON_MAX);
+}
+
+const USAGE_COUNTS = ["input", "output", "cacheRead", "cacheWrite", "turns"] as const;
+const USAGE_TOOLS = ["toolCalls", "toolErrors"] as const;
+
+/** The row's usage block, normalised: a count that is not a non-negative safe integer is NOT an
+ *  unknown-but-small number, it is a count nobody read, and it is billed as zero. Optional tool
+ *  counts are dropped rather than zeroed when malformed, so a row does not claim "made no tool
+ *  calls" about a child whose report was unreadable. Each field is read through a local binding, so
+ *  the predicate that proves it a number is the same expression that puts it on the row. */
+function normaliseUsage(usage: DispatchUsageRow["usage"] | undefined): DispatchUsageRow["usage"] {
+  const count = (key: (typeof USAGE_COUNTS)[number]): number => {
+    const value = usage?.[key];
+    return isCount(value) ? value : 0;
+  };
+  const cost = usage?.cost;
+  const out: DispatchUsageRow["usage"] = {
+    input: count("input"),
+    output: count("output"),
+    cacheRead: count("cacheRead"),
+    cacheWrite: count("cacheWrite"),
+    // `cost` is the one field that is not an integer count — a currency total that carries fractions,
+    // bounded by the loader's `isMeasure` (finite, non-negative) rather than by `isCount`.
+    cost: isMeasure(cost) ? cost : 0,
+    turns: count("turns"),
+  };
+  for (const key of USAGE_TOOLS) {
+    const value = usage?.[key];
+    if (value === undefined) continue;
+    if (isCount(value)) out[key] = value;
+  }
+  return out;
 }
 
 /**

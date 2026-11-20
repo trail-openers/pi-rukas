@@ -44,9 +44,9 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
       fixerWasTruncated:
         "the detector; test-lean-review-fix-reask-pure.ts pins the refusal table and the arm order",
       continuationRow:
-        "the continuation's cost row; test-lean-review-fix-reask-pure.ts pins that unreported usage costs zero",
+        "the continuation's cost row; test-lean-review-fix-reask-pure.ts (10) pins that unreported usage costs zero, and test-lean-review-fixer-truncation-rows.ts (2) pins every child-authored field normalised so a malformed report cannot delete its own row",
       truncatedFixerOutputTokens:
-        "the token count the clause quotes; test-lean-review-fix-reask-pure.ts pins it names the CUT child, not the continuation",
+        "the token count the clause quotes; test-lean-review-fixer-truncation-rows.ts (1) pins the forward scan names the CUT child, and pins the reversed array answering the continuation's count so a back-scan cannot pass silently",
     },
     canary: {
       symbol: "fixerWasTruncated",

@@ -291,10 +291,12 @@ export async function fixRound(
           workCycleTrust: childOpts.workCycleTrust,
         })
       : { ran: false as const };
-    // The wave's one-shot answer: `ran` says a second child was asked for, `outcome` says what it
-    // said back. Both are needed — the reason line distinguishes "re-asked, still nothing" from
-    // "never re-asked", and only `ran` can do that after a failed continuation.
-    const truncated = continuation.ran === true ? { ran: true as const } : { ran: false as const };
+    // The wave's one-shot answer, read ONCE. `ran` is the whole of what the fold and the reason line
+    // consume: it says a second child was asked for, whatever that child said back, and it is the only
+    // thing that can distinguish "re-asked, still nothing" from "never re-asked" after a continuation
+    // that failed. The flag whose entire job is "at most one paid child per wave" has one reading site
+    // on purpose — a second copy of this predicate is where a future edit to one of them goes unnoticed.
+    const ran = continuation.ran === true;
     // The fold's reverts reach the caller's reason line through this box: `foldFix`'
     // signature stays the head it advanced to.
     const disclosure: { reverted: string[] } = { reverted: [] };
@@ -305,7 +307,7 @@ export async function fixRound(
       rows: opts.rows,
       disclosure,
     });
-    return continuation.ran === true ? { ...integrated, truncated: true } : integrated;
+    return ran ? { ...integrated, truncated: true } : integrated;
   } finally {
     await removeWorktree(deps, ctx.repoRoot, wt);
   }

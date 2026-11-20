@@ -18,6 +18,12 @@
  *   (2) THE ORDER IS THE CONTRACT. `killCause` and the armed budget outrank the stop reason: a child the
  *       harness killed is never a truncated child, and a step whose budget already fired spends nothing.
  *       A detector that read `"length"` first would re-ask a killed child.
+ *
+ *   (3) THE OPERATOR'S NUMBER IS THE CUT CHILD'S. The clause quotes a token count read off the wave's
+ *       rows, and both rows are `developer` rows carrying the same tree identity — forward-scan order is
+ *       the ONLY thing that tells the cut child from the continuation that was never cut. So the scan is
+ *       pinned on both row orders, and every child-authored field of the second row is pinned against the
+ *       loader that would silently delete a row it cannot parse (see (10)).
  */
 
 import {
@@ -29,7 +35,9 @@ import {
 import { continuationRow } from "../src/fixer-truncation.ts";
 import { truncationClause } from "../src/fixer-truncation.ts";
 
-/** A resumed child that reported a small, ordinary turn. */
+/** The CONTINUATION's turn: small, ordinary, and NOT the number the clause may quote. The cut child's
+ *  row carries the field run's 16 384 (see `fixer()`), so the two rows are told apart by scan order
+ *  alone — which is what (11) pins. */
 const CUT_USAGE = {
   input: 200,
   output: 400,
@@ -39,15 +47,25 @@ const CUT_USAGE = {
   turns: 1,
   toolCalls: 0,
   toolErrors: 0,
-};
+} as const satisfies DispatchUsage;
 import { CAUSE_NO_CHANGE } from "../src/lean/review-waves.ts";
-import type { DispatchResult } from "../src/types.ts";
+import type { DispatchResult, DispatchUsage } from "../src/types.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 
 const { assert, failures } = makeAssert();
 
 /** A fixer's own result: `developer`, clean exit, one assistant turn's worth of usage. */
+/** The field run's own numbers: the cut child spent the whole output cap. */
+const CUT_CHILD_USAGE: DispatchUsage = {
+  input: 10,
+  output: 16_384,
+  cacheRead: 0,
+  cacheWrite: 0,
+  cost: 0.1,
+  turns: 6,
+};
+
 function fixer(over: Partial<DispatchResult> = {}): DispatchResult {
   return {
     role: "developer",
@@ -56,7 +74,7 @@ function fixer(over: Partial<DispatchResult> = {}): DispatchResult {
     toolUses: [],
     ms: 1000,
     exitCode: 0,
-    usage: { input: 10, output: 16384, cacheRead: 0, cacheWrite: 0, cost: 0.1, turns: 6 },
+    usage: CUT_CHILD_USAGE,
     ...over,
   };
 }

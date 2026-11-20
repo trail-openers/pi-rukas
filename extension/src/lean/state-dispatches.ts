@@ -18,7 +18,11 @@ import type { DispatchUsageRow } from "./step-budget.ts";
 
 /// The shape one lane or its reason must hold: a value that would print as STRUCTURE in the PR comment
 /// or the handback is no disclosure anyone can read — a string, trimmed, printable, within `max`.
-function isLine(value: unknown, max: number): boolean {
+/// Exported for the writer of a child-reported row (`fixer-truncation.ts`'s `continuationRow`), which
+/// normalises with this test at the row boundary: this module's answer to an unparseable field is to
+/// drop the WHOLE row silently (`validatedDispatches` `continue`s), so a writer that left the refusal
+/// to the loader would lose the record of a paid child rather than the bad field.
+export function isLine(value: unknown, max: number): boolean {
   return (
     max > 0 &&
     typeof value === "string" &&
@@ -70,8 +74,10 @@ const TOOL_COUNTERS = ["toolCalls", "toolErrors"] as const;
  */
 export const DISPATCHES_MAX_ROWS = 16;
 
-/** Is this a duration a child can honestly report? Finite and never negative. */
-export function isMeasure(value: unknown): boolean {
+/** Is this a duration a child can honestly report? Finite and never negative. A type predicate rather
+ *  than `boolean` so a writer that normalises with it (`fixer-truncation.ts`) keeps the narrowed value
+ *  instead of re-testing or casting the same field twice. */
+export function isMeasure(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
@@ -102,8 +108,10 @@ export function isRunId(value: unknown): boolean {
 }
 
 /** How long a recorded stop reason may be. Pi's vocabulary is a handful of short words; the bound is
- * there because the value came out of a child's replay, not because a real one reaches it. */
-const STOP_REASON_MAX = 40;
+ * there because the value came out of a child's replay, not because a real one reaches it. Exported
+ * with `isLine` so the writer that refuses a bad reason and the loader that refuses a bad ROW cannot
+ * drift apart on where the bound sits. */
+export const STOP_REASON_MAX = 40;
 
 /** Is this value a usage row of the shape `DispatchUsage` describes? */
 function isUsageRow(value: unknown): boolean {
@@ -121,8 +129,11 @@ function isUsageRow(value: unknown): boolean {
   return isMeasure(u.cost);
 }
 
-/** Is this an integer count a child reported: a non-negative safe integer? */
-function isCount(value: unknown): boolean {
+/** Is this an integer count a child reported: a non-negative safe integer? Exported for the same
+ *  reason as `isLine` and `isMeasure`: the writer of a child-reported row normalises with this test so
+ *  the loader's silent row-deletion is never reached. `1e400` arrives from JSON as `Infinity` and
+ *  `Infinity` fails `Number.isSafeInteger`, so the one test covers fractions and infinities both. */
+export function isCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
