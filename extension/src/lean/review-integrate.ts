@@ -51,8 +51,7 @@ export type FixRoundOutcome = {
   stop?: BudgetFired;
   submodules?: string;
   reverted?: string[];
-  /** See `askTruncatedFixer`: the wave spent its ONE continuation on a cut-off fixer, so the step's
-   *  reason line names the cut beside the no-change cause. */
+  /** See `askTruncatedFixer`: the wave spent its ONE continuation on a cut-off fixer. */
   truncated?: boolean;
 };
 
@@ -96,14 +95,11 @@ export async function integrateFix(
     const undone = await restore(deps, wt, branch, opts.gateRead);
     throw new ReviewInfraError(`${why}${restoredSentence(undone, wt, opts.gateRead)}`, opts.rows);
   };
-  // The push target was already refused at the STEP ENTRY POINT —
-  // `reviewOutcome` calls `publish`'s `assertPublishableBranch` beside its
-  // `assertSafeRef`, before a child is paid or a tree is touched. It is deliberately
-  // NOT re-asked here: on an unresolvable local mainline it asks origin too, so a
-  // re-ask per fix round is a network probe per round for an answer that cannot change
-  // while a step runs, and this function is called once per
-  // fix round. What stays here is the cheap charset check beside the argv it
-  // protects, below.
+  // `publish`'s `assertPublishableBranch` was asked at the STEP ENTRY POINT and is
+  // deliberately NOT re-asked here: on an unresolvable local mainline it probes
+  // origin, so re-asking it once per fix round buys a network call for an answer
+  // that cannot change while a step runs. The cheap charset check beside the argv
+  // stays, below.
   if (!isFullCommitSha(opts.fixHead))
     throw new ReviewInfraError(
       `the fix round reported no commit to integrate (${JSON.stringify(opts.fixHead.slice(0, 40))})`,
@@ -297,7 +293,10 @@ export async function fixRound(
     if (stop.fired !== undefined) return { stop: stop.fired };
     // A fixer cut off at the output-token limit before it wrote anything gets ONE more turn in its
     // own session, in its own tree, before this wave is judged for what it changed — see
-    // `askTruncatedFixer` for the judgement and why it precedes the fold.
+    // A fixer cut off at the output-token limit before it wrote anything gets ONE more turn in its
+    // own session, in its own tree, before this wave is judged. That judgement, the ask and the row
+    // all live in `askTruncatedFixer`, and it runs BEFORE the fold: the fold commits what the child
+    // left and `removeWorktree` then destroys the tree.
     const ran = await askTruncatedFixer(deps, {
       fixer,
       budget: opts.budget,
@@ -308,7 +307,6 @@ export async function fixRound(
       repoRoot: ctx.repoRoot,
       rows: opts.rows,
       worktreeRunId: `${String(opts.runId)}-${treeSuffix}` as FixRunId,
-      // The stamp EVERY dispatch of this run carries, from the one helper that derives it (§ `child-opts`).
       workCycleTrust: leanChildOpts(deps.headless).workCycleTrust,
     });
     // The fold's reverts reach the caller's reason line through this box: `foldFix`'

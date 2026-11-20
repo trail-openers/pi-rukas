@@ -56,6 +56,8 @@ export function reviewBoundProblem(value: unknown): string | undefined {
 }
 
 export function validatedReviewBound(value: unknown): ReviewBoundRecord | undefined {
+  // The refusal above and the reconstruction below read the SAME four fields: `reviewBoundProblem`
+  // is the rule, so a second copy of its tests here could only disagree with it.
   if (reviewBoundProblem(value) !== undefined) return undefined;
   const rec = value as Record<string, unknown>;
   return {
@@ -107,10 +109,8 @@ export function isRunId(value: unknown): boolean {
   return typeof value === "string" && FIX_RUN_ID.test(value);
 }
 
-/** How long a recorded stop reason may be. Pi's vocabulary is a handful of short words; the bound is
- * there because the value came out of a child's replay, not because a real one reaches it. Exported
- * with `isLine` so the writer that refuses a bad reason and the loader that refuses a bad ROW cannot
- * drift apart on where the bound sits. */
+/** How long a recorded stop reason may be — the bound a child's replay is measured against, exported
+ * with `isLine` so writer and loader cannot drift on where it sits. */
 export const STOP_REASON_MAX = 40;
 
 /** Is this value a usage row of the shape `DispatchUsage` describes? */
@@ -129,10 +129,8 @@ function isUsageRow(value: unknown): boolean {
   return isMeasure(u.cost);
 }
 
-/** Is this an integer count a child reported: a non-negative safe integer? Exported for the same
- *  reason as `isLine` and `isMeasure`: the writer of a child-reported row normalises with this test so
- *  the loader's silent row-deletion is never reached. `1e400` arrives from JSON as `Infinity` and
- *  `Infinity` fails `Number.isSafeInteger`, so the one test covers fractions and infinities both. */
+/** Is this an integer count a child reported: a non-negative safe integer? Exported, like `isLine`
+ *  and `isMeasure`, for the writer that normalises a child-reported row at its boundary. */
 export function isCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
