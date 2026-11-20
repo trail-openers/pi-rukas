@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * lean/review-fix-reask — the detector, the bound and the prompt, as pure functions.
+ * fixer-truncation — the switch, the detector, the bound and the prompt, as pure functions.
  *
  * The step-level suites (`test-lean-review-fixer-truncation-switch.ts`,
  * `test-lean-review-fixer-truncation-off-arm.ts`) drive the whole wave against a real repo, which is the
@@ -25,9 +25,9 @@ import {
   continuationBoundMs,
   continuationPrompt,
   fixerWasTruncated,
-} from "../src/lean/review-fix-reask.ts";
-import { continuationRow } from "../src/lean/review-fix-reask.ts";
-import { truncationClause } from "../src/lean/review-progress.ts";
+} from "../src/fixer-truncation.ts";
+import { continuationRow } from "../src/fixer-truncation.ts";
+import { truncationClause } from "../src/fixer-truncation.ts";
 
 /** A resumed child that reported a small, ordinary turn. */
 const CUT_USAGE = {

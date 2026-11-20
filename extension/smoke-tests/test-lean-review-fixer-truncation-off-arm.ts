@@ -25,9 +25,9 @@
 import { leanResultDocument } from "../src/headless/work-lean-result.ts";
 import { type LeanHandlers, runLean } from "../src/lean/engine.ts";
 import type { HandlerCtx } from "../src/lean/engine.ts";
-import { leanFixerTruncationReaskEnabled } from "../src/lean/fixer-truncation-reask-switch.ts";
+import { leanFixerTruncationReaskEnabled } from "../src/fixer-truncation.ts";
 import { handbackOutcome, neededFromLog } from "../src/lean/handback.ts";
-import { truncationClause } from "../src/lean/review-progress.ts";
+import { truncationClause } from "../src/fixer-truncation.ts";
 import { ReviewInfraError } from "../src/lean/review.ts";
 import { reviewOutcome } from "../src/lean/review.ts";
 import { sha256 } from "../src/lean/specify-proof.ts";

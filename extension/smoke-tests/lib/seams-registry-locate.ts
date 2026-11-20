@@ -26,6 +26,39 @@ export type SeamLocator = (source: {
 
 export const SEAMS_CONTINUATION = [
   {
+    // The whole pure decision about a fixer cut off at the output-token limit: the switch, the
+    // detector, the continuation's bound, its prompt, its cost row and the cause's clause. Its
+    // callers are the review step's own files under `src/lean/`, so it is judged against the
+    // recursive corpus like `developer-session-continuation.ts` below.
+    file: "fixer-truncation.ts",
+    pending: {},
+    testOnly: {
+      // Read at call time by the detector, and pinned directly by the off/on-arm suites — a step
+      // never calls the switch itself, the detector does.
+      leanFixerTruncationReaskEnabled:
+        "the switch's ONE reader; test-lean-review-fixer-truncation-off-arm.ts and test-headless-work-lean-gates-switch.ts pin the off arm",
+      // The stop reason the detector compares against, named by no caller outside this module.
+      TRUNCATED_STOP_REASON:
+        "the literal the detector compares the child's recorded stop reason against; test-lean-review-fix-reask-pure.ts pins every arm of that comparison",
+      // The refusal table's shape: read as a whole by the step, and arm by arm by the pure suite.
+      fixerWasTruncated:
+        "the detector; test-lean-review-fix-reask-pure.ts pins the refusal table and the arm order",
+      continuationRow:
+        "the continuation's cost row; test-lean-review-fix-reask-pure.ts pins that unreported usage costs zero",
+      truncatedFixerOutputTokens:
+        "the token count the clause quotes; test-lean-review-fix-reask-pure.ts pins it names the CUT child, not the continuation",
+    },
+    canary: {
+      symbol: "fixerWasTruncated",
+      importer: "lean/review-git.ts",
+    },
+    locate: (source: { name: string; text: string }) => ({
+      // The one file that turns a truncated fixer into a second child — the arm that pays for it.
+      production: source.name === "lean/review-git.ts",
+      importsSeam: /from "\.\.\/fixer-truncation\.ts"/.test(source.text),
+    }),
+  },
+  {
     // A second prompt on a truncated fixer's OWN session: the review step paid for
     // the first child, got a turn back that ended at the provider's output cap with
     // no edit, and asks that same child once more before handing back "no change".

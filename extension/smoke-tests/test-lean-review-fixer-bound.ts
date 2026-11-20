@@ -42,7 +42,7 @@ import {
   lastAgentEndFinalTurn,
   spawnDeveloperContinuationChild,
 } from "../src/developer-session-continuation.ts";
-import { continuationBoundMs } from "../src/lean/review-fix-reask.ts";
+import { continuationBoundMs } from "../src/fixer-truncation.ts";
 import { FIX_BOUND_MS } from "../src/lean/review.ts";
 import type { BudgetArms } from "../src/lean/step-budget.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";

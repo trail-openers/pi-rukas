@@ -36,7 +36,7 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // no continuation, and the no-change cause, the handback body and the headless `failure.message`
   // unchanged. The continuation is one extra fixer cost row inside the same wave; no bound, budget or
   // token cap changes. The reader is `leanFixerTruncationReaskEnabled` in
-  // lean/fixer-truncation-reask-switch.ts.
+  // fixer-truncation.ts.
   flag("LEAN_FIXER_TRUNCATION_REASK", true),
   // The publishable-branch guard's fail-closed arm: a mainline neither the clone
   // nor origin will name refuses the push instead of passing it. The reader is

@@ -1,6 +1,6 @@
 /**
- * lean/review-fix-reask — a fixer whose last turn was CUT OFF at the output-token limit is
- * continued once, in its own session, before the wave is judged "no change".
+ * lean/fixer-truncation — the whole pure decision about a fixer whose last turn was CUT OFF at the
+ * output-token limit: the switch, the detector, the continuation's bound, its prompt and its cost row.
  *
  * The defect this closes (field evidence, lean v0.14.90 / pi 1.4.0): the run's verified head was
  * correct, the fixer did six read-only turns and then one thinking block that ended with
@@ -30,20 +30,32 @@
  * What is NOT here: the child's spawn (`developer-session-continuation.ts`, injected through
  * `ReviewDeps.continueSession`), the fold, or the integration. This file decides whether to ask and
  * what to say; `review-git.ts`'s `fixRound` owns the tree the answer lands in.
+ *
+ * It lives OUTSIDE `src/lean/` on purpose (AGENTS.md §6): every function here is pure — the switch,
+ * the judgement, the bound, the prompt and the cost row — so the whole decision is one leaf module
+ * that the step consults and the pure suite drives, with no step import to break. `src/lean/` is held
+ * under a 26 000-line cap by an offline test, and this decision's evidence lives in its prose: prose
+ * does not earn that cap, a module that can be a leaf does.
  */
 
-import type { ContinuationOutcome } from "../developer-session-continuation.ts";
-import { traceWarn } from "../trace.ts";
-import type { DispatchResult } from "../types.ts";
-import { madeWriteCall } from "../write-fence.ts";
-import { leanFixerTruncationReaskEnabled } from "./fixer-truncation-reask-switch.ts";
-import type { ReviewDeps } from "./review-args.ts";
-import { type BudgetArms, type DispatchUsageRow, dispatchUsageRow } from "./step-budget.ts";
-import { fenceText } from "./text-fence.ts";
+import type { ContinuationOutcome } from "./developer-session-continuation.ts";
+import { type BudgetArms, type DispatchUsageRow, FIXER_ROLE } from "./lean/step-budget.ts";
+import { fenceText } from "./lean/text-fence.ts";
+import { traceWarn } from "./trace.ts";
+import type { DispatchResult } from "./types.ts";
+import { madeWriteCall } from "./write-fence.ts";
 
 /** The stop reason a model ends a turn with when the provider's output cap is reached. Pi passes it
  *  through verbatim; the harness never invents it. */
 export const TRUNCATED_STOP_REASON = "length";
+
+/** Whether a truncated review fixer is continued once before the wave is judged. Read at CALL time,
+ *  not at module load: every lean smoke file runs in one bun process and pins off/on arms with a
+ *  `withEnv` helper, so a load-time read would let one file's pin silently change the next file's
+ *  arm. */
+export function leanFixerTruncationReaskEnabled(): boolean {
+  return process.env.PI_ENSEMBLE_LEAN_FIXER_TRUNCATION_REASK !== "0";
+}
 
 /** What the wave wants to know about its fixer. */
 export type FixerTruncation =
@@ -98,7 +110,13 @@ export function fixerWasTruncated(
   if (result.killCause !== undefined) return notTruncated("killed");
   // The clock BEFORE the money: an aborted continuation answers nothing, and today's handback is
   // what the step would have said anyway — with the child's tokens spent for nothing.
-  if (deps.budgetFired) return notTruncated("budget-fired");
+  if (deps.budgetFired) {
+    // The refusal is named so an operator reading a wave trace can tell "the step's own ceiling had
+    // already fired" from "nobody looked": that one is a budget question and the rest are provider
+    // questions, and a silent no answers neither.
+    traceWarn(`fixer-truncation: no continuation — the step's budget had already fired`);
+    return notTruncated("budget-fired");
+  }
   const stop = result.stopReason;
   // Absent is not "end_turn": a result with no recorded stop reason is a result nobody watched
   // finish, and guessing truncation from silence is how a gate starts reporting a confident wrong
@@ -154,6 +172,24 @@ export function continuationRow(
   };
 }
 
+/**
+ * The token count the truncation clause quotes: the CUT child's own output, not the wave's largest.
+ *
+ * Read off the rows the wave billed rather than kept in a closure: `runFixer` appends the fixer's row
+ * on both arms, so a `developer` row IS a child whose cut this reason may name. Scanning backwards
+ * would land on the continuation, which is the child that was NOT cut — quoting it would tell an
+ * operator a number belonging to a different turn. The truncated child is the FIRST fixer row of the
+ * wave, and the continuation (when there was one) is the row after it. A wave that billed no fixer row
+ * — which cannot happen on the arm that reaches here, and the reason a missing one answers zero rather
+ * than guessing — names zero, the honest "nobody observed any" the row's own default gives.
+ */
+export function truncatedFixerOutputTokens(rows: DispatchUsageRow[]): number {
+  for (const row of rows) {
+    if (row.role === FIXER_ROLE) return row.usage.output;
+  }
+  return 0;
+}
+
 function notTruncated(reason: FixerNotTruncated): FixerTruncation {
   return { truncated: false, reason };
 }
@@ -184,4 +220,22 @@ Do not re-read the diff, the issue or the tree: you already read them. Go straig
 ${fenceText(findings, 4_000)}
 
 Fix them highest severity first, commit each one as you finish it, and keep this turn short enough to finish.`;
+}
+
+/**
+ * The clause naming a fixer whose last turn was cut at the output-token limit, appended to the
+ * no-change cause when the wave spent its ONE continuation and the head still did not move.
+ *
+ * It is a SUFFIX rather than a different cause, and `CAUSE_NO_CHANGE` stays the sentence's head, for
+ * two reasons: the cause is matched on all three surfaces that print it (this throw, the handback's
+ * cause line, the headless `failure.message`), so a reader keyed on the existing phrase must keep
+ * finding it; and the token count is the fact an operator needs in order to tell a model that hit its
+ * provider's cap from a fixer that read everything and decided to change nothing. The clause sits at
+ * the END of a cause this step's own renderer clips from the end, so it is short by construction and
+ * pinned inside the kept span by the truncation suite.
+ */
+export function truncationClause(outputTokens: number): string {
+  return ` — the fixer's last turn was cut off at the output-token limit (${String(
+    outputTokens,
+  )} tokens) before any edit, and one continuation changed nothing`;
 }

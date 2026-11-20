@@ -28,6 +28,7 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
+import { fixerWasTruncated } from "../fixer-truncation.ts";
 import { resolveHeadShaOutcome } from "../review-head-sha.ts";
 import { traceWarn } from "../trace.ts";
 import { netRefProblem } from "../work-driver-net-git.ts";
@@ -38,7 +39,6 @@ import type { HandlerCtx } from "./engine.ts";
 import type { ReviewWave } from "./review-args.ts";
 import { type ReviewFixArgs, fixWriteFence } from "./review-deps.ts";
 import { foldFix, runFixer, runFixerContinuation } from "./review-fix-child.ts";
-import { fixerWasTruncated } from "./review-fix-reask.ts";
 import {
   type FixArm,
   closeFixTrees,
@@ -256,7 +256,7 @@ export async function fixRound(
     if (stop.fired !== undefined) return { stop: stop.fired };
     // A fixer cut off at the output-token limit before it wrote anything gets ONE more turn in its
     // own session, in its own tree, before this wave is judged for what it changed — see
-    // `review-fix-reask.ts` for why the kill and the budget are read before the stop reason, and
+    // `fixer-truncation.ts` for why the kill and the budget are read before the stop reason, and
     // why this fires at most once per wave. It runs BEFORE the fold: `foldFix` commits what the
     // child left and `removeWorktree` (below) then destroys the tree, so a continuation asked for
     // after either would be writing into bytes nobody will read.

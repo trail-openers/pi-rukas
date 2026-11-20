@@ -19,27 +19,10 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
+import { truncationClause } from "../fixer-truncation.ts";
 import { ReviewInfraError } from "./review-errors.ts";
 import { CAUSE_NO_CHANGE } from "./review-waves.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
-
-/**
- * The clause naming a fixer whose last turn was cut at the output-token limit, appended to the
- * no-change cause when the wave spent its ONE continuation and the head still did not move.
- *
- * It is a SUFFIX rather than a different cause, and `CAUSE_NO_CHANGE` stays the sentence's head, for
- * two reasons: the cause is matched on all three surfaces that print it (this throw, the handback's
- * cause line, the headless `failure.message`), so a reader keyed on the existing phrase must keep
- * finding it; and the token count is the fact an operator needs in order to tell a model that hit its
- * provider's cap from a fixer that read everything and decided to change nothing. The clause sits at
- * the END of a cause this step's own renderer clips from the end, so it is short by construction and
- * pinned inside the kept span by the truncation suite.
- */
-export function truncationClause(outputTokens: number): string {
-  return ` — the fixer's last turn was cut off at the output-token limit (${String(
-    outputTokens,
-  )} tokens) before any edit, and one continuation changed nothing`;
-}
 
 /**
  * The head a fix wave must have produced, or a throw naming why it did not.

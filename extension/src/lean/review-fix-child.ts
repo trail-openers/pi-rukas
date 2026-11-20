@@ -5,12 +5,12 @@
  */
 
 import type { ContinuationOutcome } from "../developer-session-continuation.ts";
+import { continuationBoundMs, continuationPrompt, continuationRow } from "../fixer-truncation.ts";
 import type { DispatchResult } from "../types.ts";
 import { normaliseBuild } from "./build-normalise.ts";
 import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { type ReviewFixArgs, fixPrompt, fixWriteFence } from "./review-deps.ts";
-import { continuationBoundMs, continuationPrompt, continuationRow } from "./review-fix-reask.ts";
 import { FIX_BOUND_MS, type FixRunId, ReviewInfraError } from "./review.ts";
 import type { ReviewDeps } from "./review.ts";
 import { gitQuiet } from "./specify-reset.ts";
@@ -18,7 +18,7 @@ import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts
 import { FIXER_ROLE, dispatchUsageRow } from "./step-budget.ts";
 
 /** One fixer, and the row it cost. The result comes back for the one reader that can still use it —
- *  `review-fix-reask.ts`, which asks whether this child was cut off before it wrote anything. */
+ *  `fixer-truncation.ts`, which asks whether this child was cut off before it wrote anything. */
 export async function runFixer(
   deps: ReviewDeps,
   opts: ReviewFixArgs & { rows: DispatchUsageRow[]; worktreeRunId: FixRunId },

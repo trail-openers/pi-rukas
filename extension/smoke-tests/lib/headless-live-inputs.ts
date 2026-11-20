@@ -26,7 +26,7 @@ import { forgeReadOffGuardEnabled } from "../../src/forge-read-off-switch.ts";
 import { glabMrCreateArgvEnabled } from "../../src/gl-mr-create-switch.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
 import { leanDeadlineHandbackEnabled } from "../../src/lean/deadline-handback.ts";
-import { leanFixerTruncationReaskEnabled } from "../../src/lean/fixer-truncation-reask-switch.ts";
+import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { leanGuardFailClosed } from "../../src/lean/guard-fail-closed-switch.ts";
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
 import { leanReportBoundEnabled } from "../../src/lean/handback-report-bound-switch.ts";
