@@ -8,6 +8,21 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.94](https://github.com/trail-openers/pi-rukas/compare/v0.14.93...v0.14.94) (2026-11-19)
+
+
+### Features
+
+* **headless:** read the approved spec and write the tehas spec block ([#2409](https://github.com/trail-openers/pi-rukas/issues/2409)) ([f224e3a](https://github.com/trail-openers/pi-rukas/commit/f224e3ac6b5a26afb4f7dfd30b32686ffd81289c))
+* **lean:** let a repository configure extra protected paths ([#2406](https://github.com/trail-openers/pi-rukas/issues/2406)) ([c916314](https://github.com/trail-openers/pi-rukas/commit/c9163140971760d2a5b9aea56f93805dae198da0))
+
+
+### Bug Fixes
+
+* **commit-pr:** lease the push of a branch the cycle already published ([#2394](https://github.com/trail-openers/pi-rukas/issues/2394)) ([f69f2c8](https://github.com/trail-openers/pi-rukas/commit/f69f2c897df5e545bc215e16040cb4d50bb5a117)), closes [#2393](https://github.com/trail-openers/pi-rukas/issues/2393)
+* **work:** read the mainline for the stale-branch base skip on a fresh cycle ([#2407](https://github.com/trail-openers/pi-rukas/issues/2407)) ([1290112](https://github.com/trail-openers/pi-rukas/commit/1290112d7aea6ccf4c0d43f8bb1bd0899f60b942))
+* **work:** stop at the branch step on an earlier cycle's remote branch ([#2404](https://github.com/trail-openers/pi-rukas/issues/2404)) ([7cf17be](https://github.com/trail-openers/pi-rukas/commit/7cf17be6fb1371b11ce49d12e29926bd17abad9c))
+
 ## [0.14.93](https://github.com/trail-openers/pi-rukas/compare/v0.14.92...v0.14.93) (2026-11-19)
 
 
