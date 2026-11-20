@@ -2,10 +2,9 @@
  * lean/review-fix-tree — the fixer's own worktree: named for one round of one run, created detached,
  * provisioned, and proven clean before the child is paid.
  *
- * Split from `review-tree.ts` for the 500-line gate (AGENTS §12) along the file's own seam — the tree
- * this function builds is the one `fixRound` (`review-integrate.ts`) asks for and destroys, and it is
- * the only tree in the review step whose CLEANLINESS, not just whose existence, decides whether a fix
- * may be paid for. `review-tree.ts` keeps the rest of the disposable surface.
+ * Split from `review-tree.ts` along that file's own seam: this is the tree `fixRound`
+ * (`review-integrate.ts`) asks for and destroys, and the only one whose CLEANLINESS — not merely whose
+ * existence — decides whether a fix may be paid for.
  */
 
 import { traceWarn } from "../trace.ts";
@@ -20,17 +19,11 @@ import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
  * The fixer's tree: created fresh, detached at the reviewed commit, provisioned, and proven clean
- * before the child is paid. The clean proof is the claim every lean step makes of a tree it is about to
- * hand a model: a leftover the child inherits becomes part of what moves onto the branch. `--force` is
- * for this step's own path only.
- *
- * **The path is unique to this round, so the claim is not a race.** With a per-round name, `add`
- * refusing a path it created for a round that never completed is the only collision left, and it is a
- * refusal rather than an adoption.
- *
- * The clean proof is read WITHOUT `-uall`: `provisionWorktree` has just linked the project's dependency
- * trees into this directory, and `-uall` expands a directory of links into every file inside it, so a
- * proof read that way would refuse every fix round. The default form still lists any untracked path.
+ * before the child is paid. The clean proof is the claim every lean step makes of a tree it hands a
+ * model — a leftover the child inherits becomes part of what moves onto the branch — and it is read
+ * WITHOUT `-uall` because `provisionWorktree` has just linked the dependency trees here, which `-uall`
+ * expands into every file inside them, refusing every fix round. The per-round name keeps the claim off
+ * a race: `--force` then only ever meets a path this step made for a round that never completed.
  */
 export async function fixTree(
   deps: ReviewDeps,

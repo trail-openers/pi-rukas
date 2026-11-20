@@ -105,13 +105,11 @@ export async function integrateFix(
       `the fix round reported no commit to integrate (${JSON.stringify(opts.fixHead.slice(0, 40))})`,
       opts.rows,
     );
-  // Bring the run's own branch to the fixer's head. This is NOT
-  // `ensureSpecifyWorktreeWithProvision`: that path resets the branch with `-B`
-  // back at the base it was given, which would point the branch straight back at
-  // the reviewed commit and throw the fixer's work away before the push ever saw it.
-  // The tree is only the vehicle for a ref update here, so the ownership claim
-  // runs first (it is what refuses a tree another run owns) and the move happens
-  // by reset, which also drops any uncommitted sloppiness the child left behind.
+  // Bring the run's own branch to the fixer's head — NOT through
+  // `ensureSpecifyWorktreeWithProvision`, whose `-B` would point the branch back at the base it was
+  // given and throw the fix away before the push saw it. The tree is only the vehicle for a ref
+  // update, so the ownership claim runs first and the move happens by reset, which also drops any
+  // uncommitted sloppiness the child left behind.
   let notes: readonly SubmoduleNote[] = [];
   try {
     await assertSafeRef(branch);
@@ -138,12 +136,10 @@ export async function integrateFix(
   // a `node_modules` that `clean -fdx` deleted and nothing rebuilt is a verify
   // that fails for the shape of the tree, not for the diff.
   const provision = await provisionWorktree(deps.exec, repoRoot, wt);
-  // The provisioning note stays trace-only, as it always was. The submodule clause goes BOTH
-  // places: a trace line is read by whoever already opened the log, while the reason the caller
-  // composes lands on the run record, the PR and the handoff — the only surfaces an operator who
-  // never opens the log sees. A fix integrated from a tree whose submodule was never populated is
-  // a fix nobody can re-run. `review.ts` folds it into the `fixed` reason; `build` and `challenge`
-  // make the same fold on their own reports.
+  // The provisioning note stays trace-only; the submodule clause goes BOTH places — a trace line for
+  // whoever opens the log, and the reason the caller composes for the run record, the PR and the
+  // handoff, which are the only surfaces an operator who does not sees. A fix integrated from a tree
+  // whose submodule was never populated is a fix nobody can re-run.
   const submodules = submoduleNoteClause(notes);
   if (submodules !== undefined)
     traceWarn(`lean review #${String(issue)}: run worktree after the fix reset — ${submodules}`);
@@ -224,14 +220,11 @@ export async function integrateFix(
 }
 
 /**
- * One fix wave: the child in its disposable tree, then its commits moved onto the
- * branch.
+ * One fix wave: the child in its disposable tree, then its commits moved onto the branch.
  *
- * The step dispatches exactly one fixer, so `wave` and `arm` are constants rather
- * than loop counters — kept because the tree's NAME must be reproducible from the
- * durable run (see `fixTreeName`), which is what a resumed attempt re-enters. The
- * head it returns is the head now on origin, read back from git rather than assumed
- * from the child; `runFixer` appends the row it cost, on both arms.
+ * `wave` and `arm` are constants, not loop counters — the step dispatches one fixer — kept because
+ * the tree's NAME must be reproducible from the durable run (see `fixTreeName`), which is what a
+ * resumed attempt re-enters. The head returned is what origin now holds, read back from git.
  */
 export async function fixRound(
   deps: ReviewDeps,
