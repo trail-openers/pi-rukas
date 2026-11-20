@@ -291,12 +291,8 @@ export async function fixRound(
     });
     // The ceiling's verdict first, so the fold below cannot capture a partial child.
     if (stop.fired !== undefined) return { stop: stop.fired };
-    // A fixer cut off at the output-token limit before it wrote anything gets ONE more turn in its
-    // own session, in its own tree, before this wave is judged for what it changed — see
-    // A fixer cut off at the output-token limit before it wrote anything gets ONE more turn in its
-    // own session, in its own tree, before this wave is judged. That judgement, the ask and the row
-    // all live in `askTruncatedFixer`, and it runs BEFORE the fold: the fold commits what the child
-    // left and `removeWorktree` then destroys the tree.
+    // A cut-off fixer gets ONE more turn in its own session before this wave is judged (see
+    // `askTruncatedFixer`, which also runs it BEFORE the fold destroys the tree).
     const ran = await askTruncatedFixer(deps, {
       fixer,
       budget: opts.budget,

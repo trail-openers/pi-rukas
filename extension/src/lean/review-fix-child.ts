@@ -75,22 +75,11 @@ export async function runFixer(
 /**
  * The truncated fixer's SECOND child: the judgement, the ask, and the row it cost.
  *
- * The detector (`fixerWasTruncated`) is pure and the ask is not, and the split is the point: the
- * judgement (kill, then budget, then the recorded stop reason, then the tool-call record) is the
- * load-bearing rule, and only its `true` answer pays for a child. It runs BEFORE the fold: `foldFix`
- * commits what the child left and `removeWorktree` then destroys the tree, so a continuation asked
- * for after either would be writing into bytes nobody will read. The seam and the session file are
- * re-checked here rather than trusted from the detector, since either can be absent on a result the
- * detector vouched for.
- *
- * The row is billed on BOTH arms and BEFORE the outcome is read: a continuation that died or was
- * bound still spent tokens, and a row that went missing with the failure is how a wave loses its
- * second child. It is the same shape `runFixer` builds, from the fixer's role, the fix tree's
- * identity and whatever the child reported, and the two sites sit together so neither un-bills its
- * child.
- *
- * Returns the wave's one-shot answer: a continuation that FAILED is still one that was tried, so the
- * reason line must be able to say a second child was paid for.
+ * The detector (`fixerWasTruncated`) is pure and the ask is not; only the detector's `true` answer
+ * pays for a child. It runs BEFORE the fold, which commits the child's bytes and then destroys the
+ * tree. The row is billed on BOTH arms and BEFORE the outcome is read — a continuation that died still
+ * spent tokens — in the same shape `runFixer` bills its first child, so neither site un-bills its
+ * child. The return is the wave's one-shot answer: a FAILED continuation was still one that was tried.
  */
 export async function askTruncatedFixer(
   deps: ReviewDeps,
