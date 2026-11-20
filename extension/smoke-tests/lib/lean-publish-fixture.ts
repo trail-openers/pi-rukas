@@ -178,16 +178,6 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   commitFile(wt, "src.ts", "export const retry = () => 1;\n", "feat: implement the retry helper");
   commitFile(wt, "backoff.ts", "export const cap = 3;\n", "feat: bound the backoff");
 
-  // The republish shape: the run's PRIOR publish pushed one commit of this history and
-  // origin has held it ever since, so the CI-fix commit on top is the head about to go
-  // out. `priorHead` is a real ancestor of `head`, not an invented sha — which is what
-  // lets the case ask whether the step's ancestry read is doing any work.
-  if (o.commitAfterVerify === true) {
-    writeFileSync(path.join(wt, "later.ts"), "export const later = 1;\n");
-    git(wt, "add", "-A");
-    git(wt, "commit", "-q", "-m", "feat: a commit nobody verified");
-  }
-
   // The republish shape: the run's PRIOR publish pushed what the tree held up to here,
   // and the CI-fix commit below is the newer thing `publish` is now being asked to put
   // on top of it. `priorPublish.head` must be the sha this records — a case whose
@@ -217,7 +207,21 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     git(wt, "reset", "-q", "--hard", foreign);
   } else if (o.priorPublish !== undefined)
     commitFile(wt, "ci-fix.ts", "export const ciFix = 1;\n", "fix: what the red ci named");
+
+  // `head` is what the green `verify` in the log names as its subject, so it must be
+  // read BEFORE anything a case adds on top of it. `commitAfterVerify` is the knob that
+  // asks "what if the head moved after the gate was green?": committing that file above
+  // this line would fold it into `head`, make `verifiedHead` equal the pushed head by
+  // construction, and disarm the step's "HEAD moved since verify" refusal — the case
+  // would then pass by testing nothing. Same reason `dirty` is written below: a stray
+  // file has to survive to the moment the step reads the tree.
   const head = git(wt, "rev-parse", "HEAD");
+
+  if (o.commitAfterVerify === true) {
+    writeFileSync(path.join(wt, "later.ts"), "export const later = 1;\n");
+    git(wt, "add", "-A");
+    git(wt, "commit", "-q", "-m", "feat: a commit nobody verified");
+  }
 
   if (o.originStale === "fast-forward") seedFastForwardOrigin({ wt, branch });
   if (o.originStale === "own-publish") {
@@ -271,6 +275,10 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
     o.originForeign !== true &&
     o.originAtHead !== true;
   if (setupPushesHead) git(wt, "push", "-q", "origin", `HEAD:refs/heads/${branch}`);
+
+  // Written, never committed: the step refuses a dirty tree, so the stray file has to
+  // still be there when it looks.
+  if (o.dirty === true) writeFileSync(path.join(wt, "stray.txt"), "uncommitted\n");
 
   const steps = [
     ...logFor(issue, o, head),
