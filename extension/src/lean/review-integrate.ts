@@ -15,11 +15,11 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { traceWarn } from "../trace.ts";
+import { cycleChildOpts } from "../work-cycle-trust.ts";
 import { netRefProblem } from "../work-driver-net-git.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { frozenMatches } from "./build-git.ts";
-import { leanChildOpts } from "./child-opts.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { ReviewWave } from "./review-args.ts";
 import { type ReviewFixArgs, fixWriteFence } from "./review-deps.ts";
@@ -296,7 +296,9 @@ export async function fixRound(
       repoRoot: ctx.repoRoot,
       rows: opts.rows,
       worktreeRunId: `${String(opts.runId)}-${treeSuffix}` as FixRunId,
-      workCycleTrust: leanChildOpts(deps.headless).workCycleTrust,
+      // The same stamp the run's other children carry, from the function that decides it — not
+      // re-derived here. Spread AFTER the caller's options so nothing above can opt it out.
+      ...cycleChildOpts(deps),
     });
     // The fold's reverts reach the caller's reason line through this box: `foldFix`'
     // signature stays the head it advanced to.
