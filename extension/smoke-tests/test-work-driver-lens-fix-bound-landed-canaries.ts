@@ -105,7 +105,7 @@ import {
       shell: "/bin/bash",
     },
   );
-  const rep = await repositionLensFixWorktree(realExec, wt, branch, [1803], "diverged canary");
+  const rep = await repositionLensFixWorktree(realExec, wt, branch, [1803]);
   assert(
     rep.kind === "diverged" || rep.kind === "unlanded",
     `a tree the branch cannot fast-forward to is still refused (got ${rep.kind})`,
@@ -142,7 +142,7 @@ import {
   // arm that used to read it is gone.
   for (const knob of ["", "0"]) {
     process.env.PI_ENSEMBLE_LENS_FIX_LAND_AHEAD = knob;
-    const rep = await repositionLensFixWorktree(realExec, wt, branch, [1804], "knob canary");
+    const rep = await repositionLensFixWorktree(realExec, wt, branch, [1804]);
     assert(
       rep.kind === "unlanded",
       `a strictly-ahead tree parks at PI_ENSEMBLE_LENS_FIX_LAND_AHEAD=${knob || "(default)"} (got ${rep.kind})`,

@@ -110,7 +110,7 @@ try {
 
   // Round 1: the gate puts the fixer on the tip; the fix REWRITES a line the
   // feature commit wrote — which is what makes a later re-pick of F conflict.
-  const rep1 = await repositionLensFixWorktree(realExec, wt, branch, [51], "repick");
+  const rep1 = await repositionLensFixWorktree(realExec, wt, branch, [51]);
   assert(rep1.kind !== "parked", `round 1: the reposition gate did not park (${rep1.kind})`);
   writeFileSync(path.join(wt, "meter.js"), "one\ndrawMeter(view.meter)\nthree\n");
   await git(wt, ["add", "."]);
@@ -121,7 +121,7 @@ try {
   assert(afterR1 === "2", `round 1: branch is F + R1 (got ${afterR1})`);
 
   // Round 2: the gate moves the worktree onto R1; the fixer commits R2.
-  const rep2 = await repositionLensFixWorktree(realExec, wt, branch, [51], "repick");
+  const rep2 = await repositionLensFixWorktree(realExec, wt, branch, [51]);
   assert(rep2.kind !== "parked", `round 2: the reposition gate did not park (${rep2.kind})`);
   assert(
     (await git(wt, ["rev-parse", "HEAD"])) === (await git(repo, ["rev-parse", branch])),

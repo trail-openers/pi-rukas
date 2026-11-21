@@ -11,7 +11,6 @@ import { makeRunId } from "./spawn.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { continuedHeadMoved, headMovedCap } from "./work-driver-continue-pr-guard.ts";
-import { cachedIssueTitle } from "./work-driver-integrate.ts";
 import { landLensFixAfterBoundKill, readTreeHead } from "./work-driver-lens-fix-bound-land.ts";
 import {
   parkLensFixOverrun,
@@ -335,13 +334,11 @@ export async function runLensFix(
     // #1468 — the reposition fast-forwards onto origin's tip: never onto a foreign push.
     const moved = await continuedHeadMoved(execFn, ctx.repoRoot, state.pipelineState);
     if (moved) return headMovedCap(state, moved, "lens-fix");
-    const issueTitle = await cachedIssueTitle(state);
     const rep = await repositionLensFixWorktree(
       execFn,
       fixTree,
       branchName,
       [ctx.issue],
-      issueTitle,
       lostAttemptOnStep(state, "lens-fix")
         ? { repoRoot: ctx.repoRoot, issue: ctx.issue, state }
         : undefined,

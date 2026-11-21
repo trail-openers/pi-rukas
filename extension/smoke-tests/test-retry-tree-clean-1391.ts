@@ -223,7 +223,7 @@ const dirs: string[] = [];
   dirs.push(f.dir);
   writeFileSync(path.join(f.wt, "a.txt"), "operator\n");
   const op = recorder();
-  const parked = await repositionLensFixWorktree(op.exec, f.wt, f.branch, [1391], "t");
+  const parked = await repositionLensFixWorktree(op.exec, f.wt, f.branch, [1391]);
   assert(parked.kind === "dirty" && parked.attemptLost !== true, "gate: operator dirt parks");
   const writes = op.calls.filter((c) =>
     ["add", "reset", "clean", "update-ref"].includes(c[0] ?? ""),
@@ -235,7 +235,7 @@ const dirs: string[] = [];
   );
 
   const lost = { repoRoot: f.repo, issue: 1391, state: stateFor(f.wt, f.baseSha) };
-  const rep = await repositionLensFixWorktree(realExec, f.wt, f.branch, [1391], "t", lost);
+  const rep = await repositionLensFixWorktree(realExec, f.wt, f.branch, [1391], lost);
   assert(
     rep.kind === "already-at-tip",
     `gate: a lost attempt's dirt is cleaned and the gate passes (got ${rep.kind})`,
@@ -248,7 +248,7 @@ const dirs: string[] = [];
   // A failed save under the lost-attempt flag still parks, attributed, with the tree intact.
   writeFileSync(path.join(f.wt, "a.txt"), "again\n");
   const bad = recorder("write-tree");
-  const still = await repositionLensFixWorktree(bad.exec, f.wt, f.branch, [1391], "t", lost);
+  const still = await repositionLensFixWorktree(bad.exec, f.wt, f.branch, [1391], lost);
   assert(
     still.kind === "dirty" && still.attemptLost === true && still.detail.includes("NOT cleaned"),
     "gate: a failed save parks, attributed to the lost attempt",

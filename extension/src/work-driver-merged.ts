@@ -478,7 +478,7 @@ export async function runMerged(
 
   // Post-merge cleanup: worktrees, path claims, park records. All best-effort —
   // none of it may turn a landed merge into a handoff (see the module header).
-  await runMergedTeardown(ctx, state, next);
+  await runMergedTeardown(ctx, state, next, mergeSucceeded);
 
   return {
     ...next,

@@ -116,7 +116,6 @@ export async function repositionLensFixWorktree(
   tree: string,
   branchName: string,
   issues: number[],
-  issueTitle: string | undefined,
   /**
    * #1391 — set when this cycle already lost a lens-fix child into `tree`
    * (`lostAttemptOnStep`). Dirt is then the driver's own residue: it goes
@@ -353,9 +352,7 @@ export async function repositionLensFixWorktree(
         return moveToTip(
           execFn,
           tree,
-          branchName,
           issues,
-          issueTitle,
           treeSha,
           tipSha,
           `${minusShas.length} worktree commit(s) already on the branch by patch-equivalence: ${minusShas.join(", ") || "(none beyond the tip)"}`,
@@ -386,9 +383,7 @@ export async function repositionLensFixWorktree(
       return moveToTip(
         execFn,
         tree,
-        branchName,
         issues,
-        issueTitle,
         treeSha,
         // The tip `readAgainstRemote` actually judged the tree against — the
         // same capture the remote read above uses, so the move target and the
@@ -402,7 +397,7 @@ export async function repositionLensFixWorktree(
       trace(`${TRACE_PREFIX}: git-failed (ancestry probe): ${tipIsAncestorOfTree.error}`);
       return { kind: "git-failed", detail: tipIsAncestorOfTree.error };
     }
-    const backupRef = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
+    const backupRef = await backupLensFixTree(execFn, tree, issues);
     const backupRefName = backupRef.ref;
     const aheadShas =
       plusShas.length > 0 ? plusShas : await enumerateUnlanded(execFn, tree, tipSha);
@@ -422,5 +417,5 @@ export async function repositionLensFixWorktree(
 
   // `git cherry` itself failed — treat the tree as untrustworthy: back it
   // up and park (conservative — we cannot prove the work is landed).
-  return parkCherryFailedTree(execFn, tree, branchName, issues, issueTitle, tipSha);
+  return parkCherryFailedTree(execFn, tree, issues, tipSha);
 }

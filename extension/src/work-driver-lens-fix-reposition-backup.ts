@@ -1,5 +1,3 @@
-import { trace } from "./trace.ts";
-import { branchSlug } from "./work-driver-branch-mechanized.ts";
 /**
  * work-driver-lens-fix-reposition-backup — #981 (task-b) — the two small
  * git helpers the round-2+ lens-fix reposition guard needs to PARK safely:
@@ -11,16 +9,23 @@ import { branchSlug } from "./work-driver-branch-mechanized.ts";
  * of the guard that touch git in a way the gate (fetch / status /
  * merge-base / ff-merge) does not.
  */
+import { trace } from "./trace.ts";
 import { hardenedGitArgv } from "./work-driver-fix-pass-strays.ts";
 import type { RepositionResult } from "./work-driver-lens-fix-reposition-gate.ts";
 import { GIT_TIMEOUT_MS, isAncestor } from "./work-driver-lens-fix-reposition-queries.ts";
 import type { ExecFn } from "./worktree.ts";
 
+/** Where the backups live, one subtree per issue. */
+const LENS_FIX_BACKUP_NAMESPACE = "refs/pi-rukas/lens-fix-backup";
+
 /**
  * #981 — move the worktree's current HEAD to a backup ref so unlanded /
  * divergent commits are preserved but never dispatched on. The ref is
- * namespaced per branch slug + timestamp so a later round does not clobber
- * an earlier backup. Returns the ref name, or `undefined` when the backup
+ * `<namespace>/issue-<N>/<n>`: keyed on the issue so the merged step can find
+ * it whatever the title became, and numbered one past the highest existing
+ * backup so no round reuses a name. The write is create-only (an empty old
+ * value), so a name that exists anyway fails instead of overwriting the
+ * earlier backup. Returns the ref name, or `undefined` when the backup
  * could not be created (the caller still parks — the backup is a safety
  * net, not the gate), plus the git error's first line when creation failed
  * (surfaced in the park detail — a silent backup failure left the operator
@@ -29,16 +34,10 @@ import type { ExecFn } from "./worktree.ts";
 export async function backupLensFixTree(
   execFn: ExecFn,
   tree: string,
-  branchName: string,
   issues: number[],
-  issueTitle: string | undefined,
 ): Promise<{ ref?: string; error?: string }> {
-  const slug = branchSlug(issues, issueTitle).replace(/^feature\//, "");
-  const ts = new Date().toISOString().replace(/[.:-]/g, "-").slice(0, 19);
-  const ref = `refs/pi-rukas/lens-fix-backup/${slug}/${ts}`;
+  const prefix = `${LENS_FIX_BACKUP_NAMESPACE}/issue-${issues[0]}/`;
   try {
-    // #981 lens MEDIUM: argv form — the branch slug (and issue title) is
-    // data, not a shell command; the argv form prevents a shell re-parse.
     const { stdout } = await execFn("git", {
       cwd: tree,
       timeout: GIT_TIMEOUT_MS,
@@ -52,10 +51,22 @@ export async function backupLensFixTree(
       argv: hardenedGitArgv(["rev-parse", "HEAD"]),
     });
     const sha = stdout.trim();
+    const listed = await execFn("git", {
+      cwd: tree,
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: 4 * 1024 * 1024,
+      argv: hardenedGitArgv(["for-each-ref", "--format=%(refname)", prefix]),
+    });
+    let n = 1;
+    for (const name of listed.stdout.split("\n")) {
+      const k = Number(name.trim().slice(prefix.length));
+      if (name.startsWith(prefix) && Number.isInteger(k) && k >= n) n = k + 1;
+    }
+    const ref = `${prefix}${n}`;
     await execFn("git", {
       cwd: tree,
       timeout: GIT_TIMEOUT_MS,
-      argv: hardenedGitArgv(["update-ref", ref, sha]),
+      argv: hardenedGitArgv(["update-ref", ref, sha, ""]),
     });
     trace(`lens-fix-reposition: backed up worktree to ${ref} (${sha.slice(0, 12)})`);
     return { ref };
@@ -114,12 +125,10 @@ export async function enumerateUnlanded(
 export async function parkCherryFailedTree(
   execFn: ExecFn,
   tree: string,
-  branchName: string,
   issues: number[],
-  issueTitle: string | undefined,
   tipSha: string,
 ): Promise<RepositionResult> {
-  const backup = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
+  const backup = await backupLensFixTree(execFn, tree, issues);
   const aheadShas = await enumerateUnlanded(execFn, tree, tipSha);
   // #981: the ancestry probe must distinguish "git says not an ancestor"
   // (exit 1 → diverged) from "git could not answer" (any other failure →

@@ -72,7 +72,6 @@ function assert(cond: boolean, msg: string) {
       wt,
       "feature/lens-repos",
       [981],
-      "reposition test",
     );
     assert(
       r1.kind === "already-at-tip",
@@ -96,7 +95,6 @@ function assert(cond: boolean, msg: string) {
       wt,
       "feature/lens-repos",
       [981],
-      "reposition test",
     );
     assert(
       r2.kind === "diverged",
@@ -122,7 +120,6 @@ function assert(cond: boolean, msg: string) {
       wt,
       "feature/lens-repos",
       [981],
-      "reposition test",
     );
     assert(
       r3.kind === "repositioned",
@@ -148,7 +145,6 @@ function assert(cond: boolean, msg: string) {
       wt,
       "feature/lens-repos",
       [981],
-      "reposition test",
     );
     assert(
       r4.kind === "dirty",
@@ -201,7 +197,6 @@ function assert(cond: boolean, msg: string) {
       wt,
       "feature/lens-repos",
       [981],
-      "reposition test",
     );
     assert(
       r5.kind === "diverged",
@@ -234,7 +229,7 @@ function assert(cond: boolean, msg: string) {
       const gitFailedWithRef = {
         kind: "git-failed",
         detail: "git checkout --detach <tip> failed: simulated",
-        backupRef: "refs/pi-rukas/lens-fix-backup/slug/2026-01-01T00-00-00",
+        backupRef: "refs/pi-rukas/lens-fix-backup/issue-1/1",
       } as const;
       const parked = await parkLensFixReposition(ctx, state, parkNow, "/tmp/wt", {
         kind: gitFailedWithRef.kind,
@@ -311,7 +306,6 @@ function assert(cond: boolean, msg: string) {
         wt,
         "feature/lens-badref",
         [981],
-        "reposition test",
       );
       assert(
         rBad.kind === "git-failed",
@@ -352,7 +346,6 @@ function assert(cond: boolean, msg: string) {
         wt,
         "feature/lens-badref",
         [981],
-        "reposition test",
       );
       assert(
         rTo.kind === "git-failed",

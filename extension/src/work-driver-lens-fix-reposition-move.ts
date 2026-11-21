@@ -73,9 +73,7 @@ export async function readAgainstRemote(
 export async function moveToTip(
   execFn: ExecFn,
   tree: string,
-  branchName: string,
   issues: number[],
-  issueTitle: string | undefined,
   treeSha: string,
   /** Where the tree should land. The tip cherry arm passes the resolved tip;
    *  the remote cherry arm passes the REMOTE tip, which is the commit the move
@@ -93,7 +91,7 @@ export async function moveToTip(
     );
     return { kind: "git-failed", detail: `${tipSha} is not a commit id` };
   }
-  const backup = await backupLensFixTree(execFn, tree, branchName, issues, issueTitle);
+  const backup = await backupLensFixTree(execFn, tree, issues);
   const backupRef = backup.ref;
   if (backupRef === undefined) {
     // Fail closed: without the backup ref the detach checkout would orphan
