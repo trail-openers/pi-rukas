@@ -20,8 +20,8 @@
  *
  * A submodule the superproject never had is not fetched either: a DISCLOSURE, not a failure.
  *
- * Two gates decide the call and are not peers. `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` is the OUTER one and
- * wins: no submodule code runs at all. Only when it is open does `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL` decide.
+ * One gate decides the call: with `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` the runner is untrusted, so no
+ * submodule code runs at all — no listing, no seeding, no disclosure read.
  */
 
 import { existsSync } from "node:fs";
@@ -34,12 +34,11 @@ import type { SubmoduleEntry } from "./submodule-entries.ts";
 import { gitDirsOf, listSubmodules, localSource, superprojectRoot } from "./submodule-entries.ts";
 import { firstTrackedFile } from "./submodule-expect.ts";
 import { ask, handback, run } from "./submodule-reads.ts";
-import { leanSubmodulesLocalEnabled } from "./submodules-local-switch.ts";
 import { clipList, oneLine } from "./text-fence.ts";
 
 /** The wall clock on the short reads that decide where a submodule comes from. */
 const QUICK_GIT_MS = 30_000;
-/** The command as the operator knows it, and as the switch-off handback has always named it. */
+/** The command as the operator knows it, and as the handback names it. */
 const UPDATE_COMMAND = "git submodule update --init --recursive";
 
 /**
@@ -210,7 +209,6 @@ export async function initSubmodules(
   const listed = await listSubmodules(exec, wt);
   if (listed === undefined) return [];
   await beforeInit?.(wt);
-  if (!leanSubmodulesLocalEnabled()) return updateFromRemote(exec, wt);
   const notes = await seedFromSuperproject(exec, wt, listed);
   // The seeding arm's claim is negative — it never hands a recorded URL to git — and a negative is not
   // observable from a passing run. So one `submodule status` per absent path settles two questions:
@@ -233,21 +231,10 @@ export async function initSubmodules(
     const line = (status.stdout ?? "").split("\n")[0] ?? "";
     if (line === "" || line.startsWith("U") || line.startsWith("-")) continue;
     throw new SpecifyInfraError(
-      `the submodule at ${note.path} was added inside this run's own worktree, so this superproject never held it: the only source on this host is the tree under test, and bytes nobody verified cannot carry a verdict. Seed it in the superproject, or set PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL=0 and let git fetch the URL the base records. git's line, which tells this from a fetch: ${trim(line)}`,
+      `the submodule at ${note.path} was added inside this run's own worktree, so this superproject never held it: the only source on this host is the tree under test, and bytes nobody verified cannot carry a verdict. Seed it in the superproject. git's line, which tells this from a fetch: ${trim(line)}`,
     );
   }
   return notes;
-}
-
-/**
- * The switch-off arm: the release's own call, unchanged. One `submodule update --init --recursive` with no
- * `-c` beyond the hook refusals, so git applies its OWN transport policy; its failure is the handback, with
- * the command's words, which the byte-for-byte equality case depends on.
- */
-async function updateFromRemote(exec: ExecFn, wt: string): Promise<SubmoduleNote[]> {
-  const failed = await run(exec, wt, [...NO_HOOKS, "submodule", "update", "--init", "--recursive"]);
-  if (failed !== undefined) throw handback(wt, failed, UPDATE_COMMAND);
-  return [];
 }
 
 /**

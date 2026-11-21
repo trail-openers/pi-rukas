@@ -17,7 +17,6 @@ import type { execp } from "../exec.ts";
 import { validateTestDir, validateTestGlob } from "./config-test-location.ts";
 import { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
 import { protectedPathProblem } from "./protected-globs.ts";
-import { leanProtectedPathsEnabled } from "./protected-paths-switch.ts";
 import { SPEC_INTAKE_VALUES, type SpecIntake } from "./spec-intake-switch.ts";
 
 export interface Budget {
@@ -128,12 +127,10 @@ export const WORK_CONFIG_FILE = ".pi/work.json";
 
 /**
  * The configured protected globs in the shape the fold wants: the list, or `undefined` for "no
- * configured rule" — both the default and the off arm, so an absent field and
- * `PI_ENSEMBLE_LEAN_PROTECTED_PATHS=0` reach the fold as one value. Lives here so every
- * `normaliseBuild` caller hands the fold the SAME list, whichever fold of the run asks.
+ * configured rule" — an absent or empty field. Lives here so every `normaliseBuild` caller hands
+ * the fold the SAME list, whichever fold of the run asks.
  */
 export function protectedPathsOf(config?: WorkConfig): string[] | undefined {
-  if (!leanProtectedPathsEnabled()) return undefined;
   const list = config?.lean?.protectedPaths;
   return list === undefined || list.length === 0 ? undefined : [...list];
 }

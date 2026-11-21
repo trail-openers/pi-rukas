@@ -45,7 +45,6 @@
  */
 
 import { redactClip } from "../decision-log.ts";
-import { leanResultGatesEnabled } from "../lean/result-gates-switch.ts";
 import { specifyBranch } from "../lean/specify-tree.ts";
 import { type LeanRun, type Outcome, REPORT_STATES, type Step } from "../lean/state.ts";
 import { budgetSentence, budgetTrio } from "../lean/step-budget.ts";
@@ -401,11 +400,11 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
   if (prUrl !== undefined) result.prUrl = prUrl;
   const handoff = leanHandoff(run, cap);
   if (handoff !== undefined) result.handoff = handoff;
-  // The gate events, on one switch, and attached whole or not at all. Building the
-  // object separately and deciding here is what makes the off arm the byte-identical
-  // document: a field filled conditionally leaves a key holding `undefined` behind for
-  // a host that string-compares the JSON.
-  if (leanResultGatesEnabled()) result.gates = leanGates(steps, (s) => redactClip(s, TEXT_MAX));
+  // The gate events, attached whole or not at all. The projection builds the object
+  // separately so the document either carries the key or does not: a field filled
+  // conditionally leaves a key holding `undefined` behind for a host that string-compares
+  // the JSON.
+  result.gates = leanGates(steps, (s) => redactClip(s, TEXT_MAX));
   return result;
 }
 

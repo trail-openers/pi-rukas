@@ -1,13 +1,12 @@
 #!/usr/bin/env bun
 /**
  * lean: a project's own `lean.protectedPaths` globs are enforced by the build
- * fold, on both of its arms, and the switch's `0` arm is today's fold.
+ * fold, on both of its arms.
  *
  * The built-in reverts (`.pi/`, `.github/`, `agents.json`, `CODEOWNERS`,
  * `.gitmodules`) have their own cases in `test-lean-build.ts` (d) and (m); this
  * file is the configured half of the same rule, and it keeps the built-ins as
- * controls, because the whole scope claim of `PI_ENSEMBLE_LEAN_PROTECTED_PATHS`
- * is that it reaches the CONFIGURED globs and nothing else.
+ * controls, because the two lists are folded into one revert set.
  *
  *   (a) a child edits a path matching ONLY a configured glob -> reverted, gone
  *       from the tree and the commit, and named in the step reason beside a
@@ -17,9 +16,6 @@
  *       reason only would leave the ceiling handback silent;
  *   (c) the reason discloses a configured glob that matched NO path on this
  *       tree, and stays silent when every glob bit;
- *   (d) `PI_ENSEMBLE_LEAN_PROTECTED_PATHS=0` -> the configured path is KEPT,
- *       the built-in path is still reverted, and no configured glob is named
- *       anywhere in the reason (byte-identical to the fold before the field);
  *   (e) one predicate for both reads: a configured path the fold reverts is
  *       never ALSO reported as `the build commit contains untouchable path(s)`.
  *
@@ -41,7 +37,6 @@ import {
   put,
   runBuild,
 } from "./lib/lean-build-fixture.ts";
-import { withEnv } from "./lib/env-scope.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -224,54 +219,6 @@ const PROJECT_GLOBS = ["src/**/*.vue", "scripts/**", "package*.json"];
     revertedOf(builtIn.outcome?.reason).includes(".pi/work.json"),
     `(c) while the built-in revert is still disclosed where it belongs (got ${builtIn.outcome?.reason})`,
   );
-}
-
-// ── (d) the `0` arm: configured globs out, built-ins in, reason byte-clean ───
-{
-  await withEnv({ PI_ENSEMBLE_LEAN_PROTECTED_PATHS: "0" }, async () => {
-    const r = await runBuild({
-      issue: 2369,
-      // The SAME config as (a): the off arm is about the switch, not about a
-      // different file, so the only difference between the two rounds is the env.
-      config: configWithProtected(PROJECT_GLOBS),
-      child: (wt) => {
-        put(wt, "src/retry.ts", "export const retry = () => 1;\n");
-        put(wt, "src/app/legacy.vue", "<template></template>\n");
-        put(wt, "scripts/deploy.sh", "#!/bin/sh\n");
-        put(wt, "package.json", '{ "name": "rewritten" }\n');
-        put(wt, "package-lock.json", '{ "lockfileVersion": 99 }\n');
-        put(wt, ".pi/work.json", '{ "verify": { "test": "true {file}" } }\n');
-      },
-    });
-    const wt = r.worktree;
-    assert(r.threw === undefined, `(d) no throw: ${r.threw?.message ?? "clean"}`);
-    assert(r.outcome?.kind === "ok", `(d) ok, got ${r.outcome?.kind}`);
-    assert(
-      existsSync(path.join(wt, "src/app/legacy.vue")) &&
-        readFileSync(path.join(wt, "src/app/legacy.vue"), "utf8").includes("template"),
-      "(d) with the switch off the configured path survives the fold",
-    );
-    assert(
-      commitPaths(wt).join() ===
-        "package-lock.json,package.json,scripts/deploy.sh,src/app/legacy.vue,src/retry.ts",
-      `(d) and the fold commits them exactly as the fold did before the field existed (got ${commitPaths(wt).join(", ")})`,
-    );
-    // The built-ins are NOT the switch's to take: `work-driver-doctrine.ts` owns
-    // them and never reads this knob.
-    assert(
-      !existsSync(path.join(wt, ".pi/work.json")),
-      "(d) while the BUILT-IN .pi edit is still reverted — the switch reaches the configured list only",
-    );
-    const reason = r.outcome?.reason ?? "";
-    assert(
-      revertedOf(reason).join() === ".pi/work.json",
-      `(d) and the reason names only the built-in revert (got ${reason})`,
-    );
-    assert(
-      !reason.includes("legacy.vue") && !reason.includes("matched nothing"),
-      `(d) with no configured glob named anywhere in it — the pre-field bytes (got ${reason})`,
-    );
-  });
 }
 
 // ── (e) one predicate: a reverted configured path is never also a leaked one ─

@@ -195,14 +195,12 @@ the run's own worktree. The usual four:
   the create path), and by default it takes them from the SUPERPROJECT — its module store under
   `.git/modules/<path>`, else its populated checkout — so an offline host, a dead remote or a
   URL nothing can reach is no longer a reason a run hands back: the bytes come from the tree the
-  base commit's own verify ran against. `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL=0` puts the old
-  behaviour back (`git submodule update --init --recursive` from the URL the base's `.gitmodules`
-  records), and that is the arm on which a hand-back naming the submodule IS a network or a
-  remote problem — the URL, the remote's availability, or an offline host: fix the remote or the
-  checkout. With the rule on there is nothing left to fix when the superproject simply never
-  held that submodule: the run proceeds and the path is disclosed — named in the step's reason,
-  the hand-back's message and the run record — because the base commit's verify ran without it
-  too. Check which arm you are on before debugging a remote. What that disclosure does NOT say is
+  base commit's own verify ran against. There is no arm on which the step hands a recorded URL to
+  git: a hand-back naming the submodule means git was ASKED to populate it and refused, so read the
+  command and the excerpt it quotes rather than debugging a remote the step never contacted. When the
+  superproject simply never held that submodule there is nothing left to fix: the run proceeds and
+  the path is disclosed — named in the step's reason, the hand-back's message and the run record —
+  because the base commit's verify ran without it too. What that disclosure does NOT say is
   worth as much as what it does: it reports the SUPERPROJECT's state (neither a module store nor a
   populated checkout for these paths), not that the bytes exist nowhere on the host or that the base
   commit was never populated — the step measures one tree and says only what it saw there. It also
@@ -238,11 +236,9 @@ Note also that the probe is not the only place this step can hand back on the en
 whose submodules cannot be populated fails earlier, in the worktree preparation that runs
 before it. Both are `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` away, and that switch is the OUTER
 gate — with it at `0` no lean reset asks git to populate a submodule at all (not specify's, not
-`build`'s fold, not the review fix round's), so `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL` decides
-nothing there: it is read only when preflight is on. With preflight on, the submodule half has
-its own knob: `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL=0` restores the remote-cloning call, and with
-the default the run is seeded from the superproject instead — so on the default an
-un-populated submodule is a DISCLOSURE naming the path, not a hand-back. A runner that dies on
+`build`'s fold, not the review fix round's), so the run looks as if it never had a submodule pass.
+With the gate open the run is seeded from the superproject, so an un-populated submodule is a
+DISCLOSURE naming the path, not a hand-back. A runner that dies on
 the probe-shaped file is graded by the red proof alone, exactly as v0.14.71 graded it.
 
 ### Symptom: a lean run stops at `ready` with `could not read the issue: approved spec …`, or a `work` cycle halts `step-failed:explore` with `approved spec …`

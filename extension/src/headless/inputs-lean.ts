@@ -24,8 +24,6 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // also takes it out, since one renderer serves all three seats.
   // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_BUILD_ISSUE_PROSE", true),
-  // The deadline stop's route to the report. Reader in lean/deadline-handback.ts.
-  flag("LEAN_DEADLINE_HANDBACK", true),
   // A review fixer whose last turn ended at the model's output-token limit with no edit made is
   // continued ONCE, in its own session, in its own tree behind the same write fence, before the wave
   // is judged "produced no change". The detector reads the child's own recorded `stopReason` and its
@@ -76,37 +74,10 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // The reader is `leanProjectRosterEnabled` in lean/project-roster-switch.ts; the enumeration,
   // both runs and the comparison are lean/verify-roster.ts.
   flag("LEAN_PROJECT_ROSTER", true),
-  // #2365 — the project's OWN protected paths. `.pi/work.json` `lean.protectedPaths`
-  // names repo-relative gitignore-style globs whose paths the `build` fold and the
-  // review fixer's fold revert, and name in the step reason, as the built-in protected
-  // list is. `"0"` takes the CONFIGURED globs out and nothing else: the built-in reverts
-  // (`.pi/`, `.github/`, `agents.json`, `CODEOWNERS`, `.gitmodules`) are enforced by
-  // `work-driver-doctrine.ts`, which this knob never reads, and the process-wide
-  // `PI_ENSEMBLE_PROTECTED_PATHS` is not consulted here either. With the configured list
-  // out, every fold's report and step reason is byte-identical to the fold before the
-  // field existed. The reader is `leanProtectedPathsEnabled` in
-  // lean/protected-paths-switch.ts; the list itself is `protectedPathsOf` in
-  // lean/config.ts and the matcher is lean/protected-globs.ts.
-  flag("LEAN_PROTECTED_PATHS", true),
-  // The routed deadline report's own wall: the report is the step the deadline's stop
-  // test exempts, so without this it is the one step nothing bounds. `0` puts the
-  // unbounded await back byte for byte. The reader is `leanReportBoundEnabled` in
-  // lean/handback-report-bound-switch.ts; the bound itself is `handoffReportBoundMs()`
-  // in lean/engine-report.ts — `handoffAllowanceMs()` plus REPORT_BOUND_HEADROOM_RATIO.
-  flag("LEAN_REPORT_BOUND", true),
-  // The gate events on the host's result document (`issues[].gates`). `"0"` writes the
-  // document exactly as it read before the object existed — no key, no placeholder — which
-  // is what makes the object safe to ship on by default. Unset or any other value leaves
-  // it in. The reader is `leanResultGatesEnabled` in lean/result-gates-switch.ts.
-  flag("LEAN_RESULT_GATES", true),
   // The executed acceptance table in front of the lean review seats and on the run's
   // PR: each criterion, the frozen test the run recorded for it, and what the
-  // newest green `verify` reported for it at the certified head. `0` renders none
-  // of it — both reviewer briefs are byte-identical to the render before the table,
-  // no comment is posted, and the entry guard that refuses a head the gate never
-  // certified does not run. The reader is `leanReviewAcceptanceEnabled` in
-  // lean/review-acceptance-switch.ts.
-  flag("LEAN_REVIEW_ACCEPTANCE", true),
+  // newest green `verify` reported for it at the certified head. The table is READ,
+  // never executed, and is composed once per attempt by `lean/review-acceptance.ts`.
   // Show the lean review seats (six lenses, adversarial reviewer, review fixer)
   // the issue's prose and the spec's criteria as two sections, so a long
   // statement cannot cut the criteria by competing with its own block for one
@@ -125,14 +96,4 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // `require` would decline tickets the operator meant to run. The reader is
   // `resolveSpecIntake` in lean/spec-intake-switch.ts.
   input("LEAN_SPEC_INTAKE", "enum", null, "cycle", { values: ["require", "derive"] }),
-  // #2319 — where a lean worktree's submodules are initialised FROM. On (the default)
-  // each first level is seeded from the superproject — its module store under
-  // `.git/modules/<path>`, else its populated checkout — through a per-path URL this
-  // harness computes, and one this host never held is disclosed rather than fetched;
-  // `0` puts the release's own `git submodule update --init --recursive` back byte for
-  // byte, listing probe included, for an operator whose submodule lives on a remote.
-  // The outer gate is `LEAN_RUNNER_PREFLIGHT`, which wins: with it at `0` no submodule
-  // code runs at all. The reader is `leanSubmodulesLocalEnabled` in
-  // lean/submodules-local-switch.ts.
-  flag("LEAN_SUBMODULES_LOCAL", true),
 ];

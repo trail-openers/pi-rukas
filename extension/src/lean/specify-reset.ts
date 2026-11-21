@@ -31,7 +31,6 @@ import {
 import { changedPaths } from "./specify-tree.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 import { checkoutHolds } from "./submodule-verify.ts";
-import { leanSubmodulesLocalEnabled } from "./submodules-local-switch.ts";
 
 /** A reset the step cannot confirm. The engine turns this into handed-back 10. */
 export class SpecifyResetError extends Error {
@@ -263,13 +262,9 @@ export async function resetWorktreeToBase(
   // that the step asks git to populate NOTHING. The case pinning this reads the argv the step issued.
   if (!leanRunnerPreflightEnabled()) return [];
   const notes = await initSubmodules(exec, wt, beforeSubmoduleInit);
-  // Two reads decide whether the tree is asked about, decided differently:
-  //
-  //   - local rule off: the switch-off arm is the release's argv byte for byte (a case pins it), and that
-  //     argv contained no submodule call of any kind.
-  //   - nothing seeded: with no populating call there is no pass to disbelieve — the test is asked of the
-  //     pass's OWN account, not the file system.
-  if (!leanSubmodulesLocalEnabled() || !notes.some((n) => n.kind === "seeded")) return notes;
+  // Nothing seeded: with no populating call there is no pass to disbelieve — the test is asked of the
+  // pass's OWN account, not the file system.
+  if (!notes.some((n) => n.kind === "seeded")) return notes;
   // Then git is asked what the tree holds, because a step's account of a pass it ran is not evidence the tree
   // ended up populated. `git submodule status` marks a gitlink nothing checked out (parser in
   // `specify-submodules.ts`), and a seeded submodule whose checkout lacks the file its recorded commit names
@@ -344,8 +339,7 @@ export async function resetWorktreeToBase(
 
 /**
  * Populate the worktree's submodules when its commit has any — the seam into `lean/specify-submodules.ts`,
- * which owns WHERE submodules come from, both arms of `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL`, and the disclosure
- * of a submodule this host never had.
+ * which owns WHERE submodules come from and the disclosure of a submodule this host never had.
  *
  * It sits INSIDE the reset rather than beside it because the reset's own `git clean -fdx` is the most reliable
  * de-populator a submodule has — a tree that looks clean is not a complete one. The disclosure its pass
