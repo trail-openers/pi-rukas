@@ -44,9 +44,9 @@ execFileSync("bash", [BUILD], {
 // #2430 — build.sh assembles each prompt into `<agent>.md.tmp-<pid>` beside the
 // target and publishes it by `mv -f`. A straggler here means a temp was left
 // beside a published prompt (the abort path failed to clean up), so a reader
-// could later mistake it for an artefact. The capabilities writer keeps its own
-// temp beside the base files it reads from, so `agents-base/` is scanned too:
-// a temp there is the same defect in the other directory.
+// could later mistake it for an artefact. `agents-base/` is scanned with it:
+// build.sh only reads from that directory, so a temp there is a regression in
+// either direction — one it stopped creating, or one the cleanup failed to reach.
 for (const dir of [PROMPTS, AGENTS_BASE]) {
   const stragglers = readdirSync(dir).filter((name) => name.includes(".tmp"));
   assert(
