@@ -35,22 +35,24 @@
  * and are materialised by `writeCaptured`, the same write path `specify`'s reset uses.
  */
 
-import { lstatSync, readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import path from "node:path";
 import { isFullCommitSha } from "../commit-sha.ts";
 import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
-import { linkShareableDeps } from "../worktree-provision.ts";
 import { SHAREABLE_DEPS } from "../worktree-dep-contract.ts";
+import { linkShareableDeps } from "../worktree-provision.ts";
 import { globMatches } from "./config-test-location.ts";
 import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
 import {
+  PREEXISTING_NAMES_CAP,
+  ROSTER_FILES_CAP,
   ROSTER_NAMES_CAP,
   ROSTER_PATH_MAX_CHARS,
   projectRosterProblem,
 } from "./state-outcome-maps.ts";
-import { PREEXISTING_NAMES_CAP } from "./state-outcome-maps.ts";
+import { probeWorktreePath } from "./verify-baseline.ts";
 import {
   type SuiteRun,
   parseJUnitCases,
@@ -59,14 +61,7 @@ import {
   runProjectSuite,
 } from "./verify-roster-command.ts";
 import { editedTestFiles, runEditedBaseVersions } from "./verify-roster-edited.ts";
-import type { Executed } from "./verify-steps.ts";
 import type { VerifyExec, VerifyRosterConfig } from "./verify-types.ts";
-
-/** Test files one roster may record — bounds the record, not the enumeration. */
-const ROSTER_FILES_CAP = 200;
-
-/** One roster run's output ceiling; past it the roster is unreadable, not empty. */
-const ROSTER_SCRATCH_DIR = ".lean-roster-base";
 
 /** The three answers to "what did the project's suite do?". `none` is never read as a colour. */
 type ProjectRosterOutcome =
@@ -99,31 +94,12 @@ async function undeliveredDeps(
   tree: string,
 ): Promise<string[]> {
   if (!isFullCommitSha(baseSha)) return [];
-  const ran = await exec("git", {
-    argv: [
-      ...NO_HOOKS,
-      "--literal-pathspecs",
-      "ls-tree",
-      "-r",
-      "-z",
-      "--name-only",
-      "--end-of-options",
-      baseSha,
-      "--",
-      ...SHAREABLE_DEPS,
-    ],
-    cwd: repoRoot,
-    timeout: 30_000,
-    maxBuffer: 8 * 1024 * 1024,
-    env: verifyHostEnv(),
-  }).catch(() => undefined);
-  if (ran === undefined) return [];
+  const listed = await trackedPathsAt(exec, repoRoot, baseSha, SHAREABLE_DEPS);
+  if (listed === undefined) return [];
   // A directory is expected where the commit tracks a path under one of the shareable names; the
   // recorded path's first segment is the dependency directory itself.
   const expected = new Set<string>();
-  for (const entry of String(ran.stdout ?? "").split("\0")) {
-    const rel = entry.trim();
-    if (rel === "") continue;
+  for (const rel of listed) {
     const head = rel.split("/")[0] ?? "";
     if ((SHAREABLE_DEPS as readonly string[]).includes(head)) expected.add(head);
   }
@@ -147,6 +123,46 @@ async function undeliveredDeps(
  * A failed listing is NOT "no tests". A directory that does not exist at the base answers exit
  * 0 with empty stdout; a bad sha or a broken object store REJECTS, and a rejection is `none`.
  */
+/**
+ * The tracked paths one commit holds under `paths`, or `undefined` when git would not answer.
+ *
+ * Both base reads the roster makes are this one question — which paths does `baseSha` track — asked of
+ * the commit and never of the disk, because a run that adds or deletes files would otherwise choose the
+ * tree that judges it. A rejection is `undefined`, never an empty list: a directory that does not exist
+ * at the base answers exit 0 with nothing, and that IS an empty listing, while a bad sha or a broken
+ * object store REJECTS and is not "the base had none".
+ */
+async function trackedPathsAt(
+  exec: VerifyExec,
+  repoRoot: string,
+  sha: string,
+  paths: readonly string[],
+): Promise<string[] | undefined> {
+  const ran = await exec("git", {
+    argv: [
+      ...NO_HOOKS,
+      "--literal-pathspecs",
+      "ls-tree",
+      "-r",
+      "-z",
+      "--name-only",
+      "--end-of-options",
+      sha,
+      "--",
+      ...paths,
+    ],
+    cwd: repoRoot,
+    timeout: 30_000,
+    maxBuffer: 8 * 1024 * 1024,
+    env: verifyHostEnv(),
+  }).catch(() => undefined);
+  if (ran === undefined) return undefined;
+  return (ran.stdout ?? "")
+    .split("\0")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "");
+}
+
 async function listProjectTestFilesAtBase(
   exec: VerifyExec,
   repoRoot: string,
@@ -158,37 +174,14 @@ async function listProjectTestFilesAtBase(
     return {
       reason: `the roster could not list ${testDir}/: "${baseSha}" is not a full commit sha`,
     };
-  const ran = await exec("git", {
-    argv: [
-      ...NO_HOOKS,
-      "--literal-pathspecs",
-      "ls-tree",
-      "-r",
-      "-z",
-      "--name-only",
-      "--end-of-options",
-      baseSha,
-      "--",
-      testDir,
-    ],
-    cwd: repoRoot,
-    timeout: 30_000,
-    maxBuffer: 8 * 1024 * 1024,
-    env: verifyHostEnv(),
-  }).catch((err: unknown) => ({ __err: (err as Error)?.message ?? String(err) }));
-  const err = (ran as { __err?: string })?.__err;
-  if (err !== undefined)
+  const listed = await trackedPathsAt(exec, repoRoot, baseSha, [testDir]);
+  if (listed === undefined)
     return {
-      reason: `could not list the project's test files at ${baseSha.slice(0, 12)}: ${err}`,
+      reason: `could not list the project's test files at ${baseSha.slice(0, 12)}`,
     };
-  const listed = (ran as { stdout?: string }).stdout ?? "";
-  const entries = listed
-    .split("\0")
-    .map((entry: string) => entry.trim())
-    .filter((entry: string) => entry !== "");
   const prefix = `${testDir}/`;
   const files: string[] = [];
-  for (const entry of entries) {
+  for (const entry of listed) {
     // Directly inside `testDir` only — the boundary `testLocationProblem` applies to a
     // submitted acceptance test, so the roster and the freeze agree about where tests live.
     if (!entry.startsWith(prefix)) continue;
@@ -202,12 +195,6 @@ async function listProjectTestFilesAtBase(
       };
   }
   return { files };
-}
-
-function rosterProbeWorktreePath(repoRoot: string, issue: number): string {
-  const trimmed = repoRoot.replace(/[/]+$/, "");
-  const cut = trimmed.lastIndexOf("/");
-  return `${trimmed.slice(0, cut)}/${trimmed.slice(cut + 1)}.roster-lean-verify-${issue}`;
 }
 
 /**
@@ -229,7 +216,7 @@ async function runProjectSuiteAtBase(opts: {
   headTree: string;
 }): Promise<SuiteRun> {
   const { exec, repoRoot, baseSha, timeoutMs } = opts;
-  const abs = rosterProbeWorktreePath(repoRoot, opts.issue);
+  const abs = probeWorktreePath(repoRoot, opts.issue, "roster");
   const run = retargetRosterCommand(opts.command, opts.headTree, abs);
   const hostEnv = verifyHostEnv();
   const remove = () =>
@@ -362,10 +349,7 @@ export async function buildProjectRoster(opts: {
   const basePassed = new Set(base.passed);
   const newlyFailing = dedupe(head.failed).filter((name) => basePassed.has(name));
   if (newlyFailing.length > 0)
-    return {
-      status: "red",
-      reason: `project tests that passed at the base commit now fail: ${clip(newlyFailing)} — these were green at ${baseSha.slice(0, 12)}, so this run broke them`,
-    };
+    return { status: "red", reason: newlyFailingReason(newlyFailing, baseSha) };
   // Failing on BOTH sides is the mainline's own and is not charged. A name neither passed nor
   // failed at base was not observed there, so the base cannot vouch for it and this run owns it.
   const baseSeen = new Set([...base.failed, ...base.passed]);
@@ -422,6 +406,22 @@ export async function buildProjectRoster(opts: {
   return { status: "roster", record: roster };
 }
 
+/**
+ * Why a roster red: the tests that were green at the base and fail now, named.
+ *
+ * One sentence for one verdict, written once: the roster's own comparison and the tier arm that ranks
+ * with it must be able to say the same thing about the same names, and two copies of the wording are two
+ * chances to say it differently.
+ */
+function newlyFailingReason(names: readonly string[], baseSha: string): string {
+  return `project tests that passed at the base commit now fail: ${clip(names)} — these were green at ${baseSha.slice(0, 12)}, so this run broke them`;
+}
+
+/** A recorded name cut to what the step log's reader accepts. */
+function boundedName(name: string): string {
+  return name.length > ROSTER_PATH_MAX_CHARS ? name.slice(0, ROSTER_PATH_MAX_CHARS) : name;
+}
+
 /** Order-preserving dedupe and bound; stream order is what an operator re-running the suite sees. */
 function dedupe(names: readonly string[]): string[] {
   const seen = new Set<string>();
@@ -429,7 +429,7 @@ function dedupe(names: readonly string[]): string[] {
   for (const name of names) {
     if (name === "" || seen.has(name)) continue;
     seen.add(name);
-    out.push(name.length > ROSTER_PATH_MAX_CHARS ? name.slice(0, ROSTER_PATH_MAX_CHARS) : name);
+    out.push(boundedName(name));
   }
   return out;
 }
@@ -485,10 +485,7 @@ export function arbitrateTierWithRoster(opts: {
   const basePassed = new Set(roster.passed);
   const newlyFailing = opts.headFailed.filter((name) => basePassed.has(name));
   if (newlyFailing.length > 0)
-    return {
-      kind: "red",
-      reason: `project tests that passed at the base commit now fail: ${clip(newlyFailing)} — these were green at ${opts.baseSha.slice(0, 12)}, so this run broke them`,
-    };
+    return { kind: "red", reason: newlyFailingReason(newlyFailing, opts.baseSha) };
   const baseFailed = new Set(opts.baseFailed);
   if (opts.headFailed.every((name) => baseFailed.has(name)))
     return {
@@ -501,9 +498,4 @@ export function arbitrateTierWithRoster(opts: {
       },
     };
   return { kind: "uninvolved" };
-}
-
-/** A recorded name cut to what the step log's reader accepts. */
-function boundedName(name: string): string {
-  return name.length > ROSTER_PATH_MAX_CHARS ? name.slice(0, ROSTER_PATH_MAX_CHARS) : name;
 }

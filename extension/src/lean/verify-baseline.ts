@@ -317,12 +317,23 @@ export function classifyBaseRun(ran: unknown, contractEstablished: boolean): Bas
   return { status: "red" };
 }
 
-/** The probe tree for one issue's baseline comparison. */
-export function baselineProbeWorktreePath(repoRoot: string, issue: number): string {
-  // SIBLING to the repo, not under it — see `probeTierAtBase`.
+/**
+ * The throwaway sibling tree one probe checks the base commit out into.
+ *
+ * SIBLING to the repo, never under it: verify scans the whole repo with porcelain
+ * `--untracked-files=all`, so a tree inside it would be reported as untracked dirt. `kind` names which
+ * probe owns the tree (the baseline tier probe and the roster's base-suite probe run at the same commit
+ * for the same issue, and one registration cannot serve two checkouts).
+ */
+export function probeWorktreePath(repoRoot: string, issue: number, kind: string): string {
   const trimmed = repoRoot.replace(/[/]+$/, "");
   const cut = trimmed.lastIndexOf("/");
-  return `${trimmed.slice(0, cut)}/${trimmed.slice(cut + 1)}.baseline-lean-verify-${issue}`;
+  return `${trimmed.slice(0, cut)}/${trimmed.slice(cut + 1)}.${kind}-lean-verify-${issue}`;
+}
+
+/** The probe tree for one issue's baseline comparison. */
+export function baselineProbeWorktreePath(repoRoot: string, issue: number): string {
+  return probeWorktreePath(repoRoot, issue, "baseline");
 }
 
 /** A base the probe could not check out: the machine, so the engine hands back. */

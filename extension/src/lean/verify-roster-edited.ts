@@ -11,7 +11,7 @@
 
 import { rmSync } from "node:fs";
 import path from "node:path";
-import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
+import { verifyChildEnv, verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { renderTestCommand, runTestFile, sha256 } from "./specify-proof.ts";
 import { NO_HOOKS, writeCaptured } from "./specify-reset.ts";
 import type { VerifyExec } from "./verify-types.ts";
@@ -55,7 +55,21 @@ export async function editedTestFiles(
   return preexisting.filter((f) => changed.has(f));
 }
 
-/** The base commit's bytes at `rel`, or `undefined` when git would not answer. */
+/**
+ * The base commit's bytes at `rel`, or `undefined` when git would not give them.
+ *
+ * "Would not give them" covers three answers, and none of them may come back as an empty file: a
+ * rejection (the executor could not run git, or git was killed), a child that printed nothing because
+ * it failed, and a blob that is empty when the commit says it is not. An empty string returned for
+ * any of those is a VALID empty test file to the caller, which runs it, watches it pass, and records a
+ * base version that never existed as a contract this run did not break — the exact green the edited-file
+ * arm exists to refuse.
+ *
+ * A genuinely zero-byte blob IS acceptable, and is confirmed rather than assumed: `git cat-file -s`
+ * asks the object how big it is, so an empty read is believed only when the object really is empty.
+ * Any doubt about the size is answered as "no bytes", which is the fail-closed direction — the run
+ * hands back rather than grading a green on a base file it could not read.
+ */
 async function gitShowBlob(
   exec: VerifyExec,
   repoRoot: string,
@@ -73,11 +87,27 @@ async function gitShowBlob(
       ? (err as Record<string, unknown>)
       : { message: String(err) },
   );
-  // A rejection is the executor speaking, not git's "no such path": only bytes the child really
-  // printed are the base's bytes, and an absent file answers with empty stdout, which is a valid
-  // (empty) test file the base really held.
+  // A rejection is the executor speaking, not git's "no such path", and only bytes the child really
+  // printed are the base's bytes.
   if (!Object.hasOwn(ran, "stdout") || typeof ran.stdout !== "string") return undefined;
-  return ran.stdout;
+  const bytes = ran.stdout;
+  if (bytes !== "") return bytes;
+  // The read came back empty. Ask the object its own size before believing it: a `git show` that
+  // failed for a reason the executor still reported as a success prints nothing, and nothing is not
+  // the same fact as a zero-byte blob.
+  const sized = await exec("git", {
+    argv: [...NO_HOOKS, "cat-file", "-s", `${baseSha}:${rel}`],
+    cwd: repoRoot,
+    timeout: 30_000,
+    maxBuffer: 64 * 1024,
+    env: verifyHostEnv(),
+  }).catch(() => undefined);
+  const reported = (sized as { stdout?: unknown } | undefined)?.stdout;
+  if (typeof reported !== "string") return undefined;
+  const trimmed = reported.trim();
+  // A non-numeric answer is git failing to name a size, not a size of zero.
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  return trimmed === "0" ? "" : undefined;
 }
 
 /**
@@ -121,7 +151,10 @@ export async function runEditedBaseVersions(opts: {
         wt,
         template,
         file: probe,
-        limits: { timeoutMs },
+        // The SAME scrubbed env `runProjectSuite` gives the project's suite. A base version run that
+        // inherited the driver's environment could see knobs the real tier never passes, and a
+        // verdict it reached under them is not the verdict the project's runner would have reached.
+        limits: { timeoutMs, env: verifyChildEnv() },
       });
       if (proof.kind === "infra")
         return {
