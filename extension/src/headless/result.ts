@@ -16,6 +16,7 @@ import type { CauseVerdict } from "../work-driver-cause-class.ts";
 import { causeForCycle } from "../work-driver-cause-for.ts";
 import type { CauseClass } from "../work-driver-cause-table.ts";
 import { handoffMarker, parseHandoffMarker } from "../work-driver-handoff-channel.ts";
+import { type CommentsReport, commentsReport } from "../work-driver-issue-comments.ts";
 import { resumeEnabled } from "../work-driver-resume.ts";
 import type { WorkStep } from "../workflow-state-events.ts";
 import { type WorkState, initialState } from "../workflow-state.ts";
@@ -39,7 +40,7 @@ import type { GatesResult } from "./work-lean-gates.ts";
  * Additive, no bump: top-level `resources` (#1325); per issue `failure`
  * (#1367), `usage.byRole` (#1368), `continuedPr` (#1468) and the cause fields
  * `causeClass`, `causeReason`, `causeEvidence`, `userAction` (#1675); `usage`
- * `toolCalls`/`toolErrors` and per issue `driver` (`features.usageTools`).
+ * `toolCalls`/`toolErrors` and per issue `driver` (`features.usageTools`); `comments`.
  */
 export const RESULT_SCHEMA_VERSION = 5 as const;
 
@@ -236,6 +237,8 @@ export interface IssueResult {
   exitCode: number;
   /** #1468 — the PR a `--continue-pr` cycle continued; `startHeadSha` is its head at the start. */
   continuedPr?: { number: number; headRefName: string; startHeadSha: string; mainlineSha: string };
+  /** What explore did with the host's comments blob; absent when no manifest named one. */
+  comments?: CommentsReport;
   /** Present once the cycle emitted a handoff (#1327). */
   handoff?: HandoffResult;
   /** Clarification questions (exit 11): the cap's bullet evidence, numbered q1, q2… */
@@ -441,13 +444,11 @@ export function projectIssue(state: WorkState, stateFile: string): IssueResult {
   }
   const cp = state.pipelineState.continuedPr;
   if (cp) {
-    result.continuedPr = {
-      number: cp.number,
-      headRefName: cp.headRefName,
-      startHeadSha: cp.headSha,
-      mainlineSha: cp.mainlineSha,
-    };
+    const { number, headRefName, headSha: startHeadSha, mainlineSha } = cp;
+    result.continuedPr = { number, headRefName, startHeadSha, mainlineSha };
   }
+  const comments = lastEvent(state, "issue-comments");
+  if (comments) result.comments = commentsReport(comments);
   if (exitCode === 11) result.questions = questionsOf(state);
   const capHit = lastEvent(state, "cap-hit");
   const parkReason = capHit?.parkReason ?? state.pipelineState.normalisedSpec?.parkReason;

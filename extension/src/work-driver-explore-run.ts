@@ -32,6 +32,7 @@ import {
   readCitedPrStates,
 } from "./work-driver-intent-park-evidence.ts";
 import { intentResolutionEnabled } from "./work-driver-intent.ts";
+import { loadIssueComments, withIssueComments } from "./work-driver-issue-comments.ts";
 import { issueImagesFor } from "./work-driver-issue-images.ts";
 import { cycleSpecs, inlineBody, specFetcher } from "./work-driver-issue-spec.ts";
 import {
@@ -130,7 +131,14 @@ export async function runExplore(
     });
   const specSha = read.specs.get(ctx.issue)?.sha256;
   if (specSha !== undefined) next = { ...next, pipelineState: { ...next.pipelineState, specSha } };
-  const fetchBody = specFetcher(ctx.issueBodyFetcherFn ?? fetchIssueBodyViaGh, read.specs);
+  // The host's comments join the body here, so the cached artifact carries them to every reader.
+  const comments = await loadIssueComments(issues);
+  if (comments)
+    next = appendEvent(next, { kind: "issue-comments", at: Date.now(), ...comments.report });
+  const fetchBody = withIssueComments(
+    specFetcher(ctx.issueBodyFetcherFn ?? fetchIssueBodyViaGh, read.specs),
+    comments,
+  );
   const bodySettled = await Promise.allSettled(
     issues.map((n) => fetchIssueBodyWithRetry(fetchBody, n, ctx.repoRoot, { signal: ctx.signal })),
   );

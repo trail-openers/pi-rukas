@@ -102,6 +102,12 @@ export const HEADLESS_FEATURES = {
    */
   workLeanVerb: true,
   /**
+   * `work` reads the comments blob a manifest names (`comments`), adds it to
+   * the issue text, and reports it as the result's `comments` and an
+   * `issue-comments` progress line.
+   */
+  issueComments: true,
+  /**
    * #1920 slice B — `work-lean`'s success document is the SAME schema the
    * `work` verb writes: `schemaVersion: 5` and one `issues[]` entry with
    * `status`, `cap`, `failure`, `branch`, `prUrl`, `usage` (with `byRole`) and

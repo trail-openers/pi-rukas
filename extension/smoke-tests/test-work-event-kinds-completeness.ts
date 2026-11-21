@@ -2,18 +2,13 @@
 /**
  * #986 — mechanical guard: KNOWN_EVENT_KINDS (the validator's membership
  * tuple) and the WorkEvent["kind"] union must stay in sync, in BOTH
- * directions. The live bug: the driver emitted four kinds
- * (worktree-provisioned #558, safety-net-commit #625, handoff-consolidated
- * #674, worktree-leftover-handled #735) that the tuple omitted, so EVERY
- * cycle that crashed after its branch step refused to resume ("eventLog[N].
- * kind has unknown value").
+ * directions: a kind the tuple omits makes every cycle that logged it
+ * refuse to resume ("eventLog[N].kind has unknown value").
  *
  * The guard is the offline runtime form the issue mandates:
  *   1. Forward — one FULL, well-typed instance of EVERY WorkEvent kind
  *      passes validateDiscriminants with ZERO findings at all (not just
  *      zero "unknown value" findings).
- *      Fails on the pre-fix tuple (one finding per missing kind, naming the
- *      exact value).
  *      The zero-findings assertion is a full validateDiscriminants
  *      regression over every kind — not kind-level only: it rejects any
  *      finding of any discriminant on any fixture. Per-kind FIELD validation
@@ -47,11 +42,8 @@ function assert(cond: boolean, msg: string) {
   }
 }
 
-// Full, well-typed instance of every WorkEvent union member. Typed as
-// the union itself — a union change that drops or renames a kind (or
-// changes a required field) fails the type-check, which is the optional
-// compile-time half of the guard.
-
+// Full, well-typed instance of every WorkEvent union member, typed as the
+// union itself so a dropped or renamed kind fails a type-check.
 // The four kinds the pre-fix KNOWN_EVENT_KINDS tuple omitted — the live
 // bug of #986: worktree-provisioned (#558, 8b226a5), safety-net-commit
 // (#625, b8af99d), handoff-consolidated (#674, handoff fragment),
@@ -195,6 +187,7 @@ const everyKindEvent: WorkEvent[] = [
     worktree: "/wt",
     reason: "git rev-parse failed",
   },
+  { kind: "issue-comments", at: 1, read: true, count: 2, bytes: 300, dropped: 0 },
   {
     kind: "adversarial-skipped-empty-diff",
     at: 1,
@@ -377,7 +370,14 @@ const everyKindEvent: WorkEvent[] = [
     tokens: 10,
   },
   { kind: "fence-recovery-started", at: 1, workstreamId: "a", owners: ["b"] },
-  { kind: "fence-lifted", at: 1, workstreamId: "a", file: "f.ts", line: "- f.ts", source: "precheck" },
+  {
+    kind: "fence-lifted",
+    at: 1,
+    workstreamId: "a",
+    file: "f.ts",
+    line: "- f.ts",
+    source: "precheck",
+  },
   // S4a (#1162) — the interrupt record.
   { kind: "interrupted", at: 1, reason: "signal" },
   {

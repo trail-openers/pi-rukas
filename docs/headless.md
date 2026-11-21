@@ -546,6 +546,21 @@ A host that approved an issue against a spec hands that spec to `work` or `work-
   One line per requirement: the spec's own ids (`R1`, `FR-3`, `REQ-001` at a line start), else its top-level headings, else the spec's name. One read-only child judges each requirement against the PR's tree. A `met` that names no file present at that head, an id the child left out, and a check that did not run are each written `not met`, so the block is always present and readable, and never claims more than was checked. Whether a requirement is met is for the person who reviews.
 - **`work` keeps the block.** `work` computes the block once per cycle when it reaches commit-pr, from the develop tree the reviewers read (uncommitted files included; the integrated head does not exist yet), and caches it. After every commit-pr outcome it reads the PR body back and, when the block is missing or unreadable, rewrites it with the same manifest sha256; every later driver body rewrite (the attribution disclosure, the repair after a continued PR or the ops fallback) keeps it. The block is cached as it is published, with host paths in its lines written `<repo>/…` or `~/…`. A manifest whose spec is no longer the one explore read halts at commit-pr rather than pin a spec the cycle was not built against. A body it cannot give a valid block halts with `step-failed:commit-pr` and evidence `approved spec block: …`. On GitLab `work` has no body edit, so that halt applies whenever the body was not the one the driver created. The capped draft PR a parked cycle opens carries no block.
 
+## Issue comments for hosts
+
+A host that wants a single-issue `work` cycle to see the comments on the issue and its pull requests writes them as a blob in the same attachments directory and lists it in `manifest.json` (`features.issueComments`):
+
+```json
+{"issue": 42, "images": [],
+ "comments": {"file": "comments.json", "bytes": 5120, "sha256": "<64 hex>"}}
+```
+
+`comments.json` is `{"version": 1, "issue": 42, "until": "<ISO-8601>", "items": [...]}`. Each item has `source` (`issue-comment`, `pr-comment`, `review`, `review-comment`, `fixer`, `refresh`), `id`, `by`, `at`, `url` and `text`, plus `pr` (required on `pr-comment`, `review`, `review-comment`; optional on `fixer` and `refresh`), and `path` (required) and `line` (optional) on a `review-comment`. The host decides which comments count. The driver fetches none and filters none.
+
+- **What is checked.** The same file checks as the approved spec: a plain name in that directory, a regular file and not a symbolic link, its size is `bytes` and its bytes hash to `sha256`. It must also be valid UTF-8 with no NUL byte, and its `issue` must equal the manifest's and the cycle's. A blob that fails any check is not used: the cycle runs on the body alone and the step goes on. An item that does not have exactly the shape above is dropped and counted. Multi-issue cycles ignore the blob. `PI_ENSEMBLE_ISSUE_IMAGES=0` does not turn this off, and a manifest with no images still works.
+- **What the run reads.** Explore adds the comments, oldest first, after the issue body under `## Comments on this issue and its pull requests`, ahead of any approved spec, and caches that text. Every later step, and the repeat-park guard's fingerprint, reads that cached text. The same body with different comments is therefore a different park. Each item is cut at 4,000 characters, and the section is capped at 64 KB rendered, oldest dropped first with a line saying how many.
+- **What the result says.** `issues[].comments` is `{read, count, bytes, dropped, reason?}`, where `reason` is present when `read` is `false`. An `issue-comments` NDJSON line carries the same fields. Without a `comments` entry, neither appears, and the issue text and every prompt are byte-identical to a run without the feature.
+
 ## `--restart` for hosts
 
 `work <issue> --restart` is the supported way to run an issue again after a handoff that a person has dealt with. A host passes it; it never removes labels itself.
