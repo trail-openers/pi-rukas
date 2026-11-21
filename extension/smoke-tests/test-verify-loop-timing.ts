@@ -368,5 +368,3 @@ for (const jobs of ["1", "3"]) {
 }
 
 process.exit(exit);
-
-process.exit(exit);

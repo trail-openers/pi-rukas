@@ -59,8 +59,8 @@
 #   the first job's start to the drain, so a pooled run's `wall` is LESS than
 #   `sum` — which is exactly why the block prints both rather than one number
 #   whose meaning a reader would have to guess. `sum` and `max` are taken over the
-#   rows the block shows, so the three numbers describe the block the operator
-#   just read.
+#   whole record — every test that ran, the same set `emit_timing_lines` prints and
+#   the block draws its rows from — so a small `N` shrinks the rows, not the totals.
 #
 # Two contract decisions, both pinned by smoke-tests/test-verify-loop-timing.ts:
 #
@@ -90,17 +90,21 @@ elif [ -n "${PI_ENSEMBLE_VERIFY_TIMING:-}" ] && ! [[ "${PI_ENSEMBLE_VERIFY_TIMIN
 fi
 
 # How many files the slowest-first block lists — `PI_ENSEMBLE_VERIFY_TIMING_TOP_N`,
-# named like every other knob this loop reads. Digits only: anything else falls
-# back to the shipped 30 with the rejected value named, because a typo in a bound
-# the operator chose is worth one line of stderr — the same discipline as the
-# job-count and timeout parses. `0` is legal and means "header and TOTAL only",
-# which is how an operator asks for the totals without the rows.
+# named like every other knob this loop reads. One to four digits only: anything
+# else falls back to the shipped 30 with the rejected value named, because a typo
+# in a bound the operator chose is worth one line of stderr — the same discipline
+# as the job-count and timeout parses. The width is part of the parse, not a
+# sanity check after it: a value of any length is accepted by `^[0-9]+$`, and one
+# long enough to overflow an arithmetic context would reach `head -n` and the
+# `[ -lt ]` comparison below as a number this script cannot represent. `0` is
+# legal and means "header and TOTAL only", which is how an operator asks for the
+# totals without the rows.
 VERIFY_TIMING_TOP_N=30
-if [ -n "${PI_ENSEMBLE_VERIFY_TIMING_TOP_N:-}" ] && [[ "${PI_ENSEMBLE_VERIFY_TIMING_TOP_N}" =~ ^[0-9]+$ ]]; then
+if [ -n "${PI_ENSEMBLE_VERIFY_TIMING_TOP_N:-}" ] && [[ "${PI_ENSEMBLE_VERIFY_TIMING_TOP_N}" =~ ^[0-9]{1,4}$ ]]; then
   VERIFY_TIMING_TOP_N="$PI_ENSEMBLE_VERIFY_TIMING_TOP_N"
 else
   if [ -n "${PI_ENSEMBLE_VERIFY_TIMING_TOP_N:-}" ]; then
-    echo "warn: verify-loop: PI_ENSEMBLE_VERIFY_TIMING_TOP_N must be a non-negative integer; got '${PI_ENSEMBLE_VERIFY_TIMING_TOP_N}', showing 30" >&2
+    echo "warn: verify-loop: PI_ENSEMBLE_VERIFY_TIMING_TOP_N must be 1-4 digits; got '${PI_ENSEMBLE_VERIFY_TIMING_TOP_N}', showing 30" >&2
   fi
   VERIFY_TIMING_TOP_N=30
 fi
@@ -168,10 +172,12 @@ record_timing() {
   fi
 }
 
-# record_job_timing <i> <rc> — the timing row for one finished job. Takes the
-# pool's two clocks for job <i> and the replay's own reading of its exit code, and
-# refuses to record anything unless both clocks were actually written (see the
-# header: no end, no duration, no row). The outcome is read from the SAME timeout
+# record_job_timing <i> <rc> <timed_out> — the timing row for one finished job.
+# Takes the pool's two clocks for job <i>, the replay's own reading of its exit
+# code, and
+# the replay's one reading of the timeout marker. Refuses to record anything
+# unless both clocks were actually written (see the header: no end, no duration,
+# no row). The outcome is read from the SAME timeout
 # marker the `FAILED:` line is read from — passed in as `timed_out` so this step
 # reads the marker once and both outputs see the same answer.
 record_job_timing() {
@@ -244,7 +250,9 @@ $rows
 EOF
   # The sums are taken over the whole record — every test that ran, not merely the
   # window the block shows — so the TOTAL line describes the run rather than its
-  # top N, and `sum` can be compared against `wall` for any N.
+  # top N, and `sum` can be compared against `wall` for any N. `emit_timing_lines`
+  # prints the same record in argument order, so lines, block and TOTAL all cover
+  # the record (see the header).
   sum=0
   max=0
   while IFS="$tab" read -r secs file _rest; do

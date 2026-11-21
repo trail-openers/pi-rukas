@@ -483,6 +483,8 @@
     "smoke-tests/lib/adversarial-reask-fixtures.ts",
     "smoke-tests/lib/adversarial-verdict-reask-off-arm-golden.ts",
     "smoke-tests/test-build-prompt-writes-atomic.ts",
-    "smoke-tests/test-built-prompts.ts"
+    "smoke-tests/test-built-prompts.ts",
+    "smoke-tests/lib/verify-loop-timing-harness.ts",
+    "smoke-tests/test-verify-loop-timing.ts"
   ]
 }

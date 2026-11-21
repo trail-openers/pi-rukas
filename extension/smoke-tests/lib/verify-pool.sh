@@ -156,8 +156,11 @@ JOB_STARTED_AT=()
 # finish_job this, and the replay step turns the pair into a row). The pool owns the
 # moments, lib/verify-timing.sh the storage and printing — the seam that keeps both
 # under the AGENTS.md §12 cap. Nothing here reads it: deleting it changes no job's
-# start, bound, signal or kill. Seeded EMPTY (not 0) so "never written" reads as
-# absent rather than as the legitimate duration 0.
+# start, bound, signal or kill. `JOB_STARTED_AT` keeps the pre-existing `0` seed
+# exactly as it was — run_pool's outer-bound arithmetic reads it with `:-0`, so an
+# unstarted job must keep reading 0 — and `JOB_STOP` is seeded EMPTY instead: only
+# the stop clock has a "never written" state that must not be read as the
+# legitimate duration 0 (see the header of lib/verify-timing.sh).
 # Jobs currently in state 1. run_pool reads it; start_job and the completion
 # branch are the only two places that move it.
 POOL_RUNNING=0
@@ -217,7 +220,7 @@ pool_collect() {
     JOB_PID+=(0)
     JOB_EXIT+=(0)
     JOB_KILLED+=(0)
-    JOB_STARTED_AT+=()
+    JOB_STARTED_AT+=(0)
     JOB_STOP+=()
     n=$((n + 1))
   done
