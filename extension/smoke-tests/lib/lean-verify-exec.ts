@@ -36,6 +36,7 @@ import { execp } from "../../src/exec.ts";
 import type { VerifyExec } from "../../src/lean/verify-types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { namesProbeTree } from "./lean-verify-probe-tree.ts";
+import { canonicalRosterProbeDir } from "./lean-verify-probe-tree.ts";
 import type { VerifyOpts } from "./lean-verify-types.ts";
 
 export { canonicalProbeDir } from "./lean-verify-probe-tree.ts";
@@ -200,6 +201,28 @@ export function makeVerifyExec(opts: {
   };
   /** The tree a roster run of this side belongs to. */
   const treeOf = (side: "head" | "base") => (side === "base" ? probeDir : wt);
+  /**
+   * The roster's OWN throwaway checkout of the base commit. The step derives its path from the repo
+   * root, so the stub recognises the `worktree add` that makes it rather than guessing at a name.
+   */
+  const rosterProbeDir = canonicalRosterProbeDir(repoRoot, o.issue);
+  /**
+   * Take the dependency tree a case says never arrived out of the roster's base checkout.
+   *
+   * Timed to the base SUITE's run rather than to the checkout: the production order is checkout, link,
+   * then run, and the gate is asked to notice an undelivered dependency between the link that reported
+   * success and the run that would silently fail every test. Removing them here is the state a link that
+   * never landed leaves — the tree is present, the modules are not, and nothing upstream reported it.
+   */
+  const bareBaseDeps = (tree: string): void => {
+    for (const dep of o.roster?.baseMissingDeps ?? []) {
+      try {
+        rmSync(path.join(tree, dep), { recursive: true, force: true });
+      } catch {
+        /* a tree already bare is the state the case asked for */
+      }
+    }
+  };
   /**
    * A roster run the stub itself produces: it writes the report the gate then reads back, holding the
    * names this side was declared to have. The report is a real file in the tree the run belongs to and
@@ -389,7 +412,14 @@ export function makeVerifyExec(opts: {
     ) {
       // The fixture's own `worktree add` for the run's tree, plus the probe's: both go to
       // the real git, since a registration the stub invented could not be read back.
-      return execp(cmd, { ...o2, env: o2?.env ?? childEnv(), cwd: o2?.cwd ?? repoRoot });
+      const isRosterProbe = o2?.argv?.includes(rosterProbeDir) === true;
+      return execp(cmd, { ...o2, env: o2?.env ?? childEnv(), cwd: o2?.cwd ?? repoRoot }).then((r) => {
+        // Bared the moment the checkout exists — before the gate provisions it and before it asks the
+        // checkout anything — so the whole production sequence (checkout, link, judge, run) sees the
+        // same tree a link that never landed would leave.
+        if (isRosterProbe) bareBaseDeps(rosterProbeDir);
+        return r;
+      });
     }
     if (namesProbeTree(repoRoot, probeDir, o2) || isProbeBlobRead(o2, baseSha)) {
       // The base's blob reads are the ONE place a case answers for the base commit rather

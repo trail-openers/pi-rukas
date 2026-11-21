@@ -54,7 +54,9 @@ export function reasonFor(
  *
  * Behind the roster switch the green `verify` is read as a RECORD, not only as a kind: the merge is
  * the irreversible act, so it fails closed on a log whose green carries no roster — including a
- * hand-built or resumed one that never ran the project's suite.
+ * hand-built or resumed one that never ran the project's suite. What the record must additionally
+ * lack is a newly failing base version, and that is the step's job: a failing base version makes the
+ * verify `red` (`verify-roster-edited.ts`), so no green the step wrote can carry one.
  */
 function landEarned(run: LeanRun): boolean {
   if (run.counters.draft) return false;
@@ -69,17 +71,19 @@ function landEarned(run: LeanRun): boolean {
 }
 
 /**
- * Does a green verify's record carry a roster the merge may rest on? A missing roster, an empty
- * one, and one naming a base-version edited file are each refused. The third cannot arrive on a
- * green the STEP produced; reading it from the record anyway is what catches a resumed log that
- * pairs a green with a roster the step would never have written.
+ * Does a green verify's record carry a roster the merge may rest on? A missing roster and an empty
+ * one are each refused, and so is one that contradicts #2410 R5: `editedFiles` may only name files
+ * whose base version the step PROVED passed against the head code, so a green that records BOTH an
+ * edited file and any failing test is a roster the step could not have written — it went `red` at
+ * `runEditedBaseVersions` before any roster existed. Refusing the mere FACT of an edit would refuse
+ * every legitimate test edit (Part B's subject) and leave an honest run no path to `landed`; what
+ * the merge refuses is a green that vouches for itself while its own head run failed.
  */
 function rosterEarnsLand(outcome: Outcome | undefined): boolean {
   const roster = outcome?.projectRoster;
   if (roster === undefined) return false;
   if (!Number.isSafeInteger(roster.total) || roster.total < 1) return false;
-  if (roster.editedFiles !== undefined && roster.editedFiles.length > 0) return false;
-  return true;
+  return !(roster.editedFiles !== undefined && roster.editedFiles.length > 0 && roster.failed.length > 0);
 }
 
 /** The reason the record gives for refusing the merge, for the handback line. */

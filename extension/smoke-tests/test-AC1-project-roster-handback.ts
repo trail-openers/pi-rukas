@@ -152,6 +152,42 @@ const NAMES = ["tests/test-a.sh::first", "tests/test-a.sh::second", "tests/test-
   );
 }
 
+{
+  // The base checkout never received the project's dependencies. Swallowed, that failure leaves a
+  // base tree whose suite cannot even import, so every head failure matches a base failure and the
+  // whole-line excuse reads them as "already broken at base" — a green graded on a base that never
+  // ran. The roster's authority is that its base run OBSERVED the real suite, so this hands back and
+  // names the base tree's dependencies as what is missing.
+  const r = await runVerify({
+    issue: 2432,
+    implement: true,
+    config: { fast: PASS_TIER },
+    roster: {
+      files: PRE_EXISTING,
+      headPassed: NAMES,
+      basePassed: NAMES,
+      baseMissingDeps: ["node_modules"],
+    },
+  });
+  const said = `${r.threw?.message ?? ""}${r.outcome?.reason ?? ""}`;
+  assert(
+    r.threw !== undefined,
+    `(no deps) an unprovisioned base checkout hands back rather than grading green (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`,
+  );
+  assert(
+    /dependenc/i.test(said),
+    `(no deps) the hand-back names the base tree's dependencies as what is missing (${said.slice(0, 200)})`,
+  );
+  assert(
+    r.outcome === undefined,
+    "(no deps) no outcome is recorded — a base nobody provisioned decided nothing",
+  );
+  assert(
+    r.rosterRuns < 2,
+    `(no deps) the base suite never completed a run, so no roster was built (runs: ${String(r.rosterRuns)})`,
+  );
+}
+
 for (const dir of ROOTS) rmSync(dir, { recursive: true, force: true });
 console.log(`\nexit ${String(exit)}`);
 if (exit !== 0) process.exit(exit);

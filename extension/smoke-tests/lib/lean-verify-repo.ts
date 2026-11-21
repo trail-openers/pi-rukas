@@ -12,7 +12,7 @@
  * hook-provisioned tree on top, which is the only reason the repo build is not all synchronous.
  */
 
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
@@ -22,6 +22,9 @@ import { RED_BASE_TEST, SRC, TEST, commitFrozenFiles } from "./lean-verify-bytes
 import { FROZEN_FILE } from "./lean-verify-frozen.ts";
 import { ROOTS, fixtureGitEnv, git, sha } from "./lean-verify-git.ts";
 import { type Fixture, provisionHookedTree } from "./lean-verify-hook-tree.ts";
+
+/** The dependency directories a case may give the project; each must read as gitignored to git. */
+const SHAREABLE_DEP_DIRS = ["node_modules", ".venv", "vendor"] as const;
 
 export { git, sha };
 
@@ -88,6 +91,12 @@ export async function fixture(
   rosterFiles?: Record<string, string[]>,
   /** Make the BASE commit's copy of each pre-existing test exit non-zero (bench cell 2). */
   baseProjectTestFails?: boolean,
+  /**
+   * Commit a real non-empty gitignored `node_modules/` at the base, so the roster's throwaway base
+   * checkout has a dependency tree the provisioner could have linked — and a case can then ask what
+   * happens when it does not.
+   */
+  baseHasDeps?: boolean,
 ): Promise<Fixture> {
   const built = fixtureSync(
     issue,
@@ -97,6 +106,7 @@ export async function fixture(
     extraFrozen,
     rosterFiles,
     baseProjectTestFails,
+    baseHasDeps,
   );
   if (hook !== undefined) await provisionHookedTree(built, hook, fixtureGitEnv());
   return built;
@@ -114,6 +124,7 @@ export function fixtureSync(
   extraFrozen: Record<string, string> = {},
   rosterFiles?: Record<string, string[]>,
   baseProjectTestFails?: boolean,
+  baseHasDeps?: boolean,
 ): Fixture {
   const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-verify-"));
   ROOTS.push(repoRoot);
@@ -169,6 +180,22 @@ export function fixtureSync(
     // A project keeps its runner's report out of the index, and the step's own re-check demands a
     // clean tree afterwards, so the fixture earns the same courtesy it would give a real suite.
     writeFileSync(dir(".gitignore"), `${ROSTER_REPORT_FILE}\n`);
+    // The dependency dirs a case gives this project are gitignored from the FIRST commit: a candidate
+    // git does not report as ignored is one `linkShareableDeps` will never link, and a gate cannot
+    // judge whether a link landed for a link that was never on the table.
+    if (baseHasDeps === true)
+      writeFileSync(dir(".gitignore"), `${ROSTER_REPORT_FILE}\n${SHAREABLE_DEP_DIRS.join("\n")}\n`);
+    // A project's dependency tree lives where the provisioner looks for it: at the root, gitignored,
+    // and non-empty. Both halves are needed to ask "what if the base checkout never received it": the
+    // `.gitignore` entry that makes the candidate linkable at all (an unignored candidate is one the
+    // provisioner was never going to link, and a link that was never on the table is not this gate's
+    // problem to catch), and a real non-empty tree beside it. Both are COMMITTED at the base, so the
+    // throwaway checkout has them and `expectedDepLocations` expects them there — a case asking what
+    // happens when they do not arrive removes them from the checkout, since git restores tracked bytes.
+    if (baseHasDeps === true) {
+      mkdirSync(dir("node_modules/dep"), { recursive: true });
+      writeFileSync(dir("node_modules/dep/index.js"), "export const dep = 1;\n");
+    }
     for (const rel of Object.keys(rosterFiles)) {
       const target = dir(rel);
       mkdirSync(path.dirname(target), { recursive: true });

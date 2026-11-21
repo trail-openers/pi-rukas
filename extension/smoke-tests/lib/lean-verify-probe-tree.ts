@@ -39,6 +39,27 @@ export function canonicalProbeDir(repoRoot: string, issue: number): string {
 }
 
 /**
+ * The ROSTER's throwaway checkout of the base commit, canonicalised the same way.
+ *
+ * `verify-roster.ts` builds its own sibling tree rather than reusing the baseline probe's, and the
+ * stub has to recognise the `worktree add` that creates it. The same `/var` → `/private/var` rule
+ * that makes `canonicalProbeDir` necessary makes this one necessary: a path built from the raw
+ * tmpdir is never the path the step actually checks out to, and a stub that cannot name the tree
+ * cannot bare it of the dependencies a case says it never received.
+ */
+export function canonicalRosterProbeDir(repoRoot: string, issue: number): string {
+  const trimmed = repoRoot.replace(/[/]+$/, "");
+  const cut = trimmed.lastIndexOf("/");
+  const probePath = `${trimmed.slice(0, cut)}/${trimmed.slice(cut + 1)}.roster-lean-verify-${String(issue)}`;
+  const probeParent = path.dirname(probePath);
+  try {
+    return path.join(realpathSync(probeParent), probePath.slice(probeParent.length + 1));
+  } catch {
+    return probePath;
+  }
+}
+
+/**
  * The ONE fact that makes an exec call "the probe": it names the probe's own tree, and
  * that tree is REGISTERED with git.
  *
