@@ -22,8 +22,8 @@
  *    a full set, remove one manifest-referenced module, rerun: the build must
  *    exit non-zero naming the missing module, with every previously published
  *    prompt byte-identical and no `.tmp-*` straggler left behind — in the
- *    output dir **or** in the copied `agents-base/`, where the capabilities
- *    writer puts its own temp. The abort lands mid-loop: a module only a
+ *    output dir **or** in the copied `agents-base/`, which build.sh only ever
+ *    reads from. The abort lands mid-loop: a module only a
  *    later-built agent references is removed, so the earlier prompts publish
  *    and the loop dies partway. That is the path that used to leak, because the
  *    capabilities function ran inside a command substitution where its
@@ -31,9 +31,10 @@
  *    replaced the run-wide one.
  * 3. **An abort inside the capabilities writer leaves nothing.** Arms 1 and 2
  *    break the parent's module loop; this one breaks the writer itself, by
- *    deleting an agent from the copied `agents.json` so the run dies before the
- *    last prompt is reached. Nothing may be left in the output dir or in the
- *    copied `agents-base/`, and the prompts already published stay byte-identical.
+ *    deleting an agent from the copied `agents.json` so the run dies on the last
+ *    specialist, after the others published. Nothing may be left in the output
+ *    dir or in the copied `agents-base/`, and the prompts already published stay
+ *    byte-identical.
  */
 
 import { spawn } from "node:child_process";
@@ -179,11 +180,11 @@ try {
     assert(before.size === AGENTS.length, `arm 2: ${AGENTS.length} prompts published`);
 
     // Break the build the way a missing module does, and break it MID-LOOP:
-    // the capabilities matrix is referenced by the last-built manifest only, so
-    // the earlier agents publish and the loop dies partway through. That is
+    // the module the loop dies on is referenced by the last-built manifest only,
+    // so the earlier agents publish and the loop dies partway through. That is
     // where the run's EXIT trap has to reach: some prompts are already
-    // published, some have a half-assembled temp beside them, and the
-    // capabilities writer has a temp of its own in the copied agents-base/.
+    // published and some have a half-assembled temp beside them, while the
+    // capabilities writer has its $$-scoped temp in the shared temp root.
     const removed = path.join(base, "modules", "core", "async-tasks.md");
     assert(
       existsSync(removed) && statSync(removed).isFile(),
@@ -206,7 +207,7 @@ try {
       stragglers.length === 0,
       `arm 2: no .tmp-* left behind in the output dir by the aborted build${stragglers.length ? ` (${stragglers.join(", ")})` : ""}`,
     );
-    // The capabilities writer's own temp lives beside the copied base files.
+    // build.sh writes nothing under agents-base/; a temp there is a regression.
     const agentsBase = path.join(base, "agents-base");
     const baseStragglers = readdirSync(agentsBase).filter((f) => f.includes(".tmp"));
     assert(
@@ -284,7 +285,7 @@ try {
     );
     assert(
       baseStragglers.length === 0,
-      `arm 3: the capabilities temp was reclaimed from agents-base/ by the aborted build${baseStragglers.length ? ` (${baseStragglers.join(", ")})` : ""}`,
+      `arm 3: agents-base/ holds no *.tmp* after the capabilities abort${baseStragglers.length ? ` (${baseStragglers.join(", ")})` : ""}`,
     );
     const after = readdirSync(publishedDir);
     assert(
