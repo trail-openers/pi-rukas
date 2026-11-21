@@ -45,24 +45,23 @@ else
   fi
   VERIFY_TEST_JOBS=2
 fi
-# Ceiling on concurrent jobs. More than this buys nothing — every job is a full
-# `bun` process plus whatever the test itself spawns, so past 16 the pool is
-# competing with itself for CPU and the suite gets slower, not faster. host_job_count
-# applies the same ceiling before pool_collect's clamps run.
+# Ceiling on concurrent jobs. More than this buys nothing — every job is a full `bun`
+# process plus whatever the test itself spawns, so past 16 the pool competes with itself
+# for CPU and the suite gets slower, not faster.
 VERIFY_TEST_JOBS_MAX=16
 #
-# host_job_count — the pool width a host can actually use: max(2,
-# min(VERIFY_TEST_JOBS_MAX, cpus - 2)) — two CPUs stay for the interactive session and
-# the pool itself. A small host gains nothing from a wide pool and pays in contention.
+# host_job_count — the pool width a host can actually use:
+# max(2, min(VERIFY_TEST_JOBS_MAX, cpus - 2)) — two CPUs stay for the interactive session
+# and the pool itself; host_job_count applies that ceiling before pool_collect's clamps.
 #
-# `getconf _NPROCESSORS_ONLN` rather than `nproc`: nproc is GNU coreutils, and
-# `getconf` is POSIX, so the same call works on macOS and Linux CI images alike. On
-# a host without it the lookup fails and the answer is the narrow default — sizing UP
-# off an unknown host is the wrong direction to guess.
+# `getconf _NPROCESSORS_ONLN` rather than `nproc`: nproc is GNU coreutils, and `getconf`
+# is POSIX, so the same call works on macOS and Linux CI images alike. On a host without
+# it the lookup fails and the answer is the narrow default — sizing UP off an unknown
+# host is the wrong direction to guess.
 #
-# NOTE: the count is the raw online CPU count, NOT the cgroup CPU quota — a container
-# limited to 2 CPUs on an 8-core host still reports 8 here. The cgroup-aware authority
-# is `extension/src/host-resources.ts` (`hostBudget`), which lowers
+# NOTE: the raw online CPU count, NOT the cgroup CPU quota — a container limited to 2 CPUs
+# on an 8-core host still reports 8 here. The cgroup-aware authority is
+# `extension/src/host-resources.ts` (`hostBudget`), which lowers
 # `os.availableParallelism()` by the quota; this shell-side number is the coarse one.
 #
 # A function rather than an inline substitution at the call site, so the tests can put
@@ -72,38 +71,39 @@ host_job_count() {
   local cpus
   # No `|| cpus=""`: a getconf that exits non-zero prints its error to stderr
   # (discarded) and nothing to stdout, so `$cpus` is already the empty string the `''`
-  # arm below handles — and a non-zero exit that DID print a count is a count, which
-  # the same arms judge on its content either way.
+  # arm below handles — and a non-zero exit that DID print a count is a count.
   cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null)"
   # `case` rather than `[[ =~ ]]`, and the arithmetic stays inside it: an unquoted,
   # unvalidated `$cpus` in an arithmetic test is the shape that accepts junk, and a BSD
-  # getconf can print something that is not a bare count.
+  # getconf can print something that is not a bare count. `0[0-9]*` is the shape the digit
+  # run alone does not catch: bash reads a leading zero as OCTAL, so a getconf that printed
+  # `08` is string-valid but kills `$(( ))` before $width is set, leaving run_pool an empty
+  # ceiling. Guard and arithmetic must agree on what a decimal count is.
   local width
   case "$cpus" in
-    '' | *[!0-9]*)
-      # One stderr note, then the narrow default: silently sizing down is the wrong
-      # shape — an operator who asked for host sizing is entitled to know the host did
-      # not answer.
+    '' | *[!0-9]* | 0[0-9]*)
+      # One stderr note, then the narrow default: sizing down silently is the wrong
+      # shape — an operator who asked for host sizing is entitled to know the host did not
+      # answer, which is what every shape reaching this arm failed to do.
       echo "warn: verify-loop: could not read CPU count; pool at 2" >&2
       width=2
       ;;
     *)
-      # max(2, min(VERIFY_TEST_JOBS_MAX, cpus - 2)); the junk arm above has already
-      # rejected anything but a bare decimal run, so the arithmetic is safe.
+      # The junk arm above has already rejected every shape but a leading-zero-free
+      # decimal run, so this arm is max(2, min(VERIFY_TEST_JOBS_MAX, cpus - 2)).
       width=$((cpus - 2))
       if [ "$width" -gt "$VERIFY_TEST_JOBS_MAX" ]; then width="$VERIFY_TEST_JOBS_MAX"; fi
       [ "$width" -lt 2 ] && width=2
       ;;
   esac
-  # The chosen width is echoed to stdout — this function's answer, and nothing else
-  # reads it — and ALSO traced to stderr under a name the caller cannot produce by
-  # accident. Stderr is where the test observes it: stdout is captured by the command
-  # substitution in `apply_host_jobs` and never reaches the caller's terminal. The trace
-  # is what lets `test-verify-loop-jobs-from-host.ts` assert the width the host sizing
-  # produced rather than inferring it from the peak overlap, which is only ever a lower
-  # bound on the ceiling. The `verify-loop.sh:` segment names the script the pool
-  # belongs to, matching the `verify-loop:` prefix every other line here carries — the
-  # prefix is `verify-loop.sh` because that is the caller's name.
+  # The width is echoed to stdout — this function's answer, and nothing else reads
+  # it — and ALSO traced to stderr under a name the caller cannot produce by accident.
+  # Stderr is where the test observes it: stdout is captured by the command substitution
+  # in `apply_host_jobs` and never reaches the caller's terminal. The trace is what lets
+  # `test-verify-loop-jobs-from-host.ts` assert the width the host sizing produced rather
+  # than infer it from the peak overlap, which is only ever a lower bound on the ceiling.
+  # The `verify-loop.sh:` segment names the pool's own script, matching the `verify-loop:`
+  # prefix every other line here carries.
   echo "note: verify-loop.sh: host_job_count: $width (cpus='${cpus}')" >&2
   echo "$width"
 }

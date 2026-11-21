@@ -14,9 +14,10 @@
  * Cases:
  *   1. `--jobs-from-host` with the variable UNSET → the host decides:
  *      `max(2, min(16, cpus - 2))`. `getconf` is stubbed through PATH and swept
- *      over eight CPU counts (1, 2, 4, 6, 8, 16, 18, 64 → 2, 2, 2, 4, 6, 14,
- *      16, 16), so the case pins the FORMULA rather than the machine it happens
- *      to run on. The exact width each stub produces is read from the
+ *      over nine CPU counts (1, 2, 4, 6, 8, 16, 18, 64, and the leading-zero
+ *      `08` a shell-safe formatter can emit → 2, 2, 2, 4, 6, 14, 16, 16, 2), so
+ *      the case pins the FORMULA rather than the machine it happens to run on.
+ *      The exact width each stub produces is read from the
  *      `host_job_count: N (cpus='…')` stderr trace. A host where the lookup
  *      fails sizes DOWN to 2, never up.
  *   2. An explicit PI_ENSEMBLE_VERIFY_TEST_JOBS wins over the host — with the
@@ -216,6 +217,11 @@ const WIDTH_SWEEP: Array<[string, string]> = [
   ["16", "14"],
   ["18", "16"],
   ["64", "16"],
+  // A leading zero is digits to the `case` guard but OCTAL to bash arithmetic:
+  // `08` is not a valid octal literal, so if the guard does not claim it the
+  // subtraction aborts, $width is never assigned, and run_pool is handed an
+  // empty ceiling it can never satisfy. `09` and `08` are the same host shape.
+  ["08", "2"],
 ];
 
 // Every temp dir this file creates (getconf stubs and record dirs), removed in
@@ -236,7 +242,8 @@ try {
   {
     // The sweep: each stubbed CPU count must trace exactly max(2, min(16,
     // cpus - 2)) — 1, 2 and 4 all bottom out at the floor 2, 6 answers 4, 8
-    // answers 6, 16 answers 14, and 18 and 64 both hit the 16 ceiling. The
+    // answers 6, 16 answers 14, 18 and 64 both hit the 16 ceiling, and `08`
+    // joins the floor rather than dying in the arithmetic. The
     // width comes from the `host_job_count: N (cpus='…')` stderr trace, which
     // is the pool's admission ceiling; peak overlap stays at N_NARROW because
     // it is only ever a LOWER bound (three copies cannot show a 14-wide pool).
@@ -275,7 +282,7 @@ try {
     );
     assert(
       wide.overlap >= N_WIDE,
-      `case 1: --jobs-from-host on an 8+ CPU host runs 4 jobs at once (peak overlap ${wide.overlap})`,
+      `case 1: --jobs-from-host on a wide host admits all ${N_WIDE} copies at once (peak overlap ${wide.overlap})`,
     );
     assert(
       wide.width === "10",
@@ -292,7 +299,7 @@ try {
     );
     assert(
       narrow.overlap === WANT_NARROW,
-      `case 1: --jobs-from-host under 8 CPUs keeps the pool at 2 (peak overlap ${narrow.overlap}, want ${WANT_NARROW})`,
+      `case 1: --jobs-from-host below the floor keeps the pool at 2 (peak overlap ${narrow.overlap}, want ${WANT_NARROW})`,
     );
     assert(
       narrow.width === "2",
@@ -300,11 +307,15 @@ try {
     );
 
     // getconf missing/unparseable: sizes DOWN to 2, never up.
-    // The two shapes are one arm of the shell's `case` but two different hosts:
-    // a getconf that exits non-zero prints nothing, and a getconf that prints
-    // something that is not a bare count. Both must land on the floor.
-    for (const junk of [null, "eight"]) {
-      const label = junk === null ? "no-getconf" : "unparseable-CPU";
+    // The three shapes are one arm of the shell's `case` but three different
+    // hosts: a getconf that exits non-zero prints nothing, a getconf that
+    // prints something that is not a bare count, and a getconf that prints a
+    // leading-zero count the arithmetic would read as octal. All must reach the
+    // floor — and all must print the note, since an operator who asked for host
+    // sizing is entitled to know the host did not answer usefully.
+    for (const junk of [null, "eight", "08"]) {
+      const label =
+        junk === null ? "no-getconf" : junk === "08" ? "leading-zero-CPU" : "unparseable-CPU";
       const noconf = runSet(N_NARROW, freshRecordDir(), { flag: true, cpus: junk });
       assert(noconf.status === 0, `case 1: the ${label} run exits 0 (got ${noconf.status})`);
       assert(
@@ -371,7 +382,9 @@ try {
     // The ceiling, not just the achieved overlap: the host must never have been
     // consulted at all (no `host_job_count` trace, no clamp naming a host number)
     // and the pool must have run at the shipped default. The three-copy set is
-    // one short of the host-derived 4, so the overlap alone would read the same
+    // one short of the host-derived width (10 on this 12-CPU stub), so the
+    // overlap alone would read the same whether the flag worked or the shipped
+    // default had, and only the absence of the host trace tells them apart.
     // for a pool sized 3 or 4.
     assert(
       plain.width === "default",

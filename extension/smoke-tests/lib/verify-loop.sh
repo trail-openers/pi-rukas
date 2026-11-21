@@ -303,7 +303,8 @@ if [ "$#" -gt 0 ] && [ "$1" = "--digest" ]; then
 fi
 # #1365 follow-up — --jobs-from-host: size the pool from the host CPU count when
 # the caller did not name a number. Opt-in, and CI does not pass it, so the
-# shipped default of 2 stays the CI shape; the host-derived 4 is what this repo's
+# shipped default of 2 stays the CI shape; the host-derived width
+# (max(2, min(16, cpus - 2)), see host_job_count) is what this repo's
 # own develop gate needs to stay inside PI_ENSEMBLE_VERIFY_TIMEOUT_MS. It lives
 # here rather than as an inline expansion in .pi/verify-cmd for a historical
 # reason: until #1764 phase 2 the review-accept guard (#1125) modelled shell
