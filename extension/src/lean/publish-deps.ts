@@ -34,11 +34,12 @@ type PublishExec = VerifyExec;
 /**
  * The forge in the shape the step uses: list, read, (re)draft, then create. Nothing else.
  *
- * `prDraft` is here because a REUSED PR carries the draft state a previous run left on it — `prCreate`'s
- * `draft` option applies only to a PR this step opens. `prView` exists because `gh pr list --json` carries
- * no `isDraft`, so the list reply alone cannot tell a reused PR's state.
+ * `issueView` reads the title a created PR carries. `prDraft` is here because a REUSED PR carries the draft
+ * state a previous run left on it — `prCreate`'s `draft` option applies only to a PR this step opens.
+ * `prView` exists because `gh pr list --json` carries no `isDraft`, so the list reply alone cannot tell a
+ * reused PR's state.
  */
-export type PublishForge = Pick<Forge, "prList" | "prView" | "prDraft" | "prCreate">;
+export type PublishForge = Pick<Forge, "issueView" | "prList" | "prView" | "prDraft" | "prCreate">;
 
 /** What the step reaches outside itself. */
 export interface PublishDeps {

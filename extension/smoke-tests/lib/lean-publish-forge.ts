@@ -10,7 +10,7 @@
  * a well-typed stub would not: a PR row whose `state` is not one of the union
  * members, and a `prDraft` that returned without changing anything.
  */
-import type { NormalizedPullRequest } from "../../src/forge-types.ts";
+import type { NormalizedIssue, NormalizedPullRequest } from "../../src/forge-types.ts";
 
 /** A PR in the shape the forge adapter returns, with just the fields publish reads. */
 export function fakePr(
@@ -98,6 +98,9 @@ export interface FakeForge {
    */
   created: NormalizedPullRequest[];
   listThrows: boolean;
+  /** The title `issueView` answers with — what a created PR is titled from. */
+  issueTitle: string;
+  issueView: (number: number) => Promise<NormalizedIssue>;
   prList: (opts?: { state?: string; sourceBranch?: string }) => Promise<NormalizedPullRequest[]>;
   prView: (number: number) => Promise<NormalizedPullRequest>;
   prDraft: (number: number) => Promise<void>;
@@ -111,7 +114,7 @@ export interface FakeForge {
 
 /** The fake forge: it records, and it answers whatever the case loaded into it. */
 export function fakeForge(
-  over: Partial<Omit<FakeForge, "prList" | "prView" | "prDraft" | "prCreate">> = {},
+  over: Partial<Omit<FakeForge, "issueView" | "prList" | "prView" | "prDraft" | "prCreate">> = {},
 ): FakeForge {
   const f: FakeForge = {
     prListCalls: 0,
@@ -126,8 +129,20 @@ export function fakeForge(
     created: [],
     listThrows: false,
     afterCreate: undefined,
+    issueTitle: "the issue title",
     // Placeholders, assigned just below: the methods close over `f` itself, so
     // they cannot appear in the object literal that creates `f`.
+    issueView: async (n) => ({
+      number: n,
+      title: f.issueTitle,
+      body: "",
+      state: "OPEN",
+      url: `https://forge.example/issues/${n}`,
+      author: undefined,
+      labels: [],
+      createdAt: undefined,
+      updatedAt: undefined,
+    }),
     prList: async () => [],
     prView: async (n) => fakePr(n, "https://forge.example/none", "none"),
     prDraft: async () => {},

@@ -87,6 +87,8 @@ export interface PublishOpts extends PublishSeams, PublishRemoteSeeds {
   commitAfterVerify?: boolean;
   /** Counters the run carries (a `draft` flag from the gate). */
   draft?: boolean;
+  /** The issue title the fake forge reports. */
+  issueTitle?: string;
 
   /** The fake forge's open PRs; `undefined` means "load none". */
   openPrs?: NormalizedPullRequest[];
@@ -326,6 +328,7 @@ export async function runPublish(o: PublishOpts): Promise<PublishRun> {
   );
   const forge = fakeForge({
     prs: seededRows,
+    ...(o.issueTitle === undefined ? {} : { issueTitle: o.issueTitle }),
     listThrows: o.listThrows === true,
     viewThrows: o.viewThrows === true,
     ...(o.viewIsDraft === undefined

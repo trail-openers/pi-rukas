@@ -87,6 +87,17 @@ export function republishRecorder(): RepublishRecorder {
       const rows = prs.map((pr) => ({ ...pr }));
       const created: NormalizedPullRequest[] = [];
       const f: PublishForge = {
+        issueView: async (n) => ({
+          number: n,
+          title: "t",
+          body: "",
+          state: "OPEN",
+          url: `https://forge.example/issues/${n}`,
+          author: undefined,
+          labels: [],
+          createdAt: undefined,
+          updatedAt: undefined,
+        }),
         prList: async (opts) => {
           forgeCalls.push({
             call: "prList",

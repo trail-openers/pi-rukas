@@ -51,7 +51,6 @@ import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import { PR_URL, PR_URL_MAX_CHARS } from "./state-outcome.ts";
 import { type Outcome, newestDecided } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
-import { oneLine } from "./text-fence.ts";
 
 /** Run git in `wt`, rejecting a read that cannot answer as infrastructure. */
 async function gitIn(
@@ -187,20 +186,28 @@ async function pushHead(
   );
 }
 
-/** Reuse an open PR on the branch, or create one. Never both. */
+/**
+ * Reuse an open PR on the branch, or create one. Never both.
+ *
+ * A created PR is titled with the issue's WHOLE title, never cut, as the classic driver's PR and the lean
+ * squash subject are: a cut title is a sentence that stops. It is an argv value, not markdown, so nothing in
+ * it is escaped; only whitespace runs fold, because a title is one line.
+ */
 async function openPr(
   f: PublishForge,
   branch: string,
   issue: number,
-  problem: string,
   body: () => Promise<string>,
   draft: boolean,
 ): Promise<NormalizedPullRequest> {
   const open = await listOpenPrs(f, branch);
   const found = open.find((pr) => pr.headRefName === branch);
   if (found === undefined) {
+    const title = (await f.issueView(issue)).title.replace(/\s+/g, " ").trim();
+    if (title === "")
+      throw new PublishInfraError(`issue #${issue} has no title to open the PR with`);
     const created = await f.prCreate(
-      `work-lean #${issue}: ${oneLineTitle(problem)}`,
+      `work-lean #${issue}: ${title}`,
       branch,
       // Built only here: a reused PR keeps its creation body, so nothing is paid for it.
       await body(),
@@ -209,11 +216,6 @@ async function openPr(
     return { ...created, isDraft: await createdDraftState(f, created) };
   }
   return reusedDraftState(f, found, draft);
-}
-
-/** A PR title is one line, and the issue's problem statement is not. */
-function oneLineTitle(problem: string): string {
-  return oneLine(problem, 72);
 }
 
 /**
@@ -314,7 +316,6 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
     f,
     branch,
     issue,
-    spec.problem,
     async () => {
       // The host's block: each requirement judged at this head by one read-only child.
       const block = approved?.block === 1 ? await deps.specBlock(approved, wt, head) : undefined;
