@@ -23,14 +23,9 @@
 # works, not because a guard requires it.
 # See docs/configuration.md (`PI_ENSEMBLE_VERIFY_TEST_JOBS`).
 #
-# The loop call arms the #2449 per-file wall-clock ceiling at 30 s: comfortably
-# above every file the suite's own timing summary calls normal, low enough that a
-# file which quietly grew past half a minute is named as a failure rather than
-# absorbed into the pool. The `:-` keeps the operator in charge — an exported
-# value wins, and `0` turns the ratchet off on a loaded host (per-file times swing
-# with pool neighbours and host load). The only exemptions live in
-# extension/timing-allowlist.json, which the ceiling reads and which is shrink-only.
-# See docs/configuration.md (`PI_ENSEMBLE_VERIFY_TIMING_CEILING_S`).
+# The loop call arms the #2449 per-file ceiling at 30 s — above the 20 s seed of
+# extension/timing-allowlist.json; the `:-` lets an export win and `0` turns it off
+# on a loaded host. A selected develop run builds its own command, so it is unceiled.
 #
 # The typecheck names the compiler by PATH, not by alias (#1414/#1118). The
 # `bun x` form is an npx-style lookup, and on the host this was filed from it
