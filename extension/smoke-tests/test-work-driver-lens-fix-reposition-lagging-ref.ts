@@ -116,7 +116,7 @@ async function mkRepo(tag: string, issue: number, title: string) {
 
     // Round 1: the gate puts the fixer on the tip; it commits a fix; the
     // driver lands it and pushes it.
-    const rep1 = await repositionLensFixWorktree(realExec, wt, branch, [1882], "1882 lagging ref");
+    const rep1 = await repositionLensFixWorktree(realExec, wt, branch, [1882]);
     assert(
       rep1.kind === "already-at-tip" || rep1.kind === "repositioned",
       `1882: round 1 dispatches (${rep1.kind})`,
@@ -169,7 +169,7 @@ async function mkRepo(tag: string, issue: number, title: string) {
     // The round-2 gate. Before #1882 this resolved the tip from the lagging
     // local ref, counted the round-1 commit as work the branch does not
     // have, and parked `lens-fix-reposition` — the fixer never dispatched.
-    const rep2 = await repositionLensFixWorktree(realExec, wt, branch, [1882], "1882 lagging ref");
+    const rep2 = await repositionLensFixWorktree(realExec, wt, branch, [1882]);
     assert(
       rep2.kind === "repositioned",
       `1882: a lagging local ref does NOT park the round-2 gate (got ${rep2.kind}${
@@ -230,7 +230,6 @@ async function mkRepo(tag: string, issue: number, title: string) {
       wt,
       branch,
       [1882],
-      "1882 lagging ref",
     );
     assert(
       repHook.kind === "repositioned",
@@ -329,7 +328,7 @@ async function mkRepo(tag: string, issue: number, title: string) {
     await git(wt, ["add", "."]);
     await git(wt, ["commit", "-q", "-m", "fixer work neither ref holds"]);
 
-    const rep = await repositionLensFixWorktree(realExec, wt, branch, [1883], "1883 genuine");
+    const rep = await repositionLensFixWorktree(realExec, wt, branch, [1883]);
     assert(
       rep.kind === "diverged" || rep.kind === "unlanded",
       `1882: a tree holding a commit NEITHER ref has still parks (got ${rep.kind})`,
@@ -364,7 +363,7 @@ async function mkRepo(tag: string, issue: number, title: string) {
     const remoteTip = (await git(other, ["rev-parse", "HEAD"])).stdout.trim();
     await git(repo, ["update-ref", `refs/heads/${branch}`, setup.baseSha]);
 
-    const rep = await repositionLensFixWorktree(realExec, wt, branch, [1884], "1884 fetch");
+    const rep = await repositionLensFixWorktree(realExec, wt, branch, [1884]);
     assert(
       rep.kind === "repositioned",
       `1882: the gate's fetch resolves the lagging ref pair (got ${rep.kind}${

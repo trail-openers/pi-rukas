@@ -133,7 +133,6 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
       wt5,
       s5.branchName,
       [981],
-      "981 round-2",
     );
     assert(
       rep.kind === "repositioned",
@@ -325,7 +324,6 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
       wtI,
       sI.branchName,
       [981],
-      "981 unlanded",
     );
     assert(
       repI.kind === "unlanded" || repI.kind === "diverged",
@@ -390,7 +388,6 @@ const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
       wtJ,
       sJ.branchName,
       [981],
-      "981 local-tip",
     );
     // The fast-forward arm runs `merge --ff-only` and returns without a
     // backup ref; the cherry arm cannot reach this state (an ancestor tree

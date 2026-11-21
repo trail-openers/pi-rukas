@@ -128,14 +128,14 @@ function assertParkedByGate(
 }
 
 /**
- * The commands a MERGED cycle runs after the merge itself: `restoreCheckout` and the
- * branch clean-up. The fixture scripts the gate reads, not the teardown, so these
+ * The commands a MERGED cycle runs after the merge itself: `restoreCheckout`, the
+ * branch clean-up, and the listing of the cycle's backup refs. The fixture scripts the gate reads, not the teardown, so these
  * are the only entries `log.unexpected` may legitimately hold — and only on the
  * path that actually merged. Derived from the argv the restoration sends, so a new
  * unanswered gate read still lands outside it and fails the case.
  */
 const POST_MERGE_TEARDOWN =
-	/^git (checkout \S+ --|status --porcelain -z -uall|pull --ff-only \S+ \S+|check-ref-format --branch \S+|branch -d -- \S+)$/;
+	/^git (checkout \S+ --|status --porcelain -z -uall|pull --ff-only \S+ \S+|check-ref-format --branch \S+|branch -d -- \S+|for-each-ref --format=%\(refname\) refs\/pi-rukas\/)$/;
 
 /** The park for a declared path the PR touched. */
 function assertParkedBy(

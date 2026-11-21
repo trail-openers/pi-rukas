@@ -209,7 +209,7 @@ import {
     headAfterMove === moveHead,
     `the conversion moved the lens worktree onto the fixer's commit (started ${moveTip.slice(0, 8)}, fix ${moveHead.slice(0, 8)}, now ${headAfterMove.slice(0, 8)})`,
   );
-  const rep = await repositionLensFixWorktree(realExec, mv.wt, moveBranch, [1806], "bound landed");
+  const rep = await repositionLensFixWorktree(realExec, mv.wt, moveBranch, [1806]);
   assert(
     rep.kind === "already-at-tip",
     `the next reposition sees the tree already at the tip — the conversion moved it (got ${rep.kind})`,

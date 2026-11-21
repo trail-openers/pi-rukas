@@ -42,8 +42,10 @@ const KNOWN_GIT_SUBCOMMANDS = new Set([
   "rev-list --count",
   "pull",
   "branch",
-  // The merged step's teardown (`worktreeRemove` / `worktreePrune`).
+  // The merged step's teardown (`worktreeRemove` / `worktreePrune`), and its
+  // listing of the cycle's `refs/pi-rukas/*` backups (`deleteIssueRefs`).
   "worktree",
+  "for-each-ref",
 ]);
 
 /** The first two argv words, joined — the form two-word whitelist entries use. */
