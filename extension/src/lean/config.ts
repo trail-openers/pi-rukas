@@ -49,6 +49,16 @@ export interface WorkConfig {
      * Unset: nothing runs. Mechanism: `lean/freeze-check.ts`.
      */
     freezeCheck?: string;
+    /**
+     * The runner's machine-readable per-test report command, which the project roster
+     * (`lean/verify-roster.ts`) runs at head and at the run's base commit to record WHICH tests
+     * ran and which failed. Like `test` it is executed as an executable plus argv, never through
+     * a shell, so it carries the same metacharacter ban. `{dir}` names the tree the roster runs
+     * in and `{report}` the file the gate reads back. Unset is not "no roster" — the gate derives
+     * `--junitxml={report} {dir}` onto the `test` command; with neither field set the roster
+     * cannot be built and the run hands back.
+     */
+    roster?: string;
   };
   budgets: Partial<Record<string, Budget>>;
   lean?: {
@@ -79,6 +89,36 @@ export class LeanConfigError extends Error {
  * explains it and the renderer that substitutes it all read this constant.
  */
 export const TEST_RUNNER_PLACEHOLDER = "{file}";
+
+/** The placeholder a `verify.roster` command names the tree with. See `validateRosterCommand` below. */
+const ROSTER_DIR_PLACEHOLDER = "{dir}";
+
+/** The placeholder a `verify.roster` command names its report file with. */
+const ROSTER_REPORT_PLACEHOLDER = "{report}";
+
+/**
+ * Why this `verify.roster` report command is not usable, or undefined when it is.
+ *
+ * The roster command reaches the executor in argv form, exactly as `verify.test` does, so the
+ * same metacharacter ban applies — a template carrying one is one its author meant for a shell,
+ * and the roster never hands a command to a shell. What differs is the placeholder rule: the
+ * roster runs the whole suite rather than one file, so it carries no `{file}` and its own
+ * placeholders are `{dir}` (the tree) and `{report}` (the file the gate reads back). Each, if
+ * present, must be a WHOLE whitespace-separated word, because it is substituted per word.
+ */
+function validateRosterCommand(cmd: string): string | undefined {
+  if (TEST_RUNNER_FORBIDDEN.test(cmd))
+    return ".pi/work.json verify.roster is run without a shell: ; & | ` $ < > \" ' \\ and newline are not allowed";
+  for (const placeholder of [ROSTER_DIR_PLACEHOLDER, ROSTER_REPORT_PLACEHOLDER] as const) {
+    const count = cmd.split(placeholder).length - 1;
+    if (count > 1)
+      return `.pi/work.json verify.roster must contain the literal ${placeholder} at most once, found ${count}`;
+    if (count === 1 && !cmd.split(/\s+/).includes(placeholder))
+      return `.pi/work.json verify.roster must use ${placeholder} as a whole word, not glued to other characters`;
+  }
+  if (cmd.trim() === "") return ".pi/work.json verify.roster must not be empty";
+  return undefined;
+}
 
 /**
  * The one spelling of the config's path, for a gate that wants to read the same bytes the loader does.
@@ -258,7 +298,15 @@ function validate(obj: unknown): string | undefined {
     if (typeof o.verify !== "object" || o.verify === null || Array.isArray(o.verify))
       return ".pi/work.json verify must be an object";
     const v = o.verify as Record<string, unknown>;
-    for (const key of ["fast", "full", "test", "testDir", "testGlob", "freezeCheck"] as const) {
+    for (const key of [
+      "fast",
+      "full",
+      "test",
+      "testDir",
+      "testGlob",
+      "freezeCheck",
+      "roster",
+    ] as const) {
       if (v[key] !== undefined && typeof v[key] !== "string")
         return `.pi/work.json verify.${key} must be a string`;
     }
@@ -280,6 +328,13 @@ function validate(obj: unknown): string | undefined {
     // file it is running.
     if (typeof v.test === "string") {
       const reason = validateTestRunner(v.test);
+      if (reason !== undefined) return reason;
+    }
+    // The roster report command is executed in argv form too, so it earns the metacharacter ban
+    // — but NOT the `{file}` rule: it runs the whole suite, not one file, and its own
+    // placeholders are `{dir}` and `{report}`.
+    if (typeof v.roster === "string") {
+      const reason = validateRosterCommand(v.roster);
       if (reason !== undefined) return reason;
     }
   }

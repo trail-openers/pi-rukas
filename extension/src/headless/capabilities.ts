@@ -105,8 +105,7 @@ export const HEADLESS_FEATURES = {
    * `status`, `cap`, `failure`, `branch`, `prUrl`, `usage` (with `byRole`) and
    * the lean-only typed `prState` (`ready` | `draft` | `none`) and
    * `reviewComplete`, so a host needs no second reader to compare the two
-   * engines. While `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP` is on (its shipped default),
-   * `awaiting-human-merge` means `ready` WITH EVERY REVIEW LENS JUDGED ON THE HEAD THE PR NOW
+   * engines. `awaiting-human-merge` means `ready` WITH EVERY REVIEW LENS JUDGED ON THE HEAD THE PR NOW
    * STANDS ON: a `ready` PR whose newest `review` step recorded a stop (any lane list), ended
    * on a throw that recorded no verdict at all, does not cover the head the PR now stands
    * on (`machine.ts` re-runs `publish` after the review on TWO routes: a `fixed` review's own

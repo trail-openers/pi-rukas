@@ -17,7 +17,6 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import type { NormalizedPullRequest } from "../forge-types.ts";
 import type { PublishDeps, PublishForge } from "./publish-deps.ts";
 import { PublishInfraError } from "./publish-deps.ts";
-import { leanRepublishOwnPrEnabled } from "./republish-own-pr-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { type Step, newestDecided } from "./state.ts";
 
@@ -82,13 +81,9 @@ export async function pushLeaseTarget(
   const unsettled = (await listOpenPrs(f, branch)).filter((pr) => !isSettled(pr.state));
   // The forge is asked on the exempt arm too — the row's identity is READ, never
   // inferred from the record, and this is the same list `openPr` reuses below.
-  if (
-    leanRepublishOwnPrEnabled() &&
-    (await ownOpenPrExemption(deps, wt, branch, head, remote, own, unsettled))
-  )
-    return remote;
-  // The refusal is byte-identical on every arm: with the switch off, with no record
-  // to compare against, or with a row that is not this run's own.
+  if (await ownOpenPrExemption(deps, wt, branch, head, remote, own, unsettled)) return remote;
+  // The refusal is byte-identical on every arm: with no record to compare against, or
+  // with a row that is not this run's own.
   const blocking = unsettled[0];
   if (blocking !== undefined)
     throw new PublishInfraError(

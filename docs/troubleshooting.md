@@ -4493,10 +4493,70 @@ head is asked of git as a commit object this clone holds before any arm may call
 head verified, so a state file naming bytes nobody has moves nothing and reads as unverified.
 Where origin already holds the certified head, the step pushed nothing and
 says so, without calling the shipped head unverified. Read `shippedVerified: false` as the reason to
-look before merging. The rule is behind `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (default on;
-`0` restores the pre-rule step that reports and moves nothing), and the unforced refspec
-and atomic push that make the lease bind are together behind `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS`
-(default on; `0` puts the leading `+` back and drops `--atomic`, byte for byte). It keys on the step log, so
+look before merging. The rule is always on, and so is the unforced refspec
+and atomic push that make the lease bind: a rewind is a non-fast-forward move by
+definition, and `git push` does not consult a lease for a forced refspec. It keys on the step log, so
 it covers every handback whose newest work step is a `fixed` review, whatever stopped the
 run. Source: `lean/handback-heads.ts`, `lean/handback-rewind.ts`, `docs/lean.md` → "The
 verified handback".
+
+### Symptom: a lean `verify` handed back with "no project test roster"
+
+**Symptom:** a `work-lean` run ends `handed-back` (exit 10) and the `verify` step's reason
+begins `no project test roster:`. The frozen acceptance tests passed, the configured tiers
+passed, and the run still decided nothing. The clause after the colon names which half is
+missing, and it is one of:
+
+- **`the project configured no verify.testDir + verify.testGlob pair`** — the gate has no way
+  to list which files are the project's pre-existing tests, so it has nothing to run.
+- **`the base commit carries no test file matching <dir>/<glob>`** — the pair is configured, but
+  nothing at the run's base commit matches it. Either the pattern does not name the project's
+  test files, or the project keeps them under a different name.
+- **`at head: …`** / **`at the base commit: …`** — the suite ran and wrote nothing the gate can
+  read: no report at the path `{report}` names, a report that names no `<testcase>`, or a run with
+  no exit status at all (a kill, a timeout, a buffer overflow).
+- **`the base versions of …`** — a pre-existing test file the run edited could not be read at the
+  base commit, so its base version cannot be run against the head code.
+
+**Cause:** the step now judges the project's OWN test suite and refuses to certify a run whose
+result it never observed. It runs the pre-existing suite at HEAD and at the run's base commit and
+reads the runner's machine-readable report for the per-test names; the report is the only source of
+those names, because a bounded output tail shows a summary and elides every per-failure marker — a
+roster built from one would report zero tests and read as a pass. An absent roster, an empty roster
+and a roster that ran nothing are each a reason to stop rather than a green.
+
+**Fix:** tell the gate how to run the suite and where its report goes, in `.pi/work.json` at the
+run's base commit.
+
+```json
+{ "verify": { "testDir": "tests", "testGlob": "test-*.py", "roster": "pytest -q --junitxml={report} {dir}" } }
+```
+
+`verify.roster` is optional: without it the gate derives `<verify.test> --junitxml={report} {dir}`
+from the project's per-file runner template, which works when that template is a suite runner and
+fails when it is not (a template that names one file cannot also take `{dir}`). `{report}` is the
+absolute path the runner must write its JUnit XML to and `{dir}` the tree it runs in; both must
+appear as whole words, and the command is argv form, never a shell — a `;`, `|`, `$`, backtick or
+quote in it is refused at load. Keep the report out of the index (`.gitignore` the path, as a
+project already does for its `test.xml`): the step demands a clean tree afterwards and will
+otherwise report its own scratch bytes as a tier leaving the worktree dirty.
+
+For a project that genuinely has no runnable pre-existing suite, the lever is
+`PI_ENSEMBLE_LEAN_PROJECT_ROSTER=0`: no project test runs, no roster is required, and the land gate
+asks only the verdict kinds it asked before this gate existed. It is the whole arm in one knob —
+there is no way to keep the roster's red and drop its hand-back, which is deliberate: a gate whose
+refusal is optional is a gate that reports green on the tests it skipped.
+
+**Related symptom — the merge refuses with "the newest green verify carries no project-test
+roster".** Same cause, one step later: `landEarned` reads the newest decided green `verify`'s
+RECORD rather than trusting its kind, so a hand-built or resumed step log that carries `verify:
+green` with no `projectRoster` does not reach `landed`. The refusal names the roster and not
+"verify not green", because the second sends an operator to a gate that reported green. Re-run
+`verify` with the roster configured, or set the lever above if the project has no suite. The land
+gate also refuses a roster that ran nothing (`total` below one) and one that names an edited
+pre-existing file whose base version failed against the head code.
+
+Source: `extension/src/lean/verify-roster.ts` (enumeration, both runs, the report parser, the
+base-version runs), `extension/src/lean/verify.ts` (the hand-backs), `extension/src/lean/engine-facts.ts`
+(the land gate), `extension/src/lean/project-roster-switch.ts` (the lever); pinned by
+`extension/smoke-tests/test-AC1-project-roster-handback.ts` and friends.

@@ -15,18 +15,25 @@ import { execp } from "../exec.ts";
 import { loadWorkConfig } from "./config.ts";
 import { fetchIssueBody } from "./io.ts";
 import type { Outcome, Step } from "./state.ts";
-import type { VerifyExec, VerifyTiers } from "./verify-types.ts";
+import type { VerifyExec, VerifyRosterConfig, VerifyTiers } from "./verify-types.ts";
 
 /**
  * What `verify` reaches outside itself.
  *
  * `loadConfig` reads `.pi/work.json` at the run's base sha, never the working tree: doctrine a
  * cycle is judged by is read at the commit it started from, so a run cannot rewrite the rules it
- * is measured against mid-cycle.
+ * is measured against mid-cycle. Its return is widened beyond `verify`'s own tiers to the fields
+ * the PROJECT-TEST ROSTER reads (`roster`, `testDir`, `testGlob`): the roster's inventory is a
+ * fact about the base commit, and a roster that read the pair off the working tree would let the
+ * run choose the suite that judges it. A seam that returns only `verify` still satisfies the
+ * interface, so the cases written before the roster are unchanged.
  */
 export interface VerifyDeps {
   exec: VerifyExec;
-  loadConfig: (repoRoot: string, baseSha: string) => Promise<{ verify: VerifyTiers }>;
+  loadConfig: (
+    repoRoot: string,
+    baseSha: string,
+  ) => Promise<{ verify: VerifyTiers & Partial<VerifyRosterConfig> }>;
   /** The committed `.pi/verify-cmd` at HEAD; `undefined` when there is none. */
   readVerifyCmd?: (wt: string, head: string) => Promise<string | undefined>;
   /** Bounds every tier and frozen-test run; a test shortens it to observe a hang. */

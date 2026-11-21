@@ -11,7 +11,6 @@
  *
  * Being unforced makes the lease real: `git push` does not consult the lease for a refspec with a leading
  * `+`, and a rewind is a non-fast-forward move the lease alone authorises.
- * `PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS=0` puts BOTH the `+` and `--atomic` back byte for byte.
  *
  * The branch is state-file data, so it gets `assertPublishableBranch`. Origin is read BEFORE the push (the
  * lease binds to that read) and AGAIN after it; success is origin holding the verified head, whatever git
@@ -24,7 +23,6 @@ import { netGitEnv, netRefProblem, runNetGit } from "../work-driver-net-git.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { leanHandbackNetGitEnabled } from "./handback-net-git-switch.ts";
 import { PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
-import { leanRewindLeaseBinds } from "./rewind-lease-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch } from "./specify-tree.ts";
 import type { VerifyExec } from "./verify-types.ts";
@@ -68,9 +66,6 @@ export const NO_HEAD: Rewind = {
   shipped: false,
   reason: "no verified head was recorded, so nothing was moved",
 };
-
-/** A rewind that never ran because the operator switched the rule off. */
-export const SWITCHED_OFF: Rewind = { shipped: false };
 
 /**
  * The ref holding the head the rewind moved off, so it is not lost to a GC. Under `refs/lean/` rather than
@@ -249,22 +244,22 @@ export async function rewindToVerified(
   // One push, two refspecs: the branch moves back to the verified head and the head it moved off gains its
   // keeping-ref on origin — on BOTH sides of the wire, since a ref written in the clone alone dies with the
   // worktree. They must be ONE transaction: git applies each ref on its own by default, so `--atomic` is
-  // the only reading of "nothing of it is moved"; the off arm does not get it.
+  // the only reading of "nothing of it is moved".
   //
   // Deliberately no local `update-ref` first: a ref can only be written from an object this clone holds,
   // and on the refusal path origin's head may be one it has never seen.
   //
   // The lease carries its EXPECTED value (`<ref>:<held>`) — the bare form compares origin against this
   // clone's remote-tracking ref, which only a `fetch` refreshes. The branch refspec must NOT be forced:
-  // git skips the lease for a leading `+`.
-  const binds = leanRewindLeaseBinds();
+  // git skips the lease for a leading `+`, and a rewind is a non-fast-forward move by definition, so the
+  // lease names the one value this step read off origin that authorises it.
   const pushArgv = [
     ...NO_HOOKS,
     "push",
-    ...(binds ? ["--atomic"] : []),
+    "--atomic",
     `--force-with-lease=${ref}:${held}`,
     "origin",
-    `${binds ? "" : "+"}${verifiedHead}:${ref}`,
+    `${verifiedHead}:${ref}`,
     `${held}:${unverifiedRef(ctx.issue)}`,
   ];
   // A push git rejected comes back as the stderr it printed; one that ran as `undefined`.

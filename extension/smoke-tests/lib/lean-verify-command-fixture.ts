@@ -28,6 +28,8 @@ import { createRun } from "../../src/lean/state.ts";
 import type { VerifyExec } from "../../src/lean/verify-types.ts";
 import type { VerifyDeps } from "../../src/lean/verify-deps.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import { ROSTER_REPORT_FILE } from "../../src/lean/verify-roster-command.ts";
+import { rosterReportXml } from "./lean-verify-roster.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -57,6 +59,11 @@ export function git(dir: string, ...args: string[]): string {
 
 export interface CommandVerifyOpts {
   issue: number;
+  /**
+   * Take the config's `testDir` + `testGlob` pair away, so the roster cannot enumerate the project's
+   * tests and the step must hand back naming the roster rather than grading a green.
+   */
+  noTestLocation?: boolean;
   /** The issue body carrying the `pi-spec v1` block. */
   specBody: string;
   /** Commit the implementation so the frozen test is green. */
@@ -255,8 +262,18 @@ export async function runCommandVerify(o: CommandVerifyOpts): Promise<CommandVer
     rmSync(abs, { force: true });
     symlinkSync(target, abs);
   }
-  git(repoRoot, "add", "-A");
-  git(repoRoot, "commit", "-q", "-m", "base");
+  // One pre-existing project test at the base, plus the runner the roster command names and the
+  // ignore that keeps its report out of the index: the shape a project that HAS a suite has, and
+  // what lets the roster build so these cases keep judging the thing they ask about. A case that
+  // wants the rosterless hand-back takes the config pair away with `noTestLocation`.
+  if (o.noTestLocation !== true) {
+    mkdirSync(path.join(repoRoot, "tests"), { recursive: true });
+    writeFileSync(path.join(repoRoot, "tests/test-project.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    writeFileSync(path.join(repoRoot, ".lean-roster-runner.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    writeFileSync(path.join(repoRoot, ".gitignore"), `${ROSTER_REPORT_FILE}\n`);
+  }
+  git(repoRoot, "add", "-A", "-f");
+  git(repoRoot, "commit", "-q", "--allow-empty", "-m", "base");
   const baseSha = git(repoRoot, "rev-parse", "HEAD");
   const branch = `lean/issue-${o.issue}`;
   const wt = path.join(repoRoot, ".worktrees", `lean-${o.issue}`);
@@ -300,6 +317,15 @@ export async function runCommandVerify(o: CommandVerifyOpts): Promise<CommandVer
   };
 
   const exec: VerifyExec = (cmd, opts) => {
+    // The roster's suite run: the stub writes the report the gate reads back, naming one test that
+    // passes in both trees. These cases ask about the spec's `command` criteria, not about the
+    // project's verdicts, and a roster nobody ran would hand every one of them back.
+    if (cmd === "sh" && Array.isArray(opts?.argv) && opts.argv.some((a) => a.startsWith("--junitxml="))) {
+      const tree = String(opts.cwd ?? wt);
+      const xml = rosterReportXml({ passed: ["project_test_passes"], failed: [] });
+      if (xml !== undefined) writeFileSync(path.join(tree, ROSTER_REPORT_FILE), xml);
+      return Promise.resolve({ code: 0, stdout: "roster ok\n", stderr: "" });
+    }
     const over = o.execOver?.(cmd, opts);
     if (over !== undefined)
       return over.then(
@@ -313,6 +339,13 @@ export async function runCommandVerify(o: CommandVerifyOpts): Promise<CommandVer
       verify: {
         fast: o.fastTier ?? "true",
         test: o.testTemplate === undefined ? "sh {file}" : o.testTemplate,
+        ...(o.noTestLocation === true
+          ? {}
+          : {
+              testDir: "tests",
+              testGlob: "test-*.sh",
+              roster: "sh .lean-roster-runner.sh --junitxml={report} {dir}",
+            }),
       },
     }),
     readVerifyCmd: async () => undefined,

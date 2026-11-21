@@ -24,9 +24,33 @@ export interface VerifyTiers {
   test?: string;
   /** See `WorkConfig["verify"]["freezeCheck"]` — `lean/freeze-check.ts` runs it. */
   freezeCheck?: string;
+  /**
+   * The runner's machine-readable per-test report command, for the project roster
+   * (`lean/verify-roster.ts`). Executed in argv form like `verify.test`, so it carries no shell
+   * metacharacter. `{dir}` names the tree the roster runs in and `{report}` the file the gate
+   * reads back; with no `verify.roster` the roster derives `--junitxml={report} {dir}` onto the
+   * `verify.test` command. Absent is not "no roster": it is "derive one".
+   */
+  roster?: string;
+  /**
+   * The directory the project keeps its tests in, and the basename pattern they match — the pair
+   * that says WHICH files the roster considers pre-existing. Read at the run's base commit, so a
+   * run cannot choose its own judges by editing the pair.
+   */
+  testDir?: string;
+  testGlob?: string;
 }
 
 /** A tree, a tier or a runner this step cannot trust. The engine makes it exit 10. */
 export class VerifyInfraError extends Error {
   override readonly name = "VerifyInfraError";
 }
+
+/**
+ * What the project roster reads out of the config: the report command (or the `verify.test`
+ * template it is derived from) and the pair that names the pre-existing test files.
+ *
+ * A subset of `VerifyTiers` rather than the whole, because the roster's module must be able to
+ * say what it reads and a module that takes the config object reads all of it by accident.
+ */
+export type VerifyRosterConfig = Pick<VerifyTiers, "roster" | "test" | "testDir" | "testGlob">;

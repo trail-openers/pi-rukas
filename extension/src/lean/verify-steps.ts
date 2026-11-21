@@ -41,6 +41,8 @@ export const TIER_TAIL_LINES = 40;
  * is one the head's code made HANG. The `infra` shapes are where NOTHING RAN. The shell's 126 and 127 are
  * NOT a third shape: a real test can exit 127 after printing its failure, so routing on the number alone
  * hides genuine reds.
+ *
+ * and a green over it would be a green over an empty suite.
  */
 export type Executed =
   | { kind: "pass" }

@@ -89,3 +89,22 @@ export function bodyLine(body: string, prefix: string): string {
 export function showRewind(r: Rewind): string {
   return `${String(r.shipped)}${r.reason === undefined ? "" : `: ${r.reason}`}`;
 }
+
+/**
+ * The roster a handback walk's green verify carries.
+ *
+ * The land gate reads the RECORD, not only the verdict kind — a green with no project-test roster is
+ * refused — so a walk that is here to reach `landed` has to record one. One test that ran, at the
+ * head the walk names, is the minimum the gate accepts.
+ */
+export function landedRoster(baseSha: string): NonNullable<Outcome["projectRoster"]> {
+  return {
+    baseSha,
+    files: ["tests/suite.test.ts"],
+    passed: ["tests/suite.test.ts::passes"],
+    failed: [],
+    baseFailed: [],
+    total: 1,
+    baseTotal: 1,
+  };
+}

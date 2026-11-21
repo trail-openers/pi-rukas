@@ -102,51 +102,6 @@ function fencePayload(text: string, marker: string): string {
 }
 
 
-/** The criteria section as it rendered with NO statement above the list: heading,
- * lead, and the rendered criteria — nothing else. */
-export function preStatementCriteriaSection(rawBody: string | undefined): string {
-  if (rawBody === undefined || rawBody.trim() === "") return "";
-  const parsed = parsePiSpec(rawBody);
-  if (!parsed.ok) return "";
-  const block = criteriaBlock(parsed.spec);
-  if (block.trim() === "") return "";
-  return `${GOLDEN_CRITERIA_HEADING}\n\n${GOLDEN_CRITERIA_LEAD}\n\n${fencePayload(block, GOLDEN_CRITERIA_MARKER)}`;
-}
-
-/** The split's issue-block expression over a caller-supplied section. Each site
- * passes its own rule, and the rule is spelled above rather than read back from the
- * module: the statement switch owns neither sentence, and a golden that moved one
- * would forgive the very edit it is meant to catch. */
-function issueBlockWithSection(body: string, rule: string, section: string): string {
-  const prose = renderReviewProse(body);
-  if (prose === "") return "";
-  return `\n\n${ISSUE_PROMPT_LEAD} ${ADVERSARIAL_FINDING_RULE}${CRITERIA_CLAUSE} ${rule}\n\n${prose}\n\n${section}`;
-}
-
-/** The lens brief as the split rendered it without the statement: the scope line
- * and the issue block, joined the way `lensContext` joins them. `""` where the
- * body carries no section — that arm is the split's own golden's business. */
-export function preStatementLensContext(body: string): string {
-  const section = preStatementCriteriaSection(body);
-  if (section === "") return "";
-  const block = issueBlockWithSection(body, LENS_RULE, section);
-  if (block === "") return "";
-  return [FULL_SCOPE_LINE, block.trim()].join("\n\n");
-}
-
-/** The fixer brief's issue span as it rendered without the statement: the block
- * above the findings, plus the decline section the print site appends whenever there
- * is an issue block to cite. The span under test runs from the newline that ends
- * the brief's own preamble to the next heading, so the golden re-creates that line
- * ending and the decline section verbatim rather than assuming a trim. */
-export function preStatementFixerIssueSection(body: string): string {
-  const section = preStatementCriteriaSection(body);
-  if (section === "") return "";
-  const block = issueBlockWithSection(body, FIXER_RULE, section);
-  if (block === "") return "";
-  return `\n${block}\n## Declining a finding that contradicts the issue\n\n${FIXER_DECLINE_RULE}\n`;
-}
-
 /** Everything in a brief AFTER the criteria heading — the section a seat reads as
  * its contract, and the only place the statement may appear. */
 export function criteriaSpanOf(brief: string): string {
@@ -184,31 +139,6 @@ export function keptStatementSpan(section: string): string {
 /** A key of the raw spec block as its JSON prints it. A brief that carried the
  * block verbatim would carry these, and no seat's brief is meant to. */
 export const SPEC_JSON_KEYS = ['"problem"', '"criteria"'] as const;
-
-/** The lens seat's issue block as the split printed it before the statement —
- * the block alone, not the whole brief: the case that pins the prose block's
- * presence beside the section compares one print site's output, not the join. */
-export function preStatementLensIssueBlock(body: string): string {
-  const section = preStatementCriteriaSection(body);
-  return section === "" ? "" : issueBlockWithSection(body, LENS_RULE, section);
-}
-
-/** A criterion's row AS THE PRE-STATEMENT SECTION PRINTS IT, read out of the
- * section this file renders rather than the module's: a seat that printed the raw
- * block also carries the id quoted, so a bare `includes` on the id cannot tell the
- * two apart, and a fixture that reworded a criterion would otherwise make the
- * assertion vacuous. Throws so a body that carries no such row fails loudly. */
-export function renderedCriterionRow(body: string, id: string): string {
-  const line = preStatementCriteriaSection(body)
-    .split("\n")
-    .find((l) => l.includes(`**${id}**`) && criterionRow(id).test(l));
-  if (line === undefined) {
-    throw new Error(
-      `renderedCriterionRow: ${id} is not a row of the criteria section for this body — the arm would be vacuous.`,
-    );
-  }
-  return line;
-}
 
 /**
  * The five bodies the statement's four claims need, kept beside the goldens that

@@ -27,7 +27,6 @@ import { glabMrCreateArgvEnabled } from "../../src/gl-mr-create-switch.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
 import { leanDeadlineHandbackEnabled } from "../../src/lean/deadline-handback.ts";
 import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
-import { leanGuardFailClosed } from "../../src/lean/guard-fail-closed-switch.ts";
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
 import { leanReportBoundEnabled } from "../../src/lean/handback-report-bound-switch.ts";
 import { leanBuildIssueProseEnabled, leanIssueProseEnabled } from "../../src/lean/issue-prose.ts";
@@ -36,20 +35,11 @@ import {
   leanPreflightProbeContainEnabled,
 } from "../../src/lean/preflight-probe-switch.ts";
 import { leanProtectedPathsEnabled } from "../../src/lean/protected-paths-switch.ts";
-import { leanReadyFactsOnLoadEnabled } from "../../src/lean/ready-facts-switch.ts";
-import { leanRepublishOwnPrEnabled } from "../../src/lean/republish-own-pr-switch.ts";
 import { leanResultGatesEnabled } from "../../src/lean/result-gates-switch.ts";
 import { leanReviewAcceptanceEnabled } from "../../src/lean/review-acceptance-switch.ts";
-import { leanReviewIncompleteCapEnabled } from "../../src/lean/review-incomplete-cap-switch.ts";
-import { leanReviewProblemEnabled } from "../../src/lean/review-problem-switch.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
-import { leanRewindLeaseBinds } from "../../src/lean/rewind-lease-switch.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
 import { leanSubmodulesLocalEnabled } from "../../src/lean/submodules-local-switch.ts";
-import {
-  leanHandbackNoHeadRecordEnabled,
-  leanVerifiedHandbackEnabled,
-} from "../../src/lean/verified-handback-switch.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../../src/lens-evidence.ts";
 import { lensLargeDiffEnabled } from "../../src/lens-large-diff-switch.ts";
 import { lensIncompleteForcesFull } from "../../src/lens-review-incomplete-switch.ts";
@@ -205,10 +195,8 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_COLLECTABLE", leanPreflightProbeCollectableEnabled],
   ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN", leanPreflightProbeContainEnabled],
-  ["PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD", leanHandbackNoHeadRecordEnabled],
   // #2416 — re-push to the PR this run's own `publish` opened. The reader is
   // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on".
-  ["PI_ENSEMBLE_LEAN_REPUBLISH_OWN_PR", leanRepublishOwnPrEnabled],
   // The routed deadline report's wall. The reader is `v !== "0"`, so the LIVE loop
   // (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_REPORT_BOUND", leanReportBoundEnabled],
@@ -218,10 +206,6 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // The executed acceptance table at the lean review seats and on the run's PR. The
   // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_REVIEW_ACCEPTANCE", leanReviewAcceptanceEnabled],
-  // #2265 — the statement the criteria section opens with. The reader is
-  // `v !== "0"`, so the LIVE assertion in the gate (env deleted) pins "unset
-  // means on".
-  ["PI_ENSEMBLE_LEAN_REVIEW_PROBLEM", leanReviewProblemEnabled],
   // #2212 — #2179's preflight/submodule behaviour. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT", leanRunnerPreflightEnabled],
@@ -234,18 +218,13 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on";
   // the truth table, the docs row and the two-arm rebuild are pinned by
   // test-lean-ready-facts-on-load-switch.ts.
-  ["PI_ENSEMBLE_LEAN_READY_FACTS_ON_LOAD", leanReadyFactsOnLoadEnabled],
   // #2365 — the project's own `lean.protectedPaths` globs in the lean folds. The reader
   // is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the
   // truth table, the docs row, the fold's two arms and the built-in controls are pinned
   // by test-lean-protected-paths.ts and test-lean-build-protected-paths-switch.ts.
   ["PI_ENSEMBLE_LEAN_PROTECTED_PATHS", leanProtectedPathsEnabled],
-  ["PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK", leanVerifiedHandbackEnabled],
-  // The verified-handback rule. The reader is `v !== "0"`, so the gate's LIVE
-  // loop (env deleted) pins "unset means on".
   // #2262 — whether the rewind's branch refspec stays unforced so its lease binds. The
   // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on".
-  ["PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS", leanRewindLeaseBinds],
   // The gate events on the host's result document. The reader is `v !== "0"`, so the
   // gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_RESULT_GATES", leanResultGatesEnabled],
@@ -253,14 +232,12 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on";
   // the truth table, the four-arm matrix and the off arm's golden are pinned by
   // test-headless-work-lean-review-incomplete-cap-switch.ts.
-  ["PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP", leanReviewIncompleteCapEnabled],
   // The truncated-fixer continuation: its default is pinned here, its truth table by
   // `test-lean-review-fix-reask-pure.ts` and its off arm by
   // `test-lean-review-fixer-truncation-off-arm.ts`.
   ["PI_ENSEMBLE_LEAN_FIXER_TRUNCATION_REASK", leanFixerTruncationReaskEnabled],
   // #2255 — the publishable-branch guard's fail-closed arm. The reader is `v !== "0"`,
   // so the gate's LIVE loop (env deleted) pins "unset means on".
-  ["PI_ENSEMBLE_LEAN_GUARD_FAIL_CLOSED", leanGuardFailClosed],
   // #2279 — the handback's origin reads through the network-git wrapper. The reader is
   // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth
   // table, the docs row and the off-arm call shape are pinned by

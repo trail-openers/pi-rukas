@@ -22,12 +22,10 @@
  *        named — the two halves of the record saying one thing;
  *   (i)  the comment body for a no-head log is `===` to the body the PRE-RULE
  *        `handbackOutcome` posted. That equality is a rollback guarantee only if the
- *        same log reaches the same renderer, so the arm that really turns the rule
- *        off is (j);
- *   (j)  `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK=0`: none of the four fields, no rewind
- *        call at all, origin untouched, and the body is the PRE-RULE body — while the
- *        same log with the rule ON produces a body that DIFFERS (the falsification
- *        that keeps (i) from being a renderer compared with itself).
+ *        same log reaches the same renderer, so (j) is its falsification;
+ *   (j)  the rule's control: with the log shape (i) uses, the rewind moves origin and
+ *        the posted body DIFFERS from the pre-rule capture — which keeps (i) from being
+ *        a renderer compared with itself.
  *
  * The logs are driven by the engine, not typed (lib/lean-verified-handback-fixture).
  * The repo is real and origin is a real bare repo, so "nothing moved" is a fact about
@@ -349,34 +347,21 @@ const PRE_RULE_BODY = [
   );
 }
 
-// ── (j) the switch OFF: no rewind, no fields, same body ────────────────────
+// ── (j) the rule's own control: the rewind moves origin and the body is NOT the pre-rule one ──
 {
-  // THREE arms, so each gets its own repo: with one shared origin the control's
-  // rewind would move the branch the off arm is meant to leave exactly where it was,
-  // and the case would pass on the control's work. The CONTROL's green names its own
-  // base commit, because that is the head its rewind has to be able to push.
-  // The OFF arm's log is the driven default — green at `FAKE_VERIFIED` — which is
-  // the log the pre-rule capture was taken from, and the body it prints is the
-  // string the capture recorded. An off arm built from a different head would be
-  // compared against a body no run ever posted.
+  // The rule is always on, so this case is the control rather than an arm comparison: with the
+  // log shape (i) uses, the rewind really moves origin and the body the seat posts is not the
+  // pre-rule capture. Without it, (i)'s equality against that capture could be a body the rule
+  // would have printed anyway.
   const control = repoWithFixHead();
-  const off = repoWithFixHead();
   const on = await driveHandback(
     await fixedReviewLog(control.baseSha),
     control.repoRoot,
     rewinder(control.repoRoot),
   );
-  let rewindCalls = 0;
-  const noMove = async (): Promise<Rewind> => {
-    rewindCalls++;
-    return { shipped: false };
-  };
-  // The control for (i): the same log shape with the rule on and the real rewind
-  // moves origin and prints a head section, so the equality in (i) is not a body
-  // the rule would have produced anyway.
   assert(
     on.posts[0] !== PRE_RULE_BODY,
-    "(j) control: the same log with the rule ON does NOT print the pre-rule body",
+    "(j) control: the same log with the rule on does NOT print the pre-rule body",
   );
   assert(
     on.outcome.shippedHead === control.baseSha,
@@ -385,42 +370,6 @@ const PRE_RULE_BODY = [
   assert(
     originBranchSha(control.origin) === control.baseSha,
     "(j) control: and origin's branch stands at the verified head",
-  );
-
-  const before = originBranchSha(off.origin);
-  if (before !== off.branchHeadSha)
-    throw new Error(`the off arm's origin does not hold the fix head: ${String(before)}`);
-
-  // Pin the switch for this block alone and put it back exactly as it was: a leak
-  // here would silently switch the rule off in every later file of the run.
-  const saved = process.env.PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK;
-  process.env.PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK = "0";
-  let offRun: { outcome: Awaited<ReturnType<typeof driveHandback>>["outcome"]; posts: string[] };
-  try {
-    offRun = await driveHandback(await fixedReviewLog(FAKE_VERIFIED), off.repoRoot, noMove);
-  } finally {
-    if (saved === undefined) delete process.env.PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK;
-    else process.env.PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK = saved;
-  }
-  assert(rewindCalls === 0, `(j) with the switch off the rewind was never called (${rewindCalls})`);
-  assert(
-    originBranchSha(off.origin) === before,
-    `(j) origin's branch is untouched by the off arm (${String(originBranchSha(off.origin))} vs ${before})`,
-  );
-  assert(
-    originRefSha(off.origin, unverifiedRef(ISSUE)) === undefined,
-    "(j) and no keeping-ref was written",
-  );
-  assert(
-    offRun.posts[0] === PRE_RULE_BODY,
-    `(j) the off-arm comment is the PRE-RULE body too, byte for byte (got ${JSON.stringify((offRun.posts[0] ?? "").split("\n").slice(-4).join(" / "))})`,
-  );
-  assert(
-    offRun.outcome.shippedHead === undefined &&
-      offRun.outcome.shippedVerified === undefined &&
-      offRun.outcome.unshippedHead === undefined &&
-      offRun.outcome.unshippedReason === undefined,
-    `(j) and its record carries NONE of the four fields (${JSON.stringify([offRun.outcome.shippedHead, offRun.outcome.shippedVerified, offRun.outcome.unshippedHead, offRun.outcome.unshippedReason])})`,
   );
 }
 
