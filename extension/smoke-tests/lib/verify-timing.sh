@@ -135,7 +135,13 @@ fi
 # way to ask for no bound.
 VERIFY_TIMING_CEILING_S=0
 if [ -n "${PI_ENSEMBLE_VERIFY_TIMING_CEILING_S:-}" ] && [[ "${PI_ENSEMBLE_VERIFY_TIMING_CEILING_S}" =~ ^[0-9]{1,4}$ ]]; then
-  VERIFY_TIMING_CEILING_S="$PI_ENSEMBLE_VERIFY_TIMING_CEILING_S"
+  # `$((10#…))`, not the matched string: bash reads a leading zero as OCTAL, so
+  # `[ 008 -gt 0 ]` is a syntax error whose status is FAILURE. A verbatim store would
+  # have let `00`, `000` and `0030` past the parse above and then refused them at
+  # every `-gt 0` gate below — the ceiling silently OFF, with none of the warning the
+  # junk arm prints. The radix prefix says decimal and makes each spelling answer as
+  # the number it names; `10#` is accepted by bash 3.2, the floor this file targets.
+  VERIFY_TIMING_CEILING_S="$((10#$PI_ENSEMBLE_VERIFY_TIMING_CEILING_S))"
 else
   if [ -n "${PI_ENSEMBLE_VERIFY_TIMING_CEILING_S:-}" ] && [ "${PI_ENSEMBLE_VERIFY_TIMING_CEILING_S}" != "0" ]; then
     echo "warn: verify-loop: PI_ENSEMBLE_VERIFY_TIMING_CEILING_S must be 1-4 digits; got '${PI_ENSEMBLE_VERIFY_TIMING_CEILING_S}', ceiling stays off" >&2

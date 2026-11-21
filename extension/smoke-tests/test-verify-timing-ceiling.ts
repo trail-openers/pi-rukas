@@ -76,6 +76,17 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
+/** Every line the timing feature prints — `TIME` rows, the block's header, rows and
+ * TOTAL, and `CEILING:`. Module-scope: 7f and case 8 both strip it before comparing
+ * whole channels, and the two must strip one set to be one claim. Not the harness'
+ * `timingOutput`, which returns the lines it RECOGNISES — comparing through it is an
+ * equality of two filtered sets and passes on streams differing anywhere else. */
+function isTimingLine(l: string): boolean {
+  return TIME_RE.test(l) || HEADER_RE.test(l) || TOTAL_RE.test(l) || CEILING_RE.test(l);
+}
+
+const stripTiming = (s: string): string => s.split("\n").filter((l) => !isTimingLine(l)).join("\n");
+
 // ------------------------- Case 7: the per-file ceiling (PI_ENSEMBLE_VERIFY_TIMING_CEILING_S)
 
 {
@@ -114,6 +125,18 @@ function assert(cond: boolean, msg: string): void {
     unlisted.stdout.includes(`FAILED: 1 test(s) — ${CEILING_OVER}`),
     `case 7a: the offender is a NAMED failure — the FAILED <n> test(s) list summary carries it (R5) (stdout: ${JSON.stringify(unlisted.stdout.slice(0, 240))})`,
   );
+  // The offender joins `names` with an EMPTY capture placeholder, because it failed
+  // on the clock and no job ever wrote it a `✗` line. The #827 tail echo walks those
+  // captures with `grep -F -- "✗" "$capfile"`, and the empty entry is not a file name:
+  // every offender-only failure printed `grep: : No such file or directory` on stderr,
+  // a diagnostic from the reporter itself on a run whose only fault was the clock (the
+  // digest arm has tested `-n`/`-f` on the same placeholder since #2449 landed; the
+  // normal-mode echo had no such guard and no assertion). Reproduced before the fix:
+  // one such line per offender, between the `FAILED:` summary and the SLOWEST block.
+  assert(
+    !/grep:.*No such file or directory/.test(unlisted.stderr),
+    `case 7a: a ceiling-only failure prints no grep diagnostic for the offender's empty capture placeholder (stderr: ${JSON.stringify(unlisted.stderr.slice(0, 400))})`,
+  );
   assert(
     unlisted.stdout.includes("1 test(s)"),
     `case 7a: the summary counts the offender as the one failure, not the clock (stdout: ${JSON.stringify(unlisted.stdout.slice(-60))})`,
@@ -129,9 +152,13 @@ function assert(cond: boolean, msg: string): void {
   );
 
   // --- AC1, the green arm: the same file, the same ceiling, exempt by the list.
+  // Both lists are held in one `try` so the empty-list temp dir is removed on the
+  // same path as the named one: each `writeAllowlist` allocates its own 0700 dir
+  // under TMPDIR and nothing else removes it.
   const list = writeAllowlist([
     { file: "smoke-tests/fixtures/verify-loop/fixture-ceiling-listed.ts", seconds: 9 },
   ]);
+  const emptyList = writeAllowlist([]);
   try {
     const listed = runLoop([PASS, CEILING_LISTED], { ...env, TIMING_ALLOWLIST: list });
     assert(
@@ -150,7 +177,7 @@ function assert(cond: boolean, msg: string): void {
     // A list that names nothing exempts nothing, even when the file is on disk.
     const empty = runLoop([PASS, CEILING_LISTED], {
       ...env,
-      TIMING_ALLOWLIST: writeAllowlist([]),
+      TIMING_ALLOWLIST: emptyList,
     });
     assert(
       empty.status === 1 && ceilingLines(empty.stderr).length === 1,
@@ -174,6 +201,7 @@ function assert(cond: boolean, msg: string): void {
     );
   } finally {
     removeAllowlist(list);
+    removeAllowlist(emptyList);
   }
 
   // --- R6: a row the watchdog killed is exempt — its secs measure the bound.
@@ -223,6 +251,38 @@ function assert(cond: boolean, msg: string): void {
     `case 7e: 0 is off without a warning (status ${zero.status}, stderr ${JSON.stringify(zero.stderr.slice(0, 200))})`,
   );
 
+  // case 7e: a value the 1–4-digit parse accepts used to be stored VERBATIM and
+  // answered by `[ "$VERIFY_TIMING_CEILING_S" -gt 0 ]`, and bash reads a leading zero
+  // as OCTAL — `[ 008 -gt 0 ]` is a syntax error whose status is FAILURE. So `00`,
+  // `000` and `0030` passed the parse, were refused by every `-gt 0` gate, and left the
+  // ceiling OFF in silence: the junk case's outcome without the junk case's warning.
+  // `$((10#…))` normalises the accepted value, so each spelling answers as the number
+  // it names. One table, three halves: `0030` is ACCEPTED at its own 30 s bound (8 s,
+  // green); `001` is ENFORCED at its own 1 s bound (8 s over it — the offender row an
+  // un-normalised parse prints nothing for); `00` stays the documented off state.
+  const padded: [string, number, number, string][] = [
+    ["0030", 8000, 0, "accepted at its own 30s bound"],
+    ["001", 8000, 1, "enforced at its own 1s bound"],
+    ["00", 8000, 0, "the documented off state"],
+  ];
+  for (const [knob, ms, wantLines, why] of padded) {
+    const r = runLoop([PASS, CEILING_OVER], {
+      PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: knob,
+      FIXTURE_CEILING_MS: String(ms),
+    });
+    const lines = ceilingLines(r.stderr);
+    assert(
+      lines.length === wantLines && r.status === (wantLines === 0 ? 0 : 1),
+      `case 7e: ${knob} is ${why} — ${wantLines} CEILING line(s) expected, got ${JSON.stringify(lines)} at status ${r.status}`,
+    );
+    if (knob === "00") {
+      assert(
+        !/PI_ENSEMBLE_VERIFY_TIMING_CEILING_S/.test(r.stderr),
+        `case 7e: 00 is off in silence like 0 — no warning naming the value (stderr ${JSON.stringify(r.stderr.slice(0, 200))})`,
+      );
+    }
+  }
+
   // --- AC2, off-path cost: with the knob unset the loop must read the allow-list
   // ZERO times. The parser forks `awk` on every read, so an implementation that
   // asked the list before consulting the knob cost ~2 forks per timing row —
@@ -266,31 +326,41 @@ function assert(cond: boolean, msg: string): void {
   // because the harness pins `TIMING_ALLOWLIST` off, so a canary that left it alone
   // would fork nothing for the wrong reason (no list to read), not because the off
   // path is idle. Naming both rows keeps the run green at the forced 1 s bound, so the
-  // only thing this assertion measures is whether the list was consulted.
+  // only thing this assertion measures is whether the list was consulted. Its dir is
+  // a second temp allocation and is removed in the same `finally` as the probe's.
   const canaryList = writeAllowlist([
     { file: "smoke-tests/fixtures/verify-loop/allpass-a.ts", seconds: 9 },
     { file: "smoke-tests/fixtures/verify-loop/fixture-ceiling-over.ts", seconds: 9 },
   ]);
-  const eager = runLoop([PASS, CEILING_OVER], {
-    FIXTURE_CEILING_MS: "8000",
-    TIMING_ALLOWLIST: canaryList,
-    TIMING_ALLOWLIST_PROBE: canaryProbe,
-    TIMING_ALLOWLIST_EAGER: "1",
-  });
   let eagerBytes = -1;
+  let eager: { status: number; stdout: string; stderr: string };
   try {
-    eagerBytes = statSync(canaryProbe).size;
-  } catch {
-    eagerBytes = -1; // no probe file at all = the canary did not fire, which fails below
-  }
-  try {
-    rmSync(canaryDir, { recursive: true, force: true });
-  } catch {
-    /* a leftover scratch dir is reaped with TMPDIR */
+    eager = runLoop([PASS, CEILING_OVER], {
+      FIXTURE_CEILING_MS: "8000",
+      TIMING_ALLOWLIST: canaryList,
+      TIMING_ALLOWLIST_PROBE: canaryProbe,
+      TIMING_ALLOWLIST_EAGER: "1",
+    });
+    try {
+      eagerBytes = statSync(canaryProbe).size;
+    } catch {
+      eagerBytes = -1; // no probe file at all = the canary did not fire, which fails below
+    }
+  } finally {
+    try {
+      rmSync(canaryDir, { recursive: true, force: true });
+    } catch {
+      /* a leftover scratch dir is reaped with TMPDIR */
+    }
+    removeAllowlist(canaryList);
   }
   assert(
-    eagerBytes > 0 && eager.status === 0,
-    `case 7g canary: an off path that DOES read the list is caught — with the ceiling forced where none was asked for, the probe holds ${eagerBytes} byte(s) and the run is still green at ${eager.status} (a green 7g without this line would be vacuous)`,
+    eagerBytes > 0,
+    `case 7g canary: an off path that DOES read the list is caught — with the ceiling forced where none was asked for, the probe holds ${eagerBytes} byte(s) (a green 7g without this line would be vacuous)`,
+  );
+  assert(
+    eager.status === 0,
+    `case 7g canary: forcing the read costs the run nothing — the forced-bound run is still green at ${eager.status} (a red here means the canary changed the verdict, not just the cost)`,
   );
 
   // --- AC2: with the knob unset, behaviour is unchanged — the offender's own file
@@ -310,13 +380,10 @@ function assert(cond: boolean, msg: string): void {
     on.status === 0 && knobOff.status === 0,
     `case 7f: with no ceiling asked for, a slow passing file stays green (${on.status} / ${knobOff.status})`,
   );
-  // Modulo the per-file timing lines (which measure the clock and so legitimately
-  // vary run to run), the two off-path runs agree on both channels.
-  const stripTiming = (s: string) =>
-    s
-      .split("\n")
-      .filter((l) => !TIME_RE.test(l) && !HEADER_RE.test(l) && !TOTAL_RE.test(l))
-      .join("\n");
+  // Modulo the timing lines the loop prints, the two off-path runs agree on both
+  // channels. What a run legitimately varies between two invocations is its own
+  // measured seconds (the ±50% swing the header pins), and TOTAL sums those, so it
+  // belongs to the clock-derived set, not the verdict. See `isTimingLine`.
   assert(
     stripTiming(on.stdout) === stripTiming(knobOff.stdout) &&
       stripTiming(on.stderr) === stripTiming(knobOff.stderr),
@@ -359,11 +426,10 @@ function assert(cond: boolean, msg: string): void {
       PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "30",
       PI_ENSEMBLE_VERIFY_TIMING: "0",
     });
-    const stripped = ceiling.stderr
-      .split("\n")
-      .filter(
-        (l) => !TIME_RE.test(l) && !HEADER_RE.test(l) && !TOTAL_RE.test(l) && !CEILING_RE.test(l),
-      );
+    // The same `isTimingLine` filter as 7f (which also drops `CEILING:`, the shape
+    // this run can print). Case 5 of test-verify-loop-timing.ts is the sibling claim
+    // with no ceiling in play.
+    const stripped = ceiling.stderr.split("\n").filter((l) => !isTimingLine(l));
     assert(
       stripped.join("\n") === off.stderr,
       `case 8: turning the timing off removes the ceiling lines and nothing else (stderr ${JSON.stringify(off.stderr.slice(0, 160))})`,

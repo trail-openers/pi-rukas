@@ -160,7 +160,12 @@ report_results() {
   # least the last failing test's assertion lines are guaranteed in the
   # tail. Only `✗` lines qualify — warnings (`!`
   # lines) and other output are intentionally excluded.
+  # Only a real capture is grepped: a ceiling offender (or a failed `cp`) pushes an
+  # EMPTY placeholder, and `grep -F -- "✗" ""` answers `grep: : No such file or
+  # directory` on stderr for each one — a diagnostic from the reporter on a run whose
+  # only fault was the clock. The digest arm above tests the same pair.
   for capfile in "${_extra_captures[@]}"; do
+    [ -n "$capfile" ] || continue
     cap=0
     while IFS= read -r line; do
       cap=$((cap + 1))

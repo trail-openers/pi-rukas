@@ -4461,8 +4461,6 @@ When the suite is on the critical path of a **gate** rather than a developer's o
 
 A file the per-test watchdog **killed** (`timed out after <N>s`) is exempt from the ceiling on its own — its seconds measure the bound, not the test — so a hang fails once, on the watchdog, not twice. `--digest` prints no `CEILING:` line (stdout/stderr timing contracts hold) yet still exits 1 and counts the offender in its `P:/F:` tally. The verdict is entirely absent when the knob is unset: with the ceiling off the feature changes nothing. See `docs/configuration.md` → `PI_ENSEMBLE_VERIFY_TIMING_CEILING_S`.
 
-[124 more lines in file. Use offset=4442 to continue.]
-
 ### A consolidated verify parks with "the verify report file …" instead of naming failing tests
 
 Since #1404 the commit-pr baseline probe reads failing-test **names** only from an out-of-band report file the smoke loop writes, never from the run's stdout/stderr. The reason is a forgery: a test that prints the loop's whole failure triad — a per-file `FAILED: <path>`, a count-matched `FAILED: 1 test(s) — <path>`, and a non-zero `P:/F:` tally — is byte-for-byte what the loop emits, so under stream-parsing a **green** base could be made to name the change's failure, the change-caused failure was excused, and the cycle pushed red code.
