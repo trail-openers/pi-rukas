@@ -11,6 +11,24 @@ BASE="${PI_ENSEMBLE_BASE:-$SCRIPT_DIR}"
 MANIFESTS_DIR="$BASE/manifests"
 PROMPTS_DIR="${PROMPTS_DIR:-$BASE/dist/prompts}"
 
+# Every temporary this run creates is listed in RUN_TEMPS and removed by the
+# single EXIT trap below, so a build that aborts (set -e, or an `exit 1` on a
+# missing module) leaves no stray file beside a published prompt. The trap is
+# defined BEFORE generate_agent_capabilities runs and that function only adds
+# names to the list, so the two traps compose instead of one replacing the other.
+RUN_TEMPS=()
+_cleanup_run_temps() {
+  local temp
+  for temp in "${RUN_TEMPS[@]}"; do
+    rm -f "$temp"
+  done
+}
+trap _cleanup_run_temps EXIT
+
+_track_temp() {
+  RUN_TEMPS+=("$1")
+}
+
 get_config_filename() {
   case "$1" in
     standard) echo "agents.json" ;;
@@ -87,7 +105,10 @@ generate_agent_capabilities() {
   local temp_capabilities=$(mktemp)
   local target_tmp="${target_file}.tmp"
 
-  # Ensure cleanup on exit
+  # Register both temporaries with the run's EXIT trap; the per-call trap kept
+  # here covers the early `return 1` paths inside this function.
+  _track_temp "$temp_capabilities"
+  _track_temp "$target_tmp"
   trap "rm -f '$temp_capabilities' '$target_tmp'" EXIT
 
   # Generate header for new format
@@ -307,9 +328,6 @@ for env in "${ENVIRONMENTS[@]}"; do
     fi
   done
 
-  # Clean stale files before build
-  rm -f "$OUTPUT_DIR"/*.txt "$OUTPUT_DIR"/*.md 2>/dev/null || true
-
   echo "=== Building $env environment ==="
 
   for agent in "${AGENTS[@]}"; do
@@ -329,6 +347,11 @@ for env in "${ENVIRONMENTS[@]}"; do
     fi
 
     output="$OUTPUT_DIR/${agent}.md"
+    # The temp sibling carries a suffix that matches neither *.md nor *.txt, so
+    # a concurrent reader never picks it up as a prompt, and never picks the
+    # target up as missing: $output is untouched until the rename below.
+    output_tmp="$output.tmp-$$"
+    _track_temp "$output_tmp"
 
     echo "Building $agent ($env)..."
     echo "  Manifest: $manifest_name"
@@ -354,8 +377,9 @@ for env in "${ENVIRONMENTS[@]}"; do
     # we deliberately drop it since markers are stripped during assembly)
     capabilities_content=$(echo "$agent_capabilities" | tail -n +2)
 
-    # Create empty output file
-    > "$output"
+    # Assemble into the temp sibling; the published file is replaced only by
+    # the `mv -f` at the end of this loop body.
+    > "$output_tmp"
 
     # Process each line in manifest
     module_count=0
@@ -396,7 +420,7 @@ for env in "${ENVIRONMENTS[@]}"; do
             next
           }
           !skip { print }
-        ' "$module_path" >> "$output"
+        ' "$module_path" >> "$output_tmp"
 
         rm -f "$tmp_caps"
         capabilities_injected=true
@@ -409,7 +433,7 @@ for env in "${ENVIRONMENTS[@]}"; do
             !/^<!-- Auto-generated from agents\.json -->$/
           ' "$module_path"
           echo ""
-        } >> "$output"
+        } >> "$output_tmp"
       fi
 
       # Use explicit arithmetic instead of `((var++))` — post-increment returns
@@ -430,6 +454,10 @@ for env in "${ENVIRONMENTS[@]}"; do
       echo "  Manifest: $manifest"
       exit 1
     fi
+
+    # The one publish step: rename(2) within the same directory, so a reader
+    # sees the old prompt or the new one, never a gap.
+    mv -f "$output_tmp" "$output"
 
     echo "  -> $output"
   done

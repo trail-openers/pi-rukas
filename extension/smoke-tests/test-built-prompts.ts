@@ -40,6 +40,16 @@ execFileSync("bash", [BUILD], {
   stdio: "ignore",
 });
 
+// #2430 — build.sh assembles each prompt into `<agent>.md.tmp-<pid>` beside the
+// target and publishes it by `mv -f`. A straggler here means a temp was left
+// beside a published prompt (the abort path failed to clean up), so a reader
+// could later mistake it for an artefact.
+const stragglers = readdirSync(PROMPTS).filter((name) => name.includes(".tmp-"));
+assert(
+  stragglers.length === 0,
+  `dist/prompts/standard holds no build temp file (*.tmp-*)${stragglers.length ? ` — found ${stragglers.join(", ")}` : ""}`,
+);
+
 // #1031 — codemode module heading, asserted per-manifest below.
 const codemodeHeading = readFileSync(path.join(ROOT, CODEMODE_MODULE), "utf8").match(/^#{1,6} .+$/m)?.[0];
 
