@@ -404,13 +404,6 @@ export async function verifyDevelopOutcome(
   // hands to its own out-parameter, because this function takes `state` by value
   // and mutates only `failures`/`notes`.
   const plan = await planDevelopVerify(ctx, touchedPaths, worktrees, baseSha, execFn, notes);
-  // #2450 — hand the selector's verdict to the caller that owns the event log. The
-  // plan is built here and the gate's events are written five layers up, so the
-  // verdict travels on the sink the caller created rather than being rebuilt from
-  // the notes (which are operator prose, and the two would drift).
-  if (options.verifySelectSink !== undefined && plan.verdict !== undefined) {
-    options.verifySelectSink.verdict = plan.verdict;
-  }
   const cmd = plan.cmd;
   // #1765 — the base probe's two claims, each recorded by `aggregateVerifyOutcome`
   // from the verdict it got back; `reportBaselineLeg` below reads them.

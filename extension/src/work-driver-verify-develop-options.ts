@@ -17,6 +17,7 @@ import type { SpecSlotSource } from "./work-driver-spec-slot-admission.ts";
 import type { ProvenanceDisclosureSink } from "./work-driver-verify-develop-provenance.ts";
 import type { VerifyRecordSlot } from "./work-driver-verify-record.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
+import type { VerifySelectArgs } from "./workflow-state-events-verify-select.ts";
 
 /**
  * The out-parameters of `verifyDevelopOutcome`, as one object instead of
@@ -27,6 +28,11 @@ import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
  * forwards to a seam (`walkProcessTree`, `hangSink`, `spec`) rather than
  * out-parameters; each says which.
  */
+/** The #2450 sink form: filled in place, the `verifyRecord` idiom rather than a callback. */
+export interface VerifySelectSink {
+  verdict?: VerifySelectArgs;
+}
+
 export interface VerifyDevelopOutcomeOptions {
   /**
    * #1667 — out-parameter: what the verify command gate ran and how each run failed
@@ -112,14 +118,13 @@ export interface VerifyDevelopOutcomeOptions {
   /**
    * #2450 — where the develop gate leaves the selector's verdict for this call, so
    * the caller can record it. A sink rather than a return value because the plan
-   * that computes it is built inside `verifyDevelopOutcome`, five layers below the
+   * that computes it is built inside the verify chain, five layers below the
    * caller that owns the event log — the same reason `hangSink` and
-   * `provenanceDisclosures` are sinks. Filled at most once per gate call, and left
-   * untouched when selection was never attempted.
+   * `provenanceDisclosures` are sinks. Filled by `runDevelopVerifyCommandChain`
+   * from the plan it already holds: at most once per gate call, and left untouched
+   * when selection was never attempted.
    */
-  verifySelectSink?: {
-    verdict?: import("./workflow-state-events-verify-select.ts").VerifySelectArgs;
-  };
+  verifySelectSink?: VerifySelectSink;
   /**
    * The ONE channel on which the background base-health probe reaches the caller
    * (`work-driver-base-health-inflight.ts`), once per gate call — an empty report

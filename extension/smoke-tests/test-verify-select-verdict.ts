@@ -21,8 +21,11 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { runDevelopVerifyCommandChain } from "../src/work-driver-verify-develop-cmd.ts";
 import { recordDevelopGateEvents } from "../src/work-driver-verify-events.ts";
+import type { VerifyDevelopOutcomeOptions } from "../src/work-driver-verify-develop-options.ts";
 import { planDevelopVerify } from "../src/work-driver-verify-select-develop.ts";
+import type { SelectedVerifyPlan } from "../src/work-driver-verify-select-develop.ts";
 import { makeVerifySelectEvent } from "../src/workflow-state-events-verify-select.ts";
 import type { VerifySelectEvent } from "../src/workflow-state-events-verify-select.ts";
 import { initialState } from "../src/workflow-state.ts";
@@ -76,6 +79,27 @@ function makeRepo(opts: {
  * out to git.
  */
 
+/** The chain's arguments with this fixture's plan, options and no-op exec. */
+function chainArgs(plan: SelectedVerifyPlan, options: VerifyDevelopOutcomeOptions) {
+  return {
+    ctx: { repoRoot: "/nonexistent-fixture" } as never,
+    state: initialState(4245),
+    execFn: (async () => ({ stdout: "", stderr: "" })) as never,
+    plan,
+    worktrees: {},
+    baseSha: undefined,
+    changedWorktrees: [],
+    workstreamBaseShas: undefined,
+    touchedPaths: [],
+    getGitReadFailed: () => false,
+    failures: [] as string[],
+    notes: [] as string[],
+    options,
+    baselineLeg: { red: false, established: false },
+    onBaseHealth: () => {},
+  };
+}
+
 /** Run one plan and hand its verdict to the recording seam, as the gate does. */
 async function planAndRecord(repoRoot: string, touched: string[]): Promise<{
   notes: string[];
@@ -84,7 +108,6 @@ async function planAndRecord(repoRoot: string, touched: string[]): Promise<{
   events: VerifySelectEvent[];
 }> {
   const notes: string[] = [];
-  const sink: { verdict?: never } = {};
   const noopExec = (async () => ({ stdout: "", stderr: "" })) as never;
   const plan = await planDevelopVerify(
     { repoRoot } as never,
@@ -94,16 +117,20 @@ async function planAndRecord(repoRoot: string, touched: string[]): Promise<{
     noopExec,
     notes,
   );
-  // The gate threads the plan's verdict into the seam that owns the state write.
+  // The chain fills the caller's sink from the plan it holds (the hand-off lives in
+  // runDevelopVerifyCommandChain, the module that has both), and the caller passes
+  // what it read to the seam that owns the state write. A plan with no command
+  // reaches no gate at all — the whole-suite fallback always has one.
+  const sink: { verdict?: SelectedVerifyPlan["verdict"] } = {};
+  await runDevelopVerifyCommandChain(chainArgs(plan, { verifySelectSink: sink }));
   const before = initialState(4245);
   const after = recordDevelopGateEvents(before, {
-    ...(plan.verdict !== undefined ? { verifySelect: plan.verdict } : {}),
+    ...(sink.verdict !== undefined ? { verifySelect: sink.verdict } : {}),
   });
-  void sink;
   const events = after.eventLog.filter(
     (e): e is VerifySelectEvent => e.kind === "verify-select",
   );
-  return { notes, verdict: plan.verdict, kinds: after.eventLog.map((e) => e.kind), events };
+  return { notes, verdict: sink.verdict, kinds: after.eventLog.map((e) => e.kind), events };
 }
 
 // --- the selected run --------------------------------------------------------

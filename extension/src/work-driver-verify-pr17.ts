@@ -322,9 +322,6 @@ export async function verifyStepOutcome(
         ? { baseHealthConsulted: baseHealthOut.report.consulted }
         : {}),
       ...(selectedOut.record !== undefined ? { selectedVerify: selectedOut.record } : {}),
-      // #2450 — the selector's verdict for THIS gate call, read straight off the
-      // plan the chain ran: a verdict the plan computed and nobody carried is how
-      // the selector stayed invisible while it was inert.
       // #2450 — the selector's verdict for THIS gate call, read from the sink the
       // chain filled: a verdict the plan computed and nobody carried is how the
       // selector stayed invisible while it was inert.
