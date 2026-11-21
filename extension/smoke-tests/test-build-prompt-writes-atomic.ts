@@ -223,12 +223,12 @@ try {
 
   // --- Arm 3: an abort INSIDE the capabilities writer leaves nothing. -------
   // Arms 1 and 2 abort in the parent's module loop. This arm aborts in the
-  // writer itself, which is the only place a temp's ownership is decided: the
-  // writer runs inside a command substitution, so it cannot hand a temp to a
-  // parent array (the assignment dies with the subshell) and must not install a
-  // trap of its own (only one EXIT trap exists, and the writer's would be the
-  // one that runs). Its capabilities temp is therefore named with the parent's
-  // `$$` and reclaimed by the parent's trap — which is what this arm measures.
+  // writer itself: the capabilities temp is made there, inside a command
+  // substitution, where the writer can neither hand it to a parent array (the
+  // assignment dies with the subshell) nor install a trap of its own (only one
+  // EXIT trap exists, and the writer's would be the one that runs). So it is
+  // named with the parent's `$$` and reclaimed by the parent's trap, and the
+  // directory the writer reads its target from must hold nothing at all.
   //
   // The writer fails on an agent `agents.json` does not name: every agent
   // before the doomed one publishes, the doomed one aborts the run.
