@@ -65,20 +65,6 @@ function makeRepo(opts: {
   return { repoRoot: root, ext };
 }
 
-/**
- * A repo shaped like the real one, but inert to git.
- *
- * A fixture root is created under tmpdir(), which on a developer host sits inside
- * a working tree. `git init` there is a no-op (git finds the enclosing repo and
- * returns 0), and every later `git` call in the fixture then runs against THAT
- * repository — so a fixture that removes its own directory is removing while real
- * paths are open, which is how this suite was made to fail intermittently in
- * directories it never touched. The isolation the verify loop itself exports
- * (`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_NOSYSTEM`, a private `HOME`) is set here for
- * the same reason, and no `git init` is attempted: nothing in these plans shells
- * out to git.
- */
-
 /** The chain's arguments with this fixture's plan, options and no-op exec. */
 function chainArgs(plan: SelectedVerifyPlan, options: VerifyDevelopOutcomeOptions) {
   return {

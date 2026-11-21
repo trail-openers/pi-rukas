@@ -39,6 +39,17 @@ const lexes = (name: string, snippet: string, msg: string) =>
   assert(lex(snippet) !== undefined, `${name}: ${msg}`);
 const refuses = (name: string, snippet: string, msg: string) =>
   assert(lex(snippet) === undefined, `${name}: ${msg}`);
+/**
+ * Lex text that ENDS where the file ends, with no `;\n` grafted on.
+ *
+ * `lex` above appends `;\n` because that is how a snippet sits inside a real
+ * statement — and that suffix is what closes a construct the file never closed.
+ * `buildGraph` hands `lexSource` the bytes of a truncated file, so an EOF the
+ * lexer reads as a complete template is invisible to a suffixed snippet: only
+ * text that stops at its last character measures the fail-closed exit.
+ */
+const refusesAtEof = (name: string, text: string, msg: string) =>
+  assert(lexSource(text) === undefined, `${name}: ${msg}`);
 
 // --- nested templates whose interpolation contains a brace ------------------
 // The exact shape at src/worktree-loss.ts:450 (`${fromRef}^{tree}`).
@@ -91,7 +102,7 @@ lexes(
   "an interpolation holding an arrow body still lexes (measured passing pre-fix)",
 );
 lexes(
-  "a nested interpolation whose tail text holds a further }",
+  "a nested interpolation whose tail text carries a quoted }",
   '`a ${ `${b}` + "}" } c`',
   "a tail text carrying a further `}` lexes (measured passing pre-fix)",
 );
@@ -161,6 +172,69 @@ refuses(
   "an unterminated string",
   '"unterminated',
   "an unterminated string is unlexable",
+);
+// --- an unclosed construct at the END of the text ---------------------------
+// The cases above all sit inside a suffixed snippet, so a construct they leave
+// open is closed by the `;\n` the harness grafts on. These are the bytes of a
+// truncated file: no suffix, the text simply stops. An EOF the lexer reads as a
+// complete template hands the selector an edge cut out of the middle of a file,
+// which selects fewer tests than the diff needs — so each of these is measured
+// LEXES when its own fail-closed `return -1` in `skipTemplate` is turned into an
+// EOF-optimistic return.
+refusesAtEof(
+  "a template that never closes before the end of the file",
+  "export const q = `abc",
+  "a template still open at the last byte is unlexable",
+);
+refusesAtEof(
+  "a template that ends in an opening interpolation",
+  "export const q = `${",
+  "a file whose last characters are `${` is unlexable",
+);
+refusesAtEof(
+  "an interpolation left open at end of text",
+  "export const q = `a ${ b",
+  "a template whose interpolation never closes by the end of the file is unlexable",
+);
+refusesAtEof(
+  "an unclosed nested template at end of text",
+  "export const q = `a ${`x`",
+  "a nested template still open at the end of the file is unlexable",
+);
+refusesAtEof(
+  "a line comment left open inside an interpolation",
+  "export const q = `a ${ b // the comment never ends",
+  "a line comment with no newline after it inside an interpolation is unlexable",
+);
+refusesAtEof(
+  "a block comment left open inside an interpolation",
+  "export const q = `a ${ b /* no terminator",
+  "a block comment with no `*/` inside an interpolation is unlexable",
+);
+refusesAtEof(
+  "a quoted string left open inside an interpolation",
+  'export const q = `a ${ "unclosed',
+  "a string with no closing quote inside an interpolation is unlexable",
+);
+refusesAtEof(
+  "an open line comment on a later line of the file",
+  "const a = 1;\nexport const q = `a ${ b // tail",
+  "a comment open to the last byte unlexes the file however early the template opened",
+);
+// The same comment shapes closed by a terminator are ordinary code: the refusals
+// above must come from the missing terminator, not from a comment being illegal
+// inside an interpolation. The newline arm is load-bearing in both directions —
+// a `}` past a TERMINATED comment belongs to the interpolation, so the walk has to
+// resume on the newline and still read it as code.
+lexes(
+  "a line comment closed by a newline inside an interpolation",
+  "`a ${ b // ok\n}`",
+  "a line comment inside an interpolation is inert when a newline ends it",
+);
+lexes(
+  "a block comment closed inside an interpolation",
+  "`a ${ b /* ok */}`",
+  "a block comment inside an interpolation is inert when `*/` ends it",
 );
 
 // --- the placeholder collision guard ---------------------------------------

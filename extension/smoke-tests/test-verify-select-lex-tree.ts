@@ -102,9 +102,13 @@ assert(
     // interpolation holds a nested template containing a brace.
     put("src/nested.ts", "export const f = (r: string) => `git ${JSON.stringify(`${r}^{tree}`)}`;\n");
     const nested = selectVerifyTests(ext, ["src/a.ts"]);
+    // The whole point of the fix, asserted as a verdict rather than as "one of the
+    // two possible answers": before the fix this file was the reason every
+    // selection fell back, so `full` is the failure this gate exists to catch, and
+    // a disjunction that admits it asserts nothing.
     assert(
-      nested.mode === "full" || nested.mode === "selected",
-      "the nested-template file is at least judged rather than thrown on",
+      nested.mode === "selected",
+      `the graph holding the nested-template file still selects (got ${nested.mode}/${nested.fallbackReason ?? "-"}) — a fall-back here is the #2450 defect, not an alternative outcome`,
     );
     assert(
       lexSource(readFileSync(path.join(ext, "src/nested.ts"), "utf8")) !== undefined,

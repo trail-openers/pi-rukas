@@ -62,7 +62,6 @@ const NODE_RE = /^(?:src\/(?:[^/]+\/)*[^/]+\.ts|smoke-tests\/[^/]+\.ts)$/;
 /** A relative specifier: `./x`, `../x`, `.`, `..`. Bare package names are not edges. */
 const RELATIVE_SPEC_RE = /^\.\.?(?:\/|$)/;
 /** A static import or re-export on lexed code: the specifier is the string token that ends the statement head. */
-/** A static import or re-export on lexed code: the specifier is the string token that ends the statement head. */
 // The markers are spelled as \u escapes rather than pasted, because a bare private-use
 // code point in this file would be a placeholder collision to the very lexer whose
 // output these patterns match — lexSource would refuse the file and the whole graph

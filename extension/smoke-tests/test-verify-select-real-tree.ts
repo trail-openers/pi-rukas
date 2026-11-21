@@ -19,9 +19,10 @@
  *     lexer did not quietly turn a doc change or a `smoke-tests/lib/` edit into a
  *     selection (both belong to #2424 item 5, and must stay full-suite runs).
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { lexSource } from "../src/work-driver-verify-select-lex.ts";
 import { selectVerifyTests } from "../src/work-driver-verify-select.ts";
 
 const extensionDir = path.resolve(import.meta.dirname, "..");
@@ -126,6 +127,25 @@ for (const [changed, reason] of [
       after.mode === "selected" && after.tests.includes("smoke-tests/test-b.ts"),
       `fixture: with its test present, src/b.ts selects (got ${after.mode}/${after.fallbackReason ?? "-"})`,
     );
+
+    // The other direction of the same mutant: the nested-template-with-brace shape
+    // that made this repo's nine nodes unlexable. The suite that owns the lexer
+    // (`test-verify-select-lex-tree.ts`) asserts its verdict; this gate owns the
+    // SELECTION, so the shape is asserted here as a `selected` answer — which is
+    // what a fixed lexer must produce, and what it did not produce before #2450.
+    put("src/nested-ok.ts", "export const f = (r: string) => `x ${JSON.stringify(`${r}^{tree}`)}`;\n");
+    put("smoke-tests/test-nested-ok.ts", 'import { f } from "../src/nested-ok.ts";\nvoid f;\n');
+    assert(
+      lexSource(readFileSync(path.join(ext, "src/nested-ok.ts"), "utf8")) !== undefined,
+      "the planted nested-template-with-brace file lexes",
+    );
+    const nestedOk = selectVerifyTests(ext, ["src/nested-ok.ts"]);
+    assert(
+      nestedOk.mode === "selected" && nestedOk.tests.includes("smoke-tests/test-nested-ok.ts"),
+      `the nested-template-with-brace node selects (got ${nestedOk.mode}/${nestedOk.fallbackReason ?? "-"}) — on the pre-fix lexer this fell back as unlexable`,
+    );
+    rmSync(path.join(ext, "src", "nested-ok.ts"), { force: true });
+    rmSync(path.join(ext, "smoke-tests", "test-nested-ok.ts"), { force: true });
 
     // The mutant: the nested-template shape from the issue, planted in the graph.
     // Before the fix this made the WHOLE selection fall back for every input; the

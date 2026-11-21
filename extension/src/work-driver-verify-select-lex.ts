@@ -68,13 +68,6 @@ const ESC = "\uE003";
 // own source is vouched for by a preceding ESC and the lexer can lex itself.
 const GUARD_RE = new RegExp(`(?<!${ESC})[${STR}${TPL}${REG}]`);
 const PLACEHOLDER_CHARS = [STR, TPL, REG];
-/**
- * The literal placeholder characters, for a consumer whose regexes match them.
- * A pattern that spells them as `\u` escapes carries a vouching ESC and so lexes
- * cleanly; one that pastes the raw code point is a placeholder collision, which
- * the guard above refuses — see test-verify-select-lex-tree.ts.
- */
-export const LITERAL_MARKERS = { STR, TPL, REG, ESC } as const;
 /** True when the source itself carries a marker the lexer did not write — a collision the lexer cannot resolve. */
 const carriesPlaceholder = (text: string): boolean => GUARD_RE.test(text);
 
