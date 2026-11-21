@@ -115,6 +115,8 @@ jobs:
         working-directory: extension
         env:
           PI_ENSEMBLE_VERIFY_TEST_JOBS: "4"
+          # Per-file ceiling (#2449): 30 s sits above the 20 s threshold that seeds
+          # extension/timing-allowlist.json, the only list that exempts a file.
           PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "30"
           # The shard index this job runs. The step's own NAME stays the bare
           # "Offline smoke tests" that test-ci-verify-loop-jobs.ts scopes its
