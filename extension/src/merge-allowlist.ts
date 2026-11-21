@@ -58,8 +58,8 @@
  * safety switch to unblock a read is handed the wrong remedy.
  */
 
-import { isInertFileWrite } from "./merge-inert-write.ts";
-import { MERGE_WORD } from "./merge-lex-views.ts";
+import { isInertFileWrite, isInertSegment, splitCommands } from "./merge-inert-write.ts";
+import { FORGE_WORD, MERGE_WORD, VERB_PAIR } from "./merge-lex-views.ts";
 import { lexedWhy } from "./merge-refusals.ts";
 import { analysisBound } from "./merge-size.ts";
 import { triggerCode } from "./merge-trigger.ts";
@@ -416,6 +416,35 @@ function isReadOnlyGh(words: string[]): boolean {
 
 /** Classify a bash command for the merge guard. Linear in the command length. */
 export function readMergeCommand(command: string): MergeCommand {
+  return classify(command, false);
+}
+
+/**
+ * Whether a command line the grammar cannot lex is a chain of simple commands
+ * none of which is merge-shaped on its own: a merge word in one command and a
+ * forge word in another (`git merge-base … && gh pr view 3`) hold nothing, as
+ * bash runs each alone. Each is classified with no inert-write exemption, and
+ * a `$` bash expands anywhere keeps the hold (`X=merge; gh pr $X`). A heredoc
+ * body written to a file is prose, held only where a line spells a merge (the
+ * next command may run it: `sh f`); one fed to any other command (`bash <<EOF`)
+ * is read line by line as commands, and held on any `$` or backtick.
+ */
+function isChainOfNonMerges(command: string): boolean {
+  const split = splitCommands(command);
+  if (split === undefined || split.expands) return false;
+  return split.segments.every(
+    (s) =>
+      classify(s.text, true).kind === "none" &&
+      s.bodies.every((line) =>
+        isInertSegment(s)
+          ? !VERB_PAIR.test(line) && !(MERGE_WORD.test(line) && FORGE_WORD.test(line))
+          : !/[$`]/.test(line) && classify(line, true).kind === "none",
+      ),
+  );
+}
+
+/** `inChain`: read one command of a chain — no inert-write exemption, no further split. */
+function classify(command: string, inChain: boolean): MergeCommand {
   // #955 / #1417 — the size bound, ahead of everything else: it answers
   // "read this at all?", and an unreadably long merge-shaped command must be
   // HELD rather than fall through to current-branch PR resolution. It bounds
@@ -428,13 +457,17 @@ export function readMergeCommand(command: string): MergeCommand {
   // whatever its quoted text or heredoc body spells. It answers only `none`,
   // so it can never reach current-branch PR resolution, which is the one
   // thing the bound exists to prevent.
-  if (isInertFileWrite(command)) return { kind: "none" };
+  if (!inChain && isInertFileWrite(command)) return { kind: "none" };
   const bounded = analysisBound(command);
   if (bounded !== undefined) return bounded;
   const lexed = lex(command);
   if ("words" in lexed && isReadOnlyGh(lexed.words)) return { kind: "none" };
   const trigger = triggerCode(command);
   if (trigger === undefined) return { kind: "none" };
+  // The trigger's command-word scan is not heredoc-aware, so an apostrophe in
+  // a heredoc body reads as a quoted command word: the chain split decides.
+  const chain = trigger.code === "expansion-command-word" || !("words" in lexed);
+  if (chain && !inChain && isChainOfNonMerges(command)) return { kind: "none" };
   // A trigger that refuses without reading: the code carries its own detail.
   if (trigger.code !== "") return refuse(trigger.code, trigger.detail);
   if (!("words" in lexed)) {

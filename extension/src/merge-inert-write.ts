@@ -30,6 +30,10 @@
  *     merge 12"` stays judged by the trigger), an fd duplication (`>&`), and
  *     a `/dev/tcp` or `/dev/udp` target.
  *
+ * The splitter under it, `splitCommands`, is shared with the classifier,
+ * which reads an unlexable chain one simple command at a time; every shape
+ * refused above is one it refuses to split.
+ *
  * Linear: one pass over the text, each heredoc body line read once.
  */
 
@@ -37,8 +41,13 @@
 const TEXT_WRITERS = new Set(["cat", "printf", "echo"]);
 const INERT = new Set([...TEXT_WRITERS, "mkdir", "true"]);
 
-interface Segment {
+/** One simple command of a split command line. */
+export interface Segment {
   words: string[];
+  /** The raw text bash reads for this command, heredoc bodies excluded. */
+  text: string;
+  /** The body lines of the heredocs this command reads from. */
+  bodies: string[];
   /** Whether the first word was spelled with quotes, escapes or expansions. */
   plainHead: boolean;
   stdoutToFile: boolean;
@@ -49,6 +58,14 @@ interface Heredoc {
   delim: string;
   stripTabs: boolean;
   quoted: boolean;
+  owner: Segment;
+}
+
+/** A command line split into simple commands, or why it could not be. */
+export interface Split {
+  segments: Segment[];
+  /** Whether bash expands a `$` anywhere: a command word or a value assembled at run time. */
+  expands: boolean;
 }
 
 /** Whether an unquoted heredoc body line would run a command. */
@@ -56,8 +73,38 @@ const expandsCommand = (line: string): boolean => line.includes("`") || line.inc
 
 /** Whether `command` is nothing but text written to files (see the module doc). */
 export function isInertFileWrite(command: string): boolean {
+  const split = splitCommands(command);
+  if (split === undefined || split.segments.length === 0) return false;
+  return split.segments.every(isInertSegment);
+}
+
+/** Whether one simple command is an inert command word, a text writer only into a file. */
+export function isInertSegment(s: Segment): boolean {
+  const head = s.words[0];
+  if (head === undefined || !s.plainHead || !INERT.has(head) || s.badTarget) return false;
+  return !TEXT_WRITERS.has(head) || s.stdoutToFile;
+}
+
+const newSegment = (): Segment => ({
+  words: [],
+  text: "",
+  bodies: [],
+  plainHead: true,
+  stdoutToFile: false,
+  badTarget: false,
+});
+
+/**
+ * Split `command` into its simple commands, or undefined for any shape the
+ * module doc lists as refused (a pipe, a background job, a substitution, …).
+ * The separators it accepts are `;`, `&&`, `||` and newlines; each heredoc
+ * body is attached to the command that opened it.
+ */
+export function splitCommands(command: string): Split | undefined {
   const segments: Segment[] = [];
-  let seg: Segment = { words: [], plainHead: true, stdoutToFile: false, badTarget: false };
+  let seg = newSegment();
+  let segStart = 0;
+  let expands = false;
   let word: string | undefined;
   let wordPlain = true;
   let redirect: "stdout" | "other" | undefined;
@@ -78,11 +125,13 @@ export function isInertFileWrite(command: string): boolean {
     word = undefined;
     wordPlain = true;
   };
-  const endSegment = (): boolean => {
+  const endSegment = (end: number, next: number): boolean => {
     endWord();
     if (redirect !== undefined) return false; // a redirection with no target
+    seg.text = command.slice(segStart, end);
     if (seg.words.length > 0 || seg.stdoutToFile) segments.push(seg);
-    seg = { words: [], plainHead: true, stdoutToFile: false, badTarget: false };
+    seg = newSegment();
+    segStart = next;
     return true;
   };
   const add = (ch: string, plain = true): void => {
@@ -98,7 +147,8 @@ export function isInertFileWrite(command: string): boolean {
       else add(ch);
       continue;
     }
-    if (ch === "`" || (ch === "$" && next === "(")) return false;
+    if (ch === "`" || (ch === "$" && next === "(")) return undefined;
+    if (ch === "$") expands = true;
     if (quote === '"') {
       if (ch === '"') quote = undefined;
       else if (ch === "\\") {
@@ -114,30 +164,32 @@ export function isInertFileWrite(command: string): boolean {
       if (next !== "\n") add(next, false);
       i += 1;
     } else if (ch === "$") {
-      if (next === "'") return false; // ANSI-C: `\'` does not end the quote
+      if (next === "'") return undefined; // ANSI-C: `\'` does not end the quote
       add(ch, false);
     } else if (ch === " " || ch === "\t") {
       endWord();
     } else if (ch === ";") {
-      if (!endSegment()) return false;
+      if (!endSegment(i, i + 1)) return undefined;
     } else if (ch === "&" || ch === "|") {
-      if (next !== ch) return false; // a pipe or a background job
-      if (!endSegment()) return false;
+      if (next !== ch) return undefined; // a pipe or a background job
+      if (!endSegment(i, i + 2)) return undefined;
       i += 1;
     } else if (ch === "\n") {
-      if (!endSegment()) return false;
+      if (!endSegment(i, i + 1)) return undefined;
       const resume = consumeHeredocs(command, i + 1, pending);
-      if (resume === undefined) return false;
-      i = resume - 1;
+      if (resume === undefined) return undefined;
+      if (resume.expands) expands = true;
+      i = resume.at - 1;
+      segStart = resume.at;
     } else if (ch === "<" && next === "<") {
-      if (command[i + 2] === "<") return false; // a here-string
-      const op = readHeredocOperator(command, i + 2);
-      if (op === undefined) return false;
+      if (command[i + 2] === "<") return undefined; // a here-string
+      const op = readHeredocOperator(command, i + 2, seg);
+      if (op === undefined) return undefined;
       endWord();
       pending.push(op.heredoc);
       i = op.end - 1;
     } else if (ch === ">" || ch === "<") {
-      if (next === "(" || next === "&" || redirect !== undefined) return false;
+      if (next === "(" || next === "&" || redirect !== undefined) return undefined;
       const fd = word;
       word = undefined;
       wordPlain = true;
@@ -148,20 +200,15 @@ export function isInertFileWrite(command: string): boolean {
       redirect = ch === ">" && (fd === undefined || fd === "1") ? "stdout" : "other";
       if (ch === ">" && (next === ">" || next === "|")) i += 1;
     } else if ("(){}#".includes(ch) && word === undefined) {
-      return false;
+      return undefined;
     } else if ("()".includes(ch)) {
-      return false;
+      return undefined;
     } else {
       add(ch);
     }
   }
-  if (quote !== undefined || pending.length > 0 || !endSegment()) return false;
-  if (segments.length === 0) return false;
-  return segments.every((s) => {
-    const head = s.words[0];
-    if (head === undefined || !s.plainHead || !INERT.has(head) || s.badTarget) return false;
-    return !TEXT_WRITERS.has(head) || s.stdoutToFile;
-  });
+  if (quote !== undefined || pending.length > 0 || !endSegment(n, n)) return undefined;
+  return { segments, expands };
 }
 
 /** `[-] [blanks] DELIM`, the delimiter ending at a word boundary. Sticky: matched at an index. */
@@ -172,6 +219,7 @@ const HEREDOC_OPERATOR =
 function readHeredocOperator(
   command: string,
   start: number,
+  owner: Segment,
 ): { heredoc: Heredoc; end: number } | undefined {
   HEREDOC_OPERATOR.lastIndex = start;
   const m = HEREDOC_OPERATOR.exec(command);
@@ -179,18 +227,24 @@ function readHeredocOperator(
   const bare = m[5];
   const delim = m[2] ?? m[3] ?? m[4] ?? bare ?? "";
   return {
-    heredoc: { delim, stripTabs: m[1] === "-", quoted: bare === undefined },
+    heredoc: { delim, stripTabs: m[1] === "-", quoted: bare === undefined, owner },
     end: start + m[0].length,
   };
 }
 
 /**
- * Skip the bodies of the heredocs opened on the line that just ended, in
- * order. Returns the index after the last terminator line, or undefined when a
- * body is unterminated or an unquoted body would run a command.
+ * Read the bodies of the heredocs opened on the line that just ended, in
+ * order, onto their owners. Returns the index after the last terminator line
+ * and whether an unquoted body expands a `$`, or undefined when a body is
+ * unterminated or an unquoted body would run a command.
  */
-function consumeHeredocs(command: string, start: number, pending: Heredoc[]): number | undefined {
+function consumeHeredocs(
+  command: string,
+  start: number,
+  pending: Heredoc[],
+): { at: number; expands: boolean } | undefined {
   let at = start;
+  let expands = false;
   while (pending.length > 0) {
     const doc = pending.shift() as Heredoc;
     for (;;) {
@@ -202,8 +256,10 @@ function consumeHeredocs(command: string, start: number, pending: Heredoc[]): nu
       at = end + 1;
       if (line === doc.delim) break;
       if (!doc.quoted && expandsCommand(line)) return undefined;
+      if (!doc.quoted && line.includes("$")) expands = true;
       if (nl === -1) return undefined;
+      doc.owner.bodies.push(line);
     }
   }
-  return at;
+  return { at, expands };
 }

@@ -53,6 +53,30 @@ function bodyIndirect(command: string): boolean {
   return /[$`]|<\(/.test(quotedView(command, true)) || BODY_INDIRECT_FILE.test(command);
 }
 
+/** `gh|glab api ENDPOINT` with a literal REST path as its first argument. */
+const LITERAL_API_CALL =
+  /(?:^|[\s;&|(])(?:gh|glab)[ \t]+api[ \t]+([\w./{}][\w./{}-]*)(?=[\s;&|)]|$)/g;
+
+/**
+ * Whether every forge API call in the command names a literal REST endpoint
+ * that cannot merge: no HTTP client, no `graphql` (whose query may sit
+ * in the unread body), and no endpoint spelling a merge word (`…/pulls/N/merge`,
+ * `…/merge_requests/N/merge`). Such a call's body is a comment or an issue
+ * field, whatever file it comes from, so its indirection hides no merge.
+ * Every `api`/`graphql` word must belong to one of those calls, so a second
+ * call spelled any other way keeps the hold.
+ */
+function literalNonMergeEndpoints(command: string): boolean {
+  if (HTTP_CLIENT.test(command)) return false;
+  const endpoints = [...command.matchAll(LITERAL_API_CALL)].map((m) => m[1] ?? "");
+  const apiWords = command.match(new RegExp(API_WORD.source, "gi"))?.length ?? 0;
+  return (
+    endpoints.length > 0 &&
+    endpoints.length === apiWords &&
+    endpoints.every((e) => !/graphql/i.test(e) && !MERGE_WORD.test(e))
+  );
+}
+
 /** A body read from a file or stdin: `k=@f`, `-d @f`, `-T f`, `--post-file f`, … */
 const BODY_INDIRECT_FILE =
   /(?:^|\s)[^\s=]*=@|(?:^|\s)-[dFT]\s*@|(?:^|\s)-T\b|--(?:data[\w-]*|form)\s+@|--data-urlencode\s+[^\s=@"']*@|--(?:upload-file|post-file|input)\b/;
@@ -134,7 +158,7 @@ export function triggerCode(command: string): HoldReason | undefined {
         "a command word built by expansion, quoting or escaping, so the tool bash would exec is not readable here",
     };
   }
-  if (isForgeOrHttpCall(command) && bodyIndirect(command)) {
+  if (isForgeOrHttpCall(command) && bodyIndirect(command) && !literalNonMergeEndpoints(command)) {
     return {
       code: "body-indirect",
       detail:
