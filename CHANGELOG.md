@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.98](https://github.com/trail-openers/pi-rukas/compare/v0.14.97...v0.14.98) (2026-11-21)
+
+
+### Bug Fixes
+
+* **verify:** make the develop-round test selector work, gate it on the real tree, and record its verdict ([#2453](https://github.com/trail-openers/pi-rukas/issues/2453)) ([af38c40](https://github.com/trail-openers/pi-rukas/commit/af38c40ba962afecbaad169fe7f35c1398d2e65f)), closes [#2450](https://github.com/trail-openers/pi-rukas/issues/2450) [#2424](https://github.com/trail-openers/pi-rukas/issues/2424)
+* **work:** write PR and plan titles whole, never cut ([#2451](https://github.com/trail-openers/pi-rukas/issues/2451)) ([87db976](https://github.com/trail-openers/pi-rukas/commit/87db976ac4750746c08996e9834603806316ae05)), closes [#1773](https://github.com/trail-openers/pi-rukas/issues/1773)
+
 ## [0.14.97](https://github.com/trail-openers/pi-rukas/compare/v0.14.96...v0.14.97) (2026-11-21)
 
 
