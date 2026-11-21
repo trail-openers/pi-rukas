@@ -3869,7 +3869,7 @@ The deterministic pre-triage (`plan-precheck.ts`) fired: the descriptor is below
 2. **An `ACCEPTANCE CRITERIA` directive block** — the typed channel (see "Operator directive channels (the trusted path into a spec)" below); operator directives satisfy the check outright.
 3. **`acceptance-criterion` items from an angle** — for a feature that is the `test-surface` angle, the sole angle chartered to report criteria ([#1855](https://github.com/trail-openers/pi-rukas/issues/1855)). Re-running re-dispatches the angles, so a run whose angle was killed or returned prose-only can pass on the retry.
 
-If none applies, supply the outcome via the `context` param — a `Done when:` block is the shortest form. Before #1855 this row named only the directive block, so an operator whose context already said "Done when: …" was told to restate it in a different syntax while the plan halted exit 40.
+If none applies, supply the outcome via the `context` param — a `Done when:` block is the shortest form. A headless plan for an existing issue reads that issue's body as context when started with `--issue <n>`, so an issue whose body already has `## Acceptance criteria` needs nothing more; one started without `--issue` never sees the body. Before #1855 this row named only the directive block, so an operator whose context already said "Done when: …" was told to restate it in a different syntax while the plan halted exit 40.
 
 ### "PLAN NOT FILED — THE REVIEWED SPEC CHANGED"
 

@@ -82,6 +82,8 @@ A caller that plans FROM an existing issue passes `--issue <n>` on `--start` (th
 
 With the number, the issue `n` and its own `n-k` split children are never duplicate candidates: they are removed from the risk child's inventory and prior-context views, said so in its prompt, and a HIGH verdict that names nothing but them is downgraded to medium by a deterministic post-filter, so the turn drafts instead of halting. A HIGH that names any other issue still halts at 10 — OPEN or CLOSED, whatever the child's prose said about it — and a plan with no `--issue` behaves exactly as before. The session records the number with the session, so `--resume` needs no repetition, and the drafted body carries a `## Duplicate check — excluded candidates` section naming what was suppressed and on what grounds — the operator always sees what the driver decided, never a silent absence.
 
+The number also brings the issue's text. `--issue <n>` on `--start` and on a one-shot `--dry-run`/`--file` reads issue `n`'s body once and plans from it as operator context, ahead of any `--context`, so the sections it already carries — `## Acceptance criteria`, `Done when:`, `## Out of scope` — hold operator authority in the draft, and an issue that states its criteria does not end `draft-invalid`. A session keeps the body it read at `--start`. A body that cannot be read (no forge, or `gh` fails) refuses the run at exit 40 with `error.code: "issue-unreadable"`, before anything is dispatched.
+
 ## The four contracts
 
 The headless runner's contract with its caller is four independent surfaces, each versioned:
