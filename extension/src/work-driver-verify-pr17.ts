@@ -28,6 +28,7 @@ import { type VerifyCommandRecord, newVerifyRecordSlot } from "./work-driver-ver
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
 import { shellExecp } from "./work-driver-verify-shell.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
+import type { VerifySelectArgs } from "./workflow-state-events-verify-select.ts";
 import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
 
@@ -223,6 +224,11 @@ export async function verifyStepOutcome(
     // develop step, and a disclosure list that accumulated on the cycle context would put an
     // earlier round's unverifiable tokens in this round's PR body.
     const provenanceSink: ProvenanceDisclosureSink = {};
+    // #2450 — the selector's verdict for THIS gate call, in a sink created here for
+    // the same per-call scope reason as `provenanceSink`: `verifyStepOutcome` runs
+    // up to three times in one develop step, and a verdict that accumulated on the
+    // cycle context would report an earlier round's selection against this one.
+    const verifySelectSink: { verdict?: VerifySelectArgs } = {};
     // The background base probe's report, once the gate read one (see the
     // `baseHealthProbe` / `baseHealthConsulted` fields below): the develop gate is
     // the only reader, so it is also the only writer. An accumulator rather than
@@ -284,6 +290,7 @@ export async function verifyStepOutcome(
       onSelectedVerify: (record) => {
         selectedOut.record = record;
       },
+      verifySelectSink,
       onBaseHealth: (report) => {
         baseHealthOut.report = mergeBaseHealthReport(baseHealthOut.report ?? {}, report);
       },
@@ -315,6 +322,10 @@ export async function verifyStepOutcome(
         ? { baseHealthConsulted: baseHealthOut.report.consulted }
         : {}),
       ...(selectedOut.record !== undefined ? { selectedVerify: selectedOut.record } : {}),
+      // #2450 — the selector's verdict for THIS gate call, read from the sink the
+      // chain filled: a verdict the plan computed and nobody carried is how the
+      // selector stayed invisible while it was inert.
+      ...(verifySelectSink.verdict !== undefined ? { verifySelect: verifySelectSink.verdict } : {}),
       verifyRun: verifyRecord.current,
       // #2283 — only when this run filled it: a run that never executed the gate has nothing
       // to disclose, and an empty array here would render an empty section header.

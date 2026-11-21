@@ -13,6 +13,9 @@
  *   - it takes `plan` and calls `plan.finish` itself, so the selected run's
  *     attribution record is written on the same path the run happened on and
  *     cannot be orphaned by a caller that returned early;
+ *   - it fills the caller's #2450 `verifySelectSink` from the `plan` it holds —
+ *     this is the layer that has both, so the verdict is written by the module
+ *     that sees the decision rather than forwarded up through a pass-through;
  *   - it writes NO state. The base-health verdict and the consultation record go
  *     out through `onBaseHealth`, which the caller owns — the background probe is
  *     a concurrent task, and a second writer of `pipelineState` would race the
@@ -99,6 +102,17 @@ export async function runDevelopVerifyCommandChain(opts: {
     hangSink,
     onGateRecorded,
   } = options;
+  // #2450 — hand the selector's verdict to the caller that owns the event log. This
+  // chain is the module that already holds the plan and the caller's options, so
+  // the verdict travels on the sink from here rather than being rebuilt from the
+  // notes (which are operator prose, and the two would drift). Recorded on every
+  // plan that carries one — the selected run and every reasoned fallback — and
+  // before the command runs, so a gate that fails or aborts still says what was
+  // chosen. Nothing is filled when selection was never attempted: that plan
+  // carries no verdict, and the absence of the event is what says so.
+  if (options.verifySelectSink !== undefined && plan.verdict !== undefined) {
+    options.verifySelectSink.verdict = plan.verdict;
+  }
   const cmd = plan.cmd;
   if (!cmd) {
     notes.push(noVerifyCmdNote());

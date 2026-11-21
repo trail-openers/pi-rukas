@@ -115,6 +115,10 @@ export const KNOWN_EVENT_KINDS = [
   // #1415 — the develop gate's verify run, bracketed so its time is visible.
   "verify-started",
   "verify-completed",
+  // #2450 — what the #1647 test selector decided for a develop round. Absent
+  // from the tuple, a resumed cycle halts on the one event that says whether the
+  // gate ran a selection or the whole suite (#986's shape).
+  "verify-select",
   // #558 — the branch step's worktree provisioning record (the driver writes
   // it when it symlinks dependencies into a fresh worktree). Absent from the
   // tuple, a cycle that crashed after provisioning refused to resume.

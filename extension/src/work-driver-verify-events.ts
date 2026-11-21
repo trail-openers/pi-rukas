@@ -28,6 +28,9 @@ import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
 import type { VerifyAttributionRecord } from "./work-driver-verify-shared.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import { makeConsolidatedVerifySkippedEvent } from "./workflow-state-events-verify-flake.ts";
+// #2450 — the selector's verdict, recorded beside the gate's other develop records.
+import { makeVerifySelectEvent } from "./workflow-state-events-verify-select.ts";
+import type { VerifySelectArgs } from "./workflow-state-events-verify-select.ts";
 import type { VerifyRunEventFragment, VerifyStartedEvent } from "./workflow-state-events-verify.ts";
 import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
@@ -131,6 +134,14 @@ export function recordDevelopGateEvents(
      */
     baseHealthConsulted?: BaseHealthConsulted;
     selectedVerify?: SelectedVerifyRecord;
+    /**
+     * #2450 — what the test selector decided for this develop round: the selected
+     * run, or the reason it fell back to the whole suite. Recorded here because
+     * this is the seam that owns the develop gate's state write; a verdict
+     * collected by the plan and dropped by the caller is exactly how the selector
+     * stayed invisible while it was inert.
+     */
+    verifySelect?: VerifySelectArgs;
     fenceLifts?: FenceLift[];
     /**
      * #2283 — the data-provenance disclosures of THIS develop pass, recorded onto the state
@@ -182,6 +193,7 @@ export function recordDevelopGateEvents(
             now: Date.now(),
           }),
         ]),
+    ...(gate.verifySelect === undefined ? [] : [makeVerifySelectEvent(gate.verifySelect)]),
     ...(completed ? [completed] : []),
   ];
   const recorded = foldVerifyAttribution(

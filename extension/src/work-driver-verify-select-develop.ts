@@ -29,6 +29,7 @@ import {
 } from "./work-driver-verify-select-exec.ts";
 import { selectVerifyTests, selectedVerifyCommand } from "./work-driver-verify-select.ts";
 import { isOfflineTest } from "./work-driver-verify-shared.ts";
+import type { VerifySelectArgs } from "./workflow-state-events-verify-select.ts";
 import type { ExecFn } from "./worktree.ts";
 
 export interface SelectedVerifyPlan {
@@ -38,6 +39,13 @@ export interface SelectedVerifyPlan {
   wrap: (execFn: ExecFn) => ExecFn;
   /** Hands the gate's record to the caller and removes the report directory, once the gate has read its verdicts. */
   finish: (onRecord?: (record: SelectedVerifyRecord) => void) => void;
+  /**
+   * #2450 — what the selector decided, so the gate can record it. Present on the
+   * selected run and on every fallback that produced a reason; absent only where
+   * selection was never attempted (the escape hatch is off-path, and a project
+   * with no `.pi/verify-select` gets the pre-#1647 round with no verdict).
+   */
+  verdict?: VerifySelectArgs;
 }
 
 /** `PI_ENSEMBLE_VERIFY_SELECT=0` restores the full develop command exactly. */
@@ -101,27 +109,45 @@ export async function planDevelopVerify(
   const fastCmd = await fastVerifyCmdFor(repoRoot);
   const fastTimeoutMs = (await developTierTimeouts(repoRoot)).fast;
   // A project that has not opted in gets the pre-#1647 develop round exactly: the
-  // full command, with no selection note.
-  const fullPlan = (note?: string): SelectedVerifyPlan => {
+  // full command, with no selection note and no verdict — selection was never
+  // attempted here, and R1 keeps that path byte-identical.
+  const fullPlan = (note?: string, verdict?: VerifySelectArgs): SelectedVerifyPlan => {
     if (note !== undefined) notes.push(note);
     return {
       cmd: fullCmd,
       wrap: (execFn) => withFastTier(execFn, fullCmd, fastCmd, { fast: fastTimeoutMs }),
       finish: () => {},
+      ...(verdict !== undefined ? { verdict } : {}),
     };
   };
   if (!(await selectOptedIn(repoRoot))) return fullPlan();
   if (!verifySelectEnabled()) {
     return fullPlan(
       "verify selection disabled (PI_ENSEMBLE_VERIFY_SELECT=0) — the full verify command ran",
+      // The escape hatch is an opt-out, not a selector verdict: recording it as
+      // one would put a `fallbackReason` on the event whose own contract says the
+      // reason names why the SELECTOR fell back. The note above is the operator's
+      // record of the hatch, unchanged from today.
     );
   }
   // Selection replaces `.pi/verify-cmd` only. A command derived from package.json
   // or Cargo.toml is not one the selected command could stand in for.
   if (!(await fileExists(path.join(repoRoot, ".pi", "verify-cmd")))) {
-    return fullPlan("verify selection fell back to the full suite (no-pi-verify-cmd)");
+    return fullPlan("verify selection fell back to the full suite (no-pi-verify-cmd)", {
+      mode: "full",
+      fallbackReason: "no-pi-verify-cmd",
+      selected: 0,
+      alwaysRun: 0,
+    });
   }
-  if (!fastCmd) return fullPlan("verify selection fell back to the full suite (no-fast-tier)");
+  if (!fastCmd) {
+    return fullPlan("verify selection fell back to the full suite (no-fast-tier)", {
+      mode: "full",
+      fallbackReason: "no-fast-tier",
+      selected: 0,
+      alwaysRun: 0,
+    });
+  }
   let selection: ReturnType<typeof selectVerifyTests>;
   try {
     selection = selectVerifyTests(
@@ -129,13 +155,23 @@ export async function planDevelopVerify(
       touchedPaths.map(extensionRelativeOf),
     );
   } catch (err) {
-    return fullPlan(
-      `verify selection fell back to the full suite (uncomputable-graph: ${(err as Error).message?.slice(0, 120)})`,
-    );
+    const reason = `uncomputable-graph: ${(err as Error).message?.slice(0, 120)}`;
+    return fullPlan(`verify selection fell back to the full suite (${reason})`, {
+      mode: "full",
+      fallbackReason: reason,
+      selected: 0,
+      alwaysRun: 0,
+    });
   }
   if (selection.mode === "full") {
     return fullPlan(
       `verify selection fell back to the full suite (${selection.fallbackReason ?? "unknown"})`,
+      {
+        mode: "full",
+        fallbackReason: selection.fallbackReason ?? "unknown",
+        selected: 0,
+        alwaysRun: selection.alwaysRun.length,
+      },
     );
   }
   // Both halves come from the tree the gate runs in: the graph selection and the
@@ -184,6 +220,11 @@ export async function planDevelopVerify(
     finish: (onRecord) => {
       onRecord?.(record);
       if (channel !== undefined) removeVerifyReportDir(channel.reportDir);
+    },
+    verdict: {
+      mode: "selected",
+      selected: selection.tests.length,
+      alwaysRun: selection.alwaysRun.length,
     },
   };
 }
