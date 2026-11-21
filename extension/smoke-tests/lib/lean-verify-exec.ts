@@ -43,7 +43,6 @@ export { canonicalProbeDir } from "./lean-verify-probe-tree.ts";
 
 import { rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { ROSTER_REPORT_FILE } from "../../src/lean/verify-roster-command.ts";
 import {
   baseTierHangCommand,
   isProbeBlobRead,
@@ -51,9 +50,11 @@ import {
 } from "./lean-verify-probe-shapes.ts";
 import {
   NO_REPORT_SENTINEL,
+  bareDepsOf,
   isRosterReportRead,
   rosterReportXml,
   rosterSideOf,
+  writeDeclaredReport,
 } from "./lean-verify-roster.ts";
 
 export function makeVerifyExec(opts: {
@@ -206,49 +207,6 @@ export function makeVerifyExec(opts: {
    * root, so the stub recognises the `worktree add` that makes it rather than guessing at a name.
    */
   const rosterProbeDir = canonicalRosterProbeDir(repoRoot, o.issue);
-  /**
-   * Take the dependency tree a case says never arrived out of the roster's base checkout.
-   *
-   * Timed to the base SUITE's run rather than to the checkout: the production order is checkout, link,
-   * then run, and the gate is asked to notice an undelivered dependency between the link that reported
-   * success and the run that would silently fail every test. Removing them here is the state a link that
-   * never landed leaves — the tree is present, the modules are not, and nothing upstream reported it.
-   */
-  const bareBaseDeps = (tree: string): void => {
-    for (const dep of o.roster?.baseMissingDeps ?? []) {
-      try {
-        rmSync(path.join(tree, dep), { recursive: true, force: true });
-      } catch {
-        /* a tree already bare is the state the case asked for */
-      }
-    }
-  };
-  /**
-   * A roster run the stub itself produces: it writes the report the gate then reads back, holding the
-   * names this side was declared to have. The report is a real file in the tree the run belongs to and
-   * in the shape a JUnit report has, so the gate's parser, its emptiness rule and its contradiction
-   * rule all run on bytes rather than on a verdict the harness asserted.
-   */
-  const writeDeclaredReport = (
-    tree: string,
-    side: { passed: readonly string[]; failed: string[] },
-    which: "head" | "base",
-  ) => {
-    const report = path.join(tree, ROSTER_REPORT_FILE);
-    const absent = [...side.passed, ...side.failed].includes(NO_REPORT_SENTINEL);
-    const xml = absent ? undefined : rosterReportXml(side);
-    // Synchronous, and it has to be: the gate reads the report back with its own `readFileSync` the
-    // moment the run resolves, so an await between the run and its answer is a report that arrives
-    // after the verdict, which is the same as no report at all.
-    try {
-      if (xml === undefined) rmSync(report, { force: true });
-      else writeFileSync(report, xml);
-    } catch {
-      /* a tree that is already gone is the gate's problem to refuse, not the stub's to hide */
-    }
-    return Promise.resolve({ code: 0, stdout: `roster-said-${which}\n`, stderr: "" });
-  };
-
   /** The tier's own marker, so a stubbed red prints the identity of ITS tier. A command
    * with no `tier-said-` marker has no stamp at all — the stub invents none. */
   const markerOf = (cmd: string): string | undefined =>
@@ -413,13 +371,15 @@ export function makeVerifyExec(opts: {
       // The fixture's own `worktree add` for the run's tree, plus the probe's: both go to
       // the real git, since a registration the stub invented could not be read back.
       const isRosterProbe = o2?.argv?.includes(rosterProbeDir) === true;
-      return execp(cmd, { ...o2, env: o2?.env ?? childEnv(), cwd: o2?.cwd ?? repoRoot }).then((r) => {
-        // Bared the moment the checkout exists — before the gate provisions it and before it asks the
-        // checkout anything — so the whole production sequence (checkout, link, judge, run) sees the
-        // same tree a link that never landed would leave.
-        if (isRosterProbe) bareBaseDeps(rosterProbeDir);
-        return r;
-      });
+      return execp(cmd, { ...o2, env: o2?.env ?? childEnv(), cwd: o2?.cwd ?? repoRoot }).then(
+        (r) => {
+          // Bared the moment the checkout exists — before the gate provisions it and before it asks the
+          // checkout anything — so the whole production sequence (checkout, link, judge, run) sees the
+          // same tree a link that never landed would leave.
+          if (isRosterProbe) bareDepsOf(rosterProbeDir, o.roster?.baseMissingDeps ?? []);
+          return r;
+        },
+      );
     }
     if (namesProbeTree(repoRoot, probeDir, o2) || isProbeBlobRead(o2, baseSha)) {
       // The base's blob reads are the ONE place a case answers for the base commit rather

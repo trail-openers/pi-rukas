@@ -67,7 +67,12 @@ const ask = (shape: Record<string, unknown>) =>
 {
   // A non-integer code is no more an exit than an absent one: `null`, a string and NaN are the shapes
   // a wrapper that lost the status leaves behind, and each would otherwise be compared to zero.
-  for (const [label, bad] of [["null", null], ["string 0", "0"], ["NaN", Number.NaN], ["absent", undefined]] as const) {
+  for (const [label, bad] of [
+    ["null", null],
+    ["string 0", "0"],
+    ["NaN", Number.NaN],
+    ["absent", undefined],
+  ] as const) {
     const r = await ask({ code: bad, stdout: "", stderr: "" });
     assert(
       r.ran === false,
