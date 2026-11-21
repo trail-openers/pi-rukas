@@ -37,13 +37,23 @@ const NAMES = ["tests/test-a.sh::first", "tests/test-a.sh::second", "tests/test-
 
 {
   // The roster's on arm: the project's tests really ran, in both trees, and what they produced is
-  // in the record. `rosterRuns` is the count of the step's OWN suite invocations, so a record that
-  // appeared without two runs behind it is the defect, not a passing case.
+  // in the record. The two sides are counted APART (`rosterHeadRuns` / `rosterBaseRuns`) because a
+  // shared count cannot tell a skipped base leg from a base run that never happened (#2439 R4) — and
+  // a record that appeared without both runs behind it is the defect, not a passing case.
   const r = await runVerify({
     issue: 2428,
     implement: true,
     config: { fast: PASS_TIER },
-    roster: { files: PRE_EXISTING, headPassed: NAMES, basePassed: NAMES },
+    // One name fails at BOTH commits: the baseline comparison is then a live run rather than the
+    // skipped leg a clean head buys (#2439 R3), so this case keeps judging what it was written to
+    // judge. A name the base failed too is not charged, so the run is still green.
+    roster: {
+      files: PRE_EXISTING,
+      headPassed: NAMES,
+      basePassed: NAMES,
+      headFailed: [`${PRE_EXISTING[0]}::broken_before_this_run`],
+      baseFailed: [`${PRE_EXISTING[0]}::broken_before_this_run`],
+    },
   });
   assert(
     r.outcome?.kind === "green",
@@ -52,8 +62,8 @@ const NAMES = ["tests/test-a.sh::first", "tests/test-a.sh::second", "tests/test-
   const roster = r.outcome?.projectRoster as ProjectRosterRecord | undefined;
   assert(roster !== undefined, "(built) the green carries a projectRoster");
   assert(
-    r.rosterRuns === 2,
-    `(built) the project's suite ran at head AND at the base (runs: ${String(r.rosterRuns)})`,
+    r.rosterHeadRuns === 1 && r.rosterBaseRuns === 1,
+    `(built) the project's suite ran at head AND at the base (${String(r.rosterHeadRuns)} head, ${String(r.rosterBaseRuns)} base)`,
   );
   assert(
     JSON.stringify(roster?.passed) === JSON.stringify(NAMES),
@@ -68,8 +78,8 @@ const NAMES = ["tests/test-a.sh::first", "tests/test-a.sh::second", "tests/test-
     `(built) the record says which commit the base run ran at (${String(roster?.baseSha)} vs ${String(r.baseSha)})`,
   );
   assert(
-    roster?.total === NAMES.length && roster?.baseTotal === NAMES.length,
-    `(built) the totals are the runs' own counts (head ${String(roster?.total)}, base ${String(roster?.baseTotal)})`,
+    roster?.total === NAMES.length + 1 && roster?.baseTotal === NAMES.length + 1,
+    `(built) the totals are the runs' own counts, failures included (head ${String(roster?.total)}, base ${String(roster?.baseTotal)})`,
   );
 }
 
@@ -124,7 +134,14 @@ const NAMES = ["tests/test-a.sh::first", "tests/test-a.sh::second", "tests/test-
     issue: 2431,
     implement: true,
     config: { fast: PASS_TIER },
-    roster: { files: PRE_EXISTING, headPassed: NAMES, basePassed: [NO_REPORT_SENTINEL] },
+    roster: {
+      files: PRE_EXISTING,
+      headPassed: NAMES,
+      basePassed: [NO_REPORT_SENTINEL],
+      // A clean head would SKIP the base leg, and the case asks what a base with no report does to
+      // a roster — so the head has to have failed something the gate still owes a base run for.
+      headFailed: [`${PRE_EXISTING[0]}::broken_before_this_run`],
+    },
   });
   assert(
     r.threw !== undefined && /base/i.test(r.threw?.message ?? ""),
@@ -167,6 +184,9 @@ const NAMES = ["tests/test-a.sh::first", "tests/test-a.sh::second", "tests/test-
       headPassed: NAMES,
       basePassed: NAMES,
       baseMissingDeps: ["node_modules"],
+      // As above: an unprovisioned base is only asked about on a run that owes a base suite.
+      headFailed: [`${PRE_EXISTING[0]}::green_at_base`],
+      basePassed: NAMES,
     },
   });
   const said = `${r.threw?.message ?? ""}${r.outcome?.reason ?? ""}`;
@@ -183,8 +203,8 @@ const NAMES = ["tests/test-a.sh::first", "tests/test-a.sh::second", "tests/test-
     "(no deps) no outcome is recorded — a base nobody provisioned decided nothing",
   );
   assert(
-    r.rosterRuns < 2,
-    `(no deps) the base suite never completed a run, so no roster was built (runs: ${String(r.rosterRuns)})`,
+    r.rosterHeadRuns === 1 && r.rosterBaseRuns === 0,
+    `(no deps) the head ran and the base never completed (${String(r.rosterHeadRuns)} head, ${String(r.rosterBaseRuns)} base)`,
   );
 }
 

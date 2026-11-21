@@ -19,20 +19,10 @@
  */
 import { rmSync } from "node:fs";
 import type { ProjectRosterRecord } from "../src/lean/state-outcome-maps.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { ROOTS, runVerify } from "./lib/lean-verify-fixture.ts";
 import { NO_REPORT_SENTINEL } from "./lib/lean-verify-roster.ts";
 import { PASS_TIER } from "./lib/lean-verify-tiers.ts";
-
-const SELF = "test-AC4-project-roster-bench-cells.ts";
-let exit = 0;
-function assert(cond: boolean, msg: string): void {
-  if (cond) console.log(`✓ ${msg}`);
-  else {
-    console.error(`✗ ${SELF}: ${msg}`);
-    exit = 1;
-  }
-}
+import { withEnv } from "./lib/env-scope.ts";
 
 /**
  * Run one case with the roster lever taken off, and put the environment back exactly as it was.
@@ -46,6 +36,16 @@ async function withRosterOff<T>(body: () => Promise<T>): Promise<T> {
     out = await body();
   });
   return out;
+}
+
+const SELF = "test-AC4-project-roster-bench-cells.ts";
+let exit = 0;
+function assert(cond: boolean, msg: string): void {
+  if (cond) console.log(`✓ ${msg}`);
+  else {
+    console.error(`✗ ${SELF}: ${msg}`);
+    exit = 1;
+  }
 }
 
 {
@@ -76,12 +76,15 @@ async function withRosterOff<T>(body: () => Promise<T>): Promise<T> {
     `(cell 1) and the reason names the broken test (${(caught.outcome?.reason ?? "").slice(0, 150)})`,
   );
   assert(
-    caught.rosterRuns === 2,
-    `(cell 1) the suite ran in both trees, not just the run's (${String(caught.rosterRuns)})`,
+    // Head failed, so the base run is owed and made: the two counters say 1 + 1 where a shared
+    // count could only have said 2 and left a skipped base leg indistinguishable from a lost run.
+    caught.rosterHeadRuns === 1 && caught.rosterBaseRuns === 1,
+    `(cell 1) the suite ran in both trees, not just the run's (${String(caught.rosterHeadRuns)} head, ${String(caught.rosterBaseRuns)} base)`,
   );
 
-  // The same tree with the lever off: no suite runs, and the step answers the way it did before Part
-  // A — a green off the tiers alone. This is the shape the cell was red in, made explicit.
+  // The same tree with the roster lever taken off: no suite runs, and the step answers the way it
+  // did before Part A — a green off the tiers alone. This is the shape the cell was red in, made
+  // explicit, and the lever remains the operator's way to get it (#2438 R4 keeps it retained).
   const blind = await withRosterOff(() =>
     runVerify({
       issue: 2461,
@@ -134,7 +137,7 @@ async function withRosterOff<T>(body: () => Promise<T>): Promise<T> {
   );
 
   // Off: the step runs the edited copy, sees it pass, and has no idea the original ever failed.
-  const blind = await withRosterOff(() =>
+    const blind = await withRosterOff(() =>
     runVerify({
       issue: 2463,
       implement: true,

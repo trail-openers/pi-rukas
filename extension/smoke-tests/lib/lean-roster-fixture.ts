@@ -18,6 +18,10 @@
  * deliberately the only name list the fixture fills — `projectRosterProblem` allows it empty (a suite
  * wholly red at the base is a roster, not a hand-back), and a fixture that claimed more than the
  * gate ever observed would be forging the very evidence the land gate exists to demand.
+ *
+ * `fileCount` and `baseSkipped` (#2439) are absent by the same rule: each is a claim about an
+ * observation this fixture does not have, so the validator's tolerance of their absence is what
+ * keeps the fixture honest rather than a second place to get the shape wrong.
  */
 
 import type { Outcome } from "../../src/lean/state.ts";
@@ -30,8 +34,14 @@ const SUITE_FILE = "tests/suite.test.ts";
  *
  * `baseSha` must be a full lowercase oid — `projectRosterProblem` refuses anything else, and the
  * roster claims WHICH commit its base run ran at. Pass the same sha the run's `baseSha` holds.
+ *
+ * `baseSkipped` is the one way a case asks for the shape the #2439 skip writes: a roster stating a
+ * base leg it did not run, with the record saying so instead of inventing a base run.
  */
-export function landedRoster(baseSha: string): NonNullable<Outcome["projectRoster"]> {
+export function landedRoster(
+  baseSha: string,
+  opts?: { baseSkipped?: boolean },
+): NonNullable<Outcome["projectRoster"]> {
   return {
     baseSha,
     files: [SUITE_FILE],
@@ -39,11 +49,17 @@ export function landedRoster(baseSha: string): NonNullable<Outcome["projectRoste
     failed: [],
     baseFailed: [],
     total: 1,
-    baseTotal: 1,
+    // A skipped leg ran nothing, which is what owes the 0 (`projectRosterProblem` refuses either pair
+    // the other way round).
+    baseTotal: opts?.baseSkipped === true ? 0 : 1,
+    ...(opts?.baseSkipped === true ? { baseSkipped: true } : {}),
   };
 }
 
 /** A green `verify` outcome that carries a roster — what a scripted happy path queues. */
-export function greenWithRoster(baseSha: string): Outcome {
-  return { kind: "green", projectRoster: landedRoster(baseSha) };
+export function greenWithRoster(
+  baseSha: string,
+  opts?: { baseSkipped?: boolean },
+): Outcome {
+  return { kind: "green", projectRoster: landedRoster(baseSha, opts) };
 }

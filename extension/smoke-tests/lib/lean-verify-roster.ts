@@ -109,10 +109,23 @@ export function rosterCommandFor(config: {
 }): { bin: string } | undefined {
   const template =
     config.roster ??
-    (config.test === undefined ? undefined : `${config.test} --junitxml={report} {dir}`);
+    (config.test === undefined ? undefined : deriveRosterTemplate(config.test));
   if (template === undefined) return undefined;
   const bin = template.split(/\s+/).filter((w) => w !== "")[0];
   return bin === undefined ? undefined : { bin };
+}
+
+/**
+ * The fixture's copy of the gate's derivation (`deriveSuiteTemplate` in `verify-roster-command.ts`):
+ * `verify.test` with one whole-word `{file}` removed, plus the report pair. A fixture that appended
+ * without removing would recognise its own roster runs by an argv the gate no longer submits, and
+ * every roster case would silently stop counting the runs it asserts on.
+ */
+export function deriveRosterTemplate(test: string): string {
+  const words = test.split(/\s+/).filter((w) => w !== "");
+  const at = words.indexOf("{file}");
+  const kept = at < 0 ? words : [...words.slice(0, at), ...words.slice(at + 1)];
+  return `${kept.join(" ")} --junitxml={report} {dir}`;
 }
 
 /**
@@ -142,6 +155,9 @@ export function rosterSideOf(cwd: string, worktree: string, _probeDir: string): 
  */
 export function rosterTestFiles(opts: VerifyOpts): Record<string, string[]> {
   if (opts.roster === undefined) return { [DEFAULT_PROJECT_TEST]: [] };
+  // The case's declared files are the base commit's suite, in full: the default is for the case that
+  // declared nothing, and keeping it beside a case's own list would hand the gate a file whose
+  // verdicts the case never declared.
   return Object.fromEntries((opts.roster.files ?? []).map((rel): [string, string[]] => [rel, []]));
 }
 
@@ -195,8 +211,9 @@ export function rosterTemplate(
   if (configured.roster !== undefined) return configured.roster;
   if (opts.rosterTemplate !== undefined) return opts.rosterTemplate;
   // The fixture's own runner: a committed script that writes the JUnit report the gate reads back.
-  // It names the TREE (`{dir}`), as a suite runner does, not one file — a per-file template would
-  // hand the gate a `{file}` placeholder it never substitutes and a run of nothing.
+  // It is written in the shape the gate DERIVES from `verify.test` — the file placeholder gone, the
+  // tree and the report named — because a fixture whose template disagrees with the derivation is a
+  // fixture that recognises its own roster runs by an argv the gate never submits.
   return "sh .lean-roster-runner.sh --junitxml={report} {dir}";
 }
 

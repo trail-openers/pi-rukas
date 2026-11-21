@@ -18,7 +18,7 @@
  *     per-runner detection or exception table: the exit status alone decides.
  *
  * TWO shapes, one per language family, because the probe's NAME is part of whether a runner can read it at
- * all (`PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_COLLECTABLE`):
+ * all:
  *
  *   - the original: `.lean-runner-probe.test` at the worktree root, or just outside a configured
  *     `verify.testDir`. Hidden, so no `testGlob` (none may start with `.`) mistakes it for an acceptance
@@ -44,10 +44,7 @@ import path from "node:path";
 import type { ExecFn } from "../worktree.ts";
 import type { TestLocation } from "./config-test-location.ts";
 import { globMatches, globNamesPythonFiles } from "./config-test-location.ts";
-import {
-  leanPreflightProbeCollectableEnabled,
-  leanPreflightProbeContainEnabled,
-} from "./preflight-probe-switch.ts";
+import { leanPreflightProbeContainEnabled } from "./preflight-probe-switch.ts";
 import { leanRunnerPreflightEnabled } from "./runner-preflight-switch.ts";
 import { probeRejected, probeWrite, removeProbe } from "./specify-preflight-write.ts";
 import type { Proof, TestRunLimits } from "./specify-proof.ts";
@@ -119,7 +116,7 @@ function probeRelative(wt: string, testLocation?: TestLocation): { rel: string; 
         `matches .pi/work.json verify.testGlob (${loc.testGlob}) in ${dir}/`,
     );
   };
-  if (leanPreflightProbeCollectableEnabled() && testLocation !== undefined) {
+  if (testLocation !== undefined) {
     if (globNamesPythonFiles(testLocation.testGlob)) {
       // A Python probe has to be a file the runner can IMPORT, so it goes INSIDE the folder —
       // at the root only when that folder is not on the tree at all.
@@ -255,12 +252,7 @@ async function runProbeAt(
     if (probeHealthy(proof)) return;
     // The reading is a fact about the PROBE's name, so it belongs to the probe that carries
     // the collectable name: `pyProbe` is the answer for the name actually written.
-    if (
-      pyProbe &&
-      leanPreflightProbeCollectableEnabled() &&
-      proof.kind !== "infra" &&
-      proof.code === PYTEST_NO_COLLECTOR
-    )
+    if (pyProbe && proof.kind !== "infra" && proof.code === PYTEST_NO_COLLECTOR)
       return probeRejected(proof);
     throw new SpecifyInfraError(
       `the test runner could not run a test file: ${proof.cmd} — ${trim(proof.detail)}`,

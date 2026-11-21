@@ -64,33 +64,64 @@ function reasonShape(reason: string): string {
 
 const FILE = "tests/test-a.sh";
 const NAMES = ["tests/test-a.sh::one", "tests/test-a.sh::two"];
+/** The name `caseOf` moves from passing to failing when a case owes the step a head failure. */
+const BROKEN = NAMES[1];
 
-/** The same case every arm runs, so a difference between arms can only be the lever. */
-function caseOf(issue: number) {
+/**
+ * The same case every arm runs, so a difference between arms can only be the lever.
+ *
+ * Two cases, because the roster's own verdict decides what the step's record looks like and AC5
+ * pins two different things with it:
+ *
+ * - The GREEN case is the one the step's WORDING is compared on. A clean run is the only one where
+ *   the roster decides nothing, so the reason stays the step's ordinary one and the off arm can be
+ *   held against it byte for byte. A green's record is also the only record the gate writes — a red
+ *   carries a reason and no roster, by AC2's own rule, so an arm that asks to see the roster field
+ *   has to ask on a green.
+ * - The RED case exists because #2439 made the base suite's SECOND run conditional on the head run
+ *   having failed a test. An arm that asks whether the base leg ran must therefore run a head that
+ *   failed something, or it would read the #2439 skip as the lever being off.
+ */
+function caseOf(issue: number, opts: { headFailsOne?: boolean } = {}) {
+  const fails = opts.headFailsOne === true ? BROKEN : undefined;
+  const passed = fails === undefined ? NAMES : NAMES.filter((n) => n !== fails);
   return {
     issue,
     implement: true,
     config: { fast: PASS_TIER },
-    roster: { files: [FILE], basePassed: NAMES, headPassed: NAMES },
+    roster: {
+      files: [FILE],
+      // The failing name is one the BASE passed, so the roster owns the verdict and says red.
+      basePassed: NAMES,
+      headPassed: passed,
+      ...(fails === undefined ? {} : { headFailed: [fails] }),
+    },
   } as const;
 }
 
 {
   // Default on: no environment at all, and the roster is built. A default an operator has to opt into
   // is a default that never runs, and Part A's whole claim is that the project's tests are judged.
-  const on = await withRoster(undefined, () => runVerify(caseOf(2470)));
+    const on = await withRoster(undefined, () => runVerify(caseOf(2470, { headFailsOne: true })));
   assert(
-    on.outcome?.kind === "green",
-    `(default) with no env set the roster runs (${String(on.outcome?.kind)})`,
+    // The case carries a test that was green at the base and fails at head: a base leg is only owed
+    // when the head run failed something, so an arm that asks for both legs needs a failure, and the
+    // verdict a roster that ran must give for one is red — never the green.
+    on.outcome?.kind === "red" && (on.outcome?.reason ?? "").includes(BROKEN),
+    `(default) with no env set the roster runs and judges (${String(on.outcome?.kind)}: ${(on.outcome?.reason ?? "").slice(0, 60)})`,
   );
   assert(
-    (on.rosterRuns ?? 0) === 2,
-    `(default) and the project's suite ran in both trees (${String(on.rosterRuns)})`,
+    // Head failed (the fixture's roster names a failing test), so the base leg is owed: 1 + 1.
+    (on.rosterHeadRuns ?? 0) === 1 && (on.rosterBaseRuns ?? 0) === 1,
+    `(default) and the project's suite ran in both trees (${String(on.rosterHeadRuns)} head, ${String(on.rosterBaseRuns)} base)`,
   );
-  const defaultField = rosterField(on.outcome);
+  // The roster field is only ever written on a GREEN (a red carries a reason, not a record — AC2),
+  // so the field's arm is a clean run of the same case, not the failing one above.
+  const clean = await withRoster(undefined, () => runVerify(caseOf(2480)));
+  const defaultField = rosterField(clean.outcome);
   assert(
     defaultField.has && typeof defaultField.value === "object",
-    `(default) the record carries the roster key (${typeof defaultField.value})`,
+    `(default) a green's record carries the roster key (${typeof defaultField.value})`,
   );
 }
 
@@ -98,17 +129,17 @@ function caseOf(issue: number) {
 // "false", "off" or "" as off is a lever an operator will believe they pulled while the gate is
 // still running — and here the asymmetry cuts the other way, so the conservative reading is "on".
 for (const value of ["1", "true", "false", "off", "", "0 ", "00"]) {
-  const r = await withRoster(value, () => runVerify(caseOf(2471)));
+    const r = await withRoster(value, () => runVerify(caseOf(2471, { headFailsOne: true })));
   assert(
-    (r.rosterRuns ?? 0) === 2 && rosterField(r.outcome).has,
-    `(literal) "${value}" is not "0", so the roster still runs (${String(r.rosterRuns)} runs)`,
+    (r.rosterHeadRuns ?? 0) === 1 && (r.rosterBaseRuns ?? 0) === 1,
+    `(literal) "${value}" is not "0", so the roster ran the suite in both trees (${String(r.rosterHeadRuns)} head, ${String(r.rosterBaseRuns)} base)`,
   );
 }
 {
   // The off arm, byte for byte. Same case, same fixture, and neither the outcome kind, the reason
   // text, nor the record's shape may differ from the run that predates the roster — which is the
   // run whose roster fields are simply not there.
-  const off = await withRoster("0", () => runVerify(caseOf(2472)));
+    const off = await withRoster("0", () => runVerify(caseOf(2472)));
   assert(
     off.outcome?.kind === "green",
     `(off) the case still grades green (${String(off.outcome?.kind)})`,
@@ -121,7 +152,7 @@ for (const value of ["1", "true", "false", "off", "", "0 ", "00"]) {
   // The golden itself: the on arm's reason with the roster's fingerprints absent. Built from the SAME
   // step's own wording rather than a hand-typed string, so it tracks the reason's real shape and a
   // change to the on arm's text fails this rather than passing a stale literal.
-  const on = await withRoster(undefined, () => runVerify(caseOf(2473)));
+    const on = await withRoster(undefined, () => runVerify(caseOf(2473)));
   const onReason = on.outcome?.reason ?? "";
   const offReason = off.outcome?.reason ?? "";
   assert(
@@ -182,12 +213,18 @@ for (const value of ["1", "true", "false", "off", "", "0 ", "00"]) {
   // The switch is read at CALL time, not at module load: one bun process runs every lean smoke file,
   // so a load-time read would let this file's pin decide the next file's behaviour. Flip the lever
   // twice inside one process and both answers have to be current.
-  const a = await withRoster("0", () => runVerify(caseOf(2477)));
-  const b = await withRoster(undefined, () => runVerify(caseOf(2478)));
-  const c = await withRoster("0", () => runVerify(caseOf(2479)));
+    const a = await withRoster("0", () => runVerify(caseOf(2477)));
+    // The middle arm asks whether the base leg ran, which #2439 made conditional on a head failure.
+    const b = await withRoster(undefined, () =>
+      runVerify(caseOf(2478, { headFailsOne: true })),
+    );
+    const c = await withRoster("0", () => runVerify(caseOf(2479)));
   assert(
-    (a.rosterRuns ?? 0) === 0 && (b.rosterRuns ?? 0) === 2 && (c.rosterRuns ?? 0) === 0,
-    `(call time) off, on, off in ONE process answers 0, 2, 0 (${String(a.rosterRuns)}, ${String(b.rosterRuns)}, ${String(c.rosterRuns)})`,
+    (a.rosterRuns ?? 0) === 0 &&
+      (b.rosterHeadRuns ?? 0) === 1 &&
+      (b.rosterBaseRuns ?? 0) === 1 &&
+      (c.rosterRuns ?? 0) === 0,
+    `(call time) off, on, off in ONE process answers 0, 1+1, 0 (${String(a.rosterRuns)}, ${String(b.rosterHeadRuns)}+${String(b.rosterBaseRuns)}, ${String(c.rosterRuns)})`,
   );
 }
 

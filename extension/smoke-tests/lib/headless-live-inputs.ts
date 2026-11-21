@@ -25,14 +25,11 @@ import { COMMENT_RETENTION_PATHS } from "../../src/comment-retention.ts";
 import { forgeReadOffGuardEnabled } from "../../src/forge-read-off-switch.ts";
 import { glabMrCreateArgvEnabled } from "../../src/gl-mr-create-switch.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
+import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.ts";
 import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
 import { leanBuildIssueProseEnabled, leanIssueProseEnabled } from "../../src/lean/issue-prose.ts";
-import {
-  leanPreflightProbeCollectableEnabled,
-  leanPreflightProbeContainEnabled,
-} from "../../src/lean/preflight-probe-switch.ts";
-import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.ts";
+import { leanPreflightProbeContainEnabled } from "../../src/lean/preflight-probe-switch.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../../src/lens-evidence.ts";
@@ -184,10 +181,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // #2228 — the builder seat's issue-prose section. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE", leanBuildIssueProseEnabled],
-  // #2202 — the probe's collectable name and its exit-4 reading, and the probe
-  // parent's containment check. Both readers are `v !== "0"`, so the gate's LIVE
-  // loop (env deleted) pins "unset means on".
-  ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_COLLECTABLE", leanPreflightProbeCollectableEnabled],
+  // #2202 — the probe parent's containment check. The reader is `v !== "0"`, so the
+  // gate's LIVE loop (env deleted) pins "unset means on". (#2439 retired the probe's
+  // COLLECTABLE switch, keeping its default: `preflight-probe-switch.ts`.)
   ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN", leanPreflightProbeContainEnabled],
   // The lean review seats' spec split. The reader is `v !== "0"`, so the LIVE
   // assertion in the gate (env deleted) pins "unset means on".
@@ -195,14 +191,14 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // #2212 — #2179's preflight/submodule behaviour. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT", leanRunnerPreflightEnabled],
+  // The truncated-fixer continuation: its default is pinned here, its truth table by
+  // `test-lean-review-fix-reask-pure.ts` and its off arm by
+  // `test-lean-review-fixer-truncation-off-arm.ts`.
   // #2428 — `verify` judges the project's own pre-existing tests. The reader is
   // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth
   // table, the off arm's bytes and the docs row are pinned by
   // test-AC5-project-roster-switch.ts and test-AC7-project-roster-docs.ts.
   ["PI_ENSEMBLE_LEAN_PROJECT_ROSTER", leanProjectRosterEnabled],
-  // The truncated-fixer continuation: its default is pinned here, its truth table by
-  // `test-lean-review-fix-reask-pure.ts` and its off arm by
-  // `test-lean-review-fixer-truncation-off-arm.ts`.
   ["PI_ENSEMBLE_LEAN_FIXER_TRUNCATION_REASK", leanFixerTruncationReaskEnabled],
   // #2279 — the handback's origin reads through the network-git wrapper. The reader is
   // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth

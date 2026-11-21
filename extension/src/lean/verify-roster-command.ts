@@ -21,10 +21,15 @@ const ROSTER_MAX_BUFFER = 16 * 1024 * 1024;
 /**
  * Render the project roster command for one tree.
  *
- * A configured `verify.roster` template is the runner's machine-readable report form; with none
- * configured, the derived default is the `verify.test` command with pytest's `--junitxml`
- * appended. `{dir}` is the tree the roster runs in and `{report}` the file the roster reads
- * back, each substituted as a whole argv word — no shell is involved on either form.
+ * A configured `verify.roster` template is the runner's machine-readable report form. With none
+ * configured the default is DERIVED from `verify.test`: one whole-word `{file}` deleted and
+ * `--junitxml={report} {dir}` appended, so `pytest -q {file}` becomes `pytest -q --junitxml={report}
+ * {dir}`. Deleting the word is not decoration — the loader REQUIRES `verify.test` to carry one, so
+ * appending alone hands the runner a path literally named `{file}`: exit 4, no report, a hand-back
+ * about a report nobody wrote. A template with no such word derives by appending alone.
+ *
+ * `{dir}` is the tree the roster runs in and `{report}` the file the roster reads back, each
+ * substituted as a whole argv word — no shell is involved on either form.
  */
 export function renderRosterCommand(
   config: VerifyRosterConfig,
@@ -35,9 +40,9 @@ export function renderRosterCommand(
     config.roster ??
     (config.test === undefined
       ? undefined
-      : // The derived pytest default: the project's own runner, pointed at the whole tree,
-        // told to write a report this gate can read.
-        `${config.test} --junitxml={report} {dir}`);
+      : // The derived default: the project's own runner, told to write a report this gate can read,
+        // pointed at the whole tree instead of at one file.
+        deriveSuiteTemplate(config.test));
   if (template === undefined)
     return {
       reason:
@@ -51,6 +56,17 @@ export function renderRosterCommand(
   if (bin === undefined || words.length < 2)
     return { reason: `the roster command ${template} has nothing to run` };
   return { bin, args: words.slice(1), report };
+}
+
+/**
+ * `verify.test` as a SUITE command: one whole-word `{file}` removed, the report pair appended. Only a
+ * word EQUAL to `{file}` counts — the loader admits exactly one, and `test-{file}.ts` is a name.
+ */
+function deriveSuiteTemplate(test: string): string {
+  const words = test.split(/\s+/).filter((word) => word !== "");
+  const at = words.indexOf("{file}");
+  const kept = at < 0 ? words : [...words.slice(0, at), ...words.slice(at + 1)];
+  return `${kept.join(" ")} --junitxml={report} {dir}`;
 }
 
 /**
