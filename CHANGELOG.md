@@ -8,6 +8,19 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.99](https://github.com/trail-openers/pi-rukas/compare/v0.14.98...v0.14.99) (2026-11-21)
+
+
+### Features
+
+* **headless:** add the wiki verb ([#2459](https://github.com/trail-openers/pi-rukas/issues/2459)) ([f7a7f78](https://github.com/trail-openers/pi-rukas/commit/f7a7f780c7fbdf42b184eaf8b55442b2a3f35f7f))
+
+
+### Bug Fixes
+
+* **work:** merge /work-lean with the whole issue title, never cut ([#2457](https://github.com/trail-openers/pi-rukas/issues/2457)) ([c9a385d](https://github.com/trail-openers/pi-rukas/commit/c9a385d6663fef2b2c25842f0c4e3dce23f9f5c5)), closes [#2454](https://github.com/trail-openers/pi-rukas/issues/2454)
+* **work:** title a lean PR with the whole issue title, never cut ([#2460](https://github.com/trail-openers/pi-rukas/issues/2460)) ([ae0b582](https://github.com/trail-openers/pi-rukas/commit/ae0b582b89a47936d614c0eade9561485ae75724)), closes [#2455](https://github.com/trail-openers/pi-rukas/issues/2455)
+
 ## [0.14.98](https://github.com/trail-openers/pi-rukas/compare/v0.14.97...v0.14.98) (2026-11-21)
 
 
