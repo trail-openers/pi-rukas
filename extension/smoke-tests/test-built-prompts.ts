@@ -13,6 +13,7 @@ import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const MANIFESTS = path.join(ROOT, "manifests");
+const AGENTS_BASE = path.join(ROOT, "agents-base");
 const PROMPTS = path.join(ROOT, "dist", "prompts", "standard");
 const BUILD = path.join(ROOT, "build.sh");
 const CODEMODE_MODULE = "modules/core/codemode.md";
@@ -43,12 +44,16 @@ execFileSync("bash", [BUILD], {
 // #2430 — build.sh assembles each prompt into `<agent>.md.tmp-<pid>` beside the
 // target and publishes it by `mv -f`. A straggler here means a temp was left
 // beside a published prompt (the abort path failed to clean up), so a reader
-// could later mistake it for an artefact.
-const stragglers = readdirSync(PROMPTS).filter((name) => name.includes(".tmp-"));
-assert(
-  stragglers.length === 0,
-  `dist/prompts/standard holds no build temp file (*.tmp-*)${stragglers.length ? ` — found ${stragglers.join(", ")}` : ""}`,
-);
+// could later mistake it for an artefact. The capabilities writer keeps its own
+// temp beside the base files it reads from, so `agents-base/` is scanned too:
+// a temp there is the same defect in the other directory.
+for (const dir of [PROMPTS, AGENTS_BASE]) {
+  const stragglers = readdirSync(dir).filter((name) => name.includes(".tmp"));
+  assert(
+    stragglers.length === 0,
+    `${path.relative(ROOT, dir)} holds no build temp file (*.tmp*)${stragglers.length ? ` — found ${stragglers.join(", ")}` : ""}`,
+  );
+}
 
 // #1031 — codemode module heading, asserted per-manifest below.
 const codemodeHeading = readFileSync(path.join(ROOT, CODEMODE_MODULE), "utf8").match(/^#{1,6} .+$/m)?.[0];

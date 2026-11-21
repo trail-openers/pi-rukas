@@ -20,19 +20,29 @@
  *    published anything).
  * 2. **An abort destroys nothing.** Copy the module tree to a temp dir, publish
  *    a full set, remove one manifest-referenced module, rerun: the build must
- *    exit non-zero with every previously published prompt byte-identical and no
- *    `.tmp-*` straggler left behind.
+ *    exit non-zero naming the missing module, with every previously published
+ *    prompt byte-identical and no `.tmp-*` straggler left behind — in the
+ *    output dir **or** in the copied `agents-base/`, where the capabilities
+ *    writer puts its own temp. The abort lands mid-loop: a module only a
+ *    later-built agent references is removed, so the earlier prompts publish
+ *    and the loop dies partway. That is the path that used to leak, because the
+ *    capabilities function ran inside a command substitution where its
+ *    `_track_temp` writes died with the subshell and its own `trap` had
+ *    replaced the run-wide one.
  */
 
 import { spawn } from "node:child_process";
 import {
+  closeSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -56,15 +66,28 @@ function assert(cond: boolean, msg: string) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Run build.sh with BASE/PROMPTS_DIR overridden; resolve with its exit code. */
-function runBuild(base: string, promptsDir: string): Promise<number> {
-  return new Promise((resolve) => {
+/** Run build.sh with BASE/PROMPTS_DIR overridden; resolve with its exit code
+ *  and its merged stderr/stdout, which the abort arm reads for the module it
+ *  named. Output is captured to a file rather than a pipe so a verbose build
+ *  log cannot fill the OS buffer and wedge the child. */
+function runBuild(
+  base: string,
+  promptsDir: string,
+  logPath?: string,
+): Promise<{code: number; log: string}> {
+  return new Promise((resolve, reject) => {
+    const fd = logPath === undefined ? undefined : openSync(logPath, "w");
     const child = spawn("bash", [BUILD], {
       cwd: ROOT,
       env: { ...process.env, PI_ENSEMBLE_BASE: base, PROMPTS_DIR: promptsDir },
-      stdio: "ignore",
+      stdio: fd === undefined ? "ignore" : ["ignore", fd, fd],
     });
-    child.on("close", (code) => resolve(code ?? -1));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (fd !== undefined) closeSync(fd);
+      const log = logPath !== undefined && existsSync(logPath) ? readFileSync(logPath, "utf8") : "";
+      resolve({code: code ?? -1, log});
+    });
   });
 }
 
@@ -107,9 +130,9 @@ try {
     let misses = 0;
     let polls = 0;
     let done = false;
-    const build = runBuild(base, prompts).then((code) => {
+    const build = runBuild(base, prompts, path.join(scratch, "arm1.log")).then((r) => {
       done = true;
-      return code;
+      return r;
     });
     // Poll the watched file for the whole life of the build. A file that is
     // missing between the build's rm and its rewrite is counted, not retried.
@@ -118,7 +141,7 @@ try {
       polls++;
       await sleep(20);
     }
-    const code = await build;
+    const {code} = await build;
 
     // The build's exit code is a separate assertion: a build that died early
     // would leave the seeded files untouched and poll green.
@@ -136,8 +159,8 @@ try {
     const prompts = path.join(scratch, "abort");
     mkdirSync(path.join(prompts, "standard"), { recursive: true });
 
-    const pre = await runBuild(base, prompts);
-    assert(pre === 0, `arm 2: pre-abort build exited 0`);
+    const pre = await runBuild(base, prompts, path.join(scratch, "arm2-pre.log"));
+    assert(pre.code === 0, `arm 2: pre-abort build exited 0`);
     const publishedDir = path.join(prompts, "standard");
     const before = new Map(
       readdirSync(publishedDir).map((f) => [
@@ -147,23 +170,121 @@ try {
     );
     assert(before.size === AGENTS.length, `arm 2: ${AGENTS.length} prompts published`);
 
-    // Break the build the way a missing module does: one manifest reference now
-    // resolves to nothing.
-    const removed = path.join(base, "modules", "core", "codemode.md");
+    // Break the build the way a missing module does, and break it MID-LOOP:
+    // the capabilities matrix is referenced by the last-built manifest only, so
+    // the earlier agents publish and the loop dies partway through. That is
+    // where the run's EXIT trap has to reach: some prompts are already
+    // published, some have a half-assembled temp beside them, and the
+    // capabilities writer has a temp of its own in the copied agents-base/.
+    const removed = path.join(base, "modules", "core", "async-tasks.md");
+    assert(
+      existsSync(removed) && statSync(removed).isFile(),
+      "arm 2: modules/core/async-tasks.md exists to be removed (the mid-loop seed)",
+    );
     rmSync(removed);
-    const aborted = await runBuild(base, prompts);
-    assert(aborted !== 0, `arm 2: build.sh exited non-zero on the missing module`);
+    const aborted = await runBuild(base, prompts, path.join(scratch, "arm2-abort.log"));
+    assert(aborted.code !== 0, `arm 2: build.sh exited non-zero on the missing module`);
+
+    // The abort must say WHAT it could not find, not merely fail.
+    assert(
+      /ERROR/.test(aborted.log) && /async-tasks\.md/.test(aborted.log),
+      `arm 2: the aborted build named the missing module${
+        /async-tasks\.md/.test(aborted.log) ? "" : ` (captured output: ${aborted.log.slice(0, 240)})`
+      }`,
+    );
 
     const stragglers = readdirSync(publishedDir).filter((f) => f.includes(".tmp-"));
     assert(
       stragglers.length === 0,
-      `arm 2: no .tmp-* left behind by the aborted build${stragglers.length ? ` (${stragglers.join(", ")})` : ""}`,
+      `arm 2: no .tmp-* left behind in the output dir by the aborted build${stragglers.length ? ` (${stragglers.join(", ")})` : ""}`,
+    );
+    // The capabilities writer's own temp lives beside the copied base files.
+    const agentsBase = path.join(base, "agents-base");
+    const baseStragglers = readdirSync(agentsBase).filter((f) => f.includes(".tmp"));
+    assert(
+      baseStragglers.length === 0,
+      `arm 2: the aborted build left no *.tmp* in the copied agents-base/${baseStragglers.length ? ` (${baseStragglers.join(", ")})` : ""}`,
     );
     const after = readdirSync(publishedDir);
     const unchanged =
       after.length === before.size &&
       after.every((f) => before.get(f) === readFileSync(path.join(publishedDir, f), "utf8"));
     assert(unchanged, "arm 2: an aborted build leaves every published prompt byte-identical");
+  }
+
+  // --- Arm 3: an abort INSIDE the capabilities writer leaves nothing. -------
+  // Arms 1 and 2 abort in the parent's module loop, where the build never gets
+  // as far as writing a capabilities temp. This arm aborts in the writer itself,
+  // which is the only place the temp's ownership is decided: `target_tmp` is
+  // created inside a command substitution, so the writer cannot hand it to a
+  // parent array (the assignment dies with the subshell) and must not install a
+  // trap of its own (only one EXIT trap exists, and the writer's would be the
+  // one that runs). The writer's temp is therefore named with the parent's `$$`
+  // and reclaimed by the parent's trap — which is what this arm measures.
+  //
+  // The writer fails on an agent `agents.json` does not name: the first agent
+  // publishes, the second aborts, and no third agent is reached.
+  {
+    const base = path.join(scratch, "tree-caps");
+    const prompts = path.join(scratch, "caps-abort");
+    copyTree(base);
+    mkdirSync(path.join(prompts, "standard"), { recursive: true });
+
+    const seed = await runBuild(base, prompts, path.join(scratch, "arm3-seed.log"));
+    assert(seed.code === 0, "arm 3: seed build exited 0");
+    const publishedDir = path.join(prompts, "standard");
+    const before = new Map(
+      readdirSync(publishedDir).map((f) => [
+        f,
+        readFileSync(path.join(publishedDir, f), "utf8"),
+      ]),
+    );
+
+    const configPath = path.join(base, "agents.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8")) as {
+      agent: Record<string, unknown>;
+    };
+    // The doomed agent: the last specialist the sorted manifest order visits,
+    // so the loop publishes at least one prompt before it dies.
+    const candidates = AGENTS.filter((a) => a !== "project-manager");
+    const doomed = candidates[candidates.length - 1];
+    assert(
+      doomed !== undefined &&
+        doomed !== "project-manager" &&
+        Object.prototype.hasOwnProperty.call(config.agent, doomed),
+      `arm 3: '${doomed ?? "<none>"}' is an agent in agents.json (the doomed one)`,
+    );
+    if (doomed === undefined || !Object.prototype.hasOwnProperty.call(config.agent, doomed)) {
+      throw new Error(`arm 3: cannot resolve a doomed agent from ${AGENTS.join(", ")}`);
+    }
+    delete config.agent[doomed];
+    writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+    const aborted = await runBuild(base, prompts, path.join(scratch, "arm3-abort.log"));
+    assert(aborted.code !== 0, "arm 3: build.sh exited non-zero on the unknown agent");
+    assert(
+      /ERROR/.test(aborted.log) && aborted.log.includes(doomed),
+      `arm 3: the aborted build named the agent it could not resolve${aborted.log.includes(doomed) ? "" : ` (captured output: ${aborted.log.slice(0, 240)})`}`,
+    );
+
+    const outStragglers = readdirSync(publishedDir).filter((f) => f.includes(".tmp"));
+    assert(
+      outStragglers.length === 0,
+      `arm 3: no .tmp* left in the output dir by the capabilities abort${outStragglers.length ? ` (${outStragglers.join(", ")})` : ""}`,
+    );
+    const baseStragglers = readdirSync(path.join(base, "agents-base")).filter((f) =>
+      f.includes(".tmp"),
+    );
+    assert(
+      baseStragglers.length === 0,
+      `arm 3: the capabilities temp was reclaimed from agents-base/ by the aborted build${baseStragglers.length ? ` (${baseStragglers.join(", ")})` : ""}`,
+    );
+    const after = readdirSync(publishedDir);
+    assert(
+      after.length === before.size &&
+        after.every((f) => before.get(f) === readFileSync(path.join(publishedDir, f), "utf8")),
+      "arm 3: a capabilities abort leaves every previously published prompt byte-identical",
+    );
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true });

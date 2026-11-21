@@ -482,6 +482,7 @@
     "smoke-tests/test-adversarial-verdict-reask-off-arm.ts",
     "smoke-tests/lib/adversarial-reask-fixtures.ts",
     "smoke-tests/lib/adversarial-verdict-reask-off-arm-golden.ts",
-    "smoke-tests/test-build-prompt-writes-atomic.ts"
+    "smoke-tests/test-build-prompt-writes-atomic.ts",
+    "smoke-tests/test-built-prompts.ts"
   ]
 }
