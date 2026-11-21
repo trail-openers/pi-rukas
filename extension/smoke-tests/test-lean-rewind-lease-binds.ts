@@ -33,12 +33,9 @@
  *       reclaims it under the fix, where the push git refused is no longer one git would
  *       have obeyed.
  *   (b2) the arm the fix is for: the objects ARE present, on both sides, and origin's
- *       branch has moved. Same repo shape driven twice, differing only in the leading
- *       `+`: with the switch on the unforced push is authorised by its lease, rewinds
+ *       branch has moved. The unforced push is authorised by its lease, rewinds
  *       the branch non-fast-forward, and keeps the head it displaced under
- *       `refs/lean/unverified/<issue>`; with the switch off the forced push rewrites a
- *       branch this step merely read. The defect is therefore pinned as the difference
- *       between two arms, and the on arm is simultaneously the control that keeps (b)
+ *       `refs/lean/unverified/<issue>`. It is also the control that keeps (b)
  *       from being a pass which only proves the rule stopped working — git's
  *       `Everything up-to-date` exit-0 no-op, which the code comment used to cite as the
  *       reason the `+` was necessary, is not what an authorised rewind prints.
@@ -180,10 +177,8 @@ function pendingStranger(
   return { sha, pushTo };
 }
 
-// ── (a1) the switch ON: no `+` on the branch refspec, nothing else changed ──
+// ── (a1) the shipped rule: no `+` on the branch refspec, nothing else changed ──
 {
-  if (leanRewindLeaseBinds() !== true)
-    throw new Error("the operator's env has the lease switch off, so the ON arm measures nothing");
   const repo = repoWithFixHead();
   const { exec: spy, pushes } = capturingExec();
   const rewind = await rewinder(spy, repo.repoRoot)(repo.baseSha);
@@ -218,7 +213,7 @@ function pendingStranger(
     args.includes(`--force-with-lease=${branchRefspec}:${repo.branchHeadSha}`),
     `(a1) the lease argument is the same expected-value lease as before (${args.join(" ")})`,
   );
-  // The byte-identical-off guarantee has an on-arm half: the switch moves the `+`
+  // The retirement's other half: the rule moves the `+`
   // and NOTHING else — no --porcelain, no new option, same prefix, same remote, same
   // refspec order. Every element is compared against the on-arm argv written out in
   // full below, so a claim that only the `+` moved is checked rather than asserted.
