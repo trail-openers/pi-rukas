@@ -96,13 +96,14 @@ async function trackedPathsAt(
     .filter((entry) => entry !== "");
 }
 
-/** What {@link listProjectTestFilesAtBase} answers: the listing, or why git would not give it. */
+/**
+ * What {@link listProjectTestFilesAtBase} answers: the listing, or why git would not give it.
+ *
+ * `files` is never truncated here — the record's cap is `verify-roster.ts`'s to apply, and the
+ * caller's edited-file detection must still see a file that would sort past it.
+ */
 export interface BaseTestListing {
-  /**
-   * EVERY matching file at ANY depth under `testDir`, repo-relative, in git's tree order. Never
-   * truncated here: the record's cap is `verify-roster.ts`'s to apply, and the caller's edited-file
-   * detection must still see a file that would sort past it.
-   */
+  /** EVERY matching file at ANY depth under `testDir`, repo-relative, in git's tree order. */
   files: string[];
   /** How many matched — `files.length`, carried so a capped record can still state the truth. */
   fileCount: number;
