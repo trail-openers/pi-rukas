@@ -244,12 +244,10 @@ done
 unset _report_fn
 
 # The channel is opt-in, and only in the shape it was designed for. A relative
-# path would be resolved against whatever cwd the gate happens to run in, so the
-# report could land anywhere in the tree (a verify command runs in the checkout
-# under test) — an unattributable outcome is better than a stray write. An
-# unusable value is announced, the variable is dropped, and the run proceeds
-# normally: this is the shape the offline suite and CI run in, where no report
-# is wanted at all and the gate's own output is the deliverable.
+# path would resolve against whatever cwd the gate runs in, so the report could land
+# anywhere in the tree — an unattributable outcome beats a stray write. An unusable
+# value is announced, dropped, and the run proceeds: what the offline suite and CI
+# run in.
 if [ -n "${VERIFY_REPORT_FILE:-}" ] && [ "${VERIFY_REPORT_FILE#/}" = "$VERIFY_REPORT_FILE" ]; then
   echo "warn: verify-loop: VERIFY_REPORT_FILE must be an absolute path; got '${VERIFY_REPORT_FILE}', ignoring the out-of-band report" >&2
   VERIFY_REPORT_FILE=""
@@ -381,24 +379,19 @@ _extra_cleanup() {
 }
 trap '_extra_cleanup' EXIT
 
-# #1365 — the interrupt path (interrupt_now, now in lib/verify-tree.sh, reached
-# through lib/verify-pool.sh) calls `_extra_cleanup` for the same reason the EXIT
-# trap just did: RUN_DIR, the #827/#1028 failure captures and the #1069 ledger
-# temp dir have to go. The pool used to reach it through a silent `type -t`
-# probe, so a rename made Ctrl-C look clean while every one of those stayed on
-# disk — the EXIT trap it duplicates never runs on that path. It is now under the
-# same hard name check the pool's own functions get. Checked here rather than
-# with them because a `type -t` test before the definition would fail for the
-# wrong reason. It is not optional, so there is no declared flag and nothing to
-# trace when absent: the pool calls it unconditionally and so does the trap
-# above, so a run without it is broken before the pool starts. The call site
-# names this as the declared hook rather than re-deriving the cleanup.
+# #1365 — the interrupt path (interrupt_now, now in lib/verify-tree.sh) calls
+# `_extra_cleanup` for the same reason the EXIT trap just did: RUN_DIR, the failure
+# captures and the ledger temp dir have to go. The pool used to reach it through a
+# silent `type -t` probe, so a rename made Ctrl-C look clean while every one of
+# those stayed on disk. Same hard name check as the pool's own functions.
 if [ "$(type -t _extra_cleanup)" != function ]; then
   echo "error: verify-loop: _extra_cleanup is missing — the interrupt path cannot clean the run's temp state; refusing to run" >&2
   exit 2
 fi
 
 names=()
+# #2449 — the ceiling's offenders, joined to `names` below so the summary, the
+# tally and the out-of-band report all count them (R5: one verdict channel).
 # #1365: collect the tests, run them through the pool, then replay each job's
 # result in argument order. RUN_DIR is passed explicitly so the pool never
 # depends on an ambient temp name.
@@ -415,9 +408,6 @@ for ((i = 0; i < total; i++)); do
   rc="${JOB_EXIT[$i]}"
   timed_out=0
   if [ -f "$RUN_DIR/$i.timeout" ]; then timed_out=1; fi
-  # #1878 — the test's duration, from the two clocks the pool took. The marker is
-  # read once above and handed in so the timing's outcome and the `FAILED:` suffix
-  # below are one fact that cannot name different tests.
   record_job_timing "$i" "$rc" "$timed_out"
   if [ "$rc" -eq 0 ]; then
     if [ "$DIGEST" -eq 0 ]; then
@@ -465,6 +455,16 @@ for ((i = 0; i < total; i++)); do
     fi
   fi
 done
+
+# #2449 — the per-file timing ceiling's verdict, once the record is complete. An
+# offender joins `names` (summary, tally and out-of-band report count it) paired with
+# the empty capture the digest branch and the #827 echo expect — a file that passed
+# but sat over the ceiling fails a run that would have exited 0. Emitter in timing.sh.
+while IFS= read -r _offender; do
+  [ -n "$_offender" ] || continue
+  names+=("$_offender")
+  _extra_captures+=("")
+done < <(timing_ceiling_offenders)
 
 # #1878 — the `TIME <seconds> <file>` lines, one per test, in argument order, after
 # the replay rather than inside it: that loop's ordering is load-bearing for two

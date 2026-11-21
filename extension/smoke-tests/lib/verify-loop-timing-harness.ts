@@ -6,7 +6,8 @@
  * assertions and what they pin live with the cases in test-verify-loop-timing.ts.
  */
 import { spawnSync } from "node:child_process";
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import * as path from "node:path";
 
 // The harness sits in lib/ beside the loop's own halves, so HERE is one level up from
@@ -30,6 +31,13 @@ export const GENERATED = {
   slow1: "generated-timing-slow-1.ts",
   many: [0, 1, 2, 3, 4].map((i) => `generated-timing-many-${i}.ts`),
 };
+
+/** The committed ceiling fixtures (the AC1 pair), resolved here so the cases name
+ * only what they assert about. Unlike the generated set these are tracked files:
+ * an allow-list entry is a path, so the exempted arm has to be a path the shipped
+ * list can name and the shrink-only gate can check for existence. */
+export const CEILING_OVER = path.join(FIXTURES, "fixture-ceiling-over.ts");
+export const CEILING_LISTED = path.join(FIXTURES, "fixture-ceiling-listed.ts");
 
 /** The harness' own failures (a fixture it could not write) are fatal to a case
  * rather than counted: a case that cannot build its input has not tested anything,
@@ -80,12 +88,23 @@ export function env(
   // The loop's environment is the host's plus the knobs this file pins. Replacing it
   // wholesale (rather than building a minimal PATH/HOME) is what keeps `bun` findable
   // — the pool starts every job with `bun run`, and a stripped PATH makes the whole
-  // run exit 127. The two knobs that decide what these cases measure are pinned
-  // against an inherited CI value, the same hygiene test-verify-loop-jobs-from-host.ts
-  // pins from the other side.
+  // run exit 127. The knobs that decide what these cases measure are pinned against
+  // an inherited CI value, the same hygiene test-verify-loop-jobs-from-host.ts pins
+  // from the other side. The ceiling and its allow-list path are pinned here too:
+  // both reach the loop from the environment, so an operator or gate that exports
+  // `PI_ENSEMBLE_VERIFY_TIMING_CEILING_S` would silently arm the ceiling inside a
+  // test that never asked for it (and point it at a list of someone else's choosing),
+  // turning an unrelated verdict change into a puzzling red.
   const base: Record<string, string | undefined> = {
     PI_ENSEMBLE_VERIFY_TEST_JOBS: "1",
     PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "60",
+    PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "",
+    TIMING_ALLOWLIST: "",
+    // The two seams that make the allow-list read observable (the probe file) and
+    // simulate an off-path read (eager). Both must be absent in every case that does
+    // not name them, exactly as the ceiling itself must be.
+    TIMING_ALLOWLIST_PROBE: "",
+    TIMING_ALLOWLIST_EAGER: "",
   };
   return { ...process.env, ...base, ...extra };
 }
@@ -114,6 +133,18 @@ export function runLoop(
 export const TIME_RE = /^TIME (\d+) (.+)$/;
 export const HEADER_RE = /^SLOWEST: top (\d+) of (\d+) \(N=(\d+)\)$/;
 export const TOTAL_RE = /^TOTAL wall (\d+)  sum (\d+)  max (\d+)$/;
+/** The ceiling line's shape, pinned exactly (R9): `CEILING: <secs>s <file> (ceiling <N>s)`. */
+export const CEILING_RE = /^CEILING: (\d+)s (.+) \(ceiling (\d+)s\)$/;
+
+/** Every `CEILING:` line on a channel, with its fields parsed. */
+export function ceilingLines(output: string): { secs: number; file: string; ceiling: number }[] {
+  const rows: { secs: number; file: string; ceiling: number }[] = [];
+  for (const line of output.split("\n")) {
+    const m = CEILING_RE.exec(line);
+    if (m) rows.push({ secs: Number(m[1]), file: m[2] ?? "", ceiling: Number(m[3]) });
+  }
+  return rows;
+}
 
 export type Row = { secs: number; file: string };
 
@@ -182,11 +213,71 @@ export function totalLine(stdout: string): string {
 }
 
 /** Every timing line on the channel the feature prints on, for the byte-for-byte
- * comparisons: the record, the block rows, the header and TOTAL together. */
+ * comparisons: the record, the block rows, the header and TOTAL together, and the
+ * ceiling lines — a line that survived an "off" run would otherwise slip through
+ * the comparison as an unrecognised line rather than as a timing leak. */
 export function timingOutput(stdout: string): string[] {
   return stdout.split("\n").filter(
-    (l) => TIME_RE.test(l) || HEADER_RE.test(l) || TOTAL_RE.test(l),
+    (l) => TIME_RE.test(l) || HEADER_RE.test(l) || TOTAL_RE.test(l) || CEILING_RE.test(l),
   );
+}
+
+/** Allocate a unique scratch directory in one non-racing step. The suite runs
+ * tests in parallel, so `mkdtempSync`'s random suffix alone is not enough to make
+ * a retried allocation safe across sibling processes. */
+export function mkdtempDirSync(prefix: string): string {
+  let n = 0;
+  while (n++ < 64) {
+    const p = `${prefix}${Math.random().toString(36).slice(2, 10)}`;
+    try {
+      mkdirSync(p, { recursive: false, mode: 0o700 });
+      return p;
+    } catch {
+      /* taken by a sibling run; try another name */
+    }
+  }
+  harnessFatal(`could not allocate a scratch dir from ${prefix}`);
+  return `${prefix}unreachable`;
+}
+
+/**
+ * Write a temporary allow-list naming the given `file` keys (paths relative to
+ * `extension/`, the key the loop matches on — R4) and return the value to hand the
+ * loop as `TIMING_ALLOWLIST`.
+ *
+ * The list is a temp file rather than an edit to the committed one: the suite runs
+ * tests in parallel, so a mutation with a `finally` is a race another test could
+ * read, and a killed process would leave the shipped exemptions changed. The loop
+ * reads its path from the environment for exactly this reason.
+ */
+export function writeAllowlist(
+  entries: { file: string; seconds: number }[],
+  baselineCount?: number,
+): string {
+  const dir = mkdtempDirSync(path.join(tmpdir(), "pi-ens-allowlist-"));
+  const p = path.join(dir, "timing-allowlist.json");
+  try {
+    writeFileSync(
+      p,
+      JSON.stringify(
+        baselineCount === undefined ? { entries } : { baseline_count: baselineCount, entries },
+        null,
+        2,
+      ),
+    );
+  } catch (e) {
+    harnessFatal(`could not write a temporary allow-list at ${p}: ${String(e)}`);
+  }
+  return p;
+}
+
+/** Remove a temporary allow-list dir from `writeAllowlist`. */
+export function removeAllowlist(p: string): void {
+  try {
+    rmSync(path.dirname(p), { recursive: true, force: true });
+  } catch {
+    /* a leftover temp dir is reaped with TMPDIR */
+  }
 }
 
 // The committed fixtures the cases run, resolved here so the case file names only

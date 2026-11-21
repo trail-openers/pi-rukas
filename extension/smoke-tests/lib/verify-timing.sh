@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 # Issue #1878 — the per-test wall-clock record and the slowest-first summary.
 #
-# PURELY ADDITIVE. Nothing here starts, bounds, signals or kills a job: the pool
-# and the watchdog do that exactly as before, and this file only ever reads the
-# moments they already recorded. `verify-pool.sh` sources it and writes two
+# PURELY ADDITIVE — WITH THE CEILING KNOB OFF. Nothing here starts, bounds, signals
+# or kills a job: the pool and the watchdog do that exactly as before, and this file
+# only ever reads the moments they already recorded. `verify-pool.sh` sources it and writes two
 # integers per job — `JOB_STARTED_AT[i]` at `start_job`, `JOB_STOP[i]` at
 # `finish_job` — and the loop's own replay step turns that pair into a row. If
-# every function here were deleted, the run's tests, verdicts, exit codes,
-# captures and kill behaviour would be byte-identical; only the timing lines and
-# the block would disappear. That is the property the #1878 scope rests on, and
-# it is why the timing is stored in its own file rather than spread across the
-# half that owns the pool.
+# every function here were deleted while the ceiling knob is off, the run's
+# tests, verdicts, exit codes, captures and kill behaviour would be byte-identical;
+# only the timing lines and the block would disappear. That is the property the
+# #1878 scope rests on, and it is why the timing is stored in its own file rather
+# than spread across the half that owns the pool. The ceiling is the declared
+# exception to that claim, and the scoping is not a hedge: with
+# `PI_ENSEMBLE_VERIFY_TIMING_CEILING_S` SET, a file this file reports as over the
+# bound becomes a NAMED failure of the run — a different verdict and a different
+# exit code — so a reader who deleted the functions below with the knob on would
+# change a verdict, which is exactly what the sentence above promises cannot happen
+# while the knob is off.
 #
 # What is recorded, and where
 #
@@ -29,7 +35,15 @@
 #   `pass` or `fail` from the job's exit code, `timeout after <N>s` when the
 #   job's timeout marker exists. It is derived from the same marker the `FAILED:`
 #   line is derived from, in the same step, so the block and the marker cannot
-#   disagree about one test.
+#   disagree about one test. The outcome is also the field the ceiling reads to
+#   EXEMPT a watchdog-killed row (R6): its seconds measure the bound, not the test.
+#
+#   A row's file field is the path the CALLER passed, verbatim — a shell-expanded
+#   absolute path, `smoke-tests/x.ts`, `./x.ts`. That is why every comparison the
+#   ceiling and the allow-list make goes through `timing_key`, which reduces every
+#   spelling to one path relative to `extension/`. The record itself is left as
+#   given, because the `TIME` lines and the `FAILED:` names must name what the
+#   caller asked for.
 #
 # The clock is bash `SECONDS`, whole seconds — the same choice the two existing
 # timing sites make (`run_test_with_timeout`'s `start=$SECONDS` and the pool's
@@ -108,6 +122,205 @@ else
   fi
   VERIFY_TIMING_TOP_N=30
 fi
+
+# The per-file wall-time ceiling — `PI_ENSEMBLE_VERIFY_TIMING_CEILING_S`, seconds.
+# OFF by default and OFF is the shipped state: wall times are load- and
+# neighbour-sensitive (the same file measured 99 s and 139 s in two runs of this
+# repo's own suite), so a bound every local run enforced would flake on a shared
+# host. An operator who wants the ratchet names the number; CI names it in its own
+# step env. Accepted only as 1-4 digits — the width is part of the parse, not a
+# check after it, so a value long enough to overflow an arithmetic context can never
+# reach one. A rejected value is named on stderr and leaves the ceiling OFF, the
+# shape the TOP_N parse above uses; `0` is off and says nothing, being the documented
+# way to ask for no bound.
+VERIFY_TIMING_CEILING_S=0
+if [ -n "${PI_ENSEMBLE_VERIFY_TIMING_CEILING_S:-}" ] && [[ "${PI_ENSEMBLE_VERIFY_TIMING_CEILING_S}" =~ ^[0-9]{1,4}$ ]]; then
+  # `$((10#…))`, not the matched string: bash reads a leading zero as OCTAL, so
+  # `[ 008 -gt 0 ]` is a syntax error whose status is FAILURE. A verbatim store would
+  # have let `00`, `000` and `0030` past the parse above and then refused them at
+  # every `-gt 0` gate below — the ceiling silently OFF, with none of the warning the
+  # junk arm prints. The radix prefix says decimal and makes each spelling answer as
+  # the number it names; `10#` is accepted by bash 3.2, the floor this file targets.
+  VERIFY_TIMING_CEILING_S="$((10#$PI_ENSEMBLE_VERIFY_TIMING_CEILING_S))"
+else
+  if [ -n "${PI_ENSEMBLE_VERIFY_TIMING_CEILING_S:-}" ] && [ "${PI_ENSEMBLE_VERIFY_TIMING_CEILING_S}" != "0" ]; then
+    echo "warn: verify-loop: PI_ENSEMBLE_VERIFY_TIMING_CEILING_S must be 1-4 digits; got '${PI_ENSEMBLE_VERIFY_TIMING_CEILING_S}', ceiling stays off" >&2
+  fi
+  VERIFY_TIMING_CEILING_S=0
+fi
+# `TIMING_ALLOWLIST_EAGER=1` is the mutant twin the off-path canary uses: it forces a
+# bound where the operator named none, so the cost of consulting the list can be
+# observed red instead of argued. It lands AFTER the parse above (an empty env value,
+# which is what the loop tests pin it to, would otherwise re-clear it) and it is the
+# ONLY place the ceiling is forced — every gate then reads one fact. It can never
+# invent an exemption: the list still has to exist and name the path. Nothing shipped
+# sets it; the harness `env()` pins it off the way it pins the ceiling.
+if [ "${TIMING_ALLOWLIST_EAGER:-0}" = "1" ]; then
+  VERIFY_TIMING_CEILING_S=1
+fi
+
+# The committed exemption list — see `_timing_allowlist_entries`. Its path is
+# overridable so a test exercises an exemption against a temp file instead of editing
+# the shipped one, which the parallel suite would read half-written.
+TIMING_ALLOWLIST="${TIMING_ALLOWLIST:-$(dirname "${BASH_SOURCE[0]}")/../../timing-allowlist.json}"
+
+# The base the allow-list is written against: `extension/`, resolved from THIS file's
+# own location (`lib/verify-timing.sh` sits one level under it), never from `$PWD`.
+# The `$PWD`-relative base is wrong because the loop's cwd is not fixed — the harness
+# invokes the loop from `smoke-tests/`, the operator's glob from `extension/` — and a
+# key that depends on where the caller happened to `cd` matches the list on one host
+# and not another. One base, tied to the file, is the whole normalisation contract.
+TIMING_ALLOWLIST_BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"
+
+# Normalised key of one path, as the ceiling matcher and the allow-list both know it:
+# the path relative to `extension/`. Needed because the record stores whatever the
+# CALLER passed — a glob the shell expanded to `$PWD/smoke-tests/test-x.ts`, a bare
+# `smoke-tests/test-x.ts`, a `./x.ts` — while the list stores one spelling. ONE
+# function, used by the matcher and by the shrink-only gate alike, so the two cannot
+# drift into exempting different sets of files (R4).
+timing_key() {
+  local k="${1#./}"
+  k="${k#./}"
+  local base
+  # Assigned in its own statement, not in the `local`: `local x="$base/"` word-splits
+  # the value on the field separator, so the strip below would remove only the FIRST
+  # path segment and no absolute path would ever match a list entry.
+  base="$TIMING_ALLOWLIST_BASE/"
+  if [ -n "$TIMING_ALLOWLIST_BASE" ] && [ "${k#"$base"}" != "$k" ]; then
+    k="${k#"$base"}"
+  else
+    local pwd_prefix
+    pwd_prefix="${PWD}/"
+    [ "${k#"$pwd_prefix"}" != "$k" ] && k="${k#"$pwd_prefix"}"
+  fi
+  echo "$k"
+}
+
+# `secs` is a record field, so anything but a decimal is refused rather than
+# evaluated: a junk value has no business answering a bound it was never measured
+# against. No knob gate here: its only caller, `timing_ceiling_offenders`, is gated
+# first, and a second one would add a branch that cannot be reached to decide anything.
+timing_over_ceiling() {
+  local secs="${1:-}"
+  [[ "$secs" =~ ^[0-9]+$ ]] || return 1
+  [ "$VERIFY_TIMING_CEILING_S" -gt 0 ] || return 1
+  [ "$secs" -gt "$VERIFY_TIMING_CEILING_S" ]
+}
+
+# One allow-list entry per line, `secs<TAB>key`, from the committed JSON. Parsed by
+# awk alone — no jq or python, because the loop runs where neither is guaranteed.
+#
+# THE KNOB GATE IS THE WHOLE COST CLAIM, AND THE PROBE MEASURES IT FROM THE OUTSIDE:
+# a run that asked for no ceiling must not read this list at all, because every read
+# forks the awk at the bottom of this function (~2 forks per timing row was ~3,154
+# forks / ~21 s on this repo's own suite). `TIMING_ALLOWLIST_PROBE` names a file that
+# gets one line per read — a caller cannot see a fork, so the read announces itself,
+# and case 7g of test-verify-timing-ceiling.ts runs a whole loop with the knob unset
+# and asserts that file stays EMPTY. `TIMING_ALLOWLIST_EAGER=1` is its mutant twin and
+# the reason the same assertion is observed RED rather than argued: a gate nobody has
+# watched fail proves nothing. It forces the parsed ceiling once, where the parse
+# lands, so every gate in the chain below reads one fact — forcing it inside a caller
+# would be discarded with that frame's `$(…)` subshell before the next gate read it.
+# It can never invent an exemption: the list still has to exist and name the path. Both
+# knobs are unset in the shipped state and pinned off by the harness `env()`.
+#
+# The fields ACCUMULATE ACROSS LINES: the file may carry one entry per line, or the
+# same JSON pretty-printed with one field per line (what a formatter does to it), and
+# a parser that required both on one line read the pretty-printed shape as an EMPTY
+# list — every entry silently stopped exempting anything, and a run whose only fault
+# was its formatting failed on its whole slow set. A `file` with no following
+# `seconds` yields no record, so junk costs an exemption rather than inventing one,
+# and an absent or unreadable list exempts NOTHING — the fail-closed side.
+_timing_allowlist_entries() {
+  [ "$VERIFY_TIMING_CEILING_S" -gt 0 ] || return 0
+  [ -f "$TIMING_ALLOWLIST" ] || return 0
+  # One line per read of the list, which is one line per fork. The `if` rather than a
+  # trailing `… && echo` keeps the function's status about the READ, not about whether
+  # a probe was asked for — a caller's `x && _timing_allowlist_entries` chain must not
+  # see a failure here merely because the shipped state names no probe.
+  if [ -n "${TIMING_ALLOWLIST_PROBE:-}" ]; then
+    echo "$$" >>"$TIMING_ALLOWLIST_PROBE" 2>/dev/null || :
+  fi
+  awk '
+    {
+      if (match($0, /"file"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+        f = substr($0, RSTART, RLENGTH)
+        sub(/^"file"[[:space:]]*:[[:space:]]*"/, "", f)
+        sub(/"$/, "", f)
+      }
+      if (match($0, /"seconds"[[:space:]]*:[[:space:]]*[0-9]+/)) {
+        n = substr($0, RSTART, RLENGTH)
+        sub(/^"seconds"[[:space:]]*:[[:space:]]*/, "", n)
+        if (f != "") { print n "\t" f; f = "" }
+      }
+    }' "$TIMING_ALLOWLIST" 2>/dev/null
+}
+
+timing_listed() {
+  # No knob gate here on purpose: the two callers that fork (`timing_exempt` and
+  # `timing_ceiling_offenders`) both gate first, and a gate HERE would refuse the
+  # forced read the off-path canary in test-verify-timing-ceiling.ts needs to observe
+  # red. The cost claim it is not weakened: `timing_exempt`'s gate is the statement
+  # that keeps a knob-off run from ever reaching this line.
+  # `needle`, not `k`: this file is SOURCED, so `local k` here would clobber the
+  # caller's own `k` — `timing_exempt` keeps the normalised key in a global `k` — and
+  # empty it out under the caller's feet, so the match would run against "" and
+  # nothing would ever be listed. The same trap the timing helpers document for
+  # `line`.
+  local needle="${1:-}"
+  [ -n "$needle" ] || return 1
+  _timing_allowlist_entries | awk -F'\t' -v k="$needle" '$2 == k {found = 1} END {exit found ? 0 : 1}'
+}
+
+# Is <file> exempt from the ceiling? The knob gate here is the caller-side half of
+# the off-path cost claim. It goes through the one `timing_key` above, so every spelling
+# the caller can hand the loop reaches the list as the same key. There is deliberately
+# no exemption by any other recorded field: a row that could exempt itself by a column
+# it carries would make the list mean nothing.
+timing_exempt() {
+  [ "$VERIFY_TIMING_CEILING_S" -gt 0 ] || return 1
+  local k
+  k="$(timing_key "${1:-}")"
+  [ -n "$k" ] || return 1
+  timing_listed "$k"
+}
+
+# The caller's seam, and why the verdict is not an exit status:
+#
+#   offenders="$(timing_ceiling_offenders)"   # stdout = the offending paths
+#
+# stdout carries the offending paths, one per line, for the replay step to append to
+# its failing-test names; stderr carries the `CEILING:` lines a reader sees. A status
+# would report ONE answer where the run needs a LIST, and a caller under `set -e`
+# would have the loop die on the first offender instead of naming every one — so
+# every diagnostic this function writes goes to stderr, because stdout is the answer.
+# Silent, and therefore a no-op for the caller, whenever the ceiling is off.
+#
+# timing_ceiling_offenders — the run's ceiling verdict.
+timing_ceiling_offenders() {
+  [ "$VERIFY_TIMING_CEILING_S" -gt 0 ] || return 0
+  [ -n "$TIMING_FILE" ] || return 0
+  [ -f "$TIMING_FILE" ] || return 0
+  local tab secs file outcome
+  tab="$(printf '\t')"
+  while IFS="$tab" read -r secs file outcome; do
+    [ -n "$file" ] || continue
+    # R6: a row the watchdog killed is exempt. Its seconds measure the BOUND, not the
+    # test, and the marker already made that test a named failure — failing the run
+    # twice for one hang would blame the ceiling for a hang.
+    case "$outcome" in
+      timeout\ after*) continue ;;
+    esac
+    timing_over_ceiling "$secs" || continue
+    timing_exempt "$file" && continue
+    # Digest mode prints no timing on either channel — the contract the TIME lines and
+    # the block obey — but the offender still fails the run.
+    if [ "${DIGEST:-0}" -eq 0 ]; then
+      echo "CEILING: ${secs}s ${file} (ceiling ${VERIFY_TIMING_CEILING_S}s)" >&2
+    fi
+    echo "$file"
+  done <"$TIMING_FILE"
+}
 
 # The record lives beside the captures, in the run's private directory. Kept in a
 # variable rather than derived at each call site, so the functions below cannot

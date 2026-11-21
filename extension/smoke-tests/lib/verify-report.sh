@@ -105,6 +105,15 @@ report_results() {
     # name, and the exit code (0 all-pass / 1 any failure) is identical to
     # normal mode.
     for i in "${!names[@]}"; do
+      # #2449 — a ceiling offender has no capture to digest: it failed on the clock,
+      # not on an assertion, and no job ever wrote a `✗` line for it. Its name is
+      # still a failure the digest must print, and the pairing check in
+      # verify-loop.sh counts names against captures, so this is where an
+      # offender's EMPTY placeholder belongs — the same placeholder a failed `cp`
+      # pushes, which the #827 echo loop below skips and the `grep -F` below
+      # tolerates. The two arrays are appended in lockstep in the replay loop, so
+      # an empty entry here is a test that ran and failed without output, never an
+      # unpaired name.
       echo "FAILED: ${names[$i]}"
       capfile="${_extra_captures[$i]:-}"
       if [ -n "$capfile" ] && [ -f "$capfile" ]; then
@@ -151,7 +160,12 @@ report_results() {
   # least the last failing test's assertion lines are guaranteed in the
   # tail. Only `✗` lines qualify — warnings (`!`
   # lines) and other output are intentionally excluded.
+  # Only a real capture is grepped: a ceiling offender (or a failed `cp`) pushes an
+  # EMPTY placeholder, and `grep -F -- "✗" ""` answers `grep: : No such file or
+  # directory` on stderr for each one — a diagnostic from the reporter on a run whose
+  # only fault was the clock. The digest arm above tests the same pair.
   for capfile in "${_extra_captures[@]}"; do
+    [ -n "$capfile" ] || continue
     cap=0
     while IFS= read -r line; do
       cap=$((cap + 1))
