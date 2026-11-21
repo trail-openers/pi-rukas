@@ -25,6 +25,7 @@ import {
 import { SUBCOMMANDS } from "../src/headless/cli.ts";
 import { EXIT } from "../src/headless/exit-code.ts";
 import { LENS_REVIEW_FLAGS } from "../src/headless/lens-review.ts";
+import { WIKI_FLAGS } from "../src/headless/wiki.ts";
 import { NDJSON_VERSION } from "../src/headless/ndjson.ts";
 import { PLAN_FLAGS } from "../src/headless/plan.ts";
 import { RESEARCH_FLAGS } from "../src/headless/research.ts";
@@ -117,6 +118,7 @@ for (const [verb, flags] of [
   ["agents-md", AGENTS_MD_FLAGS],
   ["lens-review", LENS_REVIEW_FLAGS],
   ["work-lean", WORK_LEAN_FLAGS],
+  ["wiki", WIKI_FLAGS],
 ] as const) {
   assert(
     deepEqual(caps.verbs[verb].flags, [...flags]) && flags.includes("--json" as never),

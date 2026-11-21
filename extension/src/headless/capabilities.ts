@@ -42,6 +42,7 @@ import { NDJSON_STABLE_FIELDS, NDJSON_STABLE_VERSION, NDJSON_VERSION } from "./n
 import { PLAN_FLAGS } from "./plan.ts";
 import { RESEARCH_FLAGS } from "./research.ts";
 import { RESULT_SCHEMA_VERSION } from "./result.ts";
+import { WIKI_FLAGS } from "./wiki.ts";
 import { WORK_LEAN_FLAGS } from "./work-lean.ts";
 /**
  * The version of the capabilities object itself. Bump on any change to the
@@ -50,7 +51,8 @@ import { WORK_LEAN_FLAGS } from "./work-lean.ts";
  * v2 (#1326): every input with type/default/scope, and `files`.
  * Additive, no bump (docs/headless.md versioning rule): `resources` (#1325),
  * `contracts.resultSchema.failureKinds` (#1367), the S6 verbs (#1021),
- * `--continue-pr` and `features.continuePr` (#1468), `features.issueSpec`.
+ * `--continue-pr` and `features.continuePr` (#1468), `features.issueSpec`,
+ * the `wiki` verb (#2456).
  */
 export const CAPABILITIES_VERSION = 2 as const;
 
@@ -203,6 +205,7 @@ export interface Capabilities {
     "agents-md": { flags: (typeof AGENTS_MD_FLAGS)[number][] };
     "lens-review": { flags: (typeof LENS_REVIEW_FLAGS)[number][] };
     "work-lean": { flags: (typeof WORK_LEAN_FLAGS)[number][] };
+    wiki: { flags: (typeof WIKI_FLAGS)[number][] };
   };
   inputs: typeof HEADLESS_INPUTS;
   files: typeof HEADLESS_FILES;
@@ -254,6 +257,7 @@ export function buildCapabilities(installRoot: string = INSTALL_ROOT): Capabilit
       "agents-md": { flags: [...AGENTS_MD_FLAGS] },
       "lens-review": { flags: [...LENS_REVIEW_FLAGS] },
       "work-lean": { flags: [...WORK_LEAN_FLAGS] },
+      wiki: { flags: [...WIKI_FLAGS] },
     },
     inputs: HEADLESS_INPUTS,
     files: HEADLESS_FILES,
