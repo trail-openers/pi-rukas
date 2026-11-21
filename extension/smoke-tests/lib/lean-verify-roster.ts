@@ -16,6 +16,8 @@
  * problem to refuse rather than the harness's to paper over.
  */
 
+import { rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import type { WorkConfig } from "../../src/lean/config.ts";
 import { ROSTER_REPORT_FILE } from "../../src/lean/verify-roster-command.ts";
 import type { VerifyOpts } from "./lean-verify-types.ts";
@@ -196,4 +198,49 @@ export function rosterTemplate(
   // It names the TREE (`{dir}`), as a suite runner does, not one file — a per-file template would
   // hand the gate a `{file}` placeholder it never substitutes and a run of nothing.
   return "sh .lean-roster-runner.sh --junitxml={report} {dir}";
+}
+
+/**
+ * Take the dependency tree a case says never arrived out of a roster checkout.
+ *
+ * Timed by the caller to the base SUITE's run rather than to the checkout: the production order is
+ * checkout, link, then run, and the gate is asked to notice an undelivered dependency between the link
+ * that reported success and the run that would silently fail every test. Removing them here is the
+ * state a link that never landed leaves — the tree is present, the modules are not, and nothing
+ * upstream reported it.
+ */
+export function bareDepsOf(tree: string, deps: readonly string[]): void {
+  for (const dep of deps) {
+    try {
+      rmSync(path.join(tree, dep), { recursive: true, force: true });
+    } catch {
+      /* a tree already bare is the state the case asked for */
+    }
+  }
+}
+
+/**
+ * Write the report a declared roster run "wrote", in the tree the run belongs to.
+ *
+ * A real file, in the shape a JUnit report has, so the gate's parser, its emptiness rule and its
+ * contradiction rule all run on bytes rather than on a verdict the harness asserted. Synchronous, and
+ * it has to be: the gate reads the report back with its own `readFileSync` the moment the run resolves,
+ * so an await between the run and its answer is a report that arrives after the verdict — the same as
+ * no report at all.
+ */
+export function writeDeclaredReport(
+  tree: string,
+  side: { passed: readonly string[]; failed: string[] },
+  which: "head" | "base",
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  const report = path.join(tree, ROSTER_REPORT_FILE);
+  const absent = [...side.passed, ...side.failed].includes(NO_REPORT_SENTINEL);
+  const xml = absent ? undefined : rosterReportXml(side);
+  try {
+    if (xml === undefined) rmSync(report, { force: true });
+    else writeFileSync(report, xml);
+  } catch {
+    /* a tree that is already gone is the gate's problem to refuse, not the stub's to hide */
+  }
+  return Promise.resolve({ code: 0, stdout: `roster-said-${which}\n`, stderr: "" });
 }

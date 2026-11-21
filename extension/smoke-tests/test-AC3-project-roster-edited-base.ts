@@ -83,27 +83,25 @@ function baseScript(red: boolean): string {
     `(edited land) the green's record really does name an edited file, so the assertion below cannot pass on an empty list (${JSON.stringify(roster?.editedFiles)})`,
   );
   assert(
-    editedFacts.landEarned(
-      {
-        ...editedCreateRun({
-          issue: 2450,
-          version: "test",
-          models: {},
-          baseSha: r.baseSha ?? "0".repeat(40),
-          branch: "lean/issue-2450",
-        }),
-        state: "landed",
-        steps: [
-          {
-            key: "2450:verify:0",
-            state: "verify",
-            startedAt: 1,
-            outcome: { kind: "green", projectRoster: roster },
-          },
-          { key: "2450:ci:0", state: "ci", startedAt: 2, outcome: { kind: "green" } },
-        ],
-      } as unknown as LeanRun,
-    ) === true,
+    editedFacts.landEarned({
+      ...editedCreateRun({
+        issue: 2450,
+        version: "test",
+        models: {},
+        baseSha: r.baseSha ?? "0".repeat(40),
+        branch: "lean/issue-2450",
+      }),
+      state: "landed",
+      steps: [
+        {
+          key: "2450:verify:0",
+          state: "verify",
+          startedAt: 1,
+          outcome: { kind: "green", projectRoster: roster },
+        },
+        { key: "2450:ci:0", state: "ci", startedAt: 2, outcome: { kind: "green" } },
+      ],
+    } as unknown as LeanRun) === true,
     "(edited land) an edited file whose base version PASSED against the head code earns the land (R5 refuses only a newly failing base version)",
   );
 }
@@ -239,9 +237,8 @@ function baseScript(red: boolean): string {
     "(land) a green whose edited file's base version passed earns the land (R5: no newly failing base version)",
   );
   assert(
-    engineFacts.landEarned(
-      runWith({ projectRoster: { ...roster, editedFiles: undefined } }),
-    ) === true,
+    engineFacts.landEarned(runWith({ projectRoster: { ...roster, editedFiles: undefined } })) ===
+      true,
     "(land) a green carrying a roster with no edited files at all earns the land too",
   );
   assert(
@@ -297,8 +294,7 @@ function baseScript(red: boolean): string {
   // fsmonitor/hooks guards, so these commits are the same kind of commit every other roster
   // case makes rather than a second notion of what a git child needs.
   const { git: gitRun } = await import("./lib/lean-verify-git.ts");
-  const g = (args: string[]): string =>
-    gitRun(dir, ...(args[0] === "-C" ? args.slice(2) : args));
+  const g = (args: string[]): string => gitRun(dir, ...(args[0] === "-C" ? args.slice(2) : args));
   const dir = mkdtempSync(path.join(tmpdir(), "roster-blob-"));
   g(["init", "-q", "-b", "main", dir]);
   mkdirSync(`${dir}/tests`, { recursive: true });
@@ -349,8 +345,7 @@ function baseScript(red: boolean): string {
   // An executor that swallows the read — resolving with no stdout at all — is the same refusal: the
   // gate has no bytes, and "no bytes" is not "an empty test file the base held".
   const silent = await runEditedBaseVersions({
-    exec: (() =>
-      Promise.resolve({ stdout: "", stderr: "" })) as unknown as Parameters<
+    exec: (() => Promise.resolve({ stdout: "", stderr: "" })) as unknown as Parameters<
       typeof runEditedBaseVersions
     >[0]["exec"],
     repoRoot: dir,
@@ -374,7 +369,8 @@ function baseScript(red: boolean): string {
   // under it is not the verdict the project's runner would have reached — the very asymmetry that lets a
   // rewritten contract slip through.
   const { runEditedBaseVersions } = await import("../src/lean/verify-roster-edited.ts");
-  const seen: { argv?: string[]; killGroup?: boolean; env?: Record<string, string | undefined> }[] = [];
+  const seen: { argv?: string[]; killGroup?: boolean; env?: Record<string, string | undefined> }[] =
+    [];
   // A spy executor: it answers the gate's `git show` with bytes the base really held and records the
   // env of every child it started, so the assertion is about the RUNNER's environment rather than
   // about a string the reason happens to contain.
@@ -410,8 +406,10 @@ function baseScript(red: boolean): string {
     `(scrubbed env) the base version really reached the project's runner (${JSON.stringify(result).slice(0, 110)})`,
   );
   const leaked = Object.keys(runner?.env ?? {}).filter((k) => /^PI_ENSEMBLE_/.test(k));
+  // `PATH` is the assertion that the env was SUPPLIED at all: a runner handed `undefined` would leak no
+  // knob either, and passing on that would certify the very thing this case exists to check.
   assert(
-    (runner?.env ?? {}).PATH !== undefined && leaked.length === 0,
+    runner?.env?.PATH !== undefined && leaked.length === 0,
     `(scrubbed env) the runner was handed the scrubbed verify env, with no driver knob left in it (leaked: ${JSON.stringify(leaked)})`,
   );
   rmSync(wtDir, { recursive: true, force: true });
