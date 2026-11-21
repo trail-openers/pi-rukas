@@ -133,7 +133,7 @@ export const OVER_PROBLEM_BODY: string = (() => {
  * The criteria section as it renders today: the heading, the lead, and the
  * rendered criteria disarmed by `fenceText` — nothing above the list.
  *
- * This is the pre-`PI_ENSEMBLE_LEAN_REVIEW_PROBLEM` expression, written here
+ * This is the render from before the statement was added, written here
  * rather than imported so the off arm's `===` is checked against a copy the
  * module under change cannot move.
  */

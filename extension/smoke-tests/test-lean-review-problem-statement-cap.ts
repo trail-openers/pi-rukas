@@ -17,9 +17,9 @@
  * kept length of an over-cap statement, and the WHOLE payload of a statement that
  * sits between `MAX_ISSUE_CHARS` and the cap.
  *
- * `PI_ENSEMBLE_LEAN_REVIEW_PROBLEM` is pinned ON here — and read by the fixtures
- * at their own load, which is why the pin wraps the imports' use rather than
- * relying on the ambient default.
+ * The statement's own switch retired with the rule shipping default-on; the split lever
+ * is pinned to its ambient default here — and read by the fixtures at their own load,
+ * which is why the pin wraps the imports' use rather than relying on the ambient default.
  *
  * Offline: pure functions over strings, no child, no model, no token.
  */
@@ -45,7 +45,7 @@ import {
 const { assert, failures } = makeAssert();
 
 await withEnv(
-  { PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined, PI_ENSEMBLE_LEAN_REVIEW_PROBLEM: undefined },
+  { PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined },
   async () => {
     // ── the over-cap side: the kept span is the cap, to the character ────────
     {

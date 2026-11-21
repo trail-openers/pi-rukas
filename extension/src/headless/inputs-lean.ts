@@ -24,9 +24,7 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // also takes it out, since one renderer serves all three seats.
   // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_BUILD_ISSUE_PROSE", true),
-  // The two handback switches: the deadline stop's route to the report, and the
-  // no-head handback's record. Readers in lean/deadline-handback.ts and
-  // lean/verified-handback-switch.ts.
+  // The deadline stop's route to the report. Reader in lean/deadline-handback.ts.
   flag("LEAN_DEADLINE_HANDBACK", true),
   // A review fixer whose last turn ended at the model's output-token limit with no edit made is
   // continued ONCE, in its own session, in its own tree behind the same write fence, before the wave
@@ -43,8 +41,8 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // network-git wrapper: non-interactive env, process-group kill, bounded wait. `0` puts
   // every one of them back on the executor in its pre-fix shape — caller's env, no group
   // kill — for an origin that needs an interactive credential helper. The reader is
-  // `leanHandbackNetGitEnabled` in lean/handback-net-git-switch.ts; the push is not in
-  // scope, `LEAN_REWIND_LEASE_BINDS` owns that argv.
+  // `leanHandbackNetGitEnabled` in lean/handback-net-git-switch.ts; the push's argv is
+  // not in scope — its `--atomic` and its unforced lease-bound refspec ship with the rule.
   flag("LEAN_HANDBACK_NET_GIT", true),
   // #2171 — show the specify/challenge adversary the issue prose its frozen
   // tests were written from. 0 takes the section back out of both prompts.

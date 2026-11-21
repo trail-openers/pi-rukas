@@ -196,10 +196,9 @@ step log and the run record agree about which contract the run executed, which i
 someone reading the log afterwards is entitled to. Rebuilding it is the loader's job,
 and `buildOutcome` — the whitelist every loaded outcome passes through — had clauses for
 every other field but these two, so the loader judged the contract, refused a record
-whose copy was malformed, and then dropped it. It rebuilds both now, behind
-back byte for byte, so a loaded ready outcome carries neither field as v0.14.87 loaded
-it — the knob changes only what the run's own step log retains, and `specFor` reads the
-run's copy on either arm; [configuration.md](configuration.md)).
+whose copy was malformed, and then dropped it. It rebuilds both now, so a loaded ready
+outcome always carries the contract and the config sha — what the loader retains no
+longer depends on a knob.
 
 **What is published.** When `ready` mints a derivation it posts it to the issue as a
 fenced `pi-spec v1` block, naming the model that drafted it and the criteria count —
@@ -575,8 +574,8 @@ whose `waves` name nothing usable) must sit ahead of every `publish` attempt, de
 not), or whose log holds no `review` step at all (the machine
 sends `publish` → `review`, so a review the deadline stopped short of dispatching judged
 nothing) reports
-**`review-incomplete`** with `reviewComplete: false` instead (same exit 10,
-`awaiting-human-merge` cap back and omits the field. `reviewComplete` is `true` only where
+**`review-incomplete`** with `reviewComplete: false` instead (same exit 10, its own
+`awaiting-human-merge` cap). `reviewComplete` is `true` only where
 the step's own record says the review finished on the head that shipped, and `false` is
 never a default: a review that died before pass 1 read no lens, a stop that named no lane is still
 a stop, and a log with no `review` step is a review that never ran — none of them report a
@@ -673,17 +672,16 @@ moved my branch" from "the clone could not read that commit". Where origin alrea
 holds the certified head the step pushed nothing, and the record says so without
 calling the shipped head unverified. Where the rule fires and the log names no green
 head at all, the step records the head origin holds as read after the step, with
-`shippedVerified: false` and the rule's own `unshippedReason` — behind
+`shippedVerified: false` and the rule's own `unshippedReason` — so
 a consumer keys on `shippedVerified` and never on `shippedHead` alone. The third state is
-the one that switch's `0` restores: where the rule never spoke about a head, `shippedHead`
+where the rule never spoke about a head: `shippedHead`
 is absent and `shippedVerified` is absent with it, which is how a record says "this run's
 handback was not a rewind" rather than "it was one that found no head". The host's own
 reading of the same facts is `issues[].gates.handback.verified`, a `boolean | null` whose
 `null` means the projection has no answer (`work-lean-gates.ts`), present only when
 `features.leanGates` is reported ([headless.md](headless.md)). Every other handback is
-unchanged. The whole rule is behind `PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK` (off arm:
-(default on; only `0` puts the leading `+` back and drops `--atomic`, byte for byte,
-restoring the pre-fix push argv exactly).
+unchanged. The rule ships default-on with no switch of its own; the rewind's push is
+unforced and `--atomic`, so the lease is what authorises the move.
 
 ### Republishing to the PR the run's own `publish` opened
 
@@ -710,14 +708,12 @@ Each side of the comparison fails closed on its own: a record missing `published
 run's, and a head that does not descend from origin's all keep the old refusal. So does
 an ancestry read that cannot answer — a `PublishInfraError` naming the branch and what
 git said, never a silent "no" and never a silent "yes". **The reading of PR state is not
-this knob's**: `isSettled` stays fail-closed, so a row whose state the forge did not
-answer is unsettled and blocks the push on either arm.
+this rule's**: `isSettled` stays fail-closed, so a row whose state the forge did not
+answer is unsettled and blocks the push.
 
-at call time), whose off arm restores the pre-fix check byte for byte — same origin read,
-one `prList`, the same refusal text, and no `merge-base` call at all. Pinned by
-`test-lean-publish-republish-own-pr.ts` (the exemption and every refusal beside it),
-`test-lean-republish-own-pr-off-arm.ts` (the `"0"` arm's call sequence, against a
-literal transcription of the pre-fix body) and `test-lean-republish-own-pr-switch.ts`.
+The rule ships default-on with no switch of its own. Pinned by
+`test-lean-publish-republish-own-pr.ts`, which drives the exemption and every refusal
+beside it against a real origin.
 
 ### The publishable-branch guard, and the mainline it refuses against
 

@@ -1,7 +1,6 @@
 /**
  * lib/lean-review-problem-golden — the review seats' briefs as they rendered
- * BEFORE `PI_ENSEMBLE_LEAN_REVIEW_PROBLEM` put the spec's `problem` at the head of
- * the criteria section.
+ * BEFORE the spec's `problem` was put at the head of the criteria section.
  *
  * `lib/lean-review-spec-split-golden.ts` freezes the pre-SPLIT renders and reads
  * the criteria section's heading and lead from `lean/review-criteria.ts`. This

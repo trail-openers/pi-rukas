@@ -51,13 +51,13 @@ const docs = (file: string): string =>
     "and that row states what the wrapper supplies, so the knob's cost is legible",
   );
   // The push is the neighbour's argv, and a row that let a reader think this knob moved
-  // it would make the two switches' promises unverifiable.
+  // it would make the two promises unverifiable. The rewind's lease/`--atomic` rule shipped
+  // default-on with no switch of its own, so the row states that directly instead of pointing
+  // at a knob that no longer exists.
   assert(
-    doc.includes("LEAN_REWIND_LEASE_BINDS") &&
-      (doc.split("PI_ENSEMBLE_LEAN_HANDBACK_NET_GIT")[1] ?? "").includes(
-        "not this switch",
-      ),
-    "and that row says the rewind push belongs to LEAN_REWIND_LEASE_BINDS, not to this knob",
+    (doc.split("PI_ENSEMBLE_LEAN_HANDBACK_NET_GIT")[1] ?? "").includes("not this switch") &&
+      (doc.split("PI_ENSEMBLE_LEAN_HANDBACK_NET_GIT")[1] ?? "").includes("--atomic"),
+    "and that row says the rewind push's argv — its --atomic and its lease-bound refspec — is not this knob's",
   );
 }
 

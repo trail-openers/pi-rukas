@@ -307,18 +307,18 @@ await withEnv(ENV, async () => {
   );
 });
 
-// ── (c) the switch OFF: byte-identical to the pre-recording body, four fields absent.
-// TWO arms on the same log, so the equality in the off arm cannot be a renderer
-// compared with itself: with the recording ON the same drive must produce a body that
-// DIFFERS. Each arm owns its repo — one shared origin would let the control's rewind
-// move the branch the off arm is meant to leave exactly where it was.
+// ── (c) the rule firing with NO green head in the log: the record names the head origin
+// really holds and calls it NOT verified, and the body carries the head section. The
+// pre-recording body captured once from the parent commit is the comparison that makes this
+// mean something: a renderer that always printed the section would pass (b) alone.
+// Each arm owns its repo — one shared origin would let a rewind move the branch another
+// case is meant to find exactly where it was.
 {
   const on = repoWithFixHead();
-  const off = repoWithFixHead();
   const greenNoHead = (): Partial<Record<LeanState, Outcome[]>> =>
     walkToReview({ kind: "green", reason: "frozen tests and project tiers passed" });
 
-  await withEnv({ ...ENV, PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD: "1" }, async () => {
+  await withEnv(ENV, async () => {
     const ran = await driveToDeadline(on.repoRoot, greenNoHead(), on.baseSha);
     assert(
       ran.crossed,
@@ -326,11 +326,11 @@ await withEnv(ENV, async () => {
     );
     assert(
       ran.outcome?.shippedHead === on.headSha && ran.outcome?.shippedVerified === false,
-      `(c) control: with the recording on, the record names F and calls it unverified (got ${JSON.stringify([ran.outcome?.shippedHead, ran.outcome?.shippedVerified])})`,
+      `(c) control: the record names F and calls it unverified (got ${JSON.stringify([ran.outcome?.shippedHead, ran.outcome?.shippedVerified])})`,
     );
     assert(
       String(ran.outcome?.report ?? "") !== PRE_RECORD_BODY,
-      `(c) control: and the body DIFFERS from the pre-recording capture — the falsification that makes the off arm's equality mean something (got ${JSON.stringify((ran.outcome?.report ?? "").split("\n").slice(0, 3).join(" / "))})`,
+      `(c) control: and the body DIFFERS from the pre-recording capture — the falsification that keeps the head section from being a renderer that always printed it (got ${JSON.stringify((ran.outcome?.report ?? "").split("\n").slice(0, 3).join(" / "))})`,
     );
   });
 }
