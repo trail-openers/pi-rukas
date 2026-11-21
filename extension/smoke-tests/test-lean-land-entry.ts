@@ -23,6 +23,8 @@
  *   (l5) the merge call returned but the forge says OPEN -> refused; `merged` is
  *        only ever a read-back claim.
  *   (l6) no verified head on the log -> refused before the forge is touched.
+ *   (l10) the squash subject is the WHOLE issue title, prefixed only in a repo
+ *        that writes conventional subjects.
  *
  * The log is the real fixture (a real commit whose oid the verify step records),
  * so `merged` is never asserted over a record the loader would refuse.
@@ -33,6 +35,7 @@ import {
   mergeEvidenceGlMrCmd,
   mergeEvidenceGlPipelinesCmd,
 } from "../src/forge-commands-gl-evidence.ts";
+import type { Forge } from "../src/forge-types.ts";
 import type { HandlerCtx } from "../src/lean/engine.ts";
 import type { LandDeps, MergeCall } from "../src/lean/land-deps.ts";
 import { landOutcome } from "../src/lean/land.ts";
@@ -327,6 +330,36 @@ async function drive(
 		if (savedForge === undefined)
 			Reflect.deleteProperty(process.env, "PI_ENSEMBLE_FORGE");
 		else process.env.PI_ENSEMBLE_FORGE = savedForge;
+	}
+}
+
+// ── (l10) the squash subject is the whole issue title, never cut ──────
+{
+	const { landDeps, primeMergeSubject } = await import("../src/lean/land-deps.ts");
+	const title =
+		"fix(work): the lean squash subject keeps every word of a title longer than sixty-four characters";
+	const github = async () => ({
+		forge: "github" as const,
+		issueView: async () => ({ title }) as Awaited<ReturnType<Forge["issueView"]>>,
+	});
+	const saved = process.env.PI_ENSEMBLE_CONVENTIONAL_COMMITS;
+	try {
+		process.env.PI_ENSEMBLE_CONVENTIONAL_COMMITS = "1";
+		await primeMergeSubject("/x", 101, github);
+		assert(
+			landDeps().mergeSubject?.(101) === title,
+			`(l10) a conventional repo merges with the whole title (${landDeps().mergeSubject?.(101)})`,
+		);
+		process.env.PI_ENSEMBLE_CONVENTIONAL_COMMITS = "0";
+		await primeMergeSubject("/x", 102, github);
+		assert(
+			landDeps().mergeSubject?.(102) === title.slice("fix(work): ".length),
+			`(l10) a plain repo merges with the bare title text (${landDeps().mergeSubject?.(102)})`,
+		);
+	} finally {
+		if (saved === undefined)
+			Reflect.deleteProperty(process.env, "PI_ENSEMBLE_CONVENTIONAL_COMMITS");
+		else process.env.PI_ENSEMBLE_CONVENTIONAL_COMMITS = saved;
 	}
 }
 

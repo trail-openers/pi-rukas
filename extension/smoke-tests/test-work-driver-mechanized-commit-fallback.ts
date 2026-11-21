@@ -5,7 +5,7 @@
  *        fallbackCause classifies as `dirty-repoRoot`.
  *
  * Split out of test-work-driver-mechanized-commit.ts so that file stays
- * under the 500-line hard cap after adding the M4 clip-title e2e case.
+ * under the 500-line hard cap after adding the M4 case.
  * CI globs `smoke-tests/test-*.ts` excluding `*-live.ts`, so this file
  * runs automatically in the offline suite.
  *

@@ -9,7 +9,7 @@
  * stdout and throws on absent keys, mirroring `git config --get`'s
  * exit-1-on-missing behaviour).
  *
- * Harness pattern: pinned literals, no framework (test-clip-title.ts shape).
+ * Harness pattern: pinned literals, no framework.
  */
 
 import {

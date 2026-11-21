@@ -8,7 +8,7 @@
  * that one what `detectForge` decides from it. Fully offline by construction —
  * the parser is a pure function over a string.
  *
- * Harness pattern: pinned literals, no framework (test-clip-title.ts shape).
+ * Harness pattern: pinned literals, no framework.
  */
 
 import { MAX_SEGMENTS, MIN_SEGMENTS, parseRemoteUrl } from "../src/forge-detect.ts";

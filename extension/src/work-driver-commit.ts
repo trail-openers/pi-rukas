@@ -62,13 +62,9 @@ import { parsePrNumber } from "./work-driver-merged.ts";
 // (the AGENTS.md §12 500-line cap pushed it out); re-exported here so the
 // existing import path in work-driver.ts is unchanged.
 export { runCommitPr };
-// clipTitle (#507) lives with the PR text builders in
-// work-driver-pr-body-definition.ts; re-exported for existing consumers.
-export { clipTitle } from "./work-driver-pr-body-definition.ts";
 import {
   assumptionsBlockOf,
   carriedFindingsSectionOf,
-  clipTitle,
   companionLinesOf,
   fixesLinesOf,
   operatorActionsSectionOf,

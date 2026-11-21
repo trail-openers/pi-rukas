@@ -11,12 +11,16 @@
  */
 
 import { execp } from "../exec.ts";
+import type { Forge } from "../forge-types.ts";
 import type { AuthorRead } from "../merge-author-allowlist.ts";
 import { type MergeAuthorDecision, heldForMergeAuthor } from "../merge-guard-author.ts";
-import { deriveConsolidationSubject } from "../work-driver-handoff-subject.ts";
+import {
+  deriveConsolidationSubject,
+  parseConventionalTitle,
+} from "../work-driver-handoff-subject.ts";
 import type { MergeEvidence } from "../work-driver-merge-evidence.ts";
 import { gatherMergeEvidence } from "../work-driver-merge-evidence.ts";
-import { clipTitle } from "../work-driver-pr-body-definition.ts";
+import { usesConventionalCommits } from "../work-title.ts";
 import { loadWorkConfig } from "./config.ts";
 import { forgeFor } from "./io.ts";
 
@@ -98,18 +102,20 @@ export function landDeps(): LandDeps {
     checkAuthor: (repoRoot, baseSha, author) =>
       heldForMergeAuthor({ exec: execp, cwd: repoRoot, baseSha, author }),
     // From the cache `primeMergeSubject` fills at wiring time. The format is the driver's ONE
-    // conventional-subject parser — the commit-pr path and the handoff consolidation derive theirs the same
+    // conventional-subject parser and convention check — the commit-pr path derives its title the same
     // way; a lean merge inventing one would be a second parser disagreeing.
     mergeSubject: (issue) => subjectCache.get(issue),
   };
 }
 
 /**
- * Read the issue's title and cache the conventional squash subject its merge carries.
+ * Read the issue's title and cache the squash subject its merge carries.
  *
- * Called once per run at wiring time, because the seam returning it is sync. `clipTitle` is the driver's own
- * clipper at the same 64 as `deriveCommitPrTitle`, and only the first line survives — `--subject` is one line.
- * An absent forge, unreadable issue, empty title, or a subject the parser refused all cache `undefined`: no
+ * Called once per run at wiring time, because the seam returning it is sync. The subject is the WHOLE issue
+ * title, never cut: a cut subject is a sentence that stops, and it is the permanent record on main. The
+ * `type(scope):` prefix is added only when the repository writes conventional subjects, through the same
+ * `usesConventionalCommits` and `deriveConsolidationSubject` the classic commit-pr title uses; otherwise the
+ * subject is the title's own text. An absent forge, unreadable issue or empty title caches `undefined`: no
  * flag, not a blank subject.
  *
  * GitLab caches `undefined` on purpose: `glab mr merge` has no `--subject` (it takes `-m/--message` or
@@ -120,8 +126,9 @@ export function landDeps(): LandDeps {
 export async function primeMergeSubject(
   repoRoot: string,
   issue: number,
+  resolve: (repoRoot: string) => Promise<Pick<Forge, "forge" | "issueView"> | undefined> = forgeFor,
 ): Promise<string | undefined> {
-  const f = await forgeFor(repoRoot);
+  const f = await resolve(repoRoot);
   if (f === undefined) return undefined;
   if (f.forge !== "github") {
     subjectCache.set(issue, undefined);
@@ -130,9 +137,10 @@ export async function primeMergeSubject(
   const viewed = await f.issueView(issue).catch(() => undefined);
   const title = viewed?.title?.trim();
   if (!title) return undefined;
-  const derived = deriveConsolidationSubject(title);
-  const first = derived === undefined ? "" : (derived.split("\n")[0] ?? "").trim();
-  const value = first === "" ? undefined : clipTitle(first, 64);
+  const text = parseConventionalTitle(title).description || title;
+  const value = (await usesConventionalCommits(repoRoot, undefined, execp))
+    ? deriveConsolidationSubject(title, text)
+    : text;
   subjectCache.set(issue, value);
   return value;
 }
