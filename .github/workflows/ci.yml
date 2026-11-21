@@ -115,6 +115,7 @@ jobs:
         working-directory: extension
         env:
           PI_ENSEMBLE_VERIFY_TEST_JOBS: "4"
+          PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "30"
           # The shard index this job runs. The step's own NAME stays the bare
           # "Offline smoke tests" that test-ci-verify-loop-jobs.ts scopes its
           # env pin to: naming it per shard moves the step out from under the
