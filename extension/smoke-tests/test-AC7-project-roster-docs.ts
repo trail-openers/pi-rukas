@@ -233,15 +233,13 @@ function checkTroubleshooting(): void {
     "(troubleshooting) the entry names the `{file}` derivation as the cause of the exit-4 hand-back",
   );
   assert(
-    /recursive|recursively/.test(troubleshooting) &&
-      /test\/units|multi-segment/.test(troubleshooting),
+    /recursive|recursively/.test(troubleshooting) && /test\/units|multi-segment/.test(troubleshooting),
     "(troubleshooting) the missing-test cause reflects the recursive listing and a multi-segment testDir",
   );
 }
 
 checkSwitchRow();
 checkTroubleshooting();
-
 /**
  * The docs and the code agree on the default. A row that says ON while the switch reads off is the
  * drift this test exists to catch, so the assertion is against the real reader rather than the prose.

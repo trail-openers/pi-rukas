@@ -57,6 +57,9 @@ export function landedRoster(
 }
 
 /** A green `verify` outcome that carries a roster — what a scripted happy path queues. */
-export function greenWithRoster(baseSha: string, opts?: { baseSkipped?: boolean }): Outcome {
+export function greenWithRoster(
+  baseSha: string,
+  opts?: { baseSkipped?: boolean },
+): Outcome {
   return { kind: "green", projectRoster: landedRoster(baseSha, opts) };
 }

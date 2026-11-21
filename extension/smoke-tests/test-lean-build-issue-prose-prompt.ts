@@ -106,7 +106,10 @@ await withEnv(ON, async () => {
     !prompt.includes('"verify": "test"'),
     "the spec block itself never appears in the issue section — the criteria are printed below it",
   );
-  assert(!prompt.includes("undefined"), 'no "undefined" reaches the brief from the issue section');
+  assert(
+    !prompt.includes("undefined"),
+    "no \"undefined\" reaches the brief from the issue section",
+  );
 
   // The builder's own switch is the only one that reaches this seat: the oracle
   // seats have no switch, so the off arm is the pre-#2228 render and nothing else
@@ -190,16 +193,24 @@ await withEnv(ON, async () => {
   // section states is checked rather than assumed. A look-alike that mentions no
   // version (`​```pi-spec`, or a `json` fence quoting one) is ordinary prose and
   // still renders.
-  const lookAlike = build(
-    ["```pi-spec v1 extra", SPEC.problem, "```", "", "A requirement stated only here."].join("\n"),
-  );
+  const lookAlike = build([
+    "```pi-spec v1 extra",
+    SPEC.problem,
+    "```",
+    "",
+    "A requirement stated only here.",
+  ].join("\n"));
   assert(
     lookAlike === bare,
     "a body whose only spec-shaped fence carries trailing info-string text renders no section rather than reprinting the contract",
   );
-  const lookAlikePlain = build(
-    ["```json", "pi-spec", "```", "", "A requirement stated only here."].join("\n"),
-  );
+  const lookAlikePlain = build([
+    "```json",
+    "pi-spec",
+    "```",
+    "",
+    "A requirement stated only here.",
+  ].join("\n"));
   assert(
     lookAlikePlain.includes(LEAN_ISSUE_HEADING),
     "and a fence that merely contains the word pi-spec is still ordinary prose, so it renders",
@@ -250,7 +261,11 @@ await withEnv(ON, async () => {
   const specOnly = (prose: string): string =>
     [
       "```pi-spec v1",
-      JSON.stringify({ ...SPEC, criteria: [{ id: "AC1", text: "x", verify: "test" }] }, null, 2),
+      JSON.stringify(
+        { ...SPEC, criteria: [{ id: "AC1", text: "x", verify: "test" }] },
+        null,
+        2,
+      ),
       "```",
       "",
       prose,
@@ -277,9 +292,7 @@ await withEnv(ON, async () => {
   const quotesTheFormat = build(SPEC_BODY_WITH_PROSE);
   assert(
     quotesTheFormat.includes(LEAN_ISSUE_HEADING) &&
-      quotesTheFormat.includes(
-        'TAIL-ONLY: the exception message must remain exactly "quota exceeded"',
-      ) &&
+      quotesTheFormat.includes('TAIL-ONLY: the exception message must remain exactly "quota exceeded"') &&
       quotesTheFormat.includes("`pi-spec v1`"),
     "a valid body whose PROSE mentions pi-spec v1 keeps its section and its tail requirement — only a surviving spec-shaped fence refuses it",
   );

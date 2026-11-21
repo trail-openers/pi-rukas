@@ -188,14 +188,14 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // #2212 — #2179's preflight/submodule behaviour. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT", leanRunnerPreflightEnabled],
+  // The truncated-fixer continuation: its default is pinned here, its truth table by
+  // `test-lean-review-fix-reask-pure.ts` and its off arm by
+  // `test-lean-review-fixer-truncation-off-arm.ts`.
   // #2428 — `verify` judges the project's own pre-existing tests. The reader is
   // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth
   // table, the off arm's bytes and the docs row are pinned by
   // test-AC5-project-roster-switch.ts and test-AC7-project-roster-docs.ts.
   ["PI_ENSEMBLE_LEAN_PROJECT_ROSTER", leanProjectRosterEnabled],
-  // The truncated-fixer continuation: its default is pinned here, its truth table by
-  // `test-lean-review-fix-reask-pure.ts` and its off arm by
-  // `test-lean-review-fixer-truncation-off-arm.ts`.
   ["PI_ENSEMBLE_LEAN_FIXER_TRUNCATION_REASK", leanFixerTruncationReaskEnabled],
   // #2279 — the handback's origin reads through the network-git wrapper. The reader is
   // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth

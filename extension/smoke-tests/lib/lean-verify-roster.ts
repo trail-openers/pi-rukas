@@ -109,7 +109,8 @@ export function rosterCommandFor(config: {
   test?: string;
 }): { bin: string } | undefined {
   const template =
-    config.roster ?? (config.test === undefined ? undefined : deriveSuiteTemplate(config.test));
+    config.roster ??
+    (config.test === undefined ? undefined : deriveSuiteTemplate(config.test));
   if (template === undefined) return undefined;
   const bin = template.split(/\s+/).filter((w) => w !== "")[0];
   return bin === undefined ? undefined : { bin };

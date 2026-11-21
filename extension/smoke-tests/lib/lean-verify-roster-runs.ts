@@ -78,7 +78,11 @@ export function makeRosterRuns(opts: {
     return true;
   };
 
-  const runRosterSuite = (command: string, o2: Parameters<VerifyExec>[1], side: RosterSide) => {
+  const runRosterSuite = (
+    command: string,
+    o2: Parameters<VerifyExec>[1],
+    side: RosterSide,
+  ) => {
     if (side === "head") headSuiteRuns++;
     else baseSuiteRuns++;
     const killed = side === "head" ? o?.headRunKilled : o?.baseRunKilled;
