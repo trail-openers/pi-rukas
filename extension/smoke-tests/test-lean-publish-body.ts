@@ -22,6 +22,8 @@
  *       and says "not verified", never a head
  *   (e) a criterion id is untrusted text and goes through `oneLine` like the
  *       criterion's text does
+ *   (g) a created PR carries the issue's WHOLE title: never cut, no `…`, no
+ *       markdown escape
  */
 
 import { publishBody } from "../src/lean/publish-body.ts";
@@ -321,6 +323,18 @@ function bodyOf(o: Omit<Partial<PublishBodyInput>, "spec"> & { spec: PiSpec }): 
       clean.body.includes("## Run") &&
       !clean.body.includes("challenge stopped"),
     `(f) and no line when it does not (${clean.threw?.message ?? "clean"})`,
+  );
+}
+
+// --------------------- (g) the PR title is the whole issue title
+{
+  const title =
+    "lean publish titles a created PR with the issue's whole title | never cut at seventy-two characters";
+  const r = await runPublish({ issue: 434, verify: { kind: "green" }, issueTitle: title });
+  const got = r.forge.prCreateCalls[0]?.title;
+  assert(
+    got === `work-lean #434: ${title}`,
+    `(g) a ${title.length}-char issue title reaches the PR title whole (got ${got ?? r.threw?.message})`,
   );
 }
 
