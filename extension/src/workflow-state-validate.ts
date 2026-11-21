@@ -139,6 +139,8 @@ export const KNOWN_EVENT_KINDS = [
   // #735 — the branch step's leftover-worktree handling record (the driver
   // writes it when it adopts or removes a stale .worktrees/ entry).
   "worktree-leftover-handled",
+  // What explore did with the host's comments blob.
+  "issue-comments",
   // #849 — the develop fence recovery marker (discarded SHA + owners).
   "fence-recovery-started",
   // #1846 — the adversarial fix pass's out-of-fence files were preserved and

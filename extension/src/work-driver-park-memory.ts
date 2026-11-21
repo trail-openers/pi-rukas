@@ -55,6 +55,7 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { ISSUE_BODY_TIMEOUT_MS, fetchIssueBodyViaGh } from "./work-driver-explore.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import { handoffMarker } from "./work-driver-handoff-channel.ts";
+import { commentedFetch } from "./work-driver-issue-comments.ts";
 import {
   COVERED_PARK_CAPS,
   type CoveredParkCap,
@@ -168,7 +169,7 @@ export async function parkFingerprint(
       );
     }
   }
-  const fetchBody = ctx.issueBodyFetcherFn ?? fetchIssueBodyViaGh;
+  const fetchBody = await commentedFetch(ctx.issueBodyFetcherFn ?? fetchIssueBodyViaGh, issue);
   try {
     const { stdout } = await fetchBody(issue, ctx.repoRoot);
     if (!stdout.trim()) return undefined;

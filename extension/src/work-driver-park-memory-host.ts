@@ -52,6 +52,7 @@ import type { DriverContext } from "./work-driver-context.ts";
 import { isProtectedPath } from "./work-driver-doctrine.ts";
 import { fetchIssueBodyViaGh } from "./work-driver-explore.ts";
 import { handoffChannel } from "./work-driver-handoff-channel.ts";
+import { commentedFetch } from "./work-driver-issue-comments.ts";
 import {
   HOST_PARK_FILE_MAX_BYTES,
   HOST_PARK_MAX_ROWS,
@@ -236,7 +237,7 @@ async function rawIssueBody(
     const cached = await readCachedIssueBody(ctx.repoRoot, localArtifact);
     if (cached !== undefined) return cached;
   }
-  const fetchBody = ctx.issueBodyFetcherFn ?? fetchIssueBodyViaGh;
+  const fetchBody = await commentedFetch(ctx.issueBodyFetcherFn ?? fetchIssueBodyViaGh, issue);
   try {
     const { stdout } = await fetchBody(issue, ctx.repoRoot);
     return stdout.trim() ? stdout : undefined;

@@ -7,6 +7,7 @@
 import type { DispatchUsage } from "./types.ts";
 import type { DevelopCrashFragment } from "./work-develop-crash.ts";
 import type { FixerBoundSource } from "./work-driver-fixer-bound.ts";
+import type { IssueCommentsEvent } from "./work-driver-issue-comments.ts";
 import type { AdversarialEventFragment } from "./workflow-state-events-adversarial.ts";
 import type { BranchResetEvent } from "./workflow-state-events-branch-reset.ts";
 import type { CapHitFields } from "./workflow-state-events-cap-hit.ts";
@@ -453,6 +454,7 @@ export type WorkEvent =
   | WorkstreamCallsRefusedEvent
   | BranchResetEvent
   | WorktreeLeftoverHandledEvent
+  | IssueCommentsEvent
   | DispatchSlowEvent
   | FenceEvent
   | CycleInterruptedEvent

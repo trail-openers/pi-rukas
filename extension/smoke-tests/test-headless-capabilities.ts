@@ -171,6 +171,7 @@ assert(caps.features.resultFromMemory === true, "features.resultFromMemory is tr
 assert(caps.features.cycleDeadline === true, "features.cycleDeadline is true");
 assert(caps.features.continuePr === true, "features.continuePr is true");
 assert(caps.features.issueSpec === true, "features.issueSpec is true");
+assert(caps.features.issueComments === true, "features.issueComments is true");
 assert(
   caps.features.repeatParkGuard === true,
   "features.repeatParkGuard is true (#1743: parks are remembered and a third identical start is refused)",
