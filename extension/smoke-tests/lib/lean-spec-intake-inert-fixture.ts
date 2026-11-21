@@ -34,6 +34,7 @@ import type { LeanRun, LeanState, Outcome } from "../../src/lean/state.ts";
 import { leanStateFile, loadRun } from "../../src/lean/state.ts";
 import type { DispatchResult } from "../../src/types.ts";
 import { withEnv } from "./env-scope.ts";
+import { landedRoster } from "./lean-roster-fixture.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { worktreeCommit } from "./lean-spec-intake-fixtures.ts";
 
@@ -116,7 +117,8 @@ const WALK: Partial<Record<LeanState, Outcome>> = {
   specify: { kind: "ok" },
   build: { kind: "ok" },
   challenge: { kind: "none" },
-  verify: { kind: "green" },
+  // Installed below, per drive, with the run's real base: the land gate reads the roster off the
+  // green verify's RECORD, so a walk scripted to `landed` has to record one.
   publish: { kind: "ok" },
   review: { kind: "done" },
   ci: { kind: "green" },
@@ -234,6 +236,8 @@ export async function driveAuthoredRun(opts: {
     // Every state past `ready` is stubbed BEFORE the recording one is installed, so
     // `land`'s stub is this rig's rather than production's (see `AFTER_READY`).
     for (const state of AFTER_READY) handlers[state] = async () => WALK[state] as Outcome;
+    handlers.verify = async () =>
+      ({ kind: "green", projectRoster: landedRoster(base) }) as Outcome;
     handlers[AFTER_READY_FIRST] = (ctx: HandlerCtx) => {
       ctxRun = ctx.run;
       read = specFor(AUTHORED_BODY, ctx.run);

@@ -27,6 +27,8 @@ import {
   leanStateFile,
   loadRun,
 } from "../../src/lean/state.ts";
+import { landedRoster } from "./lean-roster-fixture.ts";
+import { FIXTURE_BASE_SHA } from "./lean-engine-fixtures.ts";
 import { runVerb } from "../headless-verb-harness.ts";
 import { fakeRun } from "./work-lean-verb-fixture.ts";
 import { REPO } from "./work-lean-verb-fixture.ts";
@@ -42,14 +44,8 @@ export const DAY = 24 * 60 * 60_000;
 /** The env keys these cases write, restored after every case. */
 export const ENV_KEYS = [
   "PI_ENSEMBLE_CYCLE_DEADLINE",
-  // The verified-handback rule is read at call time and the off/on arms are pinned
-  // with this scope, so it belongs to the set restored after every case.
-  "PI_ENSEMBLE_LEAN_VERIFIED_HANDBACK",
-  // The two switches layered on that rule are read at call time too, and their
-  // off/on arms are pinned with this scope: the recording switch decides whether a
-  // no-head handback names the head it shipped, and the deadline switch decides
-  // whether a deadline stop routes into the report at all.
-  "PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD",
+  // The deadline switch decides whether a deadline stop routes into the report at all; it is
+  // read at call time and its off/on arms are pinned with this scope.
   "PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK",
   // The bound on the routed report is read at call time too, and the off/on arms of
   // `test-lean-handback-report-bound.ts` are pinned with this scope: a pin that leaked
@@ -357,7 +353,9 @@ export const WALK: Partial<Record<LeanState, Outcome[]>> = {
   specify: [{ kind: "ok" }],
   build: Array.from({ length: MAX_BUILD_ATTEMPTS }, () => ({ kind: "ok" }) as Outcome),
   challenge: [{ kind: "none" }],
-  verify: [{ kind: "green" }],
+  // A roster, because the walk this queue drives ends `landed` and the land gate reads the green
+  // verify's RECORD — see `lib/lean-roster-fixture.ts`.
+  verify: [{ kind: "green", projectRoster: landedRoster(FIXTURE_BASE_SHA) }],
   publish: [{ kind: "ok" }],
   review: [{ kind: "done" }],
   ci: [{ kind: "green" }],

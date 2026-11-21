@@ -15,7 +15,9 @@
  */
 
 import { type Outcome, type Step } from "../../src/lean/state.ts";
-import { FIXTURE_BASE_SHA, driveRun } from "./lean-real-log-fixture.ts";
+import { driveRun } from "./lean-real-log-fixture.ts";
+import { FIXTURE_BASE_SHA } from "./lean-engine-fixtures.ts";
+import { greenWithRoster } from "./lean-roster-fixture.ts";
 import type { DrivenRun } from "./lean-real-log-fixture.ts";
 import { HEAD, URL } from "./lean-result-fixture.ts";
 
@@ -105,22 +107,7 @@ export function engineGatesPlan(r: EngineGatesRun): Record<string, Outcome[]> {
         : [{ kind: r.challenge ?? "none" }],
     verify: Array.from({ length: gateVisits }, (_, i) =>
       (verify[Math.min(i, verify.length - 1)] ?? "green") === "green"
-        ? {
-            kind: "green",
-            verifiedHead: r.verifiedHead ?? HEAD,
-            // The land gate reads the RECORD, not only the verdict kind: a newest green with
-            // no project-test roster is refused the merge, so a walk that is here to land has
-            // to record one. One test that ran is the minimum the gate accepts.
-            projectRoster: {
-              baseSha: FIXTURE_BASE_SHA,
-              files: ["tests/suite.test.ts"],
-              passed: ["tests/suite.test.ts::passes"],
-              failed: [],
-              baseFailed: [],
-              total: 1,
-              baseTotal: 1,
-            },
-          }
+        ? greenWithRoster(FIXTURE_BASE_SHA)
         : {
             kind: "red",
             reason: "frozen tests failing: tests/AC1-retry.test.sh (exited 1)",

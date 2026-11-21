@@ -93,18 +93,8 @@ export function showRewind(r: Rewind): string {
 /**
  * The roster a handback walk's green verify carries.
  *
- * The land gate reads the RECORD, not only the verdict kind — a green with no project-test roster is
- * refused — so a walk that is here to reach `landed` has to record one. One test that ran, at the
- * head the walk names, is the minimum the gate accepts.
+ * Re-exported from `lib/lean-roster-fixture.ts` rather than restated here: the land gate reads the
+ * RECORD, not only the verdict kind, and a second spelling of the minimum it accepts is a second
+ * definition of what the gate reads — only the copy a case happens to call would ever be checked.
  */
-export function landedRoster(baseSha: string): NonNullable<Outcome["projectRoster"]> {
-  return {
-    baseSha,
-    files: ["tests/suite.test.ts"],
-    passed: ["tests/suite.test.ts::passes"],
-    failed: [],
-    baseFailed: [],
-    total: 1,
-    baseTotal: 1,
-  };
-}
+export { landedRoster } from "./lean-roster-fixture.ts";

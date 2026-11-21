@@ -24,6 +24,7 @@ import {
   type RunCounters,
 } from "../../src/lean/state.ts";
 import { leanStateFile } from "../../src/lean/state.ts";
+import { greenWithRoster, landedRoster } from "./lean-roster-fixture.ts";
 
 /** The one clock every case uses, so a timestamp in the log is a number we chose. */
 export const CLOCK = 1_700_000_000_000;
@@ -131,7 +132,9 @@ export function seedUpTo(
     specify: { kind: "ok" },
     build: { kind: "ok" },
     challenge: { kind: "none" },
-    verify: { kind: "green" },
+    // The land gate reads the green verify's RECORD, so a seed a case resumes from `ci` or `land`
+    // has to carry the roster the merge rests on — see `lib/lean-roster-fixture.ts`.
+    verify: { kind: "green", projectRoster: landedRoster(FIXTURE_BASE_SHA) },
     publish: { kind: "ok" },
     review: { kind: "done" },
     ci: { kind: "green" },
@@ -314,7 +317,9 @@ export const HAPPY: Partial<Record<LeanState, Outcome[]>> = {
   specify: [{ kind: "ok" }],
   build: Array.from({ length: MAX_BUILD_ATTEMPTS }, () => ({ kind: "ok" }) as Outcome),
   challenge: [{ kind: "none" }],
-  verify: [{ kind: "green" }],
+  // Carries a roster for the same reason `seedUpTo`'s green does: the run this queue walks ends
+  // `landed`, and a rosterless green is refused the merge.
+  verify: [greenWithRoster(FIXTURE_BASE_SHA)],
   publish: [{ kind: "ok" }],
   review: [{ kind: "done" }],
   ci: [{ kind: "green" }],
