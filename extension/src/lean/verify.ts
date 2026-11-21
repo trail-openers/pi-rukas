@@ -296,7 +296,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
             // The shared failure-line classifier, the same reader the whole-line excuse uses, so the
             // roster and the excuse cannot disagree about what a stream said. A tier whose lines the
             // classifier cannot read simply leaves the roster uninvolved.
-            headFailed: rerun.stream === undefined ? [] : failureLines(rerun.stream),
+            headFailed: failureLines(rerun.stream),
             baseFailed: probe.stream === undefined ? [] : failureLines(probe.stream),
             baseSha: ctx.run.baseSha,
             cmd,

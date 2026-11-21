@@ -20,8 +20,8 @@ import { type HostInput, flag, input } from "./entry.ts";
 /** The lean switches, in the list's order. */
 export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // #2228 — show the BUILDER the issue prose its frozen tests were written from.
-  // `0` takes the section out of the build prompt only; `LEAN_ISSUE_PROSE=0`
-  // also takes it out, since one renderer serves all three seats.
+  // `0` takes the section out of the build prompt only. The oracle seats have no
+  // switch: one renderer serves all three and the section ships on.
   // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_BUILD_ISSUE_PROSE", true),
   // A review fixer whose last turn ended at the model's output-token limit with no edit made is
@@ -42,22 +42,6 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // `leanHandbackNetGitEnabled` in lean/handback-net-git-switch.ts; the push's argv is
   // not in scope — its `--atomic` and its unforced lease-bound refspec ship with the rule.
   flag("LEAN_HANDBACK_NET_GIT", true),
-  // #2171 — show the specify/challenge adversary the issue prose its frozen
-  // tests were written from. 0 takes the section back out of both prompts.
-  // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.
-  flag("LEAN_ISSUE_PROSE", true),
-  // #2202 — the runner probe's shape and the reading of ONE of its answers. `"0"`
-  // puts both back exactly as the shipped release has them: the probe is the hidden
-  // `.lean-runner-probe.test` outside the configured `verify.testDir`, and an exit 4
-  // on it is the `the test runner could not run a test file` hand-back rather than a
-  // disclosure. On, a project whose `verify.testGlob` names `.py` is probed with a
-  // visible, importable `_lean_runner_probe.py` INSIDE that folder (a hidden file
-  // cannot be imported, so the dotfile probe refused every pytest repo), and an exit
-  // 4 there is recorded as the runner rejecting the probe file — the bench is sound,
-  // the probe is the thing that was refused, so the run goes on to the adversary.
-  // The reader is `leanPreflightProbeCollectableEnabled` in
-  // lean/preflight-probe-switch.ts; the name itself is `specify-preflight.ts`.
-  flag("LEAN_PREFLIGHT_PROBE_COLLECTABLE", true),
   // #2202 — containment for the probe's parent directory: `"0"` skips the realpath
   // check that the folder the write goes into lies inside `realpath(worktree)`, so a
   // base-committed `verify.testDir` that is really a symlink out of the checkout

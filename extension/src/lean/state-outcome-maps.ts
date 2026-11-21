@@ -266,8 +266,12 @@ export interface ProjectRosterRecord {
   baseFailed: string[];
   /** The head run's TRUE total of tests it ran, which the caps above do not touch. */
   total: number;
-  /** The base run's TRUE total. */
+  /** The base run's TRUE total; 0 with `baseSkipped`, since a skipped leg ran nothing. */
   baseTotal: number;
+  /** The enumeration's true size, present only when {@link ROSTER_FILES_CAP} cut `files`. */
+  fileCount?: number;
+  /** No base SUITE ran (head failed no test, so both red arms were empty); owes `baseTotal` 0. */
+  baseSkipped?: boolean;
   /** Pre-existing files this run edited whose base version PASSED against the head code. */
   editedFiles?: string[];
 }
@@ -336,8 +340,17 @@ export function projectRosterProblem(value: unknown): string | undefined {
   }
   if (!Number.isSafeInteger(r.total) || (r.total as number) < 1)
     return "outcome projectRoster.total must be a positive integer — a roster that ran nothing is no roster";
-  if (!Number.isSafeInteger(r.baseTotal) || (r.baseTotal as number) < 1)
-    return "outcome projectRoster.baseTotal must be a positive integer";
+  // `baseSkipped` is what licenses `baseTotal` 0, so the pair is judged together; any other roster
+  // owes a base run that ran at least one test and named none of them failing without saying so.
+  const skipped = r.baseSkipped === true;
+  if (r.baseSkipped !== undefined && typeof r.baseSkipped !== "boolean")
+    return "outcome projectRoster.baseSkipped must be a boolean";
+  if (!Number.isSafeInteger(r.baseTotal) || (r.baseTotal as number) < (skipped ? 0 : 1))
+    return skipped
+      ? "outcome projectRoster.baseTotal must be 0 when the base leg is skipped"
+      : "outcome projectRoster.baseTotal must be a positive integer";
+  if (skipped && (r.baseFailed as string[]).length > 0)
+    return "outcome projectRoster.baseFailed must be empty when the base leg is skipped";
   const passed = r.passed as string[];
   const failed = r.failed as string[];
   if ((r.total as number) < passed.length + failed.length)
@@ -348,6 +361,12 @@ export function projectRosterProblem(value: unknown): string | undefined {
     const problem = rosterListProblem(r.editedFiles, "editedFiles", ROSTER_FILES_CAP);
     if (problem !== undefined) return problem;
   }
+  // A count beside a capped list can only be AT LEAST that list: fewer describes a suite it did not run.
+  if (
+    r.fileCount !== undefined &&
+    (!Number.isSafeInteger(r.fileCount) || (r.fileCount as number) < (r.files as string[]).length)
+  )
+    return "outcome projectRoster.fileCount must be an integer at least the list it sits beside";
   return undefined;
 }
 
@@ -370,6 +389,8 @@ export function validatedProjectRoster(value: unknown): ProjectRosterRecord | un
     baseFailed: [...(r.baseFailed as string[])],
     total: r.total as number,
     baseTotal: r.baseTotal as number,
+    ...(r.fileCount === undefined ? {} : { fileCount: r.fileCount as number }),
+    ...(r.baseSkipped === undefined ? {} : { baseSkipped: r.baseSkipped as boolean }),
     ...(r.editedFiles === undefined ? {} : { editedFiles: [...(r.editedFiles as string[])] }),
   };
 }

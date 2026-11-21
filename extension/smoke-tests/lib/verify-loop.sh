@@ -79,7 +79,8 @@
 # shape). With --jobs-from-host and no ambient setting, the count comes from
 # host_job_count — max(2, min(16, cpus − 2)) — instead of
 # the shipped default of 2; see that function for why getconf, and why an
-# unparseable CPU count sizes down rather than up. The count is clamped to the
+# unparseable CPU count sizes down rather than up. CI names its width separately,
+# pinned by test-ci-verify-loop-jobs.ts. The count is clamped to the
 # number of collected tests and to 16, with a warning naming the clamp — more
 # than 16 concurrent `bun` processes compete with each other for CPU and the
 # suite gets slower, not faster.
@@ -302,17 +303,16 @@ if [ "$#" -gt 0 ] && [ "$1" = "--digest" ]; then
   shift
 fi
 # #1365 follow-up — --jobs-from-host: size the pool from the host CPU count when
-# the caller did not name a number. Opt-in, and CI does not pass it, so the
-# shipped default of 2 stays the CI shape; the host-derived width
-# (max(2, min(16, cpus - 2)), see host_job_count) is what this repo's
-# own develop gate needs to stay inside PI_ENSEMBLE_VERIFY_TIMEOUT_MS. It lives
-# here rather than as an inline expansion in .pi/verify-cmd for a historical
-# reason: until #1764 phase 2 the review-accept guard (#1125) modelled shell
-# semantics, and its A5 arm (`armVerifyLoop`) admitted `bash …/verify-loop.sh`
-# only when every word after the script was `--digest` or a test path, and
-# `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf …)}"` was neither. The guard is
-# now a path tripwire with no argv rules at all, so this flag spelling is kept
-# because it works, not because a guard still requires it.
+# the caller did not name a number. Opt-in, and this repo's own develop gate
+# (.pi/verify-cmd) passes it: the host-derived width
+# (max(2, min(16, cpus - 2)), see host_job_count) keeps that gate inside
+# PI_ENSEMBLE_VERIFY_TIMEOUT_MS. CI names its width outright in the step's
+# PI_ENSEMBLE_VERIFY_TEST_JOBS environment value, because ubuntu-latest's 4 vCPUs
+# are below host_job_count's first larger width. The flag lives on the script
+# rather than inline in .pi/verify-cmd for the reason recorded there and in
+# docs/configuration.md (the accept guard's A5 arm, #1125, since retired to a path
+# tripwire), so the spelling is kept because it works, not because a guard requires
+# it.
 VERIFY_JOBS_FROM_HOST=0
 _args=()
 while [ "$#" -gt 0 ]; do

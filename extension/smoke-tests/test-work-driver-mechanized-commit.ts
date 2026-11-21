@@ -29,6 +29,10 @@ import {
   setupTestRepo,
 } from "./test-mechanized-commit-stubs.ts";
 
+// The cases assert several workstreams; pinning the ceiling keeps the host's
+// memory budget (one workstream slot per GiB) out of the verdict.
+process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = "6";
+
 let exit = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);

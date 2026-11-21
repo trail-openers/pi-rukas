@@ -18,6 +18,10 @@ import {
 import { initialState } from "../src/workflow-state-update.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 
+// The real-git cases rely on `git cat-file` answering. A spawn failure or a
+// kill reads as "keep the port" and fails case 1; the trace names which.
+process.env.PI_ENSEMBLE_DEBUG = "1";
+
 let exit = 0;
 function assert(cond: boolean, msg: string) {
 	if (cond) console.log(`✓ ${msg}`);

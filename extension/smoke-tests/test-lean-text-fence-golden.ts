@@ -4,8 +4,8 @@
  *
  * v0.14.73 widened the neutralised run to tildes and moved neutralisation before the clip,
  * for EVERY caller of `fenceText` — review, handback, publish body, both lens-fix prompts
- * and the adversarial issue block — not just the two lean prompts the
- * `PI_ENSEMBLE_LEAN_ISSUE_PROSE` switch controls. The revert restores the release's bytes
+ * and the adversarial issue block — not just the lean prompts that print an issue section.
+ * The revert restores the release's bytes
  * (see the jsdoc of `src/lean/text-fence.ts`); this test is what stops either change from
  * landing again as a quiet byte edit in six callers' briefs.
  *

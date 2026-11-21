@@ -9,7 +9,8 @@
  * three pieces that make the declaration legible to both sides: the option shape's serialiser
  * (`rosterReportXml`), the predicate that recognises the report read among the step's children
  * (`isRosterReportRead`), and the roster command the fixture renders from the config
- * (`rosterCommandFor`).
+ * (`rosterCommandFor`), which is the gate's own derivation rather than a copy of it — a second
+ * rendering of the same rule is a second thing that can disagree with the command the gate submits.
  *
  * The XML this writes is the shape a JUnit report has, so the gate's own parser is what reads it:
  * the fixture never hands the gate a verdict, only a report, and an unreadable report is the gate's
@@ -19,7 +20,7 @@
 import { rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { WorkConfig } from "../../src/lean/config.ts";
-import { ROSTER_REPORT_FILE } from "../../src/lean/verify-roster-command.ts";
+import { ROSTER_REPORT_FILE, deriveSuiteTemplate } from "../../src/lean/verify-roster-command.ts";
 import type { VerifyOpts } from "./lean-verify-types.ts";
 
 /**
@@ -109,7 +110,7 @@ export function rosterCommandFor(config: {
 }): { bin: string } | undefined {
   const template =
     config.roster ??
-    (config.test === undefined ? undefined : `${config.test} --junitxml={report} {dir}`);
+    (config.test === undefined ? undefined : deriveSuiteTemplate(config.test));
   if (template === undefined) return undefined;
   const bin = template.split(/\s+/).filter((w) => w !== "")[0];
   return bin === undefined ? undefined : { bin };
@@ -142,6 +143,9 @@ export function rosterSideOf(cwd: string, worktree: string, _probeDir: string): 
  */
 export function rosterTestFiles(opts: VerifyOpts): Record<string, string[]> {
   if (opts.roster === undefined) return { [DEFAULT_PROJECT_TEST]: [] };
+  // The case's declared files are the base commit's suite, in full: the default is for the case that
+  // declared nothing, and keeping it beside a case's own list would hand the gate a file whose
+  // verdicts the case never declared.
   return Object.fromEntries((opts.roster.files ?? []).map((rel): [string, string[]] => [rel, []]));
 }
 
@@ -195,8 +199,9 @@ export function rosterTemplate(
   if (configured.roster !== undefined) return configured.roster;
   if (opts.rosterTemplate !== undefined) return opts.rosterTemplate;
   // The fixture's own runner: a committed script that writes the JUnit report the gate reads back.
-  // It names the TREE (`{dir}`), as a suite runner does, not one file — a per-file template would
-  // hand the gate a `{file}` placeholder it never substitutes and a run of nothing.
+  // It is written in the shape the gate DERIVES from `verify.test` — the file placeholder gone, the
+  // tree and the report named — because a fixture whose template disagrees with the derivation is a
+  // fixture that recognises its own roster runs by an argv the gate never submits.
   return "sh .lean-roster-runner.sh --junitxml={report} {dir}";
 }
 

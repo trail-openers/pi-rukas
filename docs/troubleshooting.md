@@ -180,8 +180,8 @@ recorded on the step's reason and the run goes on to the adversary, since the be
 step's filename is what did not. **On an older release the workaround is
 `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0`**, which runs no probe at all: the run is then judged by the red
 proof alone and ends `not-ready` at exit 11 with the ordinary decline rather than handing back at 10.
-`PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_COLLECTABLE=0` restores only the old name and the old exit-4 reading,
-and `PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN=0` only the probe parent's containment check. Before this check existed, none of those printed anything naming the file, so the red
+`PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN=0` restores only the probe parent's containment check; the
+Python probe's name and its exit-4 reading have no lever — they are the behaviour. Before this check existed, none of those printed anything naming the file, so the red
 proof graded the run "unclear", `specify` declined with `criterion ACn has no red test`, and the issue
 was refused for an environment nothing had tested. The preflight costs one runner invocation —
 bounded at 120 s — and no model call, and it never guesses at a runner's flavour: no per-runner
@@ -3369,7 +3369,7 @@ A doctrine-prose edit is not a failure; it appears in the verify notes as *"allo
 
 Child-process load is bounded by `PI_ENSEMBLE_SPAWN_CAP` (default 64), **not** by the group count: excess spawns queue FIFO. Each workstream's develop step spends one child — the developer; the speculative explore that used to accompany it is opt-in (`PI_ENSEMBLE_SPECULATIVE_EXPLORE=1`), so develop's default fanout is M, not 2M.
 
-**Verify timeouts in a CPU-limited container** (#1325). Groups × workstreams each running a full suite used to ignore the machine: in a container with a 2-CPU quota, three concurrent cycles' verify runs starved each other past `PI_ENSEMBLE_VERIFY_TIMEOUT_MS`. The driver now reads the host's CPUs and memory (`os.availableParallelism()`, `os.totalmem()`, lowered by a cgroup v2 `cpu.max` / `memory.max` or the v1 equivalents) and lowers the unset group and workstream defaults to fit, and the verify commands it runs queue behind `PI_ENSEMBLE_VERIFY_CONCURRENCY`. Explicit settings win. The group and workstream defaults hold only from about 9 CPUs and 18 GiB up, so an 8-CPU / 16 GiB laptop now runs 2 groups and 4 concurrent verifies; set `PI_ENSEMBLE_PARALLEL_GROUPS`, `PI_ENSEMBLE_MAX_WORKSTREAMS` or `PI_ENSEMBLE_VERIFY_CONCURRENCY=0` to restore the old limits. To see what a cycle chose, run with `PI_ENSEMBLE_DEBUG=1` (the `resource budget` line at cycle start) or read `resources` in `pi-rukas-headless --json`.
+**Verify timeouts in a CPU-limited container** (#1325). Groups × workstreams each running a full suite used to ignore the machine: in a container with a 2-CPU quota, three concurrent cycles' verify runs starved each other past `PI_ENSEMBLE_VERIFY_TIMEOUT_MS`. The driver now reads the host's CPUs and memory (`os.availableParallelism()`, `os.totalmem()`, lowered by a cgroup v2 `cpu.max` / `memory.max` or the v1 equivalents) and lowers the unset group and workstream defaults to fit, and the verify commands it runs queue behind `PI_ENSEMBLE_VERIFY_CONCURRENCY`. Explicit settings win. The group and workstream defaults hold only from about 9 CPUs and 18 GiB up, so an 8-CPU / 16 GiB laptop now runs 2 groups and 4 concurrent verifies; set `PI_ENSEMBLE_PARALLEL_GROUPS`, `PI_ENSEMBLE_MAX_WORKSTREAMS` or `PI_ENSEMBLE_VERIFY_CONCURRENCY=0` to restore the old limits. To see what a cycle chose, run with `PI_ENSEMBLE_DEBUG=1` (the `resource budget` line at cycle start) or read `resources` in `pi-rukas-headless --json`. A verify run that probes its base to attribute a failure runs the probe in the slot it already holds, so a ceiling of 1 (a host under 4 GiB or 4 CPUs) never queues behind itself.
 
 Set `PI_ENSEMBLE_PARALLEL_WORK=0` for strictly sequential execution.
 
@@ -4438,7 +4438,7 @@ Since #1365 `extension/smoke-tests/lib/verify-loop.sh` runs tests through a boun
 
 The other knob is the per-test bound, unchanged by the pool: `PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S` (default 300s, positive integer, else 300 with a warning). A test that hits it is reported `FAILED: <file> (timed out after <N>s)` with a `✗ timed out after <N>s` line prepended to its capture; the whole descendant tree is killed, so a hung test does not take the pool with it. Both variables are read once at startup.
 
-When the suite is on the critical path of a **gate** rather than a developer's own run, the ceiling is the gate's bound, not the pool's: this repo's `.pi/verify-cmd` passes `--jobs-from-host` to `verify-loop.sh`, which sizes the pool from the host when `PI_ENSEMBLE_VERIFY_TEST_JOBS` is unset (`max(2, min(16, cpus - 2))`; an ambient setting of the variable wins) so the full develop-gate command stays inside `PI_ENSEMBLE_VERIFY_TIMEOUT_MS`. It is a flag on the script and not an inline `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf …)}"` prefix for a historical reason worth knowing: until #1764 phase 2 the accept guard's A5 arm admitted `bash …/verify-loop.sh` only when every word after the script was `--digest` or a test path, and an expansion-word was neither. The guard is now a path tripwire with no argv rules at all (`docs/troubleshooting.md` → "An ordinary git/gh read got blocked by the accept guard"), so the flag spelling is kept because it works, not because a guard requires it. CI passes no flag, so `.github/workflows/ci.yml` keeps the shipped default of 2. `test-verify-loop-jobs-from-host.ts` pins the formula across a sweep of stubbed `getconf` CPU counts. See `docs/configuration.md` → `PI_ENSEMBLE_VERIFY_TEST_JOBS`.
+When the suite is on the critical path of a **gate** rather than a developer's own run, the ceiling is the gate's bound, not the pool's: this repo's `.pi/verify-cmd` passes `--jobs-from-host` to `verify-loop.sh`, which sizes the pool from the host when `PI_ENSEMBLE_VERIFY_TEST_JOBS` is unset (`max(2, min(16, cpus - 2))`; an ambient setting of the variable wins) so the full develop-gate command stays inside `PI_ENSEMBLE_VERIFY_TIMEOUT_MS`. It is a flag on the script and not an inline `PI_ENSEMBLE_VERIFY_TEST_JOBS="${…:-$(getconf …)}"` prefix for a historical reason worth knowing: until #1764 phase 2 the accept guard's A5 arm admitted `bash …/verify-loop.sh` only when every word after the script was `--digest` or a test path, and an expansion-word was neither. The guard is now a path tripwire with no argv rules at all (`docs/troubleshooting.md` → "An ordinary git/gh read got blocked by the accept guard"), so the flag spelling is kept because it works, not because a guard requires it. CI takes the other route: `.github/workflows/ci.yml`'s offline smoke step sets `PI_ENSEMBLE_VERIFY_TEST_JOBS: "4"` in its own step `env:`; `test-ci-verify-loop-jobs.ts` reads the workflow and pins that value. `test-verify-loop-jobs-from-host.ts` pins the host-sizing formula (flag, explicit value, no flag) against stubbed `getconf` CPU counts. See `docs/configuration.md` → `PI_ENSEMBLE_VERIFY_TEST_JOBS`.
 
 ### A consolidated verify parks with "the verify report file …" instead of naming failing tests
 
@@ -4506,8 +4506,10 @@ missing, and it is one of:
 - **`the project configured no verify.testDir + verify.testGlob pair`** — the gate has no way
   to list which files are the project's pre-existing tests, so it has nothing to run.
 - **`the base commit carries no test file matching <dir>/<glob>`** — the pair is configured, but
-  nothing at the run's base commit matches it. Either the pattern does not name the project's
-  test files, or the project keeps them under a different name.
+  nothing at the run's base commit matches it. The listing is **recursive** since #2439 — every
+  depth below `testDir` counts, matched on the basename — so the causes left are a `testGlob` that
+  does not name the project's test files, or tests kept under a different name. `testDir` may itself
+  be multi-segment (`test/units`) when that is where the project keeps them.
 - **`at head: …`** / **`at the base commit: …`** — the suite ran and wrote nothing the gate can
   read: no report at the path `{report}` names, a report that names no `<testcase>`, or a run with
   no exit status at all (a kill, a timeout, a buffer overflow).
@@ -4528,10 +4530,14 @@ run's base commit.
 { "verify": { "testDir": "tests", "testGlob": "test-*.py", "roster": "pytest -q --junitxml={report} {dir}" } }
 ```
 
-`verify.roster` is optional: without it the gate derives `<verify.test> --junitxml={report} {dir}`
-from the project's per-file runner template, which works when that template is a suite runner and
-fails when it is not (a template that names one file cannot also take `{dir}`). `{report}` is the
-absolute path the runner must write its JUnit XML to and `{dir}` the tree it runs in; both must
+`verify.roster` is optional: without it the gate DERIVES one from the project's per-file runner
+template by deleting one whole-word `{file}` and appending `--junitxml={report} {dir}` — so
+`"verify": { "test": "pytest -q {file}" }` runs the suite as `pytest -q --junitxml=<report> <tree>`.
+Before #2439 the derivation only appended, the literal `{file}` survived into the argv, and the
+runner exited 4 on a file that does not exist: the symptom was this hand-back and the wording blamed
+the missing report. Set `verify.roster` when the project's report invocation differs from its
+per-file one. `{report}` is the absolute path the runner must write its JUnit XML to and `{dir}` the
+tree it runs in; both must
 appear as whole words, and the command is argv form, never a shell — a `;`, `|`, `$`, backtick or
 quote in it is refused at load. Keep the report out of the index (`.gitignore` the path, as a
 project already does for its `test.xml`): the step demands a clean tree afterwards and will

@@ -45,6 +45,9 @@ function envRow(name: string): string {
   return line;
 }
 
+/** The lever's row: the switch stays retained (#2438 R4), and this file is where its rule is stated. */
+const rosterRow = envRow("PI_ENSEMBLE_LEAN_PROJECT_ROSTER");
+
 /** The work.json row, which documents every config field including `verify.roster`. */
 function workJsonRow(): string {
   const line = configuration.split("\n").find((l) => l.includes("`.pi/work.json`"));
@@ -58,8 +61,6 @@ function verifyRow(): string {
   if (line === undefined) throw new Error("docs/lean.md has no verify step row");
   return line;
 }
-
-const rosterRow = envRow("PI_ENSEMBLE_LEAN_PROJECT_ROSTER");
 
 /** The lever's row states the rule the switch implements, in both directions. */
 function checkSwitchRow(): void {
@@ -88,6 +89,16 @@ function checkSwitchRow(): void {
   ]) {
     assert(rosterRow.includes(suite), `(configuration) the row cites ${suite} as what pins it`);
   }
+  // #2439: the row is also where the derived template, the recursive listing and the base skip are
+  // stated, since a reader who configures `verify.test` reads THIS row for what the gate runs.
+  assert(
+    /whole-word `\{file\}`/.test(rosterRow) && /delet/.test(rosterRow),
+    "(configuration) the switch row states the derivation removes the {file} word",
+  );
+  assert(
+    /recursively/.test(rosterRow) && /baseSkipped/.test(rosterRow),
+    "(configuration) the switch row states the recursive listing and the base-leg skip",
+  );
 }
 
 {
@@ -111,6 +122,19 @@ function checkSwitchRow(): void {
     /PI_ENSEMBLE_LEAN_PROJECT_ROSTER/.test(row),
     "(configuration) the config row points at the lever that takes the arm out",
   );
+  // #2439: the row is where an operator writing `verify.test` learns what the gate derives from it.
+  assert(
+    /whole-word `\{file\}`/.test(row) && /delet/.test(row),
+    "(configuration) the roster row states the derivation removes the {file} word rather than appending to it",
+  );
+  assert(
+    /recursively/.test(row) && /BASENAME/.test(row) && /fileCount/.test(row),
+    "(configuration) the roster row states the recursive listing, its basename matching and the true count",
+  );
+  assert(
+    /baseSkipped/.test(row) && /only when the head run failed a test/.test(row),
+    "(configuration) the roster row states the base-leg skip and the field that records it",
+  );
 }
 
 {
@@ -131,6 +155,28 @@ function checkSwitchRow(): void {
   assert(
     /git ls-tree/.test(row),
     "(lean.md) the row says pre-existing is decided by what the BASE commit lists",
+  );
+  // #2439: the three claims an operator comparing a bench run to the docs actually needs.
+  assert(
+    /at any depth below it|recursively/.test(row) && /BASENAME/.test(row),
+    "(lean.md) the row says the base listing is recursive and matched on the basename",
+  );
+  assert(
+    /fileCount/.test(row) && /at most 200/.test(row),
+    "(lean.md) the row says the record caps its file list and carries the true count",
+  );
+  assert(
+    /deleting one whole-word `\{file\}`|one whole-word `\{file\}`/.test(row) &&
+      /--junitxml=\{report\} \{dir\}/.test(row),
+    "(lean.md) the row states the DERIVED roster template, placeholder removal included",
+  );
+  assert(
+    /baseSkipped/.test(row) && /only when the head run failed a test/.test(row),
+    "(lean.md) the row says the base suite is skipped on a clean head run, and how the record shows it",
+  );
+  assert(
+    /Recursion is the ROSTER's boundary alone|submitted acceptance test/.test(row),
+    "(lean.md) the row says the submitted-test boundary stays flat while the roster recurses (R1)",
   );
   assert(
     /base version of every pre-existing test file the run edited/.test(row),
@@ -180,8 +226,20 @@ function checkTroubleshooting(): void {
     /verify not green/.test(troubleshooting),
     "(troubleshooting) the entry says the refusal names the roster rather than pointing at a green gate",
   );
+  // #2439: the hand-back this entry exists for was the derivation's, and an operator who hit it
+  // before the fix reads the same words. The entry must say what the gate derives now.
+  assert(
+    /exited? 4|exit 4/.test(troubleshooting) && /\{file\}/.test(troubleshooting),
+    "(troubleshooting) the entry names the `{file}` derivation as the cause of the exit-4 hand-back",
+  );
+  assert(
+    /recursive|recursively/.test(troubleshooting) && /test\/units|multi-segment/.test(troubleshooting),
+    "(troubleshooting) the missing-test cause reflects the recursive listing and a multi-segment testDir",
+  );
 }
 
+checkSwitchRow();
+checkTroubleshooting();
 /**
  * The docs and the code agree on the default. A row that says ON while the switch reads off is the
  * drift this test exists to catch, so the assertion is against the real reader rather than the prose.
@@ -192,9 +250,6 @@ async function checkDefaults(): Promise<void> {
     assert(leanProjectRosterEnabled() === false, "(default) and the literal 0 really is off");
   });
 }
-
-checkSwitchRow();
-checkTroubleshooting();
 await checkDefaults();
 
 console.log(`\nexit ${String(exit)}`);

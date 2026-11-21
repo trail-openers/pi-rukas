@@ -85,11 +85,11 @@ function linesOf(text: string): number {
 
 // ── (a) over the cap on attempt 1, split into two in-cap files on attempt 2 ──
 //
-// The switch is PINED absent for this case, not read from the ambient environment:
-// the two #2171 assertions at its end assert the issue section IS rendered, and
-// `leanIssueProseEnabled()` reads `process.env` at call time, so an inherited
-// `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0` failed them red on an unrelated change.
-await withEnv({ PI_ENSEMBLE_LEAN_ISSUE_PROSE: undefined }, async () => {
+// The builder's switch is PINED absent for this case, not read from the ambient
+// environment: the two #2171 assertions at its end assert the issue section IS
+// rendered, and an inherited `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` from a driver or
+// operator shell would have failed them red on an unrelated change.
+await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: undefined }, async () => {
   const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const x = 1;\n" });
   const half = Math.floor(MAX_TEST_LINES / 2);
   const prompts: string[] = [];

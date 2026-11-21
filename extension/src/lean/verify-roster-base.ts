@@ -16,7 +16,6 @@ import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { SHAREABLE_DEPS } from "../worktree-dep-contract.ts";
 import { globMatches } from "./config-test-location.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
-import { ROSTER_FILES_CAP } from "./state-outcome-maps.ts";
 import type { VerifyExec } from "./verify-types.ts";
 
 /**
@@ -98,12 +97,33 @@ async function trackedPathsAt(
 }
 
 /**
- * The project's PRE-EXISTING test files at the run's base commit.
+ * What {@link listProjectTestFilesAtBase} answers: the listing, or why git would not give it.
  *
- * `git ls-tree -r` of `verify.testDir` AT `baseSha`, kept where the basename matches
- * `verify.testGlob`. Listing at the commit rather than the disk is the rule every base read in
- * a run follows: a run that adds or deletes test files would otherwise choose the suite that
- * judges it.
+ * `files` is never truncated here — the record's cap is `verify-roster.ts`'s to apply, and the
+ * caller's edited-file detection must still see a file that would sort past it.
+ */
+export interface BaseTestListing {
+  /** EVERY matching file at ANY depth under `testDir`, repo-relative, in git's tree order. */
+  files: string[];
+  /** How many matched — `files.length`, carried so a capped record can still state the truth. */
+  fileCount: number;
+}
+
+/**
+ * The project's PRE-EXISTING test files at the run's base commit, at ANY depth under `testDir`.
+ *
+ * `git ls-tree -r` of `verify.testDir` AT `baseSha`, kept where the BASENAME matches
+ * `verify.testGlob`. Listing at the commit rather than the disk is the rule every base read in a run
+ * follows: a run that adds or deletes test files would otherwise choose the suite that judges it.
+ *
+ * The recursion is the fix for a project whose graded tests sit in nested packages
+ * (`tests/unit/`, `tests/integration/deep/`): a listing that kept only what sat directly inside
+ * `testDir` called such a base EMPTY and handed the run back for having no tests. Matching stays on
+ * the basename, so recursion widens which directories are searched and never what counts as a test,
+ * and no size of suite is refused — a repo past the record's cap is one this gate CAN judge. It is
+ * THIS enumeration's boundary alone: `testLocationProblem`, which judges where the run's SUBMITTED
+ * acceptance test may live, stays flat (the project's CI collects the folder's direct entries while its
+ * own suite reaches everything under it).
  *
  * A failed listing is NOT "no tests". A directory that does not exist at the base answers exit
  * 0 with empty stdout; a bad sha or a broken object store REJECTS, and a rejection is `none`.
@@ -114,7 +134,7 @@ export async function listProjectTestFilesAtBase(
   baseSha: string,
   testDir: string,
   testGlob: string,
-): Promise<{ files: string[] } | { reason: string }> {
+): Promise<BaseTestListing | { reason: string }> {
   if (!isFullCommitSha(baseSha))
     return {
       reason: `the roster could not list ${testDir}/: "${baseSha}" is not a full commit sha`,
@@ -124,20 +144,14 @@ export async function listProjectTestFilesAtBase(
     return {
       reason: `could not list the project's test files at ${baseSha.slice(0, 12)}`,
     };
+  // The separator is in the prefix, so a sibling named `tests_backup/` is not read as inside `tests`.
   const prefix = `${testDir}/`;
   const files: string[] = [];
   for (const entry of listed) {
-    // Directly inside `testDir` only — the boundary `testLocationProblem` applies to a
-    // submitted acceptance test, so the roster and the freeze agree about where tests live.
     if (!entry.startsWith(prefix)) continue;
-    const rel = entry.slice(prefix.length);
-    if (rel === "" || rel.includes("/")) continue;
-    if (!globMatches(testGlob, rel)) continue;
+    const base = entry.slice(prefix.length).split("/").pop() ?? "";
+    if (!globMatches(testGlob, base)) continue;
     files.push(entry);
-    if (files.length > ROSTER_FILES_CAP)
-      return {
-        reason: `the project carries more than ${ROSTER_FILES_CAP} test files in ${testDir}/ — refusing to run a suite this gate cannot record a verdict for`,
-      };
   }
-  return { files };
+  return { files, fileCount: files.length };
 }

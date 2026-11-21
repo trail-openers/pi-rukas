@@ -28,6 +28,10 @@ import { commandOf } from "./lib/argv-shell.ts";
 import { answerDiffReads } from "./lib/clean-repo-fixture.ts";
 import { type WorkstreamArgs, planResultFromCalls } from "./lib/plan-workstream-calls.ts";
 
+// The cases assert several workstreams; pinning the ceiling keeps the host's
+// memory budget (one workstream slot per GiB) out of the verdict.
+process.env.PI_ENSEMBLE_MAX_WORKSTREAMS = "6";
+
 let exit = 0;
 function assert(cond: boolean, msg: string) {
   if (cond) console.log(`✓ ${msg}`);

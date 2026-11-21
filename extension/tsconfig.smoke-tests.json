@@ -253,6 +253,7 @@
     "smoke-tests/test-AC12-baseline-excuse-ci-reason.ts",
     "smoke-tests/test-AC13-baseline-excuse-ci-unobserved.ts",
     "smoke-tests/lib/lean-verify-rerun.ts",
+    "smoke-tests/lib/lean-verify-roster-runs.ts",
     "smoke-tests/lib/lean-verify-command-fixture.ts",
     "smoke-tests/test-lean-test-location.ts",
     "smoke-tests/test-lean-test-location-steps.ts",
@@ -264,7 +265,6 @@
     "smoke-tests/test-lean-challenge-handlers.ts",
     "smoke-tests/test-lean-challenge-issue-prose.ts",
     "smoke-tests/test-lean-issue-prose-prompt.ts",
-    "smoke-tests/test-lean-issue-prose-switch.ts",
     "smoke-tests/test-lean-budgets.ts",
     "smoke-tests/test-lean-specify-retry.ts",
     "smoke-tests/test-lean-specify-retry-split.ts",
@@ -481,6 +481,8 @@
     "smoke-tests/test-build-prompt-writes-atomic.ts",
     "smoke-tests/test-built-prompts.ts",
     "smoke-tests/lib/verify-loop-timing-harness.ts",
-    "smoke-tests/test-verify-loop-timing.ts"
+    "smoke-tests/test-verify-loop-timing.ts",
+    "smoke-tests/test-ci-verify-loop-jobs.ts",
+    "smoke-tests/test-verify-loop-jobs-from-host.ts"
   ]
 }
