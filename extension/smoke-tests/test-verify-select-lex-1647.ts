@@ -107,8 +107,8 @@ lexes(
     `the whole outer template is one literal, nested text included (got ${JSON.stringify(r?.templates)})`,
   );
   assert(
-    !r?.code.includes("${b}") && r?.code.includes("d") === true,
-    "the lexed code keeps the outer template as a placeholder token — its interior is not code",
+    /^const q = [\uE001]0[\uE001];\n$/.test(r?.code ?? ""),
+    `the lexed code is the source with the WHOLE outer template replaced by one placeholder token — no interior text leaks into code (got ${JSON.stringify(r?.code)})`,
   );
   // The nested template had to be lexed on the way to the outer one end, so its
   // own placeholder lands inside the parent value. `unplaceholder` is what hands

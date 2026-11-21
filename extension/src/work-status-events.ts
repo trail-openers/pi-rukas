@@ -226,6 +226,13 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // proved was already run. Names the tree and the worktree so the claim
       // is checkable, not just asserted.
       return `  consolidated-verify-skipped · ${e.step} · tree ${e.treeHash.slice(0, 8)} already passed in ${path.basename(e.worktree)}`;
+    case "verify-select":
+      // #2450 — the selector's verdict, rendered beside the run it describes. A
+      // selected run names both halves of what ran; a fallback names the reason in
+      // the selector's own vocabulary, so this line and the gate's note agree.
+      return e.mode === "selected"
+        ? `  verify-select · selected · ${e.selected} test(s) + ${e.alwaysRun} always-run`
+        : `  verify-select · full · ${e.fallbackReason ?? "unknown"} · ${e.alwaysRun} always-run`;
     case "verify-started":
       // #1415 — the gate announcing itself BEFORE it runs: this is the line
       // that exists for the 22 minutes the operator used to watch empty.

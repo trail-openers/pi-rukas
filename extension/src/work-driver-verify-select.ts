@@ -224,16 +224,35 @@ function importersClosure(graph: Graph, start: string): Set<string> {
 }
 
 /**
+ * A test-support module: a top-level `smoke-tests/*.ts` that is not itself a test.
+ *
+ * These are the `helpers-*.ts` / `*-stub.ts` / `*-trace-*.ts` files a handful of
+ * tests import. Like a test, nothing in the graph depends on them beyond the tests
+ * that name them, and they reach fixture machinery through relative specifiers
+ * into `smoke-tests/lib/` — which is deliberately NOT a graph node (a change there
+ * falls back outright, as `smoke-test-helper`). So a specifier of theirs that
+ * names no node carries no information about the selection: the test that imports
+ * the helper is reached either way, and the fallback the old code produced was
+ * whole-graph, silently disabling selection for every change in the repo.
+ */
+const TEST_SUPPORT_RE = /^smoke-tests\/[^/]+\.ts$/;
+
+/**
  * The reason a walk over `reached` cannot be trusted, or undefined. A
  * non-literal dynamic import or an unresolved relative specifier on the walk
  * path may import something the graph cannot see. A test is exempt: nothing
- * imports it, so its own unseen edges cannot hide another test's dependency.
+ * imports it, so its own unseen edges cannot hide another test's dependency. A
+ * test-support module is exempt from the UNRESOLVED half for the same reason, and
+ * only that half — a non-literal dynamic import in one of them really can load a
+ * test the graph never saw, so it still falls back.
  */
 function untrustedNode(graph: Graph, reached: ReadonlySet<string>): string | undefined {
   for (const node of reached) {
     if (TEST_NODE_RE.test(node)) continue;
     if (graph.dynamic.has(node)) return `non-literal-specifier:${node}`;
-    if (graph.unresolved.has(node)) return `unresolved-specifier:${node}`;
+    if (graph.unresolved.has(node) && !TEST_SUPPORT_RE.test(node)) {
+      return `unresolved-specifier:${node}`;
+    }
   }
   return undefined;
 }

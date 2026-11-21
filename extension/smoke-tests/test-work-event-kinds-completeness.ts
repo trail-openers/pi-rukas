@@ -296,6 +296,26 @@ const everyKindEvent: WorkEvent[] = [
     ok: true,
     ms: 1,
   },
+  // #2450 — what the #1647 selector decided for a develop round. Both directions
+  // are carried: a selected run and a reasoned fallback are different verdicts, and
+  // the second is the one that was invisible while the selector was inert.
+  {
+    kind: "verify-select",
+    at: 1,
+    step: "develop",
+    mode: "selected",
+    selected: 12,
+    alwaysRun: 395,
+  },
+  {
+    kind: "verify-select",
+    at: 1,
+    step: "develop",
+    mode: "full",
+    fallbackReason: "unlexable:src/worktree-loss.ts",
+    selected: 0,
+    alwaysRun: 395,
+  },
   // #1404 — the consolidated verify failed and the cycle pushed anyway, every
   // failing test red at base. Same reason as the skip above: an absent kind
   // makes the validator's tuple stale, and this event is the only record a
