@@ -14,6 +14,8 @@
  *   a CRITICAL open point         → 12, the open point as a question
  *   a live lock                   → 40 `session-busy`
  *   bad arguments                 → 40 `bad-arguments`
+ *   --start --issue <N>           → the issue's Acceptance criteria reach the draft;
+ *                                   an unreadable issue → 40 `issue-unreadable`
  *
  * Every run must hold the S6 output contract: one JSON document on stdout and
  * at least one NDJSON v1 line on stderr.
@@ -48,6 +50,7 @@ process.env.PI_ENSEMBLE_PLAN_SESSION_DIR = dir;
 const prompts: string[] = [];
 let gateReply = GAP_HIGH;
 let dupReply = DUP_NONE;
+let angleKind = "acceptance-criterion";
 setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
   prompts.push(spec.prompt);
   const base = { ok: true, toolUses: [], ms: 1, exitCode: 0 };
@@ -63,7 +66,7 @@ setPlanDispatch(((_pi: unknown, spec: { role: string; prompt: string }) => {
     toolUses: [
       {
         name: "report_plan_item",
-        arguments: { kind: "acceptance-criterion", text: "the tool registers", angle: "x" },
+        arguments: { kind: angleKind, text: "the tool registers", angle: "x" },
       },
     ],
   });
@@ -106,6 +109,7 @@ function reset() {
   prompts.length = 0;
   gateReply = GAP_HIGH;
   dupReply = DUP_NONE;
+  angleKind = "acceptance-criterion";
   forge.created.length = 0;
   forge.found.length = 0;
   forge.searches.length = 0;
@@ -390,6 +394,36 @@ for (const argv of [
     "bad arguments: nothing dispatched or filed",
   );
 }
+
+// --issue <N>: the issue's own Acceptance criteria reach the draft when the angles report none.
+const ISSUE_AC = "Running the export twice leaves one row per record";
+for (const [body, expected, what] of [
+  [`## Problem\n\nRows duplicate.\n\n## Acceptance criteria\n\n- ${ISSUE_AC}\n`, 12, "with"],
+  ["## Problem\n\nRows duplicate.\n", 40, "without"],
+] as const) {
+  reset();
+  angleKind = "edge-case";
+  forge.found.push({ number: 42, title: "Export duplicates rows", body });
+  const r = await runVerb("plan", [DESC, "--start", "--issue", "42"], REPO);
+  assert(
+    r.code === expected,
+    `--issue ${what} criteria in the body: exit ${expected} (got ${r.code})`,
+  );
+  if (expected === 12)
+    assert(String(r.doc.spec).includes(ISSUE_AC), "--issue: the body's criterion is in the draft");
+}
+reset();
+forge.resolves = false;
+const unread = await runVerb("plan", [DESC, "--start", "--issue", "42"], REPO);
+assert(
+  unread.violations.length === 0,
+  `--issue unreadable: output contract (${unread.violations.join("; ")})`,
+);
+assert(
+  unread.code === 40 && (unread.doc.error as { code?: string })?.code === "issue-unreadable",
+  "--issue that cannot be read: 40 issue-unreadable",
+);
+assert(prompts.length === 0, "--issue that cannot be read: nothing dispatched");
 
 setPlanDispatch(null);
 setPlanForge(null);

@@ -13,6 +13,13 @@
  * the result carries `url`. A `--file` run that echoes a dry run's
  * `reviewedDigest` files that reviewed spec verbatim (plan-confirm.ts).
  *
+ * `--issue <N>` names the existing issue the plan is for. Its body is read once
+ * and planned from as operator context, ahead of `--context`, so the sections it
+ * already carries (Acceptance criteria, Done when, Out of scope) hold operator
+ * authority in the draft. A body that cannot be read refuses the run (40
+ * `issue-unreadable`): planning the issue without its own text would draft
+ * from the title alone.
+ *
  * Exit codes:
  *   0   dry run with a fileable spec, or filed
  *  10   duplicate-risk, or a `--file` run that filed nothing without a failure
@@ -22,6 +29,7 @@
  */
 
 import { runPlanPipeline } from "../plan-driver.ts";
+import { getPlanForge, planForgeFor } from "../plan-filing.ts";
 import { precheckDescriptor } from "../plan-precheck.ts";
 import { PLAN_TYPES, type PlanResult, type PlanType, classifyPlanType } from "../plan-types.ts";
 import { EXIT } from "./exit-code.ts";
@@ -181,16 +189,49 @@ export function planExit(r: PlanResult, dryRun: boolean): { exitCode: number; st
   return { exitCode: EXIT.handoff, status: "not-filed" };
 }
 
+/** Fold the source issue's body into the context, ahead of it; an error when it cannot be read. */
+async function withIssueBody<T extends { context?: string; sourceIssue?: number }>(
+  a: T,
+  repoRoot: string,
+): Promise<T | { error: string }> {
+  const n = a.sourceIssue;
+  if (n === undefined) return a;
+  const forge = await (getPlanForge() ?? (() => planForgeFor(repoRoot)))();
+  if (!forge) return { error: `no forge resolved to read issue #${n}` };
+  let body: string;
+  try {
+    body = ((await forge.issueView(n)).body ?? "").trim();
+  } catch (err) {
+    return { error: `issue #${n} could not be read: ${(err as Error).message}` };
+  }
+  if (body === "") return a;
+  return { ...a, context: a.context ? `${body}\n\n${a.context}` : body };
+}
+
+function issueUnreadable(message: string, ctx: VerbContext): VerbOutcome {
+  ctx.host.sendUserMessage(`plan: refused — ${message}`, { deliverAs: "steer" });
+  return {
+    exitCode: EXIT.refused,
+    doc: { subcommand: "plan", status: "refused", error: { code: "issue-unreadable", message } },
+  };
+}
+
 export async function runPlanVerb(argv: readonly string[], ctx: VerbContext): Promise<VerbOutcome> {
-  const args = parsePlanArgs(argv);
-  if ("error" in args) return badArguments(args.error);
-  if ("turn" in args) {
-    const t = args.turn;
+  const parsed = parsePlanArgs(argv);
+  if ("error" in parsed) return badArguments(parsed.error);
+  if ("turn" in parsed) {
+    const t = parsed.turn;
+    if (t.kind === "start") {
+      const start = await withIssueBody(t, ctx.repoRoot);
+      return "error" in start ? issueUnreadable(start.error, ctx) : runPlanTurn(start, ctx);
+    }
     if (t.kind !== "answer") return runPlanTurn(t, ctx);
     const answer = await readAnswer(t.answerFile);
     if (answer.text === undefined) return badArguments(answer.error ?? "no answer");
     return runPlanTurn({ kind: "answer", id: t.id, answer: answer.text }, ctx);
   }
+  const args = await withIssueBody(parsed, ctx.repoRoot);
+  if ("error" in args) return issueUnreadable(args.error, ctx);
   ctx.host.sendUserMessage(`plan: ${args.dryRun ? "dry run" : "file"} — ${args.descriptor}`, {
     deliverAs: "steer",
   });

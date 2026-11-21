@@ -95,6 +95,14 @@ export function installForgeStub(): void {
         number: 1,
       });
     },
+    // #1857: `--issue <n>` reads the issue body; an empty one leaves the context as given.
+    issueView: (n: number) =>
+      Promise.resolve({
+        number: n,
+        title: "",
+        body: "",
+        url: `https://github.com/test/test/issues/${n}`,
+      }),
   };
   if (forgeStub.existing !== null) {
     const existing = forgeStub.existing;
