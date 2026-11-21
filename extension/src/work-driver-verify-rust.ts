@@ -24,114 +24,23 @@
  *     name no check and buy no "SAME assertion" claim;
  *   - a panic header clipped past its identity compares as NOTHING (`null`),
  *     never by falling back to substring containment.
- */
-
-/**
- * The Rust panic header's opening token run, spelled ONCE (#2341 fix wave H2).
- * Every reader that recognises a panic header composes its regex from THIS
- * source: the table's line-anchored shape, the name reader, and the
- * anywhere-in-text recognizer both gates ask. Four literals spelling the same
- * token run is four answers to "is this a panic header", and the drift between
- * them is how a `warning:`-prefixed or record-lifted header ended up neither
- * vetoed as a quote nor gated as an excuse — the same header token run, read two
- * ways. The sameness key's `RUST_PANIC_HEADER_FORM` composes from here too (it
- * additionally demands the identity's trailing colon); {@link PANIC_HEADER_LOOK_RE}
- * stays its own looser literal on purpose — it asks "does this merely OPEN like a
- * header", which is the fail-closed question, not the parse.
- */
-const RUST_PANIC_OPEN_SRC = String.raw`thread\s+'([^']+)'\s+panicked\s+at\s`;
-
-/** The header's location token — the separator-free run after `panicked at `. */
-const RUST_PANIC_LOC_SRC = String.raw`\S+`;
-
-/**
- * The header anchored at line start — what the failure table's `rust-panic`
- * shape entry asks, and what reads the test name out of a header the caller
- * already holds. A gate's own prefix (`warning:`, a timestamp, `[INFO]`, an
- * ANSI colour, the harness's record sentence) is NOT a panic header in this
- * position; {@link rustPanicHeaderIn} is the arm that sees through one.
- */
-export const RUST_PANIC_RE = new RegExp(String.raw`^${RUST_PANIC_OPEN_SRC}${RUST_PANIC_LOC_SRC}`);
-
-/**
- * The same header, searched for anywhere in a text. `g` so ONE spelling serves
- * both "the first header in this text" ({@link rustPanicHeaderIn}) and "every
- * header this record carries" ({@link changePanicsAreBaseFailures}); both go
- * through `matchAll`, which works on a CLONE of this regex, so the shared
- * instance's `lastIndex` is never advanced by a reader.
- */
-const RUST_PANIC_GLOBAL_RE = new RegExp(
-  String.raw`${RUST_PANIC_OPEN_SRC}${RUST_PANIC_LOC_SRC}`,
-  "g",
-);
-
-/** The test name a panic header carries, or `undefined` if it does not parse. */
-export function rustPanicTestName(header: string): string | undefined {
-  return RUST_PANIC_RE.exec(header)?.[1];
-}
-
-/**
- * The panic header carried ANYWHERE in `text`, prefix and all, or `undefined`.
- * Returns the matched header token run — the text from `thread` through the
- * `file:line:col` — so a caller can hand the answer straight back to
- * {@link rustPanicTestName} and every other line-anchored header reader.
  *
- * THE ONE RECOGNIZER (#2341). The quote veto used to ask the table's shape key
- * and the excuse gate its own line-anchored look; a header the gate printed with
- * a prefix satisfied neither, so it could be quoted as captured output AND grant
- * an excuse. Every panic decision asks THIS instead, through the one global
- * spelling above, so they cannot drift apart again:
- * `extractSpecificAssertion` (the quote), {@link panicCanExcuseChange} (the
- * excuse) and {@link changePanicsAreBaseFailures} (the excuse, per failing test
- * of the change's record). A text this answers `undefined` for is not a panic to
- * any of them.
+ * What this seam does NOT own is the panic HEADER. The five header regexes
+ * (`RUST_PANIC_OPEN_SRC`, `RUST_PANIC_RE`, `RUST_PANIC_GLOBAL_RE`,
+ * `RUST_PANIC_HEADER_FORM`, `PANIC_HEADER_LOOK_RE`), the name reader, the
+ * anywhere-in-text recognizer and the per-thread id normaliser live in
+ * `work-driver-verify-header-leaf.ts`; this module imports them and
+ * `work-driver-verify-failures.ts` re-exports them from there, so that module's
+ * vocabulary surface and its call sites do not change. A header is spelled in
+ * exactly one file: this one asks questions OF a header, it never decides what
+ * one is.
  */
-export function rustPanicHeaderIn(text: string): string | undefined {
-  return text.matchAll(RUST_PANIC_GLOBAL_RE).next().value?.[0];
-}
 
-/**
- * #2341 — the SAMENESS key of a Rust panic assertion. The extractor joins
- * the header and its message for the operator-facing value; two runs of the
- * SAME failing test print that pair byte-identically, and two DIFFERENT
- * failing tests in one target differ exactly in the header (test name,
- * file, line, column). So the header alone — the `thread '<name>' panicked
- * at <loc>:` token run up to its trailing colon, followed by whitespace or
- * end of string — is the identity the sameness comparison anchors on.
- *
- * What the key guarantees, stated exactly: a clip that falls in the MESSAGE
- * cannot fold two failures, because the message is what the key discards. A
- * clip that falls INSIDE the header fails CLOSED (#2341 fix wave M1): a string
- * that starts like a panic header (`^thread '`) but whose identity (test name
- * / file:line:col) cannot be extracted answers `null`, and `null` is the
- * answer no sameness reader may turn into a "SAME assertion" claim — the
- * pre-fix fallback to the whole clipped string was the substring-containment
- * rule this ticket exists to remove, reachable again through the one dialect
- * that anchors sameness on a header. The fail-closed half is asked of
- * anything that merely LOOKS like a header (`^thread '`), which includes the
- * pre-1.73 inline form (`thread 'main' panicked at '…', src/main.rs:5:5`):
- * its token run does not end at a colon, its identity is not what the key
- * extracts, and a quote that only resembles a parseable header compares as
- * nothing rather than reopening the containment rule. Any other assertion —
- * every shape that does not open with the panic look — is its own key; exact
- * containment is unchanged for it.
- */
-const RUST_PANIC_HEADER_FORM = new RegExp(
-  String.raw`^(${RUST_PANIC_OPEN_SRC}${RUST_PANIC_LOC_SRC}:)(?:\s|$)`,
-);
-const PANIC_HEADER_LOOK_RE = /^thread\s+'/;
-
-/**
- * The identity a Rust panic assertion compares on; other assertions are
- * theirs. `null` when the string starts like a panic header but its identity
- * could not be extracted — a caller must treat `null` as "compares as
- * nothing", never as a key to match on.
- */
-export function rustPanicSamenessKey(assertion: string): string | null {
-  const header = RUST_PANIC_HEADER_FORM.exec(assertion)?.[1];
-  if (header !== undefined) return header;
-  return PANIC_HEADER_LOOK_RE.test(assertion) ? null : assertion;
-}
+import {
+  RUST_PANIC_GLOBAL_RE,
+  rustPanicHeaderIn,
+  rustPanicTestName,
+} from "./work-driver-verify-header-leaf.ts";
 
 /**
  * #2341 round 1 — libtest's own verdict lines, the two forms it prints: the
@@ -270,20 +179,26 @@ export function perTestVerdictsFor(stream: string, name: string): PerTestVerdict
  *     unsound step, and the loud-safe direction is the one already taken
  *     everywhere else in this predicate.
  *
- * KNOWN LIMITATION, stated plainly: a panic on a NON-TEST thread inside an
- * otherwise green target (`worker-N`, `tokio-runtime-worker`, `<unnamed>`) and
- * a `#[should_panic]` DOCTEST (header `thread 'main' panicked at
- * src/lib.rs:5:5:`, verdict line `test src/lib.rs - name (line 3) ... ok`) name
- * no test the run reported, so this predicate does not veto them and their
- * captured prints are QUOTED. `main` recognises no Rust panic line at all, so
- * those streams reported honest absence there — the cargo/libtest dialect, and
- * the quoting with it, is this module's — and what the shipped code does about
- * them instead of guessing is {@link panicCanExcuseChange}: they stay quotable
- * to the operator and never excuse a failure the change added. Refusing the
- * QUOTE too needs cargo's per-target banner identity (`     Running unittests
+ * WHAT THIS PREDICATE DOES NOT DECIDE (the current state of the dialect, not a
+ * parse failure): a panic on a NON-TEST thread inside an otherwise green target
+ * (`worker-3`, `tokio-runtime-worker`, `<unnamed>`) and a `#[should_panic]`
+ * DOCTEST (header `thread 'main' (2273955) panicked at src/lib.rs:5:1:`, verdict
+ * line `test src/lib.rs - name (line 3) ... ok`) name no test the run reported,
+ * so this predicate does not veto them and their captured prints are QUOTED. The
+ * ask is genuinely made now — a header carrying cargo's per-thread id parses and
+ * its name reads, so these classes reach this predicate and are answered `false`
+ * on the evidence, not skipped for being unreadable — and what the shipped code
+ * does about them instead of guessing is {@link panicCanExcuseChange}: they stay
+ * quotable to the operator and never excuse a failure the change added. Refusing
+ * the QUOTE too needs cargo's per-target banner identity (`     Running unittests
  * src/main.rs (…)`, `   Doc-tests pkg`) — the one thing that separates an
  * enclosing run's aggregate verdict, or a sibling crate's verdict, from this
- * header's own test. The same absence is what makes a workspace in which two
+ * header's own test — and cargo prints those banners on STDERR while libtest
+ * prints headers and verdict lines on STDOUT, which the exec layer concatenates
+ * stdout-then-stderr, so no banner ever precedes the verdict lines it would have
+ * to bind. Target-scoped verdict lookup is therefore not available on the
+ * production stream and stays deferred with the two refusal classes above.
+ * The same absence is what makes a workspace in which two
  * crates use the same test name DELIBERATELY OVER-REFUSE the second crate's
  * real panic (see OBSERVED PASSING: any ok for the name wins).
  *
