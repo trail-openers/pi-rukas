@@ -13,6 +13,7 @@ import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const MANIFESTS = path.join(ROOT, "manifests");
+const AGENTS_BASE = path.join(ROOT, "agents-base");
 const PROMPTS = path.join(ROOT, "dist", "prompts", "standard");
 const BUILD = path.join(ROOT, "build.sh");
 const CODEMODE_MODULE = "modules/core/codemode.md";
@@ -39,6 +40,20 @@ execFileSync("bash", [BUILD], {
   },
   stdio: "ignore",
 });
+
+// #2430 — build.sh assembles each prompt into `<agent>.md.tmp-<pid>` beside the
+// target and publishes it by `mv -f`. A straggler here means a temp was left
+// beside a published prompt (the abort path failed to clean up), so a reader
+// could later mistake it for an artefact. `agents-base/` is scanned with it:
+// build.sh only reads from that directory, so a temp there is a regression in
+// either direction — one it stopped creating, or one the cleanup failed to reach.
+for (const dir of [PROMPTS, AGENTS_BASE]) {
+  const stragglers = readdirSync(dir).filter((name) => name.includes(".tmp"));
+  assert(
+    stragglers.length === 0,
+    `${path.relative(ROOT, dir)} holds no build temp file (*.tmp*)${stragglers.length ? ` — found ${stragglers.join(", ")}` : ""}`,
+  );
+}
 
 // #1031 — codemode module heading, asserted per-manifest below.
 const codemodeHeading = readFileSync(path.join(ROOT, CODEMODE_MODULE), "utf8").match(/^#{1,6} .+$/m)?.[0];

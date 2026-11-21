@@ -11,6 +11,14 @@ BASE="${PI_ENSEMBLE_BASE:-$SCRIPT_DIR}"
 MANIFESTS_DIR="$BASE/manifests"
 PROMPTS_DIR="${PROMPTS_DIR:-$BASE/dist/prompts}"
 
+# One EXIT trap, installed once in the parent, owns every temporary this run
+# creates. It removes them by a $$-scoped name rather than a list, because
+# generate_agent_capabilities runs inside a command substitution: an assignment
+# it makes to a parent array dies with that subshell, so a list built there
+# would be empty by the time the trap fires. `$$` is the parent's PID and
+# expands identically in the subshell, so names derived from it are removable
+# from here.
+
 get_config_filename() {
   case "$1" in
     standard) echo "agents.json" ;;
@@ -35,6 +43,20 @@ if [[ "$ENV" != "standard" ]]; then
 fi
 
 ENVIRONMENTS=("$ENV")
+
+# Installed here rather than at the top of the file because its body expands
+# ENVIRONMENTS, and under `set -u` an unset name would fail the trap itself.
+# A SIGKILLed build leaves one `.tmp-<pid>` behind: nothing runs at that point,
+# and the patterns below carry this run's `$$`, so no later run clears it — and
+# no reader's pattern matches it either.
+_cleanup_run_temps() {
+  local env
+  for env in "${ENVIRONMENTS[@]}"; do
+    rm -f "$PROMPTS_DIR/$env"/*.tmp-"$$" 2>/dev/null || true
+  done
+  rm -f "${TMPDIR:-/tmp}"/pi-rukas-caps.*."$$" 2>/dev/null || true
+}
+trap _cleanup_run_temps EXIT
 
 # Get list of base agent names from manifests/
 get_base_agents() {
@@ -83,12 +105,17 @@ generate_agent_capabilities() {
     return 1
   fi
 
-  # Create temporary file for generated content
-  local temp_capabilities=$(mktemp)
-  local target_tmp="${target_file}.tmp"
-
-  # Ensure cleanup on exit
-  trap "rm -f '$temp_capabilities' '$target_tmp'" EXIT
+  # Create temporary file for generated content. This function sets no trap: a
+  # `trap` here is inherited by every command substitution the parent makes
+  # afterwards, and only one EXIT trap exists — so the parent's own publish
+  # temps would be cleaned by this call's pattern and never by the run's. The
+  # temp is $$-scoped, so the parent's trap can reach it; this function removes
+  # it itself on the paths it can complete.
+  local temp_capabilities
+  temp_capabilities=$(mktemp "${TMPDIR:-/tmp}/pi-rukas-caps.XXXXXX.$$") || {
+    echo "ERROR: mktemp failed for $AGENT_NAME capabilities" >&2
+    return 1
+  }
 
   # Generate header for new format
   if [[ -z "$AGENT_NAME" ]]; then
@@ -150,7 +177,7 @@ EOF
 
        "### \($display)\n**Tools:** \($tools)\n**MCP:** \($mcp_display)\n**Bash (\($bash_default)):** \($bash_allows)\n"
      ' "$config_file" >> "$temp_capabilities" || {
-      echo "ERROR: Failed to parse config file with jq"
+      echo "ERROR: Failed to parse config file with jq" >&2
       rm -f "$temp_capabilities"
       return 1
     }
@@ -158,7 +185,8 @@ EOF
     # Self-only capabilities for specialists
     # Validate agent exists in config before proceeding
     if ! jq -e ".agent[\"$AGENT_NAME\"]" "$config_file" > /dev/null 2>&1; then
-      echo "ERROR: Agent '$AGENT_NAME' not found in config file $config_file"
+      echo "ERROR: Agent '$AGENT_NAME' not found in config file $config_file" >&2
+      rm -f "$temp_capabilities"
       return 1
     fi
     
@@ -245,7 +273,7 @@ EOF
 
        "**Tools:** \($tools)\n\n**MCP:** \($mcp_display)\n\n**Bash policy: `\($bash_default)`** — anything not on the list below resolves to `ask`. Stick to the allow-list.\n\n### Bash / search hygiene rules (READ FIRST)\n\n1. **To find code, call `mcp__codebase_memory__search_code`.** It IS the canonical tool for code discovery in this repository — indexed, sub-millisecond, structural. Use `mcp__codebase_memory__trace_path` for callers/callees, `mcp__codebase_memory__detect_changes` for diff blast radius, `mcp__codebase_memory__get_architecture` for the module map. `rg` is ONLY for regex over text files; `read` is ONLY for loading a known file path. These are not substitutes — defaulting to `rg` or `read` to discover what exists in the codebase is wrong.\n2. **Prefer codemode for verbose or batched commands** — use a codemode script for test suites, builds, or any command that would produce 50+ lines of output (the script runs the command, collects only the failure lines, and returns the digest — not the full transcript). For single short commands, a plain bash call is simpler.\n3. **Do NOT `cd <path> && <cmd>`.** You are already in the right working directory. To target a different dir use the tool flag: `git -C <path>`, `cargo --manifest-path <path>`, `npm --prefix <path>`.\n4. **Do NOT chain or pipe.** No `&&`, `|`, `;`, `>`, `<`, `$(…)`, backticks. Run each command as a separate tool call. To filter output: run the producer, read its result, then call the consumer with the extracted value.\n\n### Allow-listed bash patterns (grouped by category)\n\n\($bash_allow_block)\($bash_deny_block)\n"
      ' "$config_file" >> "$temp_capabilities" || {
-       echo "ERROR: Failed to parse config file with jq for agent $AGENT_NAME"
+       echo "ERROR: Failed to parse config file with jq for agent $AGENT_NAME" >&2
       rm -f "$temp_capabilities"
       return 1
     }
@@ -253,7 +281,8 @@ EOF
 
   # Validate jq output has more than just the header
   if (( $(wc -l < "$temp_capabilities") <= 2 )); then
-    echo "ERROR: No agent capabilities found in config file"
+    echo "ERROR: No agent capabilities found in config file" >&2
+    rm -f "$temp_capabilities"
     return 1
   fi
 
@@ -307,9 +336,6 @@ for env in "${ENVIRONMENTS[@]}"; do
     fi
   done
 
-  # Clean stale files before build
-  rm -f "$OUTPUT_DIR"/*.txt "$OUTPUT_DIR"/*.md 2>/dev/null || true
-
   echo "=== Building $env environment ==="
 
   for agent in "${AGENTS[@]}"; do
@@ -329,6 +355,10 @@ for env in "${ENVIRONMENTS[@]}"; do
     fi
 
     output="$OUTPUT_DIR/${agent}.md"
+    # The temp sibling carries a suffix that matches neither *.md nor *.txt, so
+    # a concurrent reader never picks it up as a prompt, and never picks the
+    # target up as missing: $output is untouched until the rename below.
+    output_tmp="$output.tmp-$$"
 
     echo "Building $agent ($env)..."
     echo "  Manifest: $manifest_name"
@@ -336,16 +366,14 @@ for env in "${ENVIRONMENTS[@]}"; do
     # Generate capabilities for this agent (capture output to variable)
     if [[ "$agent" == "project-manager" ]]; then
       # PM gets full multi-agent matrix
-      agent_capabilities=$(generate_agent_capabilities "$env" "")
-      if [[ $? -ne 0 ]]; then
-        echo "ERROR: Failed to generate PM capabilities"
+      if ! agent_capabilities=$(generate_agent_capabilities "$env" ""); then
+        echo "ERROR: Failed to generate PM capabilities" >&2
         exit 1
       fi
     else
       # Specialists get self-only capabilities
-      agent_capabilities=$(generate_agent_capabilities "$env" "$agent")
-      if [[ $? -ne 0 ]]; then
-        echo "ERROR: Failed to generate capabilities for $agent"
+      if ! agent_capabilities=$(generate_agent_capabilities "$env" "$agent"); then
+        echo "ERROR: Failed to generate capabilities for $agent" >&2
         exit 1
       fi
     fi
@@ -354,8 +382,9 @@ for env in "${ENVIRONMENTS[@]}"; do
     # we deliberately drop it since markers are stripped during assembly)
     capabilities_content=$(echo "$agent_capabilities" | tail -n +2)
 
-    # Create empty output file
-    > "$output"
+    # Assemble into the temp sibling; the published file is replaced only by
+    # the `mv -f` at the end of this loop body.
+    > "$output_tmp"
 
     # Process each line in manifest
     module_count=0
@@ -381,7 +410,10 @@ for env in "${ENVIRONMENTS[@]}"; do
       if [[ -f "$module_path" ]] && grep -q "^<!-- AGENT-CAPABILITIES-START -->$" "$module_path" && ! $capabilities_injected; then
         # This file has capabilities markers - inject pre-generated content
         # Write capabilities content to temp file for awk to read
-        tmp_caps=$(mktemp)
+        tmp_caps=$(mktemp "${TMPDIR:-/tmp}/pi-rukas-caps.XXXXXX.$$") || {
+          echo "ERROR: mktemp failed for $agent capabilities injection" >&2
+          exit 1
+        }
         printf '%s' "$capabilities_content" > "$tmp_caps"
 
         awk -v start="<!-- AGENT-CAPABILITIES-START -->" -v end="<!-- AGENT-CAPABILITIES-END -->" -v tmpfile="$tmp_caps" '
@@ -396,7 +428,7 @@ for env in "${ENVIRONMENTS[@]}"; do
             next
           }
           !skip { print }
-        ' "$module_path" >> "$output"
+        ' "$module_path" >> "$output_tmp"
 
         rm -f "$tmp_caps"
         capabilities_injected=true
@@ -409,7 +441,7 @@ for env in "${ENVIRONMENTS[@]}"; do
             !/^<!-- Auto-generated from agents\.json -->$/
           ' "$module_path"
           echo ""
-        } >> "$output"
+        } >> "$output_tmp"
       fi
 
       # Use explicit arithmetic instead of `((var++))` — post-increment returns
@@ -430,6 +462,14 @@ for env in "${ENVIRONMENTS[@]}"; do
       echo "  Manifest: $manifest"
       exit 1
     fi
+
+    # The one publish step: rename(2) within the same directory, so a reader
+    # sees the old prompt or the new one, never a gap. A failed rename means the
+    # prompt was never published, which is a build failure, not a warning.
+    mv -f "$output_tmp" "$output" || {
+      echo "ERROR: publish failed for $agent" >&2
+      exit 1
+    }
 
     echo "  -> $output"
   done
