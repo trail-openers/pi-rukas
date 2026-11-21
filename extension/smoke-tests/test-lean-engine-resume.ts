@@ -33,6 +33,7 @@ import {
   ticking,
 } from "./lib/lean-engine-fixtures.ts";
 import { driveRun, foldOf, writePrefix } from "./lib/lean-real-log-fixture.ts";
+import { greenWithRoster, landedRoster } from "./lib/lean-roster-fixture.ts";
 import { forgedCiRedCounters, forgedCiRedSteps } from "./lib/lean-resume-fixture.ts";
 
 const { assert, failures } = makeAssert();
@@ -57,7 +58,8 @@ function path48(): Partial<Record<LeanState, Outcome[]>> {
     specify: [{ kind: "ok" }],
     build: [{ kind: "ok" }, { kind: "ok" }],
     challenge: [{ kind: "none" }],
-    verify: [{ kind: "green" }],
+    // This queue walks to `landed`, so its green has to carry the roster the merge rests on.
+    verify: [greenWithRoster(FIXTURE_BASE_SHA)],
     publish: [{ kind: "ok" }],
     review: [{ kind: "done" }],
     ci: [{ kind: "green" }],
@@ -65,12 +67,18 @@ function path48(): Partial<Record<LeanState, Outcome[]>> {
   };
 }
 
+/**
+ * One hand-written log row. A green `verify` carries the project roster: the land gate reads that
+ * RECORD, not only the kind, and a resumed run whose newest green lacks it is refused the merge.
+ */
 const STEP = (issue: number, state: LeanState, n: number, kind: string): Step => ({
   key: `${issue}:${state}:${n}`,
   state,
   startedAt: CLOCK,
   endedAt: CLOCK,
-  outcome: { kind },
+  outcome: (kind === "green" && state === "verify"
+    ? { kind, projectRoster: landedRoster(FIXTURE_BASE_SHA) }
+    : { kind }) as Outcome,
 });
 
 /** The log of a run that built once, was reviewed, and whose CI said green. */

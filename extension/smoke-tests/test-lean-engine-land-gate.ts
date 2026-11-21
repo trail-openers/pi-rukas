@@ -37,6 +37,8 @@ import { runLean } from "../src/lean/engine.ts";
 import type { LeanRun, LeanState, Outcome } from "../src/lean/state.ts";
 import { loadRun } from "../src/lean/state.ts";
 import { makeAssert, scripted, tempDir, ticking } from "./lib/lean-engine-fixtures.ts";
+import { FIXTURE_BASE_SHA } from "./lib/lean-engine-fixtures.ts";
+import { greenWithRoster } from "./lib/lean-roster-fixture.ts";
 import { driveRun, foldOf, writeForged } from "./lib/lean-real-log-fixture.ts";
 
 const { assert, failures } = makeAssert();
@@ -62,7 +64,11 @@ const queue = (verdicts: string[], ci: Outcome[]): Partial<Record<LeanState, Out
   specify: [{ kind: "ok" }],
   build: [{ kind: "ok" }, { kind: "ok" }, { kind: "ok" }],
   challenge: [{ kind: "none" }, { kind: "none" }, { kind: "none" }],
-  verify: verdicts.map((kind) => ({ kind })),
+  // A green verdict that carries the project roster: `landEarned` reads the record, and a queue
+  // whose newest green lacks it ends handed-back instead of testing the gate this file owns.
+  verify: verdicts.map((kind) =>
+    kind === "green" ? greenWithRoster(FIXTURE_BASE_SHA) : ({ kind } as Outcome),
+  ),
   publish: [{ kind: "ok" }, { kind: "ok" }],
   review: [{ kind: "done" }, { kind: "done" }],
   ci,

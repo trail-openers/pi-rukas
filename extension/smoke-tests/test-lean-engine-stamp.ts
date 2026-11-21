@@ -24,6 +24,8 @@ import { runLean } from "../src/lean/engine.ts";
 import type { LeanRun, LeanState, Outcome } from "../src/lean/state.ts";
 import { loadRun } from "../src/lean/state.ts";
 import { makeAssert, scripted, tempDir, ticking } from "./lib/lean-engine-fixtures.ts";
+import { FIXTURE_BASE_SHA } from "./lib/lean-engine-fixtures.ts";
+import { greenWithRoster } from "./lib/lean-roster-fixture.ts";
 import { driveRun, foldOf, writeForged } from "./lib/lean-real-log-fixture.ts";
 
 const { assert, failures } = makeAssert();
@@ -99,7 +101,9 @@ function ciRedThenGreen(): Partial<Record<LeanState, Outcome[]>> {
     specify: [{ kind: "ok" }],
     build: [{ kind: "ok" }, { kind: "ok" }, { kind: "ok" }],
     challenge: [{ kind: "none" }, { kind: "none" }],
-    verify: [{ kind: "green" }, { kind: "green" }],
+    // Rostered greens: the stamp this file reads off disk is only earned by a log the land gate
+    // accepts, and `landEarned` reads the green verify's record, not just its kind.
+    verify: [greenWithRoster(FIXTURE_BASE_SHA), greenWithRoster(FIXTURE_BASE_SHA)],
     publish: [{ kind: "ok" }],
     review: [{ kind: "done" }],
     ci: [{ kind: "red" }, { kind: "green" }],
@@ -114,7 +118,7 @@ function ciGreen(): Partial<Record<LeanState, Outcome[]>> {
     ...ciRedThenGreen(),
     build: [{ kind: "ok" }],
     challenge: [{ kind: "none" }],
-    verify: [{ kind: "green" }],
+    verify: [greenWithRoster(FIXTURE_BASE_SHA)],
     ci: [{ kind: "green" }],
   };
 }
