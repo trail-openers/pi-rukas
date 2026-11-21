@@ -26,7 +26,10 @@
  * inequality between sleeps far apart: the loop's clock is bash `SECONDS` — whole
  * seconds, the same portable choice the pool's bound and the watchdog make — so an
  * exact-equality assertion would pin a rounding rule the loop never promised, and a
- * `0` is a legitimate reading for a test that finished inside one tick.
+ * `0` is a legitimate reading for a test that finished inside one tick. For the
+ * same reason `wall` is bounded by `sum` plus one tick per test: each per-test
+ * reading can fall up to a tick short, and a serial run's wall also carries the
+ * gaps between jobs, so a plain `wall <= sum` holds only while the host is idle.
  *
  * Deliberately NOT covered: a test killed by the pool's OUTER per-job bound as a
  * shape distinct from the watchdog's kill. Producing it needs a descendant that
@@ -121,7 +124,10 @@ for (const jobs of ["1", "3"]) {
         `case 1 (JOBS=${jobs}): sum is the per-test times added up, not the run's clock (got ${sum})`,
       );
       assert(max === Math.max(...rows.map((x) => x.secs)), `case 1 (JOBS=${jobs}): max is the slowest single test (got ${max})`);
-      assert(wall >= 6 && wall <= sum, `case 1 (JOBS=${jobs}): wall is the run's clock and never exceeds the summed per-test times (got wall ${wall}, sum ${sum})`);
+      assert(
+        wall >= 6 && wall <= sum + rows.length,
+        `case 1 (JOBS=${jobs}): wall is the run's clock and exceeds the summed per-test times by no more than one tick per test (got wall ${wall}, sum ${sum})`,
+      );
     }
   } finally {
     removeGenerated(A);
@@ -163,7 +169,10 @@ for (const jobs of ["1", "3"]) {
         `case 2: sum is the per-test times of the same run added up (got ${sum} vs ${JSON.stringify(wideRows.map((x) => x.secs))})`,
       );
       assert(max === Math.max(...wideRows.map((x) => x.secs)), `case 2: max is that run's slowest test (got ${max})`);
-      assert(Number(wideTotal[1]) <= sum, `case 2: the pooled run's wall (${wideTotal[1]}) never exceeds its summed per-test times (${sum})`);
+      assert(
+        Number(wideTotal[1]) <= sum + wideRows.length,
+        `case 2: the run's wall (${wideTotal[1]}) exceeds its summed per-test times (${sum}) by no more than one tick per test`,
+      );
     }
 
     const narrow = runLoop(files, { PI_ENSEMBLE_VERIFY_TIMING_TOP_N: "2" });
