@@ -55,6 +55,13 @@ report_results() {
   if [ "${#names[@]}" -eq 0 ]; then
     if [ "$DIGEST" -eq 1 ]; then
       emit_tally "$total" 0
+    else
+      # #1878 — the slowest-first block on the GREEN path too: the point of the
+      # summary is to show where a passing run's time went, and a run that failed has
+      # its `FAILED:` markers to read anyway. It goes to stderr, so neither this path
+      # nor the failing one below disturbs stdout — see lib/verify-timing.sh for the
+      # two consumer-side reasons, and the digest prints none at all.
+      emit_timing_summary
     fi
     write_verify_report
     exit 0
@@ -157,6 +164,12 @@ report_results() {
       echo "$line"
     done < <(grep -F -- "✗" "$capfile" || true)
   done
+  # #1878 — last, after the summary and the #827 echo, and on stderr: the block
+  # carries no `FAILED:` and no `✗`, so it could not displace the anchor or the ✗
+  # lines even on stdout — but stdout is the stream extractAttributedTail cuts its
+  # evidence window from, and this half's contract is that that stream does not
+  # change. Emitted before the exit for the same reason write_verify_report is.
+  emit_timing_summary
   # #1365 — the verdict is the count, not the status that happens to be
   # current. report_results is the only intended exit path and it `exit 1`s on
   # failure, but a half that returned instead of exiting would let the caller

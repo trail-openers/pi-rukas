@@ -152,9 +152,27 @@ POOL_RUN_DIR=""
 # The $SECONDS value each job was started at, for run_pool's per-job wall-clock
 # bound. Written by start_job next to JOB_PID, reset by pool_collect.
 JOB_STARTED_AT=()
+# #1878 — the stop clock of the per-test duration (start_job writes the start above,
+# finish_job this, and the replay step turns the pair into a row). The pool owns the
+# moments, lib/verify-timing.sh the storage and printing — the seam that keeps both
+# under the AGENTS.md §12 cap. Nothing here reads it: deleting it changes no job's
+# start, bound, signal or kill. Seeded EMPTY (not 0) so "never written" reads as
+# absent rather than as the legitimate duration 0.
 # Jobs currently in state 1. run_pool reads it; start_job and the completion
 # branch are the only two places that move it.
 POOL_RUNNING=0
+
+. "$(dirname "${BASH_SOURCE[0]}")/verify-timing.sh"
+# Hard name check, not a silent gap: a half that failed to load would surface as
+# command-not-found only in the replay step, after every test had run — which reads
+# as a suite whose times nobody took.
+for _timing_fn in timing_start timing_finish record_job_timing emit_timing_lines emit_timing_summary; do
+  if [ "$(type -t "$_timing_fn")" != function ]; then
+    echo "error: verify-loop: lib/verify-timing.sh did not define $_timing_fn — the per-test timing is broken; refusing to run" >&2
+    exit 2
+  fi
+done
+unset _timing_fn
 
 # Every started job, whether or not it has since finished. The interrupt
 # handler walks the tree of the entries still in state 1 — the jobs actually
@@ -182,9 +200,14 @@ pool_collect() {
   JOB_EXIT=()
   JOB_KILLED=()
   JOB_STARTED_AT=()
+  JOB_STOP=()
   POOL_STARTED=()
   POOL_RUNNING=0
   POOL_RUN_DIR="$run_dir"
+  # Open the run's timing record beside the captures, so the trap that removes
+  # them removes it too. Only when there is something to time: an all-live
+  # argument list collects no jobs and must not leave an empty record behind.
+  if [ "$#" -gt 0 ]; then timing_start "$run_dir"; fi
   for t in "$@"; do
     case "$t" in *-live.ts) continue;; esac
     JOB_TESTS+=("$t")
@@ -194,7 +217,8 @@ pool_collect() {
     JOB_PID+=(0)
     JOB_EXIT+=(0)
     JOB_KILLED+=(0)
-    JOB_STARTED_AT+=(0)
+    JOB_STARTED_AT+=()
+    JOB_STOP+=()
     n=$((n + 1))
   done
   # Clamp to what can actually run: 16 concurrent jobs for 3 tests would be a
@@ -240,6 +264,7 @@ start_job() {
   ) &
   JOB_PID[$i]=$!
   JOB_STARTED_AT[$i]=$SECONDS
+  JOB_STOP[$i]=""
   JOB_STATE[$i]=1
   # run_pool's admission test is the counter rather than a scan over every job,
   # so the increment belongs with the state change that made the job running —
@@ -290,6 +315,9 @@ read_job_rc() {
 # decrement per job the invariant rather than something the branches each
 # maintain.
 finish_job() {
+  # #1878's stop clock, at the one moment a job leaves state 1 — both run_pool
+  # branches complete a job here, so one write is one clock, not two that can drift.
+  JOB_STOP[$1]=$SECONDS
   JOB_STATE[$1]=2
   POOL_RUNNING=$((POOL_RUNNING - 1))
   [ "$POOL_RUNNING" -ge 0 ] || POOL_RUNNING=0
@@ -319,6 +347,11 @@ run_pool() {
   local max_jobs="$1" next=0 done_n=0 i total="${#JOB_TESTS[@]}" retries started elapsed outer_bound landed
   if [ "$max_jobs" -lt 1 ]; then max_jobs=1; fi
   POOL_RUNNING=0
+  # The run's own wall clock, on the same SECONDS the per-job clocks use so the
+  # TOTAL line's `wall` and `sum` are two readings of one instrument. Closed by
+  # timing_finish when the pool drains.
+  VERIFY_POOL_STARTED_AT=$SECONDS
+  VERIFY_POOL_WALL=0
   while [ "$done_n" -lt "$total" ]; do
     for ((i = 0; i < total; i++)); do
       [ "${JOB_STATE[$i]}" -eq 1 ] || continue
@@ -457,4 +490,8 @@ run_pool() {
       sleep 0.1
     fi
   done
+  # Drained: every job that ran has its stop clock, so the run's wall clock
+  # closes here and not in the reporter — the reporter does its own work, and
+  # that work is not the pool's duration.
+  timing_finish
 }
