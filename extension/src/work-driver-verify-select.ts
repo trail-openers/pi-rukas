@@ -63,6 +63,12 @@ const NODE_RE = /^(?:src\/(?:[^/]+\/)*[^/]+\.ts|smoke-tests\/[^/]+\.ts)$/;
 const RELATIVE_SPEC_RE = /^\.\.?(?:\/|$)/;
 /** A static import or re-export on lexed code: the specifier is the string token that ends the statement head. */
 /** A static import or re-export on lexed code: the specifier is the string token that ends the statement head. */
+// The markers are spelled as \u escapes rather than pasted, because a bare private-use
+// code point in this file would be a placeholder collision to the very lexer whose
+// output these patterns match — lexSource would refuse the file and the whole graph
+// would fall back. biome's useRegexLiterals would rewrite them to the raw code points,
+// which is the regression this comment is the standing reason against.
+// biome-ignore lint/complexity/useRegexLiterals: the escapes are the point, not an avoidance of escaping.
 const STATIC_RE = new RegExp(
   "\\b(?:import|export)\\s+(?:type\\s+)?(?:[\\w*{}\\s,$]+\\s+from\\s+)?\\uE000(\\d+)\\uE000",
   "g",
@@ -70,6 +76,8 @@ const STATIC_RE = new RegExp(
 /** A call head `import(` or `require(`, on lexed code. */
 const CALL_RE = /\b(import|require)\s*\(/g;
 /** A string token as the first argument of a call, the rest of the call's head. */
+// See STATIC_RE: the \u escapes keep this file free of a bare placeholder the lexer would refuse.
+// biome-ignore lint/complexity/useRegexLiterals: the escapes are the point, not an avoidance of escaping.
 const LITERAL_ARG_RE = new RegExp("^\\s*\\uE000(\\d+)\\uE000\\s*\\)");
 /** `src/x.ts` (optionally `extension/`- or `../`-prefixed) as a whole string value. */
 const PATH_LITERAL_RE = /^(?:\.{1,2}\/)*(?:extension\/)?(src\/[^\s]+?\.ts)$/;
@@ -158,7 +166,15 @@ interface Graph {
   unresolved: Set<string>;
 }
 
-function listNodes(extensionDir: string): string[] {
+/**
+ * The graph's node set — every file `selectVerifyTests` will tokenize.
+ *
+ * Exported for the gate that asserts every one of them lexes
+ * (test-verify-select-lex-tree.ts): a whole-tree precondition asserted on a set
+ * re-derived by hand can silently be narrower than the graph it protects, so the
+ * gate asks the selector what its graph is.
+ */
+export function listNodes(extensionDir: string): string[] {
   const files: string[] = [];
   const walk = (rel: string) => {
     for (const entry of readdirSync(path.join(extensionDir, rel), { withFileTypes: true })) {

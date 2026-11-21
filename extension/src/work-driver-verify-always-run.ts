@@ -58,6 +58,11 @@ const READ_CALL_RE =
 /** A call to join or resolve on lexed code; the group is its argument list. */
 const JOIN_CALL_RE = /\b(?:join|resolve)\s*\(([^()]*)\)/g;
 /** A string token on lexed code (a `<STR><i><STR>` or template `<TPL><i><TPL>` pair). */
+/** A string token on lexed code (a `<STR><i><STR>` or template `<TPL><i><TPL>` pair). */
+// The markers are spelled as \u escapes rather than pasted: a bare private-use code point
+// here would be a placeholder collision to the lexer whose output this matches, and this
+// file is a graph node — the whole selection would fall back to the full suite.
+// biome-ignore lint/complexity/useRegexLiterals: the escapes are the point, not an avoidance of escaping.
 const TOKEN_RE = new RegExp("[\\uE000\\uE001](\\d+)[\\uE000\\uE001]", "g");
 /** A leading interpolation or relative prefix that does not change which repository path a literal names. */
 const LEADING_RE = /^(?:\$\{[^}]*\}\/|\.{1,2}\/|extension\/)*/;

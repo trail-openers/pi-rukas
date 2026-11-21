@@ -28,8 +28,8 @@ import { type VerifyCommandRecord, newVerifyRecordSlot } from "./work-driver-ver
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
 import { shellExecp } from "./work-driver-verify-shell.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
-import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { VerifySelectArgs } from "./workflow-state-events-verify-select.ts";
+import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 // #1134 follow-up — the argv form must be honoured: the previous
@@ -328,9 +328,7 @@ export async function verifyStepOutcome(
       // #2450 — the selector's verdict for THIS gate call, read from the sink the
       // chain filled: a verdict the plan computed and nobody carried is how the
       // selector stayed invisible while it was inert.
-      ...(verifySelectSink.verdict !== undefined
-        ? { verifySelect: verifySelectSink.verdict }
-        : {}),
+      ...(verifySelectSink.verdict !== undefined ? { verifySelect: verifySelectSink.verdict } : {}),
       verifyRun: verifyRecord.current,
       // #2283 — only when this run filled it: a run that never executed the gate has nothing
       // to disclose, and an empty array here would render an empty section header.

@@ -54,6 +54,33 @@ lexes(
   "the `git rev-parse ${JSON.stringify(`${ref}^{tree}`)}` shape lexes",
 );
 lexes(
+  "a nested interpolation holding a block",
+  "`a ${ (() => { const x = 1; return x })() } b`",
+  "an interpolation holding a block body lexes",
+);
+// The three shapes the issue's suggested criteria name as measured UNLEXABLE on
+// main. The first is the `${fromRef}^{tree}` production form; the third is the one
+// a brace counter cannot survive even without a nested template, because the
+// tail text after the inner template carries a further `}`.
+lexes(
+  "nested interpolation holding a brace (y\${t}^{tree} form)",
+  "`git rev-parse \${JSON.stringify(\`${y}^{tree}\`)}`",
+  "the y\${t}^{tree} form lexes — measured UNLEXABLE on main",
+);
+lexes(
+  "a nested interpolation whose tail text holds a further }",
+  "`a ${`${b}`} } c`",
+  "a further } in the text after a nested template lexes — measured UNLEXABLE on main",
+);
+// A placeholder (private-use code point) inside a NESTED template's own value is
+// the case the escape exists for: without it the marker inside the parent's value
+// would read as a bare collision and unlex a clean file.
+lexes(
+  "a nested template whose value carries the lexer's own marker",
+  "`outer \${ \`\${inner}\` } tail`",
+  "a nested template's placeholder inside its parent's value is not read as a collision",
+);
+lexes(
   "a nested interpolation holding an object literal",
   "`a ${ {k:1} } b`",
   "an interpolation holding an object literal still lexes (measured passing pre-fix — a regression here widens the fallback)",

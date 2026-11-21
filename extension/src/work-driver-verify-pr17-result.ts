@@ -21,8 +21,8 @@ import type { DevelopGateRecord } from "./work-driver-verify-gate-reuse.ts";
 import type { VerifyCommandRecord } from "./work-driver-verify-record.ts";
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
-import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { VerifySelectArgs } from "./workflow-state-events-verify-select.ts";
+import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
 import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 
 export interface VerifyStepOutcomeResult {

@@ -193,9 +193,7 @@ export function recordDevelopGateEvents(
             now: Date.now(),
           }),
         ]),
-    ...(gate.verifySelect === undefined
-      ? []
-      : [makeVerifySelectEvent(gate.verifySelect)]),
+    ...(gate.verifySelect === undefined ? [] : [makeVerifySelectEvent(gate.verifySelect)]),
     ...(completed ? [completed] : []),
   ];
   const recorded = foldVerifyAttribution(

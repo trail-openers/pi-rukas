@@ -156,10 +156,12 @@ export async function planDevelopVerify(
     );
   } catch (err) {
     const reason = `uncomputable-graph: ${(err as Error).message?.slice(0, 120)}`;
-    return fullPlan(
-      `verify selection fell back to the full suite (${reason})`,
-      { mode: "full", fallbackReason: reason, selected: 0, alwaysRun: 0 },
-    );
+    return fullPlan(`verify selection fell back to the full suite (${reason})`, {
+      mode: "full",
+      fallbackReason: reason,
+      selected: 0,
+      alwaysRun: 0,
+    });
   }
   if (selection.mode === "full") {
     return fullPlan(
