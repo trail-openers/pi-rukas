@@ -43,9 +43,9 @@ import { NO_HOOKS } from "./specify-reset.ts";
 import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
 import {
   PREEXISTING_NAMES_CAP,
+  PREEXISTING_NAME_MAX_CHARS,
   ROSTER_FILES_CAP,
   ROSTER_NAMES_CAP,
-  ROSTER_PATH_MAX_CHARS,
   projectRosterProblem,
 } from "./state-outcome-maps.ts";
 import { probeWorktreePath } from "./verify-baseline.ts";
@@ -207,6 +207,9 @@ export async function buildProjectRoster(opts: {
     reportCwd: wt,
   });
   if (!head.ran) return none(`at head: ${head.reason}`);
+  // Deduped ONCE: the two red arms below and the record all read the head's failing names, and a
+  // stream-order dedupe asked three times is three chances to answer differently.
+  const headFailed = dedupe(head.failed);
 
   // THE BASE-LEG SKIP. Both red arms range over `head.failed` — `newlyFailing` ∩ what the base
   // passed, `unexplained` what the base never named — so an accepted head run that failed nothing
@@ -230,13 +233,13 @@ export async function buildProjectRoster(opts: {
   // base shows PASSING is this run's regression, and the roster — not the line comparison — is
   // the arbiter (parent #2410 R4).
   const basePassed = new Set(base.passed);
-  const newlyFailing = dedupe(head.failed).filter((name) => basePassed.has(name));
+  const newlyFailing = headFailed.filter((name) => basePassed.has(name));
   if (newlyFailing.length > 0)
     return { status: "red", reason: newlyFailingReason(newlyFailing, baseSha) };
   // Failing on BOTH sides is the mainline's own and is not charged. A name neither passed nor
   // failed at base was not observed there, so the base cannot vouch for it and this run owns it.
   const baseSeen = new Set([...base.failed, ...base.passed]);
-  const unexplained = dedupe(head.failed).filter((name) => !baseSeen.has(name));
+  const unexplained = headFailed.filter((name) => !baseSeen.has(name));
   if (unexplained.length > 0)
     return {
       status: "red",
@@ -272,7 +275,7 @@ export async function buildProjectRoster(opts: {
     baseSha,
     files: recordedFiles,
     passed: dedupe(head.passed).slice(0, ROSTER_NAMES_CAP),
-    failed: dedupe(head.failed).slice(0, ROSTER_NAMES_CAP),
+    failed: headFailed.slice(0, ROSTER_NAMES_CAP),
     baseFailed: dedupe(base.failed).slice(0, ROSTER_NAMES_CAP),
     total: head.passed.length + head.failed.length,
     baseTotal: base.passed.length + base.failed.length,
@@ -304,9 +307,17 @@ function newlyFailingReason(names: readonly string[], baseSha: string): string {
   return `project tests that passed at the base commit now fail: ${clip(names)} — these were green at ${baseSha.slice(0, 12)}, so this run broke them`;
 }
 
-/** A recorded name cut to what the step log's reader accepts. */
+/**
+ * A recorded name cut to what the step log's reader accepts.
+ *
+ * The roster bounds a name by {@link PREEXISTING_NAME_MAX_CHARS}, one shorter than the record reader's
+ * own ceiling (`ROSTER_PATH_MAX_CHARS`): a roster name is a test name, so it is bounded by the rule for
+ * names, while the wider ceiling stays the reader's backstop for any roster it is handed.
+ */
 function boundedName(name: string): string {
-  return name.length > ROSTER_PATH_MAX_CHARS ? name.slice(0, ROSTER_PATH_MAX_CHARS) : name;
+  return name.length > PREEXISTING_NAME_MAX_CHARS
+    ? name.slice(0, PREEXISTING_NAME_MAX_CHARS)
+    : name;
 }
 
 /** Order-preserving dedupe and bound; stream order is what an operator re-running the suite sees. */

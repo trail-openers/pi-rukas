@@ -19,7 +19,7 @@
  */
 
 import { execp } from "../../src/exec.ts";
-import type { VerifyExec } from "../../src/verify-types.ts";
+import type { VerifyExec } from "../../src/lean/verify-types.ts";
 import type { VerifyOpts } from "./lean-verify-types.ts";
 import { writeDeclaredReport } from "./lean-verify-roster.ts";
 
