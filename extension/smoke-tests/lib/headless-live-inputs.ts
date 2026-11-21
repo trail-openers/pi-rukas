@@ -35,6 +35,7 @@ import {
   leanPreflightProbeContainEnabled,
 } from "../../src/lean/preflight-probe-switch.ts";
 import { leanProtectedPathsEnabled } from "../../src/lean/protected-paths-switch.ts";
+import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.ts";
 import { leanResultGatesEnabled } from "../../src/lean/result-gates-switch.ts";
 import { leanReviewAcceptanceEnabled } from "../../src/lean/review-acceptance-switch.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
@@ -195,8 +196,6 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_COLLECTABLE", leanPreflightProbeCollectableEnabled],
   ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN", leanPreflightProbeContainEnabled],
-  // #2416 — re-push to the PR this run's own `publish` opened. The reader is
-  // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on".
   // The routed deadline report's wall. The reader is `v !== "0"`, so the LIVE loop
   // (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_REPORT_BOUND", leanReportBoundEnabled],
@@ -214,30 +213,23 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // the off arm's argv are pinned by test-lean-submodules-local-switch.ts and
   // test-lean-submodule-local-source.ts (e).
   ["PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL", leanSubmodulesLocalEnabled],
-  // #2334 — whether `loadRun` rebuilds the ready step's own `derivedSpec`/`baseSha`. The
-  // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on";
-  // the truth table, the docs row and the two-arm rebuild are pinned by
-  // test-lean-ready-facts-on-load-switch.ts.
   // #2365 — the project's own `lean.protectedPaths` globs in the lean folds. The reader
   // is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the
   // truth table, the docs row, the fold's two arms and the built-in controls are pinned
   // by test-lean-protected-paths.ts and test-lean-build-protected-paths-switch.ts.
   ["PI_ENSEMBLE_LEAN_PROTECTED_PATHS", leanProtectedPathsEnabled],
-  // #2262 — whether the rewind's branch refspec stays unforced so its lease binds. The
-  // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on".
+  // #2428 — `verify` judges the project's own pre-existing tests. The reader is
+  // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth
+  // table, the off arm's bytes and the docs row are pinned by
+  // test-AC5-project-roster-switch.ts and test-AC7-project-roster-docs.ts.
+  ["PI_ENSEMBLE_LEAN_PROJECT_ROSTER", leanProjectRosterEnabled],
   // The gate events on the host's result document. The reader is `v !== "0"`, so the
   // gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_RESULT_GATES", leanResultGatesEnabled],
-  // Whether an unjudged lean review gets its own cap and the `reviewComplete` field. The
-  // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on";
-  // the truth table, the four-arm matrix and the off arm's golden are pinned by
-  // test-headless-work-lean-review-incomplete-cap-switch.ts.
   // The truncated-fixer continuation: its default is pinned here, its truth table by
   // `test-lean-review-fix-reask-pure.ts` and its off arm by
   // `test-lean-review-fixer-truncation-off-arm.ts`.
   ["PI_ENSEMBLE_LEAN_FIXER_TRUNCATION_REASK", leanFixerTruncationReaskEnabled],
-  // #2255 — the publishable-branch guard's fail-closed arm. The reader is `v !== "0"`,
-  // so the gate's LIVE loop (env deleted) pins "unset means on".
   // #2279 — the handback's origin reads through the network-git wrapper. The reader is
   // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth
   // table, the docs row and the off-arm call shape are pinned by

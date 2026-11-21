@@ -1,8 +1,8 @@
 /*
- * lib/lean-republish-recording-exec — the recorder the `"0"` arm of
- * `PI_ENSEMBLE_LEAN_REPUBLISH_OWN_PR` asserts against.
+ * lib/lean-republish-recording-exec — the recorder the republish rule asserts against.
  *
- * The off arm's promise is that the arm it restores is the arm that shipped: same
+ * The rule's promise is that the refusal it left standing is the refusal that shipped:
+ * same
  * argv, same env, same forge-call order as the step had before the exemption existed.
  * That is a claim about the CALLS, and `lib/lean-publish-fixture.ts` cannot answer it
  * — it records the rendered `--force-with-lease=` argument and the env each git child
