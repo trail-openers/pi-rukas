@@ -332,6 +332,13 @@ withEnv({ PI_ENSEMBLE_VERIFY_CONCURRENCY: "lots" }, () =>
   );
   const stats = verifySlotStats();
   assert(stats.active === 0 && stats.queued === 0, "every slot is released, failures included");
+  // An attributed verify probes the base from inside its own slot.
+  process.env.PI_ENSEMBLE_VERIFY_CONCURRENCY = "1";
+  const nested = await Promise.race([
+    withVerifySlot(() => withVerifySlot(async () => "inner")),
+    new Promise((r) => setTimeout(() => r("deadlock"), 1000)),
+  ]);
+  assert(nested === "inner", `a slot asked for inside a held slot runs in it (got ${nested})`);
   Reflect.deleteProperty(process.env, "PI_ENSEMBLE_VERIFY_CONCURRENCY");
 }
 

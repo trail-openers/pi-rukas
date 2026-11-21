@@ -31,6 +31,7 @@
  * CPU-heavy part of a cycle and were bounded by nothing.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -212,6 +213,8 @@ export function lensConcurrency(): number {
 
 let active = 0;
 const waiting: Array<() => void> = [];
+// Marks the async context of a run that holds a slot.
+const holding = new AsyncLocalStorage<true>();
 
 /** Observability for tests. */
 export function verifySlotStats(): { active: number; queued: number } {
@@ -221,15 +224,18 @@ export function verifySlotStats(): { active: number; queued: number } {
 /**
  * Run one verify command holding a slot, queueing FIFO at the ceiling. Wrap
  * only the leaf exec of the command — a slot holder must never wait on
- * anything else (a lock, another slot), or a full pool could deadlock.
+ * anything else (a lock), or a full pool could deadlock. A call made inside a
+ * run that already holds a slot runs in that slot: an exec wrapped by verify
+ * attribution probes the base from inside the outer run's slot, and queueing
+ * there at a ceiling of 1 waits on itself forever.
  */
 export async function withVerifySlot<T>(fn: () => Promise<T>): Promise<T> {
   const cap = verifyConcurrency();
-  if (cap === 0) return fn();
+  if (cap === 0 || holding.getStore()) return fn();
   if (active >= cap) await new Promise<void>((resolve) => waiting.push(resolve));
   else active += 1;
   try {
-    return await fn();
+    return await holding.run(true, fn);
   } finally {
     // Hand the slot straight to the next waiter (active stays the same), so a
     // late arrival cannot overtake the queue between release and wake-up.
