@@ -216,8 +216,7 @@ timing_over_ceiling() {
 # lands, so every gate in the chain below reads one fact — forcing it inside a caller
 # would be discarded with that frame's `$(…)` subshell before the next gate read it.
 # It can never invent an exemption: the list still has to exist and name the path. Both
-# knobs are unset in the shipped state and pinned off by the harness `env()`, the way
-# the ceiling itself is.
+# knobs are unset in the shipped state and pinned off by the harness `env()`.
 #
 # The fields ACCUMULATE ACROSS LINES: the file may carry one entry per line, or the
 # same JSON pretty-printed with one field per line (what a formatter does to it), and
@@ -268,12 +267,10 @@ timing_listed() {
 }
 
 # Is <file> exempt from the ceiling? The knob gate here is the caller-side half of
-# the off-path cost claim.
-#
-# It goes through the one `timing_key` above, so
-# every spelling the caller can hand the loop reaches the list as the same key. There
-# is deliberately no exemption by any other recorded field: a row that could exempt
-# itself by a column it carries would make the list mean nothing.
+# the off-path cost claim. It goes through the one `timing_key` above, so every spelling
+# the caller can hand the loop reaches the list as the same key. There is deliberately
+# no exemption by any other recorded field: a row that could exempt itself by a column
+# it carries would make the list mean nothing.
 timing_exempt() {
   [ "$VERIFY_TIMING_CEILING_S" -gt 0 ] || return 1
   local k

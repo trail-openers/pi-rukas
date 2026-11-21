@@ -250,11 +250,21 @@ export function mkdtempDirSync(prefix: string): string {
  * read, and a killed process would leave the shipped exemptions changed. The loop
  * reads its path from the environment for exactly this reason.
  */
-export function writeAllowlist(entries: { file: string; seconds: number }[]): string {
+export function writeAllowlist(
+  entries: { file: string; seconds: number }[],
+  baselineCount?: number,
+): string {
   const dir = mkdtempDirSync(path.join(tmpdir(), "pi-ens-allowlist-"));
   const p = path.join(dir, "timing-allowlist.json");
   try {
-    writeFileSync(p, JSON.stringify({ entries }, null, 2));
+    writeFileSync(
+      p,
+      JSON.stringify(
+        baselineCount === undefined ? { entries } : { baseline_count: baselineCount, entries },
+        null,
+        2,
+      ),
+    );
   } catch (e) {
     harnessFatal(`could not write a temporary allow-list at ${p}: ${String(e)}`);
   }
