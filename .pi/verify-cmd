@@ -9,8 +9,8 @@
 # .pi/verify-cmd-full, which the ci step runs once.
 #
 # `--jobs-from-host` sizes the smoke pool from the host CPU count when
-# PI_ENSEMBLE_VERIFY_TEST_JOBS is unset: 4 jobs on a host reporting 8+ CPUs, 2
-# otherwise, an explicit ambient setting always winning. Measured on a 10-core
+# PI_ENSEMBLE_VERIFY_TEST_JOBS is unset: `max(2, min(16, cpus - 2))` (#2441), an
+# explicit ambient setting of that variable always winning. Measured on a 10-core
 # host at the suite stage: 4 jobs → 4m49s, versus ~19 min under load at 2. That
 # second figure is the reason this tier has its OWN bound (#1509): the suite
 # tier is governed by PI_ENSEMBLE_VERIFY_SUITE_TIMEOUT_MS (default 30 min, or
@@ -23,6 +23,15 @@
 # works, not because a guard requires it.
 # See docs/configuration.md (`PI_ENSEMBLE_VERIFY_TEST_JOBS`).
 #
+# The loop call arms the #2449 per-file wall-clock ceiling at 30 s: comfortably
+# above every file the suite's own timing summary calls normal, low enough that a
+# file which quietly grew past half a minute is named as a failure rather than
+# absorbed into the pool. The `:-` keeps the operator in charge — an exported
+# value wins, and `0` turns the ratchet off on a loaded host (per-file times swing
+# with pool neighbours and host load). The only exemptions live in
+# extension/timing-allowlist.json, which the ceiling reads and which is shrink-only.
+# See docs/configuration.md (`PI_ENSEMBLE_VERIFY_TIMING_CEILING_S`).
+#
 # The typecheck names the compiler by PATH, not by alias (#1414/#1118). The
 # `bun x` form is an npx-style lookup, and on the host this was filed from it
 # resolved a GLOBAL TypeScript 7 that printed its usage and exited 0 — a
@@ -34,4 +43,4 @@
 # extension/src/work-driver-cap-checkpoint-typecheck.ts, because both run with
 # cwd = extension/. The gate that pins the two to one another is
 # `test-verify-cmd-no-bare-alias` under extension/smoke-tests.
-cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.smoke-tests.json && cd .. && bun run check && cd extension && bash smoke-tests/lib/verify-loop.sh --jobs-from-host smoke-tests/test-*.ts
+cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.smoke-tests.json && cd .. && bun run check && cd extension && PI_ENSEMBLE_VERIFY_TIMING_CEILING_S="${PI_ENSEMBLE_VERIFY_TIMING_CEILING_S:-30}" bash smoke-tests/lib/verify-loop.sh --jobs-from-host smoke-tests/test-*.ts

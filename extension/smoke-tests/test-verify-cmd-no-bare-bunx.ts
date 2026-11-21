@@ -12,6 +12,9 @@
  *      cap-checkpoint it was also the operator-facing lie: the checkpoint
  *      ran one literal and the handoff named another.
  *
+ * The same tier's #2449 timing-ceiling prefix is judged by a sibling gate,
+ * `test-verify-cmd-timing-ceiling.ts` — split out for the §12 size cap.
+ *
  * `EXEMPT_FILES` names where `bunx` stays legal and is deliberately NOT
  * scanned: `bash-command-parser.ts` matches
  * user-typed commands (where the alias is legitimate), `review-accept-guard.ts`
