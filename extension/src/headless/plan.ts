@@ -208,7 +208,8 @@ async function withIssueBody<T extends { context?: string; sourceIssue?: number 
   return { ...a, context: a.context ? `${body}\n\n${a.context}` : body };
 }
 
-function issueUnreadable(message: string): VerbOutcome {
+function issueUnreadable(message: string, ctx: VerbContext): VerbOutcome {
+  ctx.host.sendUserMessage(`plan: refused — ${message}`, { deliverAs: "steer" });
   return {
     exitCode: EXIT.refused,
     doc: { subcommand: "plan", status: "refused", error: { code: "issue-unreadable", message } },
@@ -222,7 +223,7 @@ export async function runPlanVerb(argv: readonly string[], ctx: VerbContext): Pr
     const t = parsed.turn;
     if (t.kind === "start") {
       const start = await withIssueBody(t, ctx.repoRoot);
-      return "error" in start ? issueUnreadable(start.error) : runPlanTurn(start, ctx);
+      return "error" in start ? issueUnreadable(start.error, ctx) : runPlanTurn(start, ctx);
     }
     if (t.kind !== "answer") return runPlanTurn(t, ctx);
     const answer = await readAnswer(t.answerFile);
@@ -230,7 +231,7 @@ export async function runPlanVerb(argv: readonly string[], ctx: VerbContext): Pr
     return runPlanTurn({ kind: "answer", id: t.id, answer: answer.text }, ctx);
   }
   const args = await withIssueBody(parsed, ctx.repoRoot);
-  if ("error" in args) return issueUnreadable(args.error);
+  if ("error" in args) return issueUnreadable(args.error, ctx);
   ctx.host.sendUserMessage(`plan: ${args.dryRun ? "dry run" : "file"} — ${args.descriptor}`, {
     deliverAs: "steer",
   });

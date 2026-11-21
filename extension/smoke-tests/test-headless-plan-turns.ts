@@ -416,6 +416,10 @@ reset();
 forge.resolves = false;
 const unread = await runVerb("plan", [DESC, "--start", "--issue", "42"], REPO);
 assert(
+  unread.violations.length === 0,
+  `--issue unreadable: output contract (${unread.violations.join("; ")})`,
+);
+assert(
   unread.code === 40 && (unread.doc.error as { code?: string })?.code === "issue-unreadable",
   "--issue that cannot be read: 40 issue-unreadable",
 );
