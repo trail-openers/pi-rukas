@@ -3,7 +3,7 @@
  *
  * The split from `engine.ts` is by concern: `engine.ts` owns the runner; this module owns the one move
  * the runner makes that is not a step the table routes — the clock stopping a working step, and what
- * the run becomes because of it. `deadline-handback.ts` decides WHETHER the routing happens; this
+ * the run becomes because of it. `handback-heads.ts` decides WHETHER the routing happens; this
  * module performs it and stamps the run either way.
  *
  * `HandbackHandler` is injected rather than reached around, so this module never reads the handler
@@ -11,10 +11,9 @@
  * exactly the way the runner writes one.
  */
 import { traceWarn } from "../trace.ts";
-import { deadlineStopShouldReport } from "./deadline-handback.ts";
 import { deadlineReason, handoffAllowanceMs } from "./deadline.ts";
 import { reportBoundSentence } from "./engine-report-bound.ts";
-import { type RoutedReport, routeHandbackReport } from "./routed-report.ts";
+import { handbackHeads } from "./handback-heads.ts";
 import type { LeanRun, LeanState, Outcome, Step } from "./state.ts";
 import { nextAttempt } from "./state.ts";
 
@@ -183,38 +182,42 @@ export interface DeadlineStop {
  */
 export async function stopForDeadline(stop: DeadlineStop): Promise<LeanRun> {
   const { run, stoppedAt, deadline, now } = stop;
-  if (stoppedAt !== "handback" && deadlineStopShouldReport(run.steps) && stop.request.handler) {
-    const handler = stop.request.handler;
-    const boundMs = handoffReportBoundMs();
-    const routed: RoutedReport = await routeHandbackReport(
-      {
-        repoRoot: stop.request.repoRoot,
-        issue: stop.request.issue,
-        run,
-        stoppedAt,
-        now,
-        handler,
-        boundMs,
-        keyFor: stop.request.keyFor,
-        attach: stop.request.attach,
-        finish: (r, state, reason) => stop.end(r, reason),
-      },
-      runHandbackReport,
-    );
+  // The head rule decides whether the report runs, keyed on the LOG and not the stop cause, so the
+  // routing fires on the same shape the reporting step reports on and on nothing else. It is
+  // affordable because `REPORT_STATES` is exempt from `deadlineStopsSteps` — the one step past the
+  // line the deadline cannot refuse — and it is needed because `machine.ts` routes `fixed` back
+  // through `verify`, so stamping there left origin over bytes no gate certified.
+  if (stoppedAt !== "handback" && handbackHeads(run.steps).applies && stop.request.handler) {
+    // The report's own bound, raced against the handler inside `runHandbackReport`; an overrun throws
+    // away the verdict and answers `undefined` with `boundFiredMs` set, which is what lets the stamp
+    // below say the report was LOST rather than that there was none to lose.
+    const req: ReportRequest = {
+      repoRoot: stop.request.repoRoot,
+      issue: stop.request.issue,
+      run,
+      stoppedAt,
+      now,
+      handler: stop.request.handler,
+      boundMs: handoffReportBoundMs(),
+      keyFor: stop.request.keyFor,
+      attach: stop.request.attach,
+      finish: (r, state, reason) => stop.end(r, reason),
+    };
+    const reported = await runHandbackReport(req);
     // The report could not be run at all, or could not be run IN TIME. Either way the run is
     // stamped where it stands, and when the bound is what stopped it, the stamp says so.
-    if (routed.run === undefined) {
+    if (reported === undefined) {
       return stop.end(
         run,
         deadlineReason(
           run.steps,
           stoppedAt,
           deadline,
-          routed.boundMs === undefined ? undefined : reportBoundSentence(routed.boundMs),
+          req.boundFiredMs === undefined ? undefined : reportBoundSentence(req.boundFiredMs),
         ),
       );
     }
-    return routed.run;
+    return reported;
   }
   return stop.end(run, deadlineReason(run.steps, stoppedAt, deadline));
 }

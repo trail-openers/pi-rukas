@@ -17,11 +17,12 @@
  * behaviour over the same fixture lives in `test-lean-challenge-issue-prose.ts`;
  * this file is the render, that file is the step.
  *
- * The switch is PINED rather than trusted to the ambient environment throughout:
- * `leanIssueProseEnabled()` reads `process.env` at call time, so a driver or
- * operator shell that exported `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0` would make the
- * ON-case assertions fail red on an unrelated change. `withEnv` restores exactly
- * what was there, an absent variable included.
+ * The oracle seats have no switch: the section ships on, and the only "no section"
+ * is a body with nothing to say. The builder's knob is the one in the family and it
+ * is PINED rather than trusted to the ambient environment: `leanBuildIssueProseEnabled()`
+ * reads `process.env` at call time, so an operator shell that exported it would
+ * otherwise change what this file asserts. `withEnv` restores exactly what was there,
+ * an absent variable included.
  *
  * Split out of `test-lean-adversary-prompts.ts` (AGENTS.md §12: split, never
  * compress) along the seam of one mechanism per file.
@@ -31,7 +32,6 @@ import {
   LEAN_ISSUE_HEADING,
   LEAN_ISSUE_LEAD,
   leanBuildIssueProseEnabled,
-  leanIssueProseEnabled,
   leanIssueSection,
 } from "../src/lean/issue-prose.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
@@ -81,16 +81,7 @@ const FROZEN = ["tests/AC1-retry.test.ts", "tests/AC2-bound.test.ts"];
       issueBody,
     }),
   });
-  const bare = specifyPrompt({ issue: 1908, spec: SPEC, testRunner: RUNNER, worktree: WT });
-  const bareChallenge = challengePrompt({
-    issue: 1908,
-    spec: SPEC,
-    frozenPaths: FROZEN,
-    worktree: WT,
-    testRunner: RUNNER,
-  });
-
-  await withEnv({ PI_ENSEMBLE_LEAN_ISSUE_PROSE: undefined }, async () => {
+  await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: undefined }, async () => {
     const plain = withBody(ISSUE_BODY);
 
     for (const [name, prompt] of [
@@ -152,31 +143,10 @@ const FROZEN = ["tests/AC1-retry.test.ts", "tests/AC2-bound.test.ts"];
       );
     });
 
-    // The switch off is the pre-change render byte for byte: the same spec, the
-    // same options, no body — that is what the prompts looked like before the body
-    // was threaded in.
-    await withEnv({ PI_ENSEMBLE_LEAN_ISSUE_PROSE: "0" }, async () => {
-      const off = withBody(ISSUE_BODY);
-      assert(
-        off.specify === bare,
-        "specify: PI_ENSEMBLE_LEAN_ISSUE_PROSE=0 renders byte-identically to a prompt built with no body",
-      );
-      assert(
-        off.challenge === bareChallenge,
-        "challenge: PI_ENSEMBLE_LEAN_ISSUE_PROSE=0 renders byte-identically to a prompt built with no body",
-      );
-      assert(
-        !off.specify.includes("## The issue") && !off.challenge.includes("## The issue"),
-        "the off render carries no section heading at all, not an empty one",
-      );
-      assert(leanIssueProseEnabled() === false, "the exported reader reports the switch off");
-    });
-    // Restored by `withEnv`, so this reads the ambient state the file started with
-    // — an absent variable — which is the ON case this block exists to pin.
-    assert(
-      leanIssueProseEnabled() === true,
-      "unset (restored) means the section is ON — only the literal 0 turns it off",
-    );
+    // The builder's seat is the only one with a switch, so the oracle prompts must not
+    // move when it is turned off — pinned above. The section's absence is the only
+    // "no section" there is now: a blank body renders none (pinned at the bottom of
+    // this file), and no environment value does.
 
     // An injected heading or fence must stay inside the fence: no line of the
     // prompt outside the section's own fence may read as a heading or open a fence.

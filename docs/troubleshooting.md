@@ -180,8 +180,8 @@ recorded on the step's reason and the run goes on to the adversary, since the be
 step's filename is what did not. **On an older release the workaround is
 `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0`**, which runs no probe at all: the run is then judged by the red
 proof alone and ends `not-ready` at exit 11 with the ordinary decline rather than handing back at 10.
-`PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_COLLECTABLE=0` restores only the old name and the old exit-4 reading,
-and `PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN=0` only the probe parent's containment check. Before this check existed, none of those printed anything naming the file, so the red
+`PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN=0` restores only the probe parent's containment check; the
+Python probe's name and its exit-4 reading have no lever — they are the behaviour. Before this check existed, none of those printed anything naming the file, so the red
 proof graded the run "unclear", `specify` declined with `criterion ACn has no red test`, and the issue
 was refused for an environment nothing had tested. The preflight costs one runner invocation —
 bounded at 120 s — and no model call, and it never guesses at a runner's flavour: no per-runner
@@ -4506,8 +4506,10 @@ missing, and it is one of:
 - **`the project configured no verify.testDir + verify.testGlob pair`** — the gate has no way
   to list which files are the project's pre-existing tests, so it has nothing to run.
 - **`the base commit carries no test file matching <dir>/<glob>`** — the pair is configured, but
-  nothing at the run's base commit matches it. Either the pattern does not name the project's
-  test files, or the project keeps them under a different name.
+  nothing at the run's base commit matches it. The listing is **recursive** since #2439 — every
+  depth below `testDir` counts, matched on the basename — so the causes left are a `testGlob` that
+  does not name the project's test files, or tests kept under a different name. `testDir` may itself
+  be multi-segment (`test/units`) when that is where the project keeps them.
 - **`at head: …`** / **`at the base commit: …`** — the suite ran and wrote nothing the gate can
   read: no report at the path `{report}` names, a report that names no `<testcase>`, or a run with
   no exit status at all (a kill, a timeout, a buffer overflow).
@@ -4528,10 +4530,14 @@ run's base commit.
 { "verify": { "testDir": "tests", "testGlob": "test-*.py", "roster": "pytest -q --junitxml={report} {dir}" } }
 ```
 
-`verify.roster` is optional: without it the gate derives `<verify.test> --junitxml={report} {dir}`
-from the project's per-file runner template, which works when that template is a suite runner and
-fails when it is not (a template that names one file cannot also take `{dir}`). `{report}` is the
-absolute path the runner must write its JUnit XML to and `{dir}` the tree it runs in; both must
+`verify.roster` is optional: without it the gate DERIVES one from the project's per-file runner
+template by deleting one whole-word `{file}` and appending `--junitxml={report} {dir}` — so
+`"verify": { "test": "pytest -q {file}" }` runs the suite as `pytest -q --junitxml=<report> <tree>`.
+Before #2439 the derivation only appended, the literal `{file}` survived into the argv, and the
+runner exited 4 on a file that does not exist: the symptom was this hand-back and the wording blamed
+the missing report. Set `verify.roster` when the project's report invocation differs from its
+per-file one. `{report}` is the absolute path the runner must write its JUnit XML to and `{dir}` the
+tree it runs in; both must
 appear as whole words, and the command is argv form, never a shell — a `;`, `|`, `$`, backtick or
 quote in it is refused at load. Keep the report out of the index (`.gitignore` the path, as a
 project already does for its `test.xml`): the step demands a clean tree afterwards and will

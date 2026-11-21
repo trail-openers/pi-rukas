@@ -42,8 +42,8 @@ export interface SpecifyPromptOpts {
   resubmit?: boolean;
   /**
    * The issue body the step re-read from the forge, rendered as its own section — not "The problem",
-   * which is one clipped sentence while the constraints live in the prose around it. Absent, blank, or
-   * with `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0`, it is not rendered.
+   * which is one clipped sentence while the constraints live in the prose around it. Absent or
+   * blank, it is not rendered.
    */
   issueBody?: string;
 }

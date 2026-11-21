@@ -19,10 +19,7 @@
  * contract through the `runSpecify` fixture rather than through a reader.
  */
 
-import {
-  leanPreflightProbeCollectableEnabled,
-  leanPreflightProbeContainEnabled,
-} from "../../src/lean/preflight-probe-switch.ts";
+import { leanPreflightProbeContainEnabled } from "../../src/lean/preflight-probe-switch.ts";
 
 /** One cell of a switch's table: the value the environment carries, and the answer. */
 export type Cell = readonly [label: string, value: string | undefined, want: boolean];
@@ -59,10 +56,8 @@ export function checkSwitch(opts: {
   return { ok };
 }
 
-export const COLLECTABLE_KEY = "PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_COLLECTABLE";
 export const CONTAIN_KEY = "PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN";
 
 export const READERS = {
-  [COLLECTABLE_KEY]: leanPreflightProbeCollectableEnabled,
   [CONTAIN_KEY]: leanPreflightProbeContainEnabled,
 } as const;

@@ -17,9 +17,8 @@
  *      3+ in the body is replaced by a same-width look-alike (`fenceText`), so no run inside the issue can
  *      close the block the prompt opened.
  *
- * `PI_ENSEMBLE_LEAN_ISSUE_PROSE=0` removes the section from all three seats and restores the two oracle
- * prompts' pre-feature bytes byte for byte. `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` reaches the builder's seat
- * ONLY: that per-seat isolation is the point of the knob.
+ * `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` removes the section from the builder's seat ONLY: that per-seat
+ * isolation is the point of the knob. The oracle seats have no switch — the section is the rule now.
  */
 import { fencedIssueBody } from "../adversarial-prompts.ts";
 import { hasSurvivingSpecShapedFence, normalizeProse, stripPiSpecBlocks } from "./spec.ts";
@@ -38,12 +37,6 @@ export const LEAN_ISSUE_LEAD =
  */
 export const LEAN_BUILD_ISSUE_LEAD =
   "The issue text below is what the acceptance criteria summarise. Where the criteria are silent it states what to build; it never overrides a frozen test.";
-
-/** Whether the oracle prompts carry the issue section. */
-export function leanIssueProseEnabled(): boolean {
-  const v = process.env.PI_ENSEMBLE_LEAN_ISSUE_PROSE;
-  return v !== "0";
-}
 
 /**
  * Whether the BUILDER's prompt carries the issue section. Read at call time, like its sibling: every lean
@@ -69,7 +62,6 @@ export function leanIssueSection(
   lead: string = LEAN_ISSUE_LEAD,
   problemFor?: string,
 ): string {
-  if (!leanIssueProseEnabled()) return "";
   const stripped = stripPiSpecBlocks(issueBody ?? "");
   // A fence whose info merely STARTS with `pi-spec v1` is not the block, so it survives the strip and would
   // reprint the contract. Refuse the whole section rather than print a second copy. The predicate is a

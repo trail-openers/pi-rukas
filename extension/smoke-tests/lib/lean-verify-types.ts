@@ -45,8 +45,21 @@ export interface VerifyRun {
    * How many times the step ran the PROJECT's rostered suite, across the run's worktree and the
    * base probe. The roster cases assert on this: a run that graded green without ever running the
    * project's suite is the defect Part A exists to close, and the count is the evidence.
+   *
+   * For anything about the BASE LEG — the skip above all — ask `rosterBaseRuns` instead: one shared
+   * count reads the same for "the base was skipped" and "the base run was lost".
    */
   rosterRuns?: number;
+  /**
+   * How many times the roster ran the project's suite in the RUN's own worktree. 1 is the ordinary
+   * case; a roster that graded green on 0 never ran the project's tests.
+   */
+  rosterHeadRuns?: number;
+  /**
+   * How many times it ran the suite in the throwaway base checkout. 1 when head failed a test the
+   * base had to be compared against; 0 when the head run was clean and the leg was skipped (#2439).
+   */
+  rosterBaseRuns?: number;
   /** The run's repo root, for a case that wants to ask git about its worktrees. */
   repoRoot?: string;
   /** The commit the run branched from — what a roster's `baseSha` must name. */

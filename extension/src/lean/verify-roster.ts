@@ -43,9 +43,9 @@ import { NO_HOOKS } from "./specify-reset.ts";
 import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
 import {
   PREEXISTING_NAMES_CAP,
+  PREEXISTING_NAME_MAX_CHARS,
   ROSTER_FILES_CAP,
   ROSTER_NAMES_CAP,
-  ROSTER_PATH_MAX_CHARS,
   projectRosterProblem,
 } from "./state-outcome-maps.ts";
 import { probeWorktreePath } from "./verify-baseline.ts";
@@ -180,6 +180,8 @@ export async function buildProjectRoster(opts: {
     config.testGlob,
   );
   if ("reason" in listed) return none(listed.reason);
+  // The frozen filter runs over the FULL enumeration, before any cap: it is what keeps this run's own
+  // acceptance tests out of the pre-existing set, and after the cap a run could bury one past entry 200.
   const preexisting = listed.files.filter((f) => opts.frozen[f] === undefined);
   if (preexisting.length === 0)
     return none(
@@ -205,29 +207,39 @@ export async function buildProjectRoster(opts: {
     reportCwd: wt,
   });
   if (!head.ran) return none(`at head: ${head.reason}`);
+  // Deduped ONCE: the two red arms below and the roster's own `failed` list all read the head's
+  // failing names, and a stream-order dedupe asked at each site is three chances to answer differently.
+  const headFailed = dedupe(head.failed);
 
-  const base = await runProjectSuiteAtBase({
-    exec,
-    repoRoot,
-    baseSha,
-    issue: opts.issue,
-    timeoutMs,
-    command: rendered,
-    headTree: wt,
-  });
+  // THE BASE-LEG SKIP. Both red arms range over `head.failed` — `newlyFailing` ∩ what the base
+  // passed, `unexplained` what the base never named — so an accepted head run that failed nothing
+  // leaves a base run nothing to decide, and the suite would be paid for twice for two empty sets.
+  // The condition is the ACCEPTED run, not a quiet report: a run that handed back still hands back.
+  const skipBase = head.failed.length === 0;
+  const base: SuiteRun = skipBase
+    ? { ran: true, passed: [], failed: [] }
+    : await runProjectSuiteAtBase({
+        exec,
+        repoRoot,
+        baseSha,
+        issue: opts.issue,
+        timeoutMs,
+        command: rendered,
+        headTree: wt,
+      });
   if (!base.ran) return none(`at the base commit: ${base.reason}`);
 
   // The base roster is the record of what was already broken. Anything failing at head that the
   // base shows PASSING is this run's regression, and the roster — not the line comparison — is
   // the arbiter (parent #2410 R4).
   const basePassed = new Set(base.passed);
-  const newlyFailing = dedupe(head.failed).filter((name) => basePassed.has(name));
+  const newlyFailing = headFailed.filter((name) => basePassed.has(name));
   if (newlyFailing.length > 0)
     return { status: "red", reason: newlyFailingReason(newlyFailing, baseSha) };
   // Failing on BOTH sides is the mainline's own and is not charged. A name neither passed nor
   // failed at base was not observed there, so the base cannot vouch for it and this run owns it.
   const baseSeen = new Set([...base.failed, ...base.passed]);
-  const unexplained = dedupe(head.failed).filter((name) => !baseSeen.has(name));
+  const unexplained = headFailed.filter((name) => !baseSeen.has(name));
   if (unexplained.length > 0)
     return {
       status: "red",
@@ -258,14 +270,18 @@ export async function buildProjectRoster(opts: {
       reason: `the base versions of these test files fail against the head code: ${clip(baseVersions.redFiles)} — the run changed the contract its own tests were written against, and Part A has no acceptance path for that`,
     };
 
+  const recordedFiles = preexisting.slice(0, ROSTER_FILES_CAP);
   const roster: ProjectRosterRecord = {
     baseSha,
-    files: preexisting.slice(0, ROSTER_FILES_CAP),
+    files: recordedFiles,
     passed: dedupe(head.passed).slice(0, ROSTER_NAMES_CAP),
-    failed: dedupe(head.failed).slice(0, ROSTER_NAMES_CAP),
+    failed: headFailed.slice(0, ROSTER_NAMES_CAP),
     baseFailed: dedupe(base.failed).slice(0, ROSTER_NAMES_CAP),
     total: head.passed.length + head.failed.length,
     baseTotal: base.passed.length + base.failed.length,
+    // Carried only when the cap actually cut the list: a record naming every file has none to disclose.
+    ...(preexisting.length > recordedFiles.length ? { fileCount: preexisting.length } : {}),
+    ...(skipBase ? { baseSkipped: true } : {}),
     // The files whose BASE version was run against the head code and PASSED. A run that edited a
     // pre-existing test and whose base version fails never gets this far: it returned `red` above,
     // so land can never see a roster that recorded a failing base version as a green.
@@ -291,9 +307,17 @@ function newlyFailingReason(names: readonly string[], baseSha: string): string {
   return `project tests that passed at the base commit now fail: ${clip(names)} — these were green at ${baseSha.slice(0, 12)}, so this run broke them`;
 }
 
-/** A recorded name cut to what the step log's reader accepts. */
+/**
+ * A recorded name cut to what the step log's reader accepts.
+ *
+ * The roster bounds a name by {@link PREEXISTING_NAME_MAX_CHARS}, one shorter than the record reader's
+ * own ceiling (`ROSTER_PATH_MAX_CHARS`): a roster name is a test name, so it is bounded by the rule for
+ * names, while the wider ceiling stays the reader's backstop for any roster it is handed.
+ */
 function boundedName(name: string): string {
-  return name.length > ROSTER_PATH_MAX_CHARS ? name.slice(0, ROSTER_PATH_MAX_CHARS) : name;
+  return name.length > PREEXISTING_NAME_MAX_CHARS
+    ? name.slice(0, PREEXISTING_NAME_MAX_CHARS)
+    : name;
 }
 
 /** Order-preserving dedupe and bound; stream order is what an operator re-running the suite sees. */
