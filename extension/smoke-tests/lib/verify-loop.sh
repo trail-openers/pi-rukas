@@ -77,8 +77,8 @@
 # Tests run concurrently, at most PI_ENSEMBLE_VERIFY_TEST_JOBS at once
 # (${VERIFY_TEST_JOBS:-2}; 1 restores the strictly sequential pre-#1365
 # shape). With --jobs-from-host and no ambient setting, the count comes from
-# host_job_count (4 on a host reporting 8 or more CPUs, 2 otherwise) instead of
-# the shipped default of 2 — see that function for why getconf, and why an
+# host_job_count — max(2, min(16, cpus − 2)) — instead of
+# the shipped default of 2; see that function for why getconf, and why an
 # unparseable CPU count sizes down rather than up. The count is clamped to the
 # number of collected tests and to 16, with a warning naming the clamp — more
 # than 16 concurrent `bun` processes compete with each other for CPU and the
