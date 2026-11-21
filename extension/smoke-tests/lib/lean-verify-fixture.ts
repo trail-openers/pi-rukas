@@ -140,6 +140,8 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     opts.extraFrozen ?? {},
     rosterFiles,
     opts.baseProjectTestFails === true,
+    opts.roster?.baseMissingDeps !== undefined,
+    opts.roster?.baseMissingDeps,
   );
 
   const wt = f.wt;

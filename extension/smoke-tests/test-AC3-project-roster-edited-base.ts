@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
- * #2428 AC3 — every pre-existing test file the run EDITED has its BASE version run against the head
- * code, and a base version that passed at base and fails there makes land refuse.
+ * #2428 AC3 / #2410 R5 — every pre-existing test file the run EDITED has its BASE version run against
+ * the head code, and land refuses only when one of those base versions is NEWLY FAILING.
  *
  * Bench cell 2 is the whole reason: the build edits an existing test's expectation, `verify` runs the
  * edited copy and passes, and the hidden run restores the original and fails. A gate that only ever
@@ -9,8 +9,16 @@
  * roster is what closes it — the file's base bytes, materialised and run against the head code, with
  * the project's own `verify.test` template.
  *
- * The land half is asserted through `landEarned` rather than a comment: a roster that recorded a
- * failing base version must never be the record a merge is licensed on.
+ * R5 is the refusal's CONDITION, and it is narrower than "the run touched a test": land refuses a
+ * roster with at least one test and NO newly failing edited-file base version. An edited file whose
+ * base version still passes is the honest case — the run rewrote a test and the old contract still
+ * held — so it must LAND, with `editedFiles` kept as the record of what was put through that. Refusing
+ * land on any non-empty `editedFiles` would refuse every legitimate test edit, which is Part B's
+ * subject, not Part A's.
+ *
+ * The land half is asserted through `landEarned` rather than a comment, because the gate reads the
+ * RECORD: a roster that recorded a failing base version must never license a merge, and one that
+ * recorded only passing base versions must never be refused for the edit alone.
  */
 import { rmSync } from "node:fs";
 import type { ProjectRosterRecord } from "../src/lean/state-outcome-maps.ts";
@@ -37,9 +45,10 @@ function baseScript(red: boolean): string {
 }
 
 {
-  // The honest shape: the run edited a pre-existing test, its base version still passes against the
+  // R5's honest shape: the run edited a pre-existing test, its base version still passes against the
   // head code, and the record says which files were put through that. Without the record, "we ran the
-  // base versions" would be narration.
+  // base versions" would be narration — and without this case, the gate's refusal could (and did)
+  // refuse the mere fact of an edit rather than the newly failing base version R5 names.
   const r = await runVerify({
     issue: 2450,
     implement: true,
@@ -59,6 +68,41 @@ function baseScript(red: boolean): string {
   assert(
     r.threw === undefined || !/dirty/i.test(r.threw.message),
     `(edited green) the gate's own scratch bytes are never reported as a tier leaving the tree dirty (${(r.threw?.message ?? "").slice(0, 120)})`,
+  );
+  // THE REFUSAL THIS CASE EXISTS FOR (R5, AC3): the run edited a pre-existing test and its base
+  // version passed against the head code, so the merge gate has to let it through. The record says
+  // which files were put through that, so `editedFiles` is non-empty by design — a gate that refused
+  // land on a non-empty `editedFiles` refused every legitimate test edit, and an honest run had no
+  // path to `landed` at all.
+  const { engineFacts: editedFacts } = await import("../src/lean/engine-facts.ts");
+  const { createRun: editedCreateRun } = await import("../src/lean/state.ts");
+  assert(
+    Array.isArray(roster?.editedFiles) && roster.editedFiles.length > 0,
+    `(edited land) the green's record really does name an edited file, so the assertion below cannot pass on an empty list (${JSON.stringify(roster?.editedFiles)})`,
+  );
+  assert(
+    editedFacts.landEarned(
+      {
+        ...editedCreateRun({
+          issue: 2450,
+          version: "test",
+          models: {},
+          baseSha: r.baseSha ?? "0".repeat(40),
+          branch: "lean/issue-2450",
+        }),
+        state: "landed",
+        steps: [
+          {
+            key: "2450:verify:0",
+            state: "verify",
+            startedAt: 1,
+            outcome: { kind: "green", projectRoster: roster },
+          },
+          { key: "2450:ci:0", state: "ci", startedAt: 2, outcome: { kind: "green" } },
+        ],
+      } as unknown as LeanRun,
+    ) === true,
+    "(edited land) an edited file whose base version PASSED against the head code earns the land (R5 refuses only a newly failing base version)",
   );
 }
 
@@ -93,9 +137,46 @@ function baseScript(red: boolean): string {
 }
 
 {
+  // R5's refusal, at the STEP: the run edited a pre-existing test AND a pre-existing test that the
+  // base passed now fails at head. That combination cannot be a green — the roster is the arbiter for
+  // project tests, so the step goes `red` naming the test — and it is the record shape land must never
+  // license: an `editedFiles` entry standing beside a head failure says a base version was vouched
+  // for while the same suite was failing.
+  const r = await runVerify({
+    issue: 2454,
+    implement: true,
+    config: { fast: PASS_TIER },
+    roster: {
+      files: [FILE],
+      basePassed: [NAME],
+      headPassed: [],
+      headFailed: [NAME],
+      baseFailed: [],
+    },
+    editProjectTests: { [FILE]: "#!/bin/sh\nexit 0\n" },
+  });
+  const said = `${r.threw?.message ?? ""}${r.outcome?.reason ?? ""}`;
+  assert(
+    r.outcome?.kind === "red",
+    `(edited + newly failing) a base-passing test that head fails is red, not a green beside an edit (got ${r.outcome?.kind ?? "threw"})`,
+  );
+  assert(
+    said.includes(NAME),
+    `(edited + newly failing) the refusal names the test that was green at base (${said.slice(0, 160)})`,
+  );
+  assert(
+    r.outcome?.projectRoster === undefined,
+    "(edited + newly failing) the red carries no roster, so land has nothing to license itself on",
+  );
+}
+
+{
   // The land half (#2428 AC6 shared): a green whose roster records the edited files is what land
-  // reads. Ask landEarned about the two records directly, since a verify green that land then refused
-  // would be a different bug from one it accepted.
+  // reads. Ask landEarned about the records directly, since a verify green that land then refused
+  // would be a different bug from one it accepted. The refused record here is INVENTED — the step
+  // never writes an `editedFiles` entry beside a red base version, because it went `red` before it
+  // could — and reading the record anyway is what catches a resumed log that pairs a green with a
+  // roster the step would never have written.
   const { engineFacts } = await import("../src/lean/engine-facts.ts");
   const { createRun } = await import("../src/lean/state.ts");
   const green = await runVerify({
@@ -132,26 +213,46 @@ function baseScript(red: boolean): string {
       ],
     }) as unknown as LeanRun;
   const roster = green.outcome?.projectRoster as ProjectRosterRecord;
-  // The positive control has to be a roster with no edited files: this run DID edit one, so its own
-  // record is the refused shape and cannot also be the earned one. The rest of the fields are the
-  // step's real bytes, so the passing case passes on what the gate wrote rather than on a fixture's.
   assert(
     JSON.stringify(roster.editedFiles) === JSON.stringify([FILE]),
     `(land) the control's record names the file this run edited (${JSON.stringify(roster.editedFiles)})`,
   );
+  // The same record with the edited file's base version FAILING — the shape the step refuses to
+  // write, and the one R5 says land must refuse. Built by hand because the step cannot reach it: the
+  // gate went `red` at `runEditedBaseVersions` before any roster existed.
+  const forgedFailingBase: ProjectRosterRecord = {
+    ...roster,
+    editedFiles: [FILE],
+    failed: [...roster.failed, NAME],
+    total: roster.total + 1,
+    baseFailed: [...roster.baseFailed, NAME],
+    baseTotal: roster.baseTotal + 1,
+  };
   assert(
-    engineFacts.landEarned(runWith({ projectRoster: { ...roster, editedFiles: undefined } })) ===
-      true,
-    "(land) a green carrying a roster with no failing base version earns the land",
+    JSON.stringify(forgedFailingBase.editedFiles) === JSON.stringify([FILE]),
+    "(land) the forged record keeps the edited file the refusal is about",
+  );
+  assert(
+    engineFacts.landEarned(runWith({ projectRoster: roster })) === true,
+    "(land) a green whose edited file's base version passed earns the land (R5: no newly failing base version)",
+  );
+  assert(
+    engineFacts.landEarned(
+      runWith({ projectRoster: { ...roster, editedFiles: undefined } }),
+    ) === true,
+    "(land) a green carrying a roster with no edited files at all earns the land too",
   );
   assert(
     engineFacts.landEarned(runWith({})) === false,
     "(land) a green with NO roster is refused rather than defaulted to an empty one",
   );
   assert(
-    engineFacts.landEarned(runWith({ projectRoster: { ...roster, editedFiles: [FILE] } })) ===
-      false,
+    engineFacts.landEarned(runWith({ projectRoster: forgedFailingBase })) === false,
     "(land) a roster naming an edited file whose base version failed is refused",
+  );
+  assert(
+    /roster/i.test(engineFacts.landRefusal(runWith({ projectRoster: forgedFailingBase }))),
+    "(land) the refusal for that record names the roster, not a gate that reported green",
   );
   assert(
     engineFacts.landEarned(runWith({ projectRoster: { ...roster, total: 0 } })) === false,

@@ -35,11 +35,12 @@
  * and are materialised by `writeCaptured`, the same write path `specify`'s reset uses.
  */
 
-import { lstatSync, readFileSync } from "node:fs";
+import { lstatSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { isFullCommitSha } from "../commit-sha.ts";
 import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { linkShareableDeps } from "../worktree-provision.ts";
+import { SHAREABLE_DEPS } from "../worktree-dep-contract.ts";
 import { globMatches } from "./config-test-location.ts";
 import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
@@ -76,6 +77,63 @@ type ProjectRosterOutcome =
 /** Why a roster could not be built — prose for the hand-back, never a verdict. */
 function none(reason: string): ProjectRosterOutcome {
   return { status: "none", reason };
+}
+
+/**
+ * The dependencies the base commit tracks that `tree` does NOT have — the ones its suite could not
+ * have imported.
+ *
+ * Asked of the BASE COMMIT rather than of `expectedDepLocations`, and that choice is the whole rule:
+ * the provisioner decides what to link by looking at the SOURCE, so if the source has since gone it
+ * links nothing, expects nothing, and reports nothing — a base that cannot import a single module is
+ * then read as a base whose suite ran and failed on its merits, which is the excuse that turns a
+ * head-only regression green. The base commit is the one record of what the project's own tree held
+ * that no link can silently empty, so it is what the expectation is taken from. `statSync` follows the
+ * symlink provisioning made, so a link whose source has gone is undelivered; any read fault is
+ * "undelivered", the fail-closed direction — a tree this cannot look at is not a tree whose suite ran.
+ */
+async function undeliveredDeps(
+  exec: VerifyExec,
+  repoRoot: string,
+  baseSha: string,
+  tree: string,
+): Promise<string[]> {
+  if (!isFullCommitSha(baseSha)) return [];
+  const ran = await exec("git", {
+    argv: [
+      ...NO_HOOKS,
+      "--literal-pathspecs",
+      "ls-tree",
+      "-r",
+      "-z",
+      "--name-only",
+      "--end-of-options",
+      baseSha,
+      "--",
+      ...SHAREABLE_DEPS,
+    ],
+    cwd: repoRoot,
+    timeout: 30_000,
+    maxBuffer: 8 * 1024 * 1024,
+    env: verifyHostEnv(),
+  }).catch(() => undefined);
+  if (ran === undefined) return [];
+  // A directory is expected where the commit tracks a path under one of the shareable names; the
+  // recorded path's first segment is the dependency directory itself.
+  const expected = new Set<string>();
+  for (const entry of String(ran.stdout ?? "").split("\0")) {
+    const rel = entry.trim();
+    if (rel === "") continue;
+    const head = rel.split("/")[0] ?? "";
+    if ((SHAREABLE_DEPS as readonly string[]).includes(head)) expected.add(head);
+  }
+  return [...expected].filter((dep) => {
+    try {
+      return !statSync(path.join(tree, dep)).isDirectory();
+    } catch {
+      return true;
+    }
+  });
 }
 
 /**
@@ -199,7 +257,6 @@ async function runProjectSuiteAtBase(opts: {
         reason: `the base commit ${baseSha.slice(0, 12)} could not be checked out: ${(err as Error)?.message ?? String(err)}`,
       };
     }
-    await linkShareableDeps(exec, repoRoot, abs).catch(() => undefined);
     // A configured template with no `{report}` reports to a path this gate cannot predict; reading
     // the head tree's report as the base's is the one reading that would grade a green on bytes
     // from the wrong tree, so the base run is not run at all.
@@ -208,6 +265,29 @@ async function runProjectSuiteAtBase(opts: {
         ran: false,
         reason:
           "the roster command writes no report the base run can be asked for, so the base run's per-test verdicts cannot be read",
+      };
+    // A base run is only evidence about the project's suite if the suite could actually run, so the
+    // dependencies are verified HERE — before the command is asked, and after provisioning has had its
+    // turn. `linkShareableDeps` never throws and reports no problem for the shape that matters: it
+    // checks a candidate at its SOURCE, so a checkout whose dependency tree never landed is recorded as
+    // a success. A base that cannot import its own suite fails every test, and a head failure naming the
+    // same tests is then excused as "already failing at base" — a green graded on a run nobody watched.
+    // So the checkout is asked directly, in its own cwd, before it is believed: every dependency the
+    // repo carries at its root or in a package dir must be a directory here. A project with nothing to
+    // link has no expected locations, no problem, and is not this refusal.
+    const provisioned = await linkShareableDeps(exec, repoRoot, abs).catch(
+      (err: unknown) =>
+        ({
+          problem: `the provisioner itself failed: ${(err as Error)?.message ?? String(err)}`,
+        }) as const,
+    );
+    const undelivered = await undeliveredDeps(exec, repoRoot, baseSha, abs);
+    if (provisioned.problem !== undefined || undelivered.length > 0)
+      return {
+        ran: false,
+        reason: `the base checkout ${abs} never received the project's dependencies (${
+          provisioned.problem ?? `never arrived: ${clip(undelivered)}`
+        }), so its suite could not have run and no head failure may be excused against it`,
       };
     return await runProjectSuite(exec, { cwd: abs, ...run, timeoutMs, reportCwd: abs });
   } finally {

@@ -243,6 +243,14 @@ export interface VerifyOpts extends ProbeShapeOpts {
     /** Make the base report unreadable after a run that exited 0. */
     baseReportMissing?: boolean;
     /**
+     * Gitignore and create these dependency directories (`node_modules`, `.venv`, `vendor`) EMPTY at
+     * the base commit. The provisioner links them, verifies the link resolves to a non-empty directory,
+     * and reports that it does not — the failure shape a swallowed link leaves. The roster's gate must
+     * hand back naming the dependencies rather than let a base that cannot import its own suite excuse
+     * a head failure as already failing there.
+     */
+    baseMissingDeps?: string[];
+    /**
      * The names the HEAD run's report names, verbatim. Given, the stub writes that report itself
      * rather than running the configured command, because "this test passed at head" is a fact about
      * one tree's verdicts that no shared bytes can carry. Absent, the configured command really runs.
@@ -278,6 +286,13 @@ export interface VerifyOpts extends ProbeShapeOpts {
    * "what if the file as the mainline wrote it fails against the head code" — bench cell 2.
    */
   baseProjectTestFails?: boolean;
+  /**
+   * The roster's throwaway base checkout is made to lack these dependency directories (the fixture
+   * commits a real non-empty tree of each name at the base first, so there is something to lack).
+   * That is the state where provisioning never happened: the base suite cannot import, every test
+   * fails there, and a head failure naming the same tests is then excused as already failing at base.
+   */
+  baseMissingDeps?: string[];
   /**
    * The bytes to freeze as the run's acceptance test, for the case that fixes the
    * ACCEPTANCE half of the verdict rather than deriving it (`GREEN_TEST` and
