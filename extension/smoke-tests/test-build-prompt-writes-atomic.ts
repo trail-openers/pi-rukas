@@ -10,8 +10,8 @@
  * fix is in the writer: assemble into `<agent>.md.tmp-<pid>` beside the target
  * and `mv -f` onto it as the sole publish step.
  *
- * Two arms, both run against a PROMPTS_DIR this test owns and a copied module
- * tree, so neither disturbs the checkout's real dist/ or its sources:
+ * Three arms, all run against a PROMPTS_DIR this test owns and a copied module
+ * tree, so none disturbs the checkout's real dist/ or its sources:
  *
  * 1. **No gap.** Seed every agent prompt, run build.sh in the background while
  *    polling one of them at ~20 ms, and require ZERO missing observations. The
@@ -29,6 +29,11 @@
  *    capabilities function ran inside a command substitution where its
  *    `_track_temp` writes died with the subshell and its own `trap` had
  *    replaced the run-wide one.
+ * 3. **An abort inside the capabilities writer leaves nothing.** Arms 1 and 2
+ *    break the parent's module loop; this one breaks the writer itself, by
+ *    deleting an agent from the copied `agents.json` so the run dies before the
+ *    last prompt is reached. Nothing may be left in the output dir or in the
+ *    copied `agents-base/`, and the prompts already published stay byte-identical.
  */
 
 import { spawn } from "node:child_process";
@@ -50,9 +55,12 @@ import path from "node:path";
 
 const ROOT = path.resolve(import.meta.dirname, "..", "..");
 const BUILD = path.join(ROOT, "build.sh");
+// Sorted: build.sh visits the manifest list in sorted order, so the last entry
+// here is the last manifest the run builds (arm 3 relies on that).
 const AGENTS = readdirSync(path.join(ROOT, "manifests"))
   .filter((n) => n.endsWith(".manifest"))
-  .map((n) => n.replace(/\.manifest$/, ""));
+  .map((n) => n.replace(/\.manifest$/, ""))
+  .sort();
 const POLL_TARGET = "project-manager.md";
 
 let exit = 0;
@@ -213,17 +221,16 @@ try {
   }
 
   // --- Arm 3: an abort INSIDE the capabilities writer leaves nothing. -------
-  // Arms 1 and 2 abort in the parent's module loop, where the build never gets
-  // as far as writing a capabilities temp. This arm aborts in the writer itself,
-  // which is the only place the temp's ownership is decided: `target_tmp` is
-  // created inside a command substitution, so the writer cannot hand it to a
+  // Arms 1 and 2 abort in the parent's module loop. This arm aborts in the
+  // writer itself, which is the only place a temp's ownership is decided: the
+  // writer runs inside a command substitution, so it cannot hand a temp to a
   // parent array (the assignment dies with the subshell) and must not install a
   // trap of its own (only one EXIT trap exists, and the writer's would be the
-  // one that runs). The writer's temp is therefore named with the parent's `$$`
-  // and reclaimed by the parent's trap — which is what this arm measures.
+  // one that runs). Its capabilities temp is therefore named with the parent's
+  // `$$` and reclaimed by the parent's trap — which is what this arm measures.
   //
-  // The writer fails on an agent `agents.json` does not name: the first agent
-  // publishes, the second aborts, and no third agent is reached.
+  // The writer fails on an agent `agents.json` does not name: every agent
+  // before the doomed one publishes, the doomed one aborts the run.
   {
     const base = path.join(scratch, "tree-caps");
     const prompts = path.join(scratch, "caps-abort");

@@ -17,9 +17,7 @@ PROMPTS_DIR="${PROMPTS_DIR:-$BASE/dist/prompts}"
 # it makes to a parent array dies with that subshell, so a list built there
 # would be empty by the time the trap fires. `$$` is the parent's PID and
 # expands identically in the subshell, so names derived from it are removable
-# from here. Every temp name carries the suffix `-$$`; the trap needs no list.
-# A SIGKILLed build still leaves a temp behind (nothing can run at that point);
-# the next run clears it with the same pattern.
+# from here.
 
 get_config_filename() {
   case "$1" in
@@ -48,12 +46,14 @@ ENVIRONMENTS=("$ENV")
 
 # Installed here rather than at the top of the file because its body expands
 # ENVIRONMENTS, and under `set -u` an unset name would fail the trap itself.
+# A SIGKILLed build leaves one `.tmp-<pid>` behind: nothing runs at that point,
+# and the patterns below carry this run's `$$`, so no later run clears it — and
+# no reader's pattern matches it either.
 _cleanup_run_temps() {
   local env
   for env in "${ENVIRONMENTS[@]}"; do
     rm -f "$PROMPTS_DIR/$env"/*.tmp-"$$" 2>/dev/null || true
   done
-  rm -f "$BASE"/agents-base/*.tmp-"$$" 2>/dev/null || true
   rm -f "${TMPDIR:-/tmp}"/pi-rukas-caps.*."$$" 2>/dev/null || true
 }
 trap _cleanup_run_temps EXIT
@@ -108,18 +108,14 @@ generate_agent_capabilities() {
   # Create temporary file for generated content. This function sets no trap: a
   # `trap` here is inherited by every command substitution the parent makes
   # afterwards, and only one EXIT trap exists — so the parent's own publish
-  # temps would be cleaned by this call's pattern and never by the run's. Both
-  # temps are $$-scoped, so the parent's trap can reach them; this function
-  # removes them itself on the paths it can complete.
+  # temps would be cleaned by this call's pattern and never by the run's. The
+  # temp is $$-scoped, so the parent's trap can reach it; this function removes
+  # it itself on the paths it can complete.
   local temp_capabilities
   temp_capabilities=$(mktemp "${TMPDIR:-/tmp}/pi-rukas-caps.XXXXXX.$$") || {
     echo "ERROR: mktemp failed for $AGENT_NAME capabilities" >&2
     return 1
   }
-  # Created here, not merely named: the run's trap owns it from this point, so
-  # every later failure path in this function leaves nothing behind.
-  local target_tmp="${target_file}.tmp-$$"
-  : > "$target_tmp"
 
   # Generate header for new format
   if [[ -z "$AGENT_NAME" ]]; then
@@ -182,7 +178,7 @@ EOF
        "### \($display)\n**Tools:** \($tools)\n**MCP:** \($mcp_display)\n**Bash (\($bash_default)):** \($bash_allows)\n"
      ' "$config_file" >> "$temp_capabilities" || {
       echo "ERROR: Failed to parse config file with jq" >&2
-      rm -f "$temp_capabilities" "$target_tmp"
+      rm -f "$temp_capabilities"
       return 1
     }
   else
@@ -190,7 +186,7 @@ EOF
     # Validate agent exists in config before proceeding
     if ! jq -e ".agent[\"$AGENT_NAME\"]" "$config_file" > /dev/null 2>&1; then
       echo "ERROR: Agent '$AGENT_NAME' not found in config file $config_file" >&2
-      rm -f "$temp_capabilities" "$target_tmp"
+      rm -f "$temp_capabilities"
       return 1
     fi
     
@@ -278,7 +274,7 @@ EOF
        "**Tools:** \($tools)\n\n**MCP:** \($mcp_display)\n\n**Bash policy: `\($bash_default)`** — anything not on the list below resolves to `ask`. Stick to the allow-list.\n\n### Bash / search hygiene rules (READ FIRST)\n\n1. **To find code, call `mcp__codebase_memory__search_code`.** It IS the canonical tool for code discovery in this repository — indexed, sub-millisecond, structural. Use `mcp__codebase_memory__trace_path` for callers/callees, `mcp__codebase_memory__detect_changes` for diff blast radius, `mcp__codebase_memory__get_architecture` for the module map. `rg` is ONLY for regex over text files; `read` is ONLY for loading a known file path. These are not substitutes — defaulting to `rg` or `read` to discover what exists in the codebase is wrong.\n2. **Prefer codemode for verbose or batched commands** — use a codemode script for test suites, builds, or any command that would produce 50+ lines of output (the script runs the command, collects only the failure lines, and returns the digest — not the full transcript). For single short commands, a plain bash call is simpler.\n3. **Do NOT `cd <path> && <cmd>`.** You are already in the right working directory. To target a different dir use the tool flag: `git -C <path>`, `cargo --manifest-path <path>`, `npm --prefix <path>`.\n4. **Do NOT chain or pipe.** No `&&`, `|`, `;`, `>`, `<`, `$(…)`, backticks. Run each command as a separate tool call. To filter output: run the producer, read its result, then call the consumer with the extracted value.\n\n### Allow-listed bash patterns (grouped by category)\n\n\($bash_allow_block)\($bash_deny_block)\n"
      ' "$config_file" >> "$temp_capabilities" || {
        echo "ERROR: Failed to parse config file with jq for agent $AGENT_NAME" >&2
-      rm -f "$temp_capabilities" "$target_tmp"
+      rm -f "$temp_capabilities"
       return 1
     }
   fi
@@ -286,14 +282,14 @@ EOF
   # Validate jq output has more than just the header
   if (( $(wc -l < "$temp_capabilities") <= 2 )); then
     echo "ERROR: No agent capabilities found in config file" >&2
-    rm -f "$temp_capabilities" "$target_tmp"
+    rm -f "$temp_capabilities"
     return 1
   fi
 
 # Read the generated content and output to stdout for capture during prompt assembly
   local capabilities_content
   capabilities_content=$(cat "$temp_capabilities")
-  rm -f "$temp_capabilities" "$target_tmp"
+  rm -f "$temp_capabilities"
 
   # Verify jq output has more than just the header
   local line_count
