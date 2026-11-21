@@ -12,8 +12,25 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Issue #2425 (epic #2424 item 1b) — the offline smoke suite is 4-way sharded
+# across `smoke` jobs, and `quality-gate` is the single check the land gate and
+# publish-image.yml look at: it needs every shard and the static checks, so the
+# required check name and the workflow-run conclusion are what they were when
+# this was one job. The static checks (type-check, lint) are cheap and are NOT
+# sharded — they run once, in `static-checks`. The shards do NOT wait on them:
+# `smoke` has no `needs`, so the shards start beside the static checks instead
+# of behind them, and a static-check failure still fails the required check
+# because `quality-gate` needs both.
+#
+# Each shard builds the prompts itself (`Build per-role system prompts` below,
+# the same step `static-checks` runs). `dist/prompts/` is gitignored and is not
+# shared between jobs, so a shard whose runner had no build would read a `dist/`
+# that does not exist: the prompt gates would fail outright or fall back to
+# their source-file branch and report a pass they never measured. `jq` is
+# installed for the same reason here as in `static-checks` — build.sh needs it
+# and a shard, unlike that job, cannot borrow its dependency.
 jobs:
-  quality-gate:
+  static-checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -45,6 +62,9 @@ jobs:
         working-directory: extension
         run: bun install --frozen-lockfile
 
+      # `bunx` here is deliberate and is what keeps this file's entry in
+      # test-verify-cmd-no-bare-bunx.ts's EXEMPT_FILES alive: the runner always
+      # has the alias, unlike the driver's command tiers (#1414/#1118).
       - name: Type-check
         working-directory: extension
         run: bunx tsc --noEmit
@@ -53,9 +73,77 @@ jobs:
         working-directory: extension
         run: bun run check
 
+  smoke:
+    strategy:
+      # One shard's failure must not cancel its siblings: GitHub reports a
+      # cancelled job as a not-passing required check, which parks the cycle
+      # with no diagnosis of what actually broke.
+      fail-fast: false
+      matrix:
+        # The shard index — a 0-based position, which is what the split below
+        # answers (`(NR-1) % 4 == s` on the sorted list, i.e. index % 4). A shard
+        # that enumerated no files fails its own step, so a shard key that
+        # matches nothing can never read as a pass.
+        shard: [0, 1, 2, 3]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+
+      - name: Install jq (build.sh dependency)
+        run: |
+          if ! command -v jq >/dev/null; then sudo apt-get install -y jq; fi
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('extension/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Build per-role system prompts
+        run: bun run build
+
+      - name: Install extension deps
+        working-directory: extension
+        run: bun install --frozen-lockfile
+
       - name: Offline smoke tests
         working-directory: extension
         env:
           PI_ENSEMBLE_VERIFY_TEST_JOBS: "4"
+          # The shard index this job runs. The step's own NAME stays the bare
+          # "Offline smoke tests" that test-ci-verify-loop-jobs.ts scopes its
+          # env pin to: naming it per shard moves the step out from under the
+          # gate that proves the pool width is set, and a step-level env pin
+          # cannot be shared between differently-named steps.
+          SHARD: ${{ matrix.shard }}
         run: |
-          bash smoke-tests/lib/verify-loop.sh smoke-tests/test-*.ts
+          files=$(ls smoke-tests/test-*.ts | grep -v -- '-live[.]ts$' | LC_ALL=C sort | awk -v s="$SHARD" '(NR-1) % 4 == s')
+          [ -n "$files" ] || { echo "shard $SHARD enumerated no offline smoke tests — refusing to pass an empty shard" >&2; exit 1; }
+          echo "shard $SHARD: $(printf '%s\n' $files | wc -l) offline smoke test file(s)"
+          bash smoke-tests/lib/verify-loop.sh $files
+
+  # The required check. `if: always()` so it judges the shard results rather
+  # than being skipped with them; a skipped required check is not-passing to
+  # extension/src/work-driver-merge-evidence.ts, so skipping would park every
+  # cycle on a green board.
+  quality-gate:
+    needs: [static-checks, smoke]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every needed job must have succeeded
+        run: |
+          failed=""
+          for r in '${{ needs.static-checks.result }}' '${{ needs.smoke.result }}'; do
+            [ "$r" = "success" ] || failed="$failed $r"
+          done
+          if [ -n "$failed" ]; then
+            echo "quality-gate: needed job(s) did not succeed:$failed" >&2
+            exit 1
+          fi
+          echo "quality-gate: static checks and all 4 smoke shards succeeded"
