@@ -23,8 +23,10 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { HEADLESS_INPUTS } from "../src/headless/inputs.ts";
 import type { ProjectRosterRecord } from "../src/lean/state-outcome-maps.ts";
 import type { LeanRun } from "../src/lean/state.ts";
+import { buildDriverKnobMatcher } from "../src/work-driver-verify-cmd.ts";
 import { ROOTS, runVerify } from "./lib/lean-verify-fixture.ts";
 import { PASS_TIER } from "./lib/lean-verify-tiers.ts";
 
@@ -405,7 +407,12 @@ function baseScript(red: boolean): string {
     result.ok === true && runner !== undefined,
     `(scrubbed env) the base version really reached the project's runner (${JSON.stringify(result).slice(0, 110)})`,
   );
-  const leaked = Object.keys(runner?.env ?? {}).filter((k) => /^PI_ENSEMBLE_/.test(k));
+  // "Driver knob" is the production question, so it is the production matcher: the headless
+  // inventory behind `verifyChildEnv`. A prefix regex would also count the verify loop's own
+  // knobs, which that scrub deliberately passes through because the shell loop reads them
+  // inside the child — and CI names one (`PI_ENSEMBLE_VERIFY_TEST_JOBS`) in its smoke step.
+  const isDriverKnob = buildDriverKnobMatcher(HEADLESS_INPUTS);
+  const leaked = Object.keys(runner?.env ?? {}).filter(isDriverKnob);
   // `PATH` is the assertion that the env was SUPPLIED at all: a runner handed `undefined` would leak no
   // knob either, and passing on that would certify the very thing this case exists to check.
   assert(
