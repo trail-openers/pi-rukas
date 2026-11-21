@@ -1,0 +1,158 @@
+#!/usr/bin/env bun
+/**
+ * #2450 — the selector's tokenizer on nested templates.
+ *
+ * `skipTemplate` tracked `${…}` by brace depth alone, so a backtick nested
+ * inside an interpolation was read as the OUTER template's closing quote. The
+ * inner template's own closing `}` was then taken for an interpolation close,
+ * the depth went to −1 and `lexSource` returned `undefined`. Nine graph nodes
+ * in this repo are shaped that way — every `git rev-parse ${JSON.stringify
+ * (`${ref}^{tree}`)}` — and the selector treats an unlexable file as a reason
+ * to run the whole suite, so selection has been inert since the lexer landed.
+ *
+ * The lexer is the selector's single entry point (both consumers call only
+ * `lexSource`) and had no test of its own until this file: a defect in it
+ * could only be seen through the selection it disabled.
+ *
+ * Each case below is measured UNLEXABLE on the pre-fix `skipTemplate`, so a
+ * regression that restores the brace-depth-only walk fails here by name rather
+ * than silently turning the develop gate back into the full suite. The
+ * measured-passing cases are pinned in the same block: an interpolation
+ * holding an object literal or an arrow body already lexed, and a fix that
+ * breaks one of those is the worse failure (it would send a clean file to the
+ * full suite).
+ */
+import { lexSource, unplaceholder } from "../src/work-driver-verify-select-lex.ts";
+
+let exit = 0;
+const assert = (c: boolean, m: string) => {
+  if (c) console.log(`✓ ${m}`);
+  else {
+    console.error(`✗ ${m}`);
+    exit = 1;
+  }
+};
+
+/** Lex a snippet the way a source file would carry it. */
+const lex = (snippet: string) => lexSource(`const q = ${snippet};\n`);
+const lexes = (name: string, snippet: string, msg: string) =>
+  assert(lex(snippet) !== undefined, `${name}: ${msg}`);
+const refuses = (name: string, snippet: string, msg: string) =>
+  assert(lex(snippet) === undefined, `${name}: ${msg}`);
+
+// --- nested templates whose interpolation contains a brace ------------------
+// The exact shape at src/worktree-loss.ts:450 (`${fromRef}^{tree}`).
+lexes(
+  "nested brace in a nested interpolation",
+  "`a ${`${b}^{c}`} d`",
+  "`a ${`${b}^{c}`} d` lexes — the measured UNLEXABLE case that made nine graph nodes unlexable",
+);
+// The production site itself: an outer template holding JSON.stringify of a nested template.
+lexes(
+  "JSON.stringify of a nested template",
+  "`git rev-parse ${JSON.stringify(`${fromRef}^{tree}`)}`",
+  "the `git rev-parse ${JSON.stringify(`${ref}^{tree}`)}` shape lexes",
+);
+lexes(
+  "a nested interpolation holding an object literal",
+  "`a ${ {k:1} } b`",
+  "an interpolation holding an object literal still lexes (measured passing pre-fix — a regression here widens the fallback)",
+);
+lexes(
+  "a nested interpolation holding an arrow body",
+  "`a ${(() => { return 1 })()} b`",
+  "an interpolation holding an arrow body still lexes (measured passing pre-fix)",
+);
+lexes(
+  "a nested interpolation whose tail text holds a further }",
+  '`a ${ `${b}` + "}" } c`',
+  "a tail text carrying a further `}` lexes (measured passing pre-fix)",
+);
+lexes(
+  "three levels of nesting",
+  "`a ${`${`${b}`}^{c}`} d`",
+  "three levels of template nesting lex",
+);
+lexes(
+  "a nested template after a join in the same interpolation",
+  '`${a}${Array.from({ length: 8 }, (_, i) => `d${i + 1}/`).join("")}x`',
+  "a nested template built inside an array callback in an interpolation lexes",
+);
+lexes(
+  "an escaped backtick",
+  "`a \\` b ${c}`",
+  "an escaped backtick does not open a nested template",
+);
+lexes(
+  "a backtick inside a string inside an interpolation",
+  '`a ${ "x`y" } b`',
+  "a backtick inside a double-quoted string inside an interpolation does not open a template",
+);
+lexes(
+  "a closing brace inside a string inside an interpolation",
+  '`a ${ "}" } b`',
+  "a `}` inside a string inside an interpolation does not close the interpolation",
+);
+lexes(
+  "a comment inside an interpolation",
+  "`a ${ /* } ` inside a comment */ b } c`",
+  "a `}` and a backtick inside a comment in an interpolation are inert",
+);
+// The literals are still the text between the OUTERMOST template's quotes: the
+// placeholder stack has to pop back to the right level to report them.
+{
+  const r = lex("`a ${`${b}^{c}`} d`");
+  assert(
+    r?.templates.join("|") === "a ${`${b}^{c}`} d",
+    `the whole outer template is one literal, nested text included (got ${JSON.stringify(r?.templates)})`,
+  );
+  assert(
+    !r?.code.includes("${b}") && r?.code.includes("d") === true,
+    "the lexed code keeps the outer template as a placeholder token — its interior is not code",
+  );
+  // The nested template had to be lexed on the way to the outer one end, so its
+  // own placeholder lands inside the parent value. `unplaceholder` is what hands
+  // a consumer back the source text it expected to see.
+  assert(
+    unplaceholder(r?.templates[0] ?? "") === "a ${`${b}^{c}`} d",
+    `unplaceholder restores the source text of a template whose interior held a nested one (got ${JSON.stringify(r?.templates[0])})`,
+  );
+}
+// An unterminated nested template is still refused: the fix must not make the
+// lexer optimistic about a quote that never closes.
+refuses(
+  "an unterminated nested template",
+  "`a ${`${b} d`",
+  "a nested template that never closes is unlexable, not an early success",
+);
+refuses(
+  "an unterminated outer template",
+  "`a ${b} d",
+  "an outer template that never closes is unlexable",
+);
+refuses(
+  "an unterminated string",
+  '"unterminated',
+  "an unterminated string is unlexable",
+);
+
+// --- the placeholder collision guard ---------------------------------------
+// A source that already carries one of the private-use code points the lexer
+// substitutes for literals is refused, because a placeholder that was already
+// there would be read as one the lexer made. Untested until now: a false
+// positive here silently unlexes a clean file, which is the same inert-selector
+// failure this issue exists to kill.
+{
+  const clean = 'export const a = 1;\nconst s = "x";\n';
+  assert(lexSource(clean) !== undefined, "a clean file with no placeholder code point lexes");
+  assert(
+    lexSource(`${clean}const p = "\u{E000}";\n`) === undefined,
+    "a source carrying a placeholder code point is refused (a pre-existing placeholder would be misread as one the lexer made)",
+  );
+  assert(
+    lexSource(`${clean}// \u{E002}\n`) === undefined,
+    "the refusal covers every placeholder code point, not only the string marker",
+  );
+}
+
+process.exit(exit);

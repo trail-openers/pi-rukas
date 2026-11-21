@@ -110,6 +110,17 @@ export interface VerifyDevelopOutcomeOptions {
     record: import("./work-driver-verify-select-exec.ts").SelectedVerifyRecord,
   ) => void;
   /**
+   * #2450 — where the develop gate leaves the selector's verdict for this call, so
+   * the caller can record it. A sink rather than a return value because the plan
+   * that computes it is built inside `verifyDevelopOutcome`, five layers below the
+   * caller that owns the event log — the same reason `hangSink` and
+   * `provenanceDisclosures` are sinks. Filled at most once per gate call, and left
+   * untouched when selection was never attempted.
+   */
+  verifySelectSink?: {
+    verdict?: import("./workflow-state-events-verify-select.ts").VerifySelectArgs;
+  };
+  /**
    * The ONE channel on which the background base-health probe reaches the caller
    * (`work-driver-base-health-inflight.ts`), once per gate call — an empty report
    * when nothing was running for this cycle's key. The branch step starts that

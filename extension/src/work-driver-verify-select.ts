@@ -62,11 +62,15 @@ const NODE_RE = /^(?:src\/(?:[^/]+\/)*[^/]+\.ts|smoke-tests\/[^/]+\.ts)$/;
 /** A relative specifier: `./x`, `../x`, `.`, `..`. Bare package names are not edges. */
 const RELATIVE_SPEC_RE = /^\.\.?(?:\/|$)/;
 /** A static import or re-export on lexed code: the specifier is the string token that ends the statement head. */
-const STATIC_RE = /\b(?:import|export)\s+(?:type\s+)?(?:[\w*{}\s,$]+\s+from\s+)?(\d+)/g;
+/** A static import or re-export on lexed code: the specifier is the string token that ends the statement head. */
+const STATIC_RE = new RegExp(
+  "\\b(?:import|export)\\s+(?:type\\s+)?(?:[\\w*{}\\s,$]+\\s+from\\s+)?\\uE000(\\d+)\\uE000",
+  "g",
+);
 /** A call head `import(` or `require(`, on lexed code. */
 const CALL_RE = /\b(import|require)\s*\(/g;
 /** A string token as the first argument of a call, the rest of the call's head. */
-const LITERAL_ARG_RE = /^\s*(\d+)\s*\)/;
+const LITERAL_ARG_RE = new RegExp("^\\s*\\uE000(\\d+)\\uE000\\s*\\)");
 /** `src/x.ts` (optionally `extension/`- or `../`-prefixed) as a whole string value. */
 const PATH_LITERAL_RE = /^(?:\.{1,2}\/)*(?:extension\/)?(src\/[^\s]+?\.ts)$/;
 

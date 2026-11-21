@@ -50,6 +50,8 @@ import type {
   VerifyFlakeRecoveredEvent,
   VerifyFullStatusEvent,
 } from "./workflow-state-events-verify-flake.ts";
+// #2450 — the develop verify's test-selection verdict, in its own fragment.
+import type { VerifySelectEvent } from "./workflow-state-events-verify-select.ts";
 // #1415 — the verify-gate run pair lives in its own fragment: that one is chartered
 // for verify-TIER-OUTCOME events; these record that a run happened and what it cost.
 import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
@@ -440,6 +442,8 @@ export type WorkEvent =
   | ConsolidatedVerifySkippedEvent
   // #1415 — verify-started / verify-completed (`VerifyRunEventFragment`).
   | VerifyRunEventFragment
+  // #2450 — what the #1647 selector decided for this develop round, and why.
+  | VerifySelectEvent
   | ConsolidatedVerifyPreExistingEvent
   | WideningScanEvent
   | MemoryEventFragment

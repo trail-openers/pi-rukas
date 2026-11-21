@@ -22,6 +22,7 @@ import type { VerifyCommandRecord } from "./work-driver-verify-record.ts";
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
 import type { AlreadyVerifiedTree } from "./work-driver-verify-tree.ts";
 import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
+import type { VerifySelectArgs } from "./workflow-state-events-verify-select.ts";
 import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 
 export interface VerifyStepOutcomeResult {
@@ -104,6 +105,15 @@ export interface VerifyStepOutcomeResult {
   gateRecord?: DevelopGateRecord;
   /** #1647 — the selected develop run's flaky and baseline-red tests, folded into `pipelineState.verifyAttribution`. */
   selectedVerify?: SelectedVerifyRecord;
+  /**
+   * #2450 — what the test selector decided for this gate call: the selected run, or
+   * the whole-suite fallback and its reason. The caller appends it as a
+   * `verify-select` event through `recordDevelopGateEvents`. Absent when selection
+   * was never attempted — no `.pi/verify-select`, no `.pi/verify-cmd`, or the
+   * escape hatch — which is the same "selection not attempted" carve-out the
+   * operator-facing notes use.
+   */
+  verifySelect?: VerifySelectArgs;
   /**
    * The verdict the develop gate collected from the background base probe, when
    * it read one. The caller records it on `pipelineState.baseHealthProbe` through

@@ -57,8 +57,8 @@ const READ_CALL_RE =
   /\b(?:readFileSync|readdirSync|readFile|readdir|openSync|readSync|createReadStream|opendirSync)\s*\(|\bBun\.file\b/;
 /** A call to join or resolve on lexed code; the group is its argument list. */
 const JOIN_CALL_RE = /\b(?:join|resolve)\s*\(([^()]*)\)/g;
-/** A string token on lexed code (`<i>` or template `<i>`). */
-const TOKEN_RE = /[](\d+)[]/g;
+/** A string token on lexed code (a `<STR><i><STR>` or template `<TPL><i><TPL>` pair). */
+const TOKEN_RE = new RegExp("[\\uE000\\uE001](\\d+)[\\uE000\\uE001]", "g");
 /** A leading interpolation or relative prefix that does not change which repository path a literal names. */
 const LEADING_RE = /^(?:\$\{[^}]*\}\/|\.{1,2}\/|extension\/)*/;
 
