@@ -25,9 +25,12 @@
  *   4. No duplicate `file`. Two rows for one path is a list that does not mean what it
  *      says and would double-count the ratchet.
  *
- * The gate reads the shipped file with the loop's OWN parser (via bash, sourcing
- * lib/verify-timing.sh) rather than a second JSON reader, so the gate and the ceiling
- * cannot drift into exempting different sets of files (R4): one parser, two consumers.
+ * The gate reads the shipped file with the loop's OWN parser AND its OWN key
+ * normaliser (via bash, sourcing lib/verify-timing.sh) rather than a second JSON
+ * reader, so the gate and the ceiling cannot drift into exempting different sets of
+ * files (R4): one parser and one key, two consumers. Every entry is therefore asserted
+ * to equal `timing_key()` of the absolute path it names — the same normalisation the
+ * matcher applies to a row — so a normaliser change reddens this gate.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -49,22 +52,50 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-// The loop's own parser, run exactly as the ceiling runs it: source verify-timing.sh
-// and call `_timing_allowlist_entries`, which prints `secs<TAB>key` per record. This is
-// deliberately the SAME code path the ceiling uses, so the gate cannot pass a list the
-// ceiling would read differently (or fail to read at all — a malformed list exempts
-// nothing, which the fail-closed parser guarantees but this gate catches loudly).
-function loopEntries(): { seconds: string; key: string }[] {
-  const script = `. "${VERIFY_TIMING}" >/dev/null 2>&1; _timing_allowlist_entries`;
-  const r = spawnSync("bash", ["-c", script], { cwd: REPO, encoding: "utf8" });
-  const rows: { seconds: string; key: string }[] = [];
+// The loop's own parser and its own key normaliser, run exactly as the ceiling runs
+// them: source verify-timing.sh, then call `_timing_allowlist_entries` (which prints
+// `secs<TAB>file` per record) and `timing_key` (which reduces a path to the key the
+// ceiling matches on). This is deliberately the SAME code path the ceiling uses, so
+// the gate cannot pass a list the ceiling would read differently — and, for the
+// existence check below, cannot certify a path spelling the ceiling would never
+// match. A normaliser that stopped stripping, or that stripped too little, reddens
+// here rather than quietly exempting a whole directory (R4: one key, two consumers).
+// The gate and the ceiling read the committed list through the SAME code: sourcing
+// verify-timing.sh runs its real parse, so the ceiling's own knob gate and file test
+// decide whether a read happens at all. `loopRows` therefore asks for the read the way
+// a run with the ratchet on asks for it — a 1-second ceiling (the file's slowest row is
+// 190 s, so every row is over it and every row reaches the list) and `TIMING_ALLOWLIST`
+// pointed at the committed file. Neither knob reaches the shipped state: both are read
+// from the environment here, and this gate spawns its own bash.
+const CEILING_FOR_READ = "1";
+const sourceLoop = (call: string): string =>
+  // The knobs are named AFTER the source: verify-timing.sh parses them at source
+  // time, so an assignment before the `.` would be read and then overwritten by the
+  // file's own default — the ceiling would come back 0 and the read would be refused.
+  `. "${VERIFY_TIMING}" >/dev/null 2>&1; VERIFY_TIMING_CEILING_S=${CEILING_FOR_READ}; TIMING_ALLOWLIST="${ALLOWLIST}"; ${call}`;
+
+function loopRows(): { seconds: string; file: string }[] {
+  const r = spawnSync("bash", ["-c", sourceLoop("_timing_allowlist_entries")], {
+    cwd: REPO,
+    encoding: "utf8",
+  });
+  const rows: { seconds: string; file: string }[] = [];
   for (const line of (r.stdout ?? "").split("\n")) {
     if (!line.trim()) continue;
     const tab = line.indexOf("\t");
     if (tab < 0) continue;
-    rows.push({ seconds: line.slice(0, tab), key: line.slice(tab + 1) });
+    rows.push({ seconds: line.slice(0, tab), file: line.slice(tab + 1) });
   }
   return rows;
+}
+
+/** The loop's ONE key function, applied to a path the way the ceiling applies it to
+ * every row it checks. Batched into one bash call: each spawn is a fork, and this
+ * gate judges every entry in the list. */
+function loopKey(...paths: string[]): string[] {
+  const script = paths.map((p) => `timing_key ${JSON.stringify(p)}`).join("; ");
+  const r = spawnSync("bash", ["-c", sourceLoop(script)], { cwd: REPO, encoding: "utf8" });
+  return (r.stdout ?? "").split("\n").slice(0, paths.length);
 }
 
 // The raw file, for the fields the loop parser does not surface (measured date, count,
@@ -105,13 +136,41 @@ assert(
   `entry count ${entries.length} does not exceed the shrink-only baseline ${baseline} — growing the list is the regression the ceiling exists to stop (removing entries is allowed)`,
 );
 
-// ---- 3. Every file names a real file, relative to extension/.
-const missing = entries
+// ---- 3. Every file names a real file, and does so AS A KEY THE CEILING PRODUCES.
+//
+// Two checks, not one. `existsSync(path.join(REPO, e.file))` alone certifies that a
+// string happens to be a path under `extension/`; it says nothing about whether that
+// spelling is the one `timing_key` ever emits, and the ceiling matches on the key, not
+// on the raw field. An entry the existence check likes and the matcher never produces
+// is a row that exempts nothing while still counting toward the shrink-only total —
+// dead weight the gate was written to refuse. So the raw field is compared against
+// `timing_key` of the absolute path it must name: absolute in, relative key out, the
+// same normalisation the matcher applies to a row (R4).
+const rawFields = entries
   .filter((e) => typeof e.file === "string" && e.file.length > 0)
-  .filter((e) => !existsSync(path.join(REPO, e.file)));
+  .map((e) => e.file);
+const missing = rawFields.filter((f) => !existsSync(path.join(REPO, f)));
 assert(
   missing.length === 0,
-  `every entry names a real file; missing: ${JSON.stringify(missing.map((m) => m.file))}`,
+  `every entry names a real file; missing: ${JSON.stringify(missing)}`,
+);
+
+const loopRows_ = loopRows();
+const rawFromLoop = loopRows_.map((r) => r.file);
+// One bash call, one fork per row pair: each field must equal the key of its own
+// absolute path, and the count must match the file.
+const keys = loopKey(...rawFields.map((f) => path.join(REPO, f)));
+const notNormalised = rawFields.filter((f, i) => keys[i] !== f);
+assert(
+  notNormalised.length === 0,
+  `every entry's "file" is already the loop's own key — it equals timing_key() of the absolute path (R4); offending: ${JSON.stringify(
+    notNormalised.map((f, i) => ({ file: f, key: keys[i] })),
+  )}`,
+);
+assert(
+  rawFromLoop.length === rawFields.length &&
+    rawFromLoop.every((f, i) => f === rawFields[i]),
+  `the loop's parser reads every entry the file declares, in order and one row each (${rawFromLoop.length} vs ${rawFields.length})`,
 );
 
 // ---- 4. Every entry carries a positive integer seconds and a dated measurement.
@@ -143,20 +202,20 @@ assert(
   `no file appears twice in the allow-list; duplicates: ${JSON.stringify([...dupes])}`,
 );
 
-// ---- 6. The loop's parser agrees with the raw file: same paths, same count. A list the
-// ceiling's parser cannot read exempts NOTHING, so the two must agree or the gate would
-// certify a list that silently stops exempting the very files it names.
-const loopRows = loopEntries();
-const loopKeys = new Set(loopRows.map((r) => r.key));
-const rawKeys = new Set(entries.map((e) => e.file));
+// ---- 6. The parser and the raw file agree on the KEY SET, both directions. A list
+// the ceiling's parser cannot read exempts NOTHING, so the two must agree or the gate
+// would certify a list that silently stops exempting the very files it names.
+const loopKeys = new Set(loopRows_.map((r) => r.file));
+const rawKeys = new Set(rawFields);
 const loopMissingRaw = [...rawKeys].filter((k) => !loopKeys.has(k));
+const loopExtraRaw = [...loopKeys].filter((k) => !rawKeys.has(k));
 assert(
   loopMissingRaw.length === 0,
   `the loop's parser reads every entry the file declares; the ceiling would NOT exempt: ${JSON.stringify(loopMissingRaw)}`,
 );
 assert(
-  loopRows.length === entries.length,
-  `the loop's parser yields one row per entry (${loopRows.length} vs ${entries.length})`,
+  loopExtraRaw.length === 0,
+  `the loop's parser invents no entry the file does not declare: ${JSON.stringify(loopExtraRaw)}`,
 );
 
 process.exit(exit);

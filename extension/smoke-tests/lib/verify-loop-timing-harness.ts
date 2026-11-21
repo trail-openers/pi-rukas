@@ -6,7 +6,7 @@
  * assertions and what they pin live with the cases in test-verify-loop-timing.ts.
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
@@ -88,12 +88,23 @@ export function env(
   // The loop's environment is the host's plus the knobs this file pins. Replacing it
   // wholesale (rather than building a minimal PATH/HOME) is what keeps `bun` findable
   // — the pool starts every job with `bun run`, and a stripped PATH makes the whole
-  // run exit 127. The two knobs that decide what these cases measure are pinned
-  // against an inherited CI value, the same hygiene test-verify-loop-jobs-from-host.ts
-  // pins from the other side.
+  // run exit 127. The knobs that decide what these cases measure are pinned against
+  // an inherited CI value, the same hygiene test-verify-loop-jobs-from-host.ts pins
+  // from the other side. The ceiling and its allow-list path are pinned here too:
+  // both reach the loop from the environment, so an operator or gate that exports
+  // `PI_ENSEMBLE_VERIFY_TIMING_CEILING_S` would silently arm the ceiling inside a
+  // test that never asked for it (and point it at a list of someone else's choosing),
+  // turning an unrelated verdict change into a puzzling red.
   const base: Record<string, string | undefined> = {
     PI_ENSEMBLE_VERIFY_TEST_JOBS: "1",
     PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "60",
+    PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "",
+    TIMING_ALLOWLIST: "",
+    // The two seams that make the allow-list read observable (the probe file) and
+    // simulate an off-path read (eager). Both must be absent in every case that does
+    // not name them, exactly as the ceiling itself must be.
+    TIMING_ALLOWLIST_PROBE: "",
+    TIMING_ALLOWLIST_EAGER: "",
   };
   return { ...process.env, ...base, ...extra };
 }
@@ -211,10 +222,28 @@ export function timingOutput(stdout: string): string[] {
   );
 }
 
+/** Allocate a unique scratch directory in one non-racing step. The suite runs
+ * tests in parallel, so `mkdtempSync`'s random suffix alone is not enough to make
+ * a retried allocation safe across sibling processes. */
+export function mkdtempDirSync(prefix: string): string {
+  let n = 0;
+  while (n++ < 64) {
+    const p = `${prefix}${Math.random().toString(36).slice(2, 10)}`;
+    try {
+      mkdirSync(p, { recursive: false, mode: 0o700 });
+      return p;
+    } catch {
+      /* taken by a sibling run; try another name */
+    }
+  }
+  harnessFatal(`could not allocate a scratch dir from ${prefix}`);
+  return `${prefix}unreachable`;
+}
+
 /**
- * Write a temporary allow-list naming `file` (repo-relative-from-`extension/`, the
- * key the loop matches on — R4) and return the value to hand the loop as
- * `TIMING_ALLOWLIST`.
+ * Write a temporary allow-list naming the given `file` keys (paths relative to
+ * `extension/`, the key the loop matches on — R4) and return the value to hand the
+ * loop as `TIMING_ALLOWLIST`.
  *
  * The list is a temp file rather than an edit to the committed one: the suite runs
  * tests in parallel, so a mutation with a `finally` is a race another test could
@@ -222,7 +251,7 @@ export function timingOutput(stdout: string): string[] {
  * reads its path from the environment for exactly this reason.
  */
 export function writeAllowlist(entries: { file: string; seconds: number }[]): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "pi-ens-allowlist-"));
+  const dir = mkdtempDirSync(path.join(tmpdir(), "pi-ens-allowlist-"));
   const p = path.join(dir, "timing-allowlist.json");
   try {
     writeFileSync(p, JSON.stringify({ entries }, null, 2));

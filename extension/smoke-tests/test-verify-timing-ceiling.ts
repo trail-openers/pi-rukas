@@ -23,7 +23,16 @@
  *   6. AC2 — with the knob unset, stdout and stderr are byte-identical to the
  *      explicit-off run; and with the ceiling on but nothing over it, stdout is
  *      byte-identical to the run without the knob, so the feature stays additive
- *      for every file in bounds.
+ *      for every file in bounds. AND the off path does no exemption work at all:
+ *      `_timing_allowlist_entries` forks `awk` per read, so a knob-off run that
+ *      still consulted the list paid ~2 forks per timing row (~3,154 forks /
+ *      ~21 s on this repo's own suite) for a feature nobody asked for. The probe
+ *      file in case 7g is the witness — the shipped parser appends one line to
+ *      `TIMING_ALLOWLIST_PROBE` per fork, so the off run must leave it empty.
+ *   7. R5's other half — the out-of-band report file (`VERIFY_REPORT_FILE`) counts
+ *      the offender too: `FAILED-TESTS: 1` and the path, for a run whose tests all
+ *      passed. The stdout summary and the report file are two readers of the same
+ *      `names` array and the driver reads only the file.
  *
  * Durations are a busy-wait at 4× the bound, not a timer: per-file times swing
  * about ±50% with pool neighbours and host load (the same file measured 99 s and
@@ -41,9 +50,11 @@ import {
   HANG,
   HEADER_RE,
   PASS,
+  REPO,
   TIME_RE,
   TOTAL_RE,
   ceilingLines,
+  mkdtempDirSync,
   removeAllowlist,
   removeGenerated,
   runLoop,
@@ -52,6 +63,9 @@ import {
   writeAllowlist,
   writeGenerated,
 } from "./lib/verify-loop-timing-harness.ts";
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -209,6 +223,76 @@ function assert(cond: boolean, msg: string): void {
     `case 7e: 0 is off without a warning (status ${zero.status}, stderr ${JSON.stringify(zero.stderr.slice(0, 200))})`,
   );
 
+  // --- AC2, off-path cost: with the knob unset the loop must read the allow-list
+  // ZERO times. The parser forks `awk` on every read, so an implementation that
+  // asked the list before consulting the knob cost ~2 forks per timing row —
+  // ~3,154 forks, ~21 s, on a feature that was asked for nothing. The probe file
+  // is appended to by the very statement that forks, so "empty file" is the
+  // evidence that the off path never reached the list at all.
+  const probeDir = mkdtempDirSync(path.join(tmpdir(), "pi-2449-offprobe-"));
+  const probe = path.join(probeDir, "probe.log");
+  const offProbe = runLoop([PASS, CEILING_OVER], {
+    FIXTURE_CEILING_MS: "8000",
+    TIMING_ALLOWLIST_PROBE: probe,
+  });
+  let probeBytes = 0;
+  try {
+    probeBytes = statSync(probe).size;
+  } catch {
+    probeBytes = 0; // absent file = not one byte written, which is the pass state
+  }
+  try {
+    rmSync(probeDir, { recursive: true, force: true });
+  } catch {
+    /* a leftover scratch dir is reaped with TMPDIR */
+  }
+  assert(
+    offProbe.status === 0 && probeBytes === 0,
+    `case 7g: with the knob unset no allow-list read runs — the probe holds ${probeBytes} byte(s), exit ${offProbe.status} (the off path forks nothing: AC2 / R2)`,
+  );
+
+  // The same assertion observed RED, which is the only evidence that the green above
+  // is a measurement and not a vacuity. `TIMING_ALLOWLIST_EAGER=1` forces the
+  // ceiling's parse to a bound where the operator named none, so a run that asked for
+  // nothing still walks the record and consults the list — the exact cost 7g exists to
+  // stop. Two knobs must be named because the off path is a CHAIN of gates and eager
+  // forces only the first: a slow passing file (so a row exists whose time is over the
+  // forced bound, where the harness' own 60 s watchdog bound is not) and a temp list
+  // (so the read has a real file to read; forcing the fork must never be able to
+  // invent an exemption, and it cannot — the list still has to name the path).
+  const canaryDir = mkdtempDirSync(path.join(tmpdir(), "pi-2449-eager-"));
+  const canaryProbe = path.join(canaryDir, "probe.log");
+  // Its OWN list, naming both fixtures. `writeAllowlist` — not the committed file —
+  // because the harness pins `TIMING_ALLOWLIST` off, so a canary that left it alone
+  // would fork nothing for the wrong reason (no list to read), not because the off
+  // path is idle. Naming both rows keeps the run green at the forced 1 s bound, so the
+  // only thing this assertion measures is whether the list was consulted.
+  const canaryList = writeAllowlist([
+    { file: "smoke-tests/fixtures/verify-loop/allpass-a.ts", seconds: 9 },
+    { file: "smoke-tests/fixtures/verify-loop/fixture-ceiling-over.ts", seconds: 9 },
+  ]);
+  const eager = runLoop([PASS, CEILING_OVER], {
+    FIXTURE_CEILING_MS: "8000",
+    TIMING_ALLOWLIST: canaryList,
+    TIMING_ALLOWLIST_PROBE: canaryProbe,
+    TIMING_ALLOWLIST_EAGER: "1",
+  });
+  let eagerBytes = -1;
+  try {
+    eagerBytes = statSync(canaryProbe).size;
+  } catch {
+    eagerBytes = -1; // no probe file at all = the canary did not fire, which fails below
+  }
+  try {
+    rmSync(canaryDir, { recursive: true, force: true });
+  } catch {
+    /* a leftover scratch dir is reaped with TMPDIR */
+  }
+  assert(
+    eagerBytes > 0 && eager.status === 0,
+    `case 7g canary: an off path that DOES read the list is caught — with the ceiling forced where none was asked for, the probe holds ${eagerBytes} byte(s) and the run is still green at ${eager.status} (a green 7g without this line would be vacuous)`,
+  );
+
   // --- AC2: with the knob unset, behaviour is unchanged — the offender's own file
   // name never appears on either channel and no CEILING line is printed. Comparing
   // two SEPARATE busy-wait processes for byte-identity is not this contract: the
@@ -287,6 +371,62 @@ function assert(cond: boolean, msg: string): void {
   } finally {
     removeGenerated(A);
   }
+}
+
+// ------------------------- Case 9: R5's other half — the out-of-band report file
+
+{
+  // R5 says an offender is a NAMED failure, and the driver does not read stdout:
+  // it reads the report file the loop writes when `VERIFY_REPORT_FILE` names a
+  // path the driver pre-created (#1404), whose `FAILED-TESTS:` count is built from
+  // the same `names` array the stdout summary is. test-verify-loop.ts pins that
+  // channel for REAL failures only, so nothing pinned it for a ceiling offender: a
+  // change that stopped joining offenders to `names` would keep the stdout summary
+  // green and hand the driver `FAILED-TESTS: 0` on an exit-1 run — the exact shape
+  // the driver treats as unattributable. Both halves are asserted on a run whose
+  // tests all PASSED, so the only failure in the report is the clock.
+  //
+  // The path is ABSOLUTE, which also pins R4's key normalisation on this channel:
+  // the loop records the caller's spelling verbatim, so the report carries an
+  // absolute path while the offender reaches `names` only after `timing_key` has
+  // reduced it to the list's key. A matcher that compared the raw string would
+  // exempt nothing here and this assertion would go red.
+  const dir = mkdtempDirSync(path.join(tmpdir(), "pi-2449-report-"));
+  const report = path.join(dir, "report.txt");
+  // The writer refuses anything but a regular file the caller created (a symlink
+  // would make it an arbitrary-file writer), so the case pre-creates the path —
+  // the state the driver's `O_EXCL` creates before it spawns the loop.
+  writeFileSync(report, "");
+  const ceiling = runLoop([PASS, path.resolve(REPO, CEILING_OVER)], {
+    PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "2",
+    FIXTURE_CEILING_MS: "8000",
+    VERIFY_REPORT_FILE: report,
+  });
+  let body = "";
+  try {
+    body = existsSync(report) ? readFileSync(report, "utf8") : "";
+  } catch {
+    // Unreadable is the same answer as absent for these assertions: the driver
+    // treats an unreadable report as unattributable, so the case must fail here.
+    body = "";
+  }
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    /* a leftover scratch dir is reaped with TMPDIR */
+  }
+  assert(
+    ceiling.status === 1,
+    `case 9: the ceiling-only run exits 1 (got ${ceiling.status})`,
+  );
+  assert(
+    body.endsWith("FAILED-TESTS: 1\n") && body.includes(path.basename(CEILING_OVER)),
+    `case 9: the out-of-band report names the offender and counts it — FAILED-TESTS: 1 (R5; got: ${JSON.stringify(body)})`,
+  );
+  assert(
+    !body.includes(path.basename(PASS)),
+    `case 9: the passing file is NOT in the report — only the clock failed (got: ${JSON.stringify(body)})`,
+  );
 }
 
 process.exit(exit);
