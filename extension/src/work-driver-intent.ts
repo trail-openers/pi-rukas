@@ -104,6 +104,8 @@ export interface SpecEvidence {
 
 export interface NormalisedSpec {
   intent: string;
+  /** The resolver's PR title: a complete phrase, kept only when it fits (work-title.ts). */
+  title?: string;
   deliverables: SpecDeliverable[];
   acceptanceCriteria: string[];
   outOfScope: string[];
@@ -176,8 +178,7 @@ function sliceSubsection(text: string, name: string): string | undefined {
  * four spec fields (deliverables, acceptanceCriteria, evidence, openQuestions),
  * so a numbered spec parsed to an empty spec on every one of them. It could not
  * even self-rescue through #397's "a complete spec refutes underspecified"
- * path, because that reads the same empty fields. One measured cycle parked twice this
- * way while its own resolver rationale said the intent was clear.
+ * path, because that reads the same empty fields.
  */
 function bullets(section: string | undefined): string[] {
   if (!section) return [];
@@ -212,10 +213,12 @@ export function parseNormalisedSpec(text: string): NormalisedSpec | undefined {
   const parkReason = PARK_REASONS.find((r) => r === rawReason);
 
   const intent = (sliceSubsection(section, "Intent") ?? "").trim().split("\n")[0] ?? "";
+  const title = (sliceSubsection(section, "Title") ?? "").trim().split("\n")[0]?.trim();
   const rationale = (sliceMarkdownSection(text, "Rationale") ?? "").trim().slice(0, 1200);
 
   return {
     intent,
+    ...(title ? { title } : {}),
     deliverables: parseDeliverables(sliceSubsection(section, "Deliverables")),
     acceptanceCriteria: bullets(sliceSubsection(section, "Acceptance criteria")),
     outOfScope: bullets(sliceSubsection(section, "Out of scope")),

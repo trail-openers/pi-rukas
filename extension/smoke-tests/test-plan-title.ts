@@ -1,16 +1,13 @@
 #!/usr/bin/env bun
 /**
- * #858 — the plan-title contract (moved from test-plan-gap-parser.ts along
- * the 500-line seam) plus the new invariants that file let it ship broken:
+ * The plan-title contract (#858, #1773):
  *
- *   - a short descriptor that fits the 72-char TOTAL budget renders
- *     verbatim after the conventional type prefix (unchanged behaviour),
- *   - a 300-char descriptor yields a title ≤ 72 chars TOTAL (prefix
- *     included), with no "…", ending on a word (the mid-sentence ellipsis
- *     cut — the live defect on #836-#849 — is the regression this pins),
- *   - the degenerate no-boundary case: a single token longer than the budget
- *     is hard-cut WITHOUT an ellipsis (the ellipsis ban must not silently
- *     re-introduce itself in the fallback path).
+ *   - a descriptor that fits renders verbatim after the type prefix,
+ *   - a long one is never cut to the budget: the summary is the caller's
+ *     `title`, else the descriptor's first sentence, whole,
+ *   - a summary that already opens with the prefix carries it once,
+ *   - the only cut is the forge's own 256-char limit, on a word, no ellipsis,
+ *   - start_plan_driver asks once for a title that does not fit (plan-title-ask.ts).
  *
  * Also carries the D4 operator-typed-field precedence block (moved from
  * test-plan-gap-parser.ts along the same seam).
@@ -22,6 +19,7 @@ import {
   parseOperatorDirectives,
   renderPriorContext,
 } from "../src/plan-draft.ts";
+import { planTitleAsk } from "../src/plan-title-ask.ts";
 import { planTitle } from "../src/plan-types.ts";
 
 let exit = 0;
@@ -46,21 +44,45 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
-// #858: a 300-char descriptor must yield a title ≤ 72 chars TOTAL (including
-// the type prefix), no trailing "…", a conventional prefix, and an ending on
-// a word.
+// #1773: a long descriptor is never cut to the budget. With no `title` the
+// summary is the descriptor's FIRST SENTENCE, whole; a caller-written title is
+// used as given.
 {
-  const long =
-    "add a start_plan_driver tool for the plan pipeline in extension; it should gate issue creation behind a compiled seam with a dryRun confirmation and per-phase timings plus structured gap-gate verdicts, discriminated filing failures, and a residual-disclosure union disclosed in the filed body and the operator-visible cap message of the result.";
-  assert(long.length >= 300, `fixture is a 300+ char descriptor (${long.length})`);
-  const t = planTitle(long, "feature");
+  const d =
+    "Make report_workstream accept a planner's call when one workstream is malformed. Today one bad row refuses the whole call, and every other workstream is lost with it.";
+  const t = planTitle(d, "bug");
   assert(
-    t.length <= 72,
-    `#858: a 300-char descriptor yields a title ≤ 72 chars TOTAL (${t.length}): ${t}`,
+    t === "Bug: Make report_workstream accept a planner's call when one workstream is malformed",
+    `#1773: the first sentence is the summary, whole (got ${JSON.stringify(t)})`,
   );
-  assert(!t.includes("…"), "#858: no ellipsis anywhere in the derived title");
-  assert(t.startsWith("feat: "), "#858: the conventional type prefix is present");
-  assert(/[a-z0-9]$/.test(t), `#858: the title ends on a word (got ${JSON.stringify(t)})`);
+  // #1744's filed title stopped at "when one": the same descriptor shape now ends on its last word.
+  const issue1744 =
+    "report_workstream refuses a planner's whole call when one workstream row fails validation, so every valid workstream in the call is lost";
+  const t1744 = planTitle(issue1744, "bug");
+  assert(
+    t1744 === `Bug: ${issue1744}`,
+    `#1773: #1744's descriptor files whole, not stopped at "when one" (got ${JSON.stringify(t1744)})`,
+  );
+  const given = planTitle(d, "bug", "Accept a planner's call when one workstream is malformed");
+  assert(
+    given === "Bug: Accept a planner's call when one workstream is malformed",
+    `#1773: a caller-written title is used as given (got ${JSON.stringify(given)})`,
+  );
+  assert(!t.includes("…") && !given.includes("…"), "#1773: no ellipsis in any title");
+}
+
+// #1773: a descriptor that already carries the type prefix gets it once.
+{
+  const t = planTitle("EPIC: Quality-gated releases", "epic");
+  assert(
+    t === "EPIC: Quality-gated releases",
+    `#1773: no doubled EPIC prefix (got ${JSON.stringify(t)})`,
+  );
+  const g = planTitle("descriptor", "bug", "Bug: the parser drops a row");
+  assert(
+    g === "Bug: the parser drops a row",
+    `#1773: a title with the prefix gets it once (got ${JSON.stringify(g)})`,
+  );
 }
 
 // #858 review: the dangling-fragment strip is ONE-PASS — a descriptor that
@@ -86,15 +108,40 @@ function assert(cond: boolean, msg: string) {
   );
 }
 
-// #858: the degenerate no-boundary case — a single token longer than the
-// budget is hard-cut WITHOUT an ellipsis (the primary path's ellipsis ban
-// must not silently re-introduce itself here).
+// #1773: the one cut left is the forge's own 256-character limit, which the
+// forge would refuse; it lands on a word, keeps the prefix and adds no ellipsis.
 {
-  const token = `src/${"x".repeat(70)}.ts`;
-  const t = planTitle(token, "bug");
-  assert(t.length <= 72, `#858: single-token descriptor hard-cut to ≤ 72 (${t.length})`);
-  assert(t.startsWith("Bug: "), "#858: single-token title keeps the type prefix");
-  assert(!t.includes("…"), "#858: the hard cut carries NO ellipsis");
+  const t = planTitle(`${"word ".repeat(80)}end`, "bug");
+  assert(t.length <= 256, `#1773: a title over the forge limit fits it (${t.length})`);
+  assert(
+    t.startsWith("Bug: ") && t.endsWith("word"),
+    "#1773: the forge-limit cut keeps the prefix and a whole word",
+  );
+  assert(!t.includes("…"), "#1773: the forge-limit cut carries NO ellipsis");
+}
+
+// #1773: the tool asks ONCE per descriptor for a given title that does not
+// fit, then files whatever the next call carries, whole. No title → no ask.
+{
+  const d = "Make the plan driver careful about titles.";
+  const long = `Make the plan driver ${"really ".repeat(12)}careful about titles`;
+  const first = planTitleAsk(d, "feature", long);
+  assert(
+    first?.includes("at most 72 characters") === true,
+    `#1773: an over-budget title is asked for (${first})`,
+  );
+  assert(
+    planTitleAsk(d, "feature", long) === undefined,
+    "#1773: the second call for the descriptor is not asked again",
+  );
+  assert(
+    planTitleAsk(`${long}.`, "feature", undefined) === undefined,
+    "#1773: a call with no title is never asked",
+  );
+  assert(
+    planTitleAsk("Another descriptor.", "feature", "Keep plan titles whole") === undefined,
+    "#1773: a fitting title passes first time",
+  );
 }
 
 // D4: operator-supplied typed fields take precedence over specialist output.

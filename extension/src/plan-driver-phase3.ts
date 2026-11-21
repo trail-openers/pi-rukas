@@ -26,6 +26,7 @@ import { trace } from "./trace.ts";
 export interface Phase3Args {
   type: PlanType;
   descriptor: string;
+  title?: string;
   findings: AngleFindings[];
   inventoryContext: { source: string; fact: string }[];
   directives: OperatorDirectives;
@@ -113,6 +114,7 @@ export function phase3Draft(args: Phase3Args): Phase3Outcome {
         [],
         undefined,
         b,
+        args.title,
       ),
     // #1377 + #1883: both after-the-fitter appends (the provenance marker and
     // the spec block) are reserved before drafting runs. The block's reservation
@@ -125,7 +127,7 @@ export function phase3Draft(args: Phase3Args): Phase3Outcome {
     return {
       halt: haltResult({
         type: args.type,
-        title: planTitle(args.descriptor, args.type),
+        title: planTitle(args.descriptor, args.type, args.title),
         spec: `(spec not rendered — the drafted body is ${fitted.size} chars even after compaction; the forge caps issue bodies at ${FORGE_BODY_MAX})\n\nPer-section sizes: ${fitted.breakdown}\n\nTrim the dominant section's source (usually the context param) and re-run start_plan_driver.`,
         priorContext: args.priorContext,
         failure: {

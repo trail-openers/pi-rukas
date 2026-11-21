@@ -38,6 +38,7 @@ import type { WorkEvent } from "./workflow-state-events.ts";
  */
 export interface PipelineStateNormalisedSpec {
   intent: string;
+  title?: string;
   deliverables: Array<{
     id: string;
     description: string;
@@ -294,13 +295,20 @@ export function hasTldrSection(body: string): boolean {
   return /^\s*##\s+TL;?DR\b/im.test(body);
 }
 
+/** The sentences of a text, each kept whole and ending in its own mark (a full stop when it had none). */
+function sentencesOf(text: string): string[] {
+  return text
+    .trim()
+    .split(/(?<=[.!?])\s+/)
+    .filter((t) => t !== "")
+    .map((t) => (/[.!?]$/.test(t) ? t : `${t}.`));
+}
+
 /**
- * #1006 — derive a short plain-language TL;DR from the normalised spec.
- *
- * Source: driver-side deterministic derivation (no LLM dispatch).
- *   - First sentence of `spec.intent` (the one-sentence "what this does")
- *   - The first deliverable description (the most important change)
- *   - Both are clipped to keep the total ≤ 400 chars.
+ * #1006 — a short plain-language TL;DR from the normalised spec: the intent's
+ * sentences, then the first deliverable's, at most three in all and 400
+ * characters. Whole sentences are dropped to fit, never cut, so the first
+ * sentence always stands (whatever its length) and nothing gains a `…`.
  *
  * Returns `""` when `spec` is absent, has no intent, or has no deliverables
  * (the module's established empty-string contract: an empty section is
@@ -309,26 +317,13 @@ export function hasTldrSection(body: string): boolean {
  */
 export function tldrSectionOf(spec: PipelineStateNormalisedSpec | undefined): string {
   if (!spec || !spec.intent || spec.intent.trim() === "") return "";
-  const intent = spec.intent.trim();
-  // First sentence (up to the first period followed by whitespace or end).
-  const firstSentence = intent.match(/^(.+?)(?:\.(?:\s|$)|\s*\.{2,})/)?.[1]?.trim();
-  const lead = (firstSentence && firstSentence.length > 10 ? firstSentence : intent).trim();
-  const deliverables = spec.deliverables.filter((d) => d.description?.trim());
-  if (deliverables.length === 0) return "";
-  const desc = (deliverables[0]?.description ?? "").trim();
-  // Build the text, capped at 400 chars total.
-  const cap = 400;
-  let text = lead;
-  if (text.length > cap) text = `${text.slice(0, cap - 1)}\u2026`;
-  else {
-    if (desc.length > 0) {
-      const joined = `${text} ${desc}`;
-      if (joined.length <= cap) {
-        text = joined;
-      } else {
-        text = `${text.slice(0, Math.max(0, cap - 1))}\u2026`;
-      }
-    }
+  const desc = spec.deliverables.find((d) => d.description?.trim())?.description ?? "";
+  if (desc === "") return "";
+  const [first, ...rest] = [...sentencesOf(spec.intent), ...sentencesOf(desc)];
+  let text = first ?? "";
+  for (const s of rest.slice(0, 2)) {
+    if (text.length + 1 + s.length > 400) break;
+    text = `${text} ${s}`;
   }
   return `${TLDR_HEADING}\n\n${text}`;
 }

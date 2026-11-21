@@ -41,6 +41,8 @@ import {
 } from "./work-driver-plan.ts";
 import { inlineExplorePrompt } from "./work-driver-prompts-early.ts";
 import { scratchDir } from "./work-driver-workspace.ts";
+import { exploreTitleAsk } from "./work-title-ask.ts";
+import { settleSpecTitle } from "./work-title.ts";
 import {
   type WorkState,
   appendEvent,
@@ -259,6 +261,7 @@ export async function runExplore(
   // retries.
   if (first.reply === undefined) return next;
   let responseText = first.reply.text ?? "";
+  let transcriptPath = first.reply.transcriptPath;
   // One read per reply: the retry decision and the routing below both use it.
   let resolved = useIntent ? await resolveExploreSpec(ctx, responseText) : undefined;
   let retried = false;
@@ -284,6 +287,7 @@ export async function runExplore(
     next = second.state;
     if (second.reply === undefined) return next;
     responseText = second.reply.text ?? "";
+    transcriptPath = second.reply.transcriptPath;
     resolved = useIntent ? await resolveExploreSpec(ctx, responseText) : undefined;
     retried = true;
   }
@@ -325,7 +329,7 @@ export async function runExplore(
       });
     }
     // #1351 — an `already-implemented` park is checked against the mainline first.
-    const finalSpec = resolved
+    const finalised = resolved
       ? finaliseSpecVerdict(
           await groundAlreadyImplemented(
             resolved.spec,
@@ -336,6 +340,12 @@ export async function runExplore(
           primarySettled.value.stdout,
         )
       : undefined;
+    // A spec that proceeds names the PR: its title is checked here, re-asked once on the
+    // explore session when it does not fit, and dropped when the answer still does not.
+    const finalSpec =
+      finalised?.verdict === "park" || finalised === undefined
+        ? finalised
+        : await settleSpecTitle(finalised, exploreTitleAsk(transcriptPath, ctx.repoRoot));
     if (resolved !== undefined && finalSpec !== undefined) {
       next = {
         ...next,

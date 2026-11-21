@@ -78,10 +78,10 @@ registerPlanTool(fakePi);
   // #1856: `sourceIssue` joins the schema (optional) after reviewedDigest, so the
   // pre-#1856 order stays a prefix of it.
   // #1854: `targetRepository` joins AFTER provenance — provenance was last, so the
-  // whole pre-#1854 order (and every prefix of it) still holds.
+  // whole pre-#1854 order (and every prefix of it) still holds. #1773: `title` joins last.
   assert(
     props.join(",") ===
-      "descriptor,type,context,dryRun,reviewedDigest,sourceIssue,labels,targetRepository,provenance",
+      "descriptor,type,context,dryRun,reviewedDigest,sourceIssue,labels,targetRepository,provenance,title",
     `exact TypeBox schema: ${props.join(", ")}`,
   );
   const typeUnion = (t?.parameters.properties?.type as { anyOf?: Array<{ const?: string }> })
@@ -240,16 +240,21 @@ setPlanDispatch(((pi: unknown, spec: { role: string; prompt: string }) => {
 // ------------------------------------------- #858: title, dedup, vipune
 
 {
-  // #858 e2e: a long descriptor's dry-run title is ≤ 72 chars TOTAL, ends
-  // without "…", and starts with the conventional type prefix.
+  // #858/#1773 e2e: a long descriptor's dry-run title is the caller's `title`,
+  // whole, after the type prefix; without one it is never cut to the budget.
   const longDesc =
     "add a start_plan_driver tool for the plan pipeline in extension; it should gate issue creation behind a compiled seam with a dryRun confirmation and per-phase timings plus structured gap-gate verdicts, discriminated filing failures, and a residual-disclosure union disclosed in the filed body and the operator-visible cap message of the result.";
-  const { details, text } = await invokePlanTool(tools, { descriptor: longDesc, dryRun: true });
+  const { details, text } = await invokePlanTool(tools, {
+    descriptor: longDesc,
+    title: "Add a start_plan_driver tool for the plan pipeline",
+    dryRun: true,
+  });
   const title = (details.title as string) ?? "";
-  assert(title.length > 0, "#858 title: the dry-run result carries a title");
-  assert(title.length <= 72, `#858 title: ≤ 72 chars TOTAL (got ${title.length}): ${title}`);
+  assert(
+    title === "feat: Add a start_plan_driver tool for the plan pipeline",
+    `#1773 title: the caller's title, whole, after the prefix (got ${title})`,
+  );
   assert(!title.includes("…"), "#858 title: no ellipsis in the filed title");
-  assert(title.startsWith("feat: "), `#858 title: conventional type prefix (got ${title})`);
   void text;
 }
 

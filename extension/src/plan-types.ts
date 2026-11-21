@@ -207,6 +207,8 @@ export interface PlanResult {
 
 export interface PlanDriverInput {
   descriptor: string;
+  /** The caller's issue title summary, filed whole (plan-title-ask.ts checks its length). */
+  title?: string;
   type?: PlanType;
   context?: string;
   dryRun?: boolean;
@@ -280,63 +282,32 @@ const TITLE_PREFIX: Record<PlanType, string> = {
   spike: "research: ",
 };
 
-/**
- * The dangling-fragment words stripped from the end of a cut summary — a
- * cut landing mid-clause would otherwise end the title on a conjunction or
- * article ("… and it also"). Checked as whole trailing words, so a title
- * that legitimately ends "with" ("with the plan pipeline") is untouched.
- */
-/** The total title budget, prefix INCLUDED (#858). */
-export const TOTAL_TITLE_BUDGET = 72;
-
-const TRAILING_FRAGMENT_RE = /\s+(?:and|or|with|to|the|a|an|of|for|in|on|at|by)$/i;
+/** The forge's own title limit (GitHub: 256). The one length a title is ever cut to. */
+const FORGE_TITLE_LIMIT = 256;
 
 /**
- * Cut the descriptor's FIRST clause to `budget` chars (summary budget,
- * prefix excluded). Cut order: trailing punctuation is stripped first, then
- * the clause is shortened to the FIRST sentence end (`.`, `?`, `!`), or to
- * the first ` — ` / `; ` / `: ` separator if there is no sentence end, then
- * — while it still exceeds the budget — back to the last word (or hyphen)
- * boundary within the budget. NEVER an ellipsis (the mid-sentence "…" tail
- * is the defect this replaces); a single token longer than the budget is
- * hard-cut without one. After the cut, trailing punctuation and dangling
- * conjunction fragments are stripped as a ONE-PASS cut (checked as whole
- * trailing words, so a summary that legitimately ends "with the plan
- * pipeline" is untouched).
+ * The filed issue title: the type prefix and a complete summary, never cut to
+ * the budget. The summary is the caller's `title` when it gave one (plan-tool.ts
+ * checks the length and asks once more), else the descriptor's first sentence,
+ * whole. A summary that already opens with the prefix carries it once. Only a
+ * title over the forge's own limit, which the forge would refuse, is cut there.
  */
-function titleSummary(d: string, budget: number): string {
-  let s = d.replace(/[,;:)]+[)\]]*$/g, "").trim();
-  for (const re of [/[.?!]\s+/u, / — /u, /; /u, /: /u]) {
-    const idx = s.search(re);
-    if (idx >= 0) {
-      s = s.slice(0, idx);
-      break;
-    }
-  }
-  while (s.length > budget) {
-    const cut = s.slice(0, budget);
-    const lastBoundary = Math.max(cut.lastIndexOf(" "), cut.lastIndexOf("-"));
-    if (lastBoundary < 1) {
-      s = cut; // single token longer than the budget: hard cut, no ellipsis
-      break;
-    }
-    s = s.slice(0, lastBoundary);
-  }
-  s = s.replace(/[,;:)]+[)\]]*$/g, "").trim();
-  if (TRAILING_FRAGMENT_RE.test(s)) s = s.replace(TRAILING_FRAGMENT_RE, "").trim();
-  return s;
-}
-
-/**
- * `#858`: a conventional title whose summary is a COMPLETE first clause of
- * the descriptor — never a mid-sentence prefix cut, never a "…" tail. The
- * 72-char budget is TOTAL including the type prefix; a descriptor that
- * already fits renders verbatim.
- */
-export function planTitle(descriptor: string, type: PlanType): string {
-  const d = descriptor.trim().replace(/\s+/g, " ");
+export function planTitle(descriptor: string, type: PlanType, title?: string): string {
   const prefix = TITLE_PREFIX[type] ?? "";
-  const budget = TOTAL_TITLE_BUDGET - prefix.length;
-  const summary = d.length <= budget ? d : titleSummary(d, budget);
-  return `${prefix}${summary}`;
+  const given = title?.trim().replace(/\s+/g, " ");
+  let summary =
+    given ||
+    (
+      descriptor
+        .trim()
+        .replace(/\s+/g, " ")
+        .split(/(?<=[.!?])\s+/)[0] ?? ""
+    ).replace(/\.$/, "");
+  const own = prefix.trim().toLowerCase();
+  while (own !== "" && summary.toLowerCase().startsWith(own))
+    summary = summary.slice(own.length).trim();
+  const full = `${prefix}${summary}`;
+  if (full.length <= FORGE_TITLE_LIMIT) return full;
+  const cut = full.slice(0, FORGE_TITLE_LIMIT);
+  return cut.slice(0, Math.max(cut.lastIndexOf(" "), prefix.length + 1)).trim();
 }

@@ -908,6 +908,14 @@ A **green can also carry a row** worth reading. A claim that names no directory 
 
 **Now:** both failure signals route identically — back to `develop` within the retry budget, then to handoff at the cap.
 
+### A `/work` PR title or a `/plan` issue title is longer than expected, or has no `type(scope):` prefix
+
+**Symptom:** a PR or filed issue title runs past 72 characters, or a `/work` PR on a repository with plain commit subjects carries no `fix(work):`-style prefix.
+
+**Cause:** by design. A title is never cut: a cut title stops mid-sentence and says nothing about the change. The `/work` title is the spec's own `### Title` (at most 72 characters, re-asked once on the explore session when longer), else the whole issue title. A `/plan` title is the caller's `title` (asked for once when it does not fit), else the descriptor's first sentence, whole. The prefix follows the target repository: it is added only when most of the last 20 non-merge subjects at the base commit are conventional.
+
+**Fix:** to force the prefix either way, set `PI_ENSEMBLE_CONVENTIONAL_COMMITS=1` or `0` ([configuration](configuration.md)). For a shorter `/plan` title, pass `title` to `start_plan_driver`.
+
 ### `/work` refuses a PR number at commit-pr
 
 The gate now requires the PR to be **open** and to have this cycle's branch as its head. Previously it only checked that `gh pr view <N>` did not error, which proved a PR with that number exists — not that it belongs to this cycle. If you see this, the ops reply's `pr:` marker named a PR from a different branch, or one that is already closed or merged. Check `gh pr list --head <branch>`.

@@ -162,6 +162,7 @@ async function runPipelineOn(
     return needsClarificationHalt({
       type,
       descriptor,
+      title: input.title,
       timings: finishTimings(),
       questions: pre.questions,
     });
@@ -258,6 +259,7 @@ async function runPipelineOn(
     return duplicateRiskHalt({
       type,
       descriptor,
+      title: input.title,
       rationale: duplicateRisk.rationale,
       priorContext,
       failedAngles,
@@ -269,6 +271,7 @@ async function runPipelineOn(
   const allFailed = allAnglesFailedHalt({
     type,
     descriptor,
+    title: input.title,
     findings,
     priorContext,
     failedAngles,
@@ -288,6 +291,7 @@ async function runPipelineOn(
   const phase3 = phase3Draft({
     type,
     descriptor,
+    title: input.title,
     findings,
     inventoryContext,
     directives,
@@ -351,6 +355,7 @@ async function runPipelineOn(
       ...(signal ? { signal } : {}),
       type,
       descriptor,
+      title: input.title,
       getBody: () => body,
       setTitleBody: (t, b) => {
         title = t;
