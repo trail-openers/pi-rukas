@@ -28,7 +28,7 @@ import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
 import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.ts";
 import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
-import { leanBuildIssueProseEnabled, leanIssueProseEnabled } from "../../src/lean/issue-prose.ts";
+import { leanBuildIssueProseEnabled } from "../../src/lean/issue-prose.ts";
 import { leanPreflightProbeContainEnabled } from "../../src/lean/preflight-probe-switch.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
@@ -175,9 +175,6 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_HANDOFF_POST_RETRY", handoffPostRetryEnabled],
   ["PI_ENSEMBLE_INTENT", intentResolutionEnabled],
   ["PI_ENSEMBLE_INTENT_CRITICALITY", intentCriticalityEnabled],
-  // #2171 — the oracle seat's issue-prose section. The reader is `v !== "0"`,
-  // so the gate's LIVE loop (env deleted) pins "unset means on".
-  ["PI_ENSEMBLE_LEAN_ISSUE_PROSE", leanIssueProseEnabled],
   // #2228 — the builder seat's issue-prose section. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE", leanBuildIssueProseEnabled],

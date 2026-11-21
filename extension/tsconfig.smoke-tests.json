@@ -264,7 +264,6 @@
     "smoke-tests/test-lean-challenge-handlers.ts",
     "smoke-tests/test-lean-challenge-issue-prose.ts",
     "smoke-tests/test-lean-issue-prose-prompt.ts",
-    "smoke-tests/test-lean-issue-prose-switch.ts",
     "smoke-tests/test-lean-budgets.ts",
     "smoke-tests/test-lean-specify-retry.ts",
     "smoke-tests/test-lean-specify-retry-split.ts",

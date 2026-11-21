@@ -36,12 +36,7 @@ const PROSE_BODY = SPEC_BODY_WITH_PROSE;
 // can put it in the brief, and its position pins that it landed INSIDE the section
 // rather than echoed somewhere else in it.
 
-await withEnv(
-  {
-    PI_ENSEMBLE_LEAN_ISSUE_PROSE: undefined,
-    PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: undefined,
-  },
-  async () => {
+await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: undefined }, async () => {
     const r = await runBuild({
       issue: 2228,
       specBody: PROSE_BODY,

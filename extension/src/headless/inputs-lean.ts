@@ -20,8 +20,8 @@ import { type HostInput, flag, input } from "./entry.ts";
 /** The lean switches, in the list's order. */
 export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // #2228 — show the BUILDER the issue prose its frozen tests were written from.
-  // `0` takes the section out of the build prompt only; `LEAN_ISSUE_PROSE=0`
-  // also takes it out, since one renderer serves all three seats.
+  // `0` takes the section out of the build prompt only. The oracle seats have no
+  // switch: one renderer serves all three and the section ships on.
   // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_BUILD_ISSUE_PROSE", true),
   // A review fixer whose last turn ended at the model's output-token limit with no edit made is
@@ -42,10 +42,6 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // `leanHandbackNetGitEnabled` in lean/handback-net-git-switch.ts; the push's argv is
   // not in scope — its `--atomic` and its unforced lease-bound refspec ship with the rule.
   flag("LEAN_HANDBACK_NET_GIT", true),
-  // #2171 — show the specify/challenge adversary the issue prose its frozen
-  // tests were written from. 0 takes the section back out of both prompts.
-  // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.
-  flag("LEAN_ISSUE_PROSE", true),
   // #2202 — containment for the probe's parent directory: `"0"` skips the realpath
   // check that the folder the write goes into lies inside `realpath(worktree)`, so a
   // base-committed `verify.testDir` that is really a symlink out of the checkout

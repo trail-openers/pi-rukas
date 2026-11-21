@@ -76,9 +76,8 @@ const build = (issueBody?: string) =>
     ...(issueBody === undefined ? {} : { issueBody }),
   });
 
-/** Every switch pinned ON — the state the acceptance criteria describe. */
+/** The builder's switch pinned ON — the state the acceptance criteria describe. */
 const ON = {
-  PI_ENSEMBLE_LEAN_ISSUE_PROSE: undefined,
   PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: undefined,
 };
 
@@ -112,15 +111,14 @@ await withEnv(ON, async () => {
     "no \"undefined\" reaches the brief from the issue section",
   );
 
-  // The off arm is the pre-change render byte for byte: same spec, same options,
-  // no body — that is what the builder's brief looked like before #2228 threaded
-  // the body through the step (B3).
+  // The builder's own switch is the only one that reaches this seat: the oracle
+  // seats have no switch, so the off arm is the pre-#2228 render and nothing else
+  // moves (B3).
   const bare = build();
-  // Per-seat ISOLATION, which is the whole reason this knob is a second switch
-  // rather than a second value of the first: the builder consults it at its own
-  // call site, so the two oracle prompts keep rendering. An operator A/B-ing the
-  // builder's brief that also reverted `specify`/`challenge` would measure two
-  // variables and blame the delta on one.
+  // Per-seat ISOLATION, which is the whole reason this knob exists at all: the
+  // builder consults it at its own call site, so the two oracle prompts keep
+  // rendering. An operator A/B-ing the builder's brief that also reverted
+  // `specify`/`challenge` would measure two variables and blame the delta on one.
   await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: "0" }, async () => {
     const off = build(ISSUE_BODY);
     assert(
@@ -136,14 +134,6 @@ await withEnv(ON, async () => {
       oracleLead.startsWith(`${LEAN_ISSUE_HEADING}\n\n${LEAN_ISSUE_LEAD}\n\n`) &&
         oracleLead.includes(CONSTRAINT),
       "and the same environment leaves the ORACLE render untouched — the builder's switch reaches the builder's seat only",
-    );
-  });
-  // The shared switch gates the shared renderer, so it gates this seat too (B2).
-  await withEnv({ PI_ENSEMBLE_LEAN_ISSUE_PROSE: "0" }, async () => {
-    const off = build(ISSUE_BODY);
-    assert(
-      off === bare,
-      "PI_ENSEMBLE_LEAN_ISSUE_PROSE=0 also renders byte-identically — one renderer, both switches",
     );
   });
   assert(
