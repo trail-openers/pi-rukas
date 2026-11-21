@@ -15,8 +15,7 @@
  *   (c) a fixer that changes nothing -> CAUSE_NO_CHANGE, unchanged
  *   (d) a fixer that commits its own work -> unchanged
  *   (e) a fixer that edits a path matching a CONFIGURED `lean.protectedPaths` glob ->
- *       reverted like a built-in, named in the step reason, and absent from origin —
- *       and the same edit KEPT with `PI_ENSEMBLE_LEAN_PROTECTED_PATHS=0`
+ *       reverted like a built-in, named in the step reason, and absent from origin
  *   (f) a wave that reverted part of the fix AND integrated on an unpopulated submodule
  *       -> the reason carries BOTH disclosures, not the louder one alone
  *
@@ -30,7 +29,6 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { defaultConfig } from "../src/lean/config.ts";
 import { sha256 } from "../src/lean/specify-proof.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { put } from "./lib/lean-build-fixture.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
@@ -232,19 +230,19 @@ const blob = (repoRoot: string, ref: string, rel: string): string =>
   );
 }
 
-// ── (e) the CONFIGURED globs reach the fix fold too, and the switch takes them out ──
+// ── (e) the CONFIGURED globs reach the fix fold too ──
 //
 // `build`'s two arms have their own suite (`test-lean-protected-paths.ts`); this is
 // the third `normaliseBuild` caller. A project that names `angular.json` in
 // `.pi/work.json` means it in every fold: a fixer that edited it and had the edit
 // KEPT would put the very file the project protects onto the merged branch, with the
-// build step's rule never having been asked. The two arms below are the whole scope
-// claim of `PI_ENSEMBLE_LEAN_PROTECTED_PATHS` — configured globs in, built-ins and
-// everything else untouched — driven through the real step so the claim is about what
-// reaches origin, not about what a helper returned.
+// build step's rule never having been asked. The assertions below are the whole scope
+// claim — configured globs reverted, built-ins and everything else untouched — driven
+// through the real step so the claim is about what reaches origin, not about what a
+// helper returned.
 {
-  // The built-in edit is the control inside each arm: it must be reverted whatever
-  // the switch says, so an arm that reverted nothing could not pass both assertions.
+  // The built-in edit is the control: an arm that reverted nothing could not pass
+  // both assertions.
   const write = (wt: string) => {
     put(wt, "fix-uncommitted.ts", "export const fixed = true;\n");
     put(wt, "angular.json", '{ "scripts": { "lied": true } }\n');
@@ -253,7 +251,7 @@ const blob = (repoRoot: string, ref: string, rel: string): string =>
   };
   const GLOBS = ["angular.json", "theme/"];
 
-  const arm = async (switchOff: boolean) => {
+  const arm = async () => {
     const { repoRoot, baseSha } = makeRepo();
     const head = await setup({
       repoRoot,
@@ -273,7 +271,7 @@ const blob = (repoRoot: string, ref: string, rel: string): string =>
     };
   };
 
-  const on = await arm(false);
+  const on = await arm();
   assert(
     on.threw === undefined && on.outcome?.kind === "fixed",
     `(e) the wave completes with a configured path among the fixer's edits (${on.threw?.message ?? `kind ${String(on.outcome?.kind)}`})`,
@@ -294,29 +292,6 @@ const blob = (repoRoot: string, ref: string, rel: string): string =>
     `(e) and the step's own reason names every revert, configured and built-in alike (got ${on.outcome?.reason})`,
   );
 
-  // The off arm: the SAME config, the SAME fixer, the env the only difference. The
-  // configured paths survive and the built-in does not — which is the byte-identity
-  // claim of R5 read as behaviour rather than as a string comparison.
-  await withEnv({ PI_ENSEMBLE_LEAN_PROTECTED_PATHS: "0" }, async () => {
-    const off = await arm(true);
-    assert(
-      off.threw === undefined && off.outcome?.kind === "fixed",
-      `(e) with the switch off the wave still completes (${off.threw?.message ?? `kind ${String(off.outcome?.kind)}`})`,
-    );
-    assert(
-      off.files.includes("angular.json") && off.files.some((p) => p.startsWith("src/theme/")),
-      `(e) the configured paths are KEPT with the switch off — the pre-field fold (got ${JSON.stringify(off.files)})`,
-    );
-    assert(
-      !off.files.includes(".pi/work.json"),
-      `(e) and the BUILT-IN is still reverted — the switch reaches the configured list and nothing else (got ${JSON.stringify(off.files)})`,
-    );
-    assert(
-      (off.outcome?.reason ?? "").includes("reverted: .pi/work.json") &&
-        !(off.outcome?.reason ?? "").includes("angular.json"),
-      `(e) and the reason names only the built-in (got ${off.outcome?.reason})`,
-    );
-  });
 }
 
 // ── (f) a revert AND a submodule caveat reach the reason together ──────────────

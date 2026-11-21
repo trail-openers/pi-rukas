@@ -335,58 +335,5 @@ await withEnv(ENV, async () => {
   });
 }
 
-// ── (d) `PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK=0`: the engine behaves as it did before
-// the routing existed. The same drive, the same clock, the same premise — and where
-// (a) reached a report, this run is stamped where the clock caught it and no
-// `handback` step is ever written. That is the byte-identical off arm of the second
-// commit's behaviour: not "the handback said less", but "the handback never ran".
-// Origin is untouched, because the step that moves it is the one that did not run —
-// which is exactly the gap the routing closes.
-{
-  const repo = repoWithFixHead();
-  const before = originBranchSha(repo.origin);
-  if (before !== repo.headSha)
-    throw new Error(`the (d) arm's origin does not hold the fix head: ${String(before)}`);
-  await withEnv({ ...ENV, PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK: "0" }, async () => {
-    const ran = await driveToDeadline(
-      repo.repoRoot,
-      walkToReview({
-        kind: "green",
-        verifiedHead: repo.baseSha,
-        reason: `all frozen tests green at ${repo.baseSha}`,
-      }),
-      repo.baseSha,
-    );
-    assert(
-      ran.crossed && ran.arm !== undefined && ran.arm - ran.past <= handoffDispatchTimeoutMs(),
-      `(d) the stop is a deadline stop inside the pinned allowance (crossed=${String(ran.crossed)}, arm ${String(ran.arm)}, past ${ran.past})`,
-    );
-    // The engine's own words for the stop it took, not a handler's failure: the
-    // reason line names the deadline and the step it refused to start.
-    assert(
-      ran.state === "handed-back" &&
-        ran.reason.includes("cycle deadline") &&
-        ran.reason.includes("reached at verify"),
-      `(d) with the switch off the run is stamped where the clock caught it (got ${ran.state}: ${ran.reason})`,
-    );
-    assert(
-      !ran.steps.some((s2) => s2.state === "handback"),
-      `(d) and NO reporting step was written at all (steps ${ran.steps.map((s2) => `${s2.key}=${s2.outcome?.kind ?? "?"}`).join(",")})`,
-    );
-    assert(
-      ran.outcome === undefined,
-      `(d) so there is no handback outcome to read (got ${JSON.stringify(ran.outcome)})`,
-    );
-    assert(
-      originBranchSha(repo.origin) === before,
-      `(d) origin still holds F — nothing moved it, because nothing ran (got ${String(originBranchSha(repo.origin))})`,
-    );
-    assert(
-      originRefSha(repo.origin, unverifiedRef(ISSUE)) === undefined,
-      "(d) and no keeping-ref was written",
-    );
-  });
-}
-
 for (const dir of ROOTS) rmSync(dir, { recursive: true, force: true });
 process.exit(state.exit);

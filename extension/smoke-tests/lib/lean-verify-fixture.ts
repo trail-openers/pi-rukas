@@ -140,8 +140,10 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     opts.extraFrozen ?? {},
     rosterFiles,
     opts.baseProjectTestFails === true,
+    // The dep tree is laid down whenever the case names dirs to bare from the base checkout:
+    // `lean-verify-exec.ts` bares them the moment the checkout exists, so the tree must be
+    // there to bare — a candidate git never ignores is one the link was never asked for.
     opts.roster?.baseMissingDeps !== undefined,
-    opts.roster?.baseMissingDeps,
   );
 
   const wt = f.wt;

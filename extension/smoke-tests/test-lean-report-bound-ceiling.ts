@@ -26,10 +26,6 @@
  *       cannot be a bound of zero — while the hung arm of the same allowance is
  *       cut at that number within the case's own guard, a guard that fails the case
  *       rather than hanging the suite;
- *   (c) `PI_ENSEMBLE_LEAN_REPORT_BOUND=0` awaits the handler with no wall at all:
- *       the same hung handler, and the drive only ends when the handler is let
- *       settle, at a time PAST the bound. The bound's sentence appears nowhere in
- *       the record, and the verdict the bound refused lands;
  *   (d) the bound's timer is a ref'd timer and is cleared on the way out of the race
  *       — read off the source, because both properties are invisible to a drive from
  *       outside (a passing drive exits either way). Ref'd is the direction the timer

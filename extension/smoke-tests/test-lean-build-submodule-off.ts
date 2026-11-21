@@ -55,10 +55,6 @@ function assert(cond: boolean, msg: string): void {
  */
 async function drive(
   issue: number,
-  // Which arm of the inner rule the fold runs on. `undefined` keeps the shipped default (local
-  // seeding); `"0"` selects the release's single `submodule update --init --recursive` — the
-  // only arm that hands a recorded URL to git, and so the only one (b) can control.
-  local?: "0",
   // The OUTER gate. `"0"` makes the step ask git to populate nothing at all — which is (a)'s
   // claim, and also why the disclosure cannot be asserted there: with no pass there is nothing
   // to disclose, and the switch's whole contract is that the run looks as if it never had one.
@@ -128,15 +124,9 @@ async function drive(
     });
   };
   await (
-    local === undefined && preflight === undefined
+    preflight === undefined
       ? run()
-      : withEnv(
-          {
-            ...(local === undefined ? {} : { PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: local }),
-            ...(preflight === undefined ? {} : { PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: preflight }),
-          },
-          run,
-        )
+      : withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: preflight }, run)
   );
   return {
     threw: r?.threw,
@@ -198,32 +188,28 @@ function commit(wt: string, message: string): void {
   );
 }
 
-// ── (b) the control: the same fold on the arm that asks git, throwing
+// ── (b) the control: the same fold whose reset really did ask git
 {
   // (a) is the OUTER switch at `0` — the claim being that the step then issues nothing about
-  // submodules. The control has to be the same fold on the arm that DOES ask git. Under #2319's
-  // local rule a sabotaged submodule with no local copy is a disclosure, not a failure, so a
-  // local-arm fold that quietly succeeds separates nothing; `=0` selects the release's single
-  // `submodule update --init --recursive`, which is handed the recorded URL and must fail on it.
-  const on = await drive(912, "0");
-  assert(
-    on.threw !== undefined && /submodule/i.test(on.threw.message),
-    `(b) the same fold DOES throw with the switch on (${on.threw?.constructor.name}: ${on.threw?.message.split("\n")[0] ?? "no throw"})`,
-  );
+  // submodules. The control has to be the same fold on the arm that DOES ask git, and under the
+  // seeding rule an absent submodule is a DISCLOSURE rather than a hand-back, so what separates
+  // the two arms is the CALL: the reset asked git about the submodule here and asked it nothing
+  // in (a).
+  const on = await drive(912);
   assert(
     on.submoduleArgv.length > 0,
-    `(b) and it issued the submodule call the off arm never made (got ${JSON.stringify(on.submoduleArgv.map((a) => a.slice(-3)))})`,
+    `(b) the same fold DID issue the submodule call the off arm never made (got ${JSON.stringify(on.submoduleArgv.map((a) => a.slice(-3)))})`,
   );
   assert(
     on.insideAfter === false,
-    `(b) and its recovery FAILED — the tree the fold left still held no submodule (found ${String(on.insideAfter)}), which is what the throw says`,
+    `(b) and the call it issued put nothing back — the tree the fold left still held no submodule (found ${String(on.insideAfter)}), which is what (c)'s disclosure says`,
   );
 }
 
 // ── (c) #2319 Resolution 4: the fold says the disclosure in its OWN reason
 {
-  // The arm that owes it: preflight ON (so a pass actually ran and had something to report) and
-  // the local rule ON (so the missing submodule is a disclosure rather than a hand-back). The
+  // The arm that owes it: preflight ON, so a pass actually ran and had something to report, and
+  // a missing submodule is a disclosure rather than a hand-back. The
   // fold commits bytes built against a tree with nothing at that path, and the reason line is the
   // only surface a reader judging the commit has — the log is not it. Deleting the
   // `report.submodules ?? ""` entry from the fold's `joinNotes` in `build.ts` turns this red.

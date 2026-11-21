@@ -149,8 +149,7 @@ export const HEADLESS_FEATURES = {
    * `docs/headless.md`'s `features.leanGates` row; this flag only says the object exists.
    *
    * A host reads `--capabilities` before it reads a field it may not have: with this flag
-   * absent the object is simply not there (a build running
-   * `PI_ENSEMBLE_LEAN_RESULT_GATES=0`, or one from before the object existed), and a host
+   * absent the object is simply not there (a build from before the object existed), and a host
    * that treated its absence as "the run froze nothing" would report a clean contract for
    * a run nobody looked at. Absent means "do not read `gates`", never "gates is empty".
    */

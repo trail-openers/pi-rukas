@@ -61,11 +61,6 @@ const TEST_REL = "tests/AC1-submodule.test.sh";
 /** One challenge round over a base that carries a submodule with no source left. */
 async function drive(
   issue: number,
-  // Which arm of the inner rule the round runs on. `undefined` leaves the shipped default
-  // (local seeding) in place; `"0"` asks for the release's own single `submodule update
-  // --init --recursive`, which is the only arm that hands a recorded URL to git and therefore
-  // the only one this file's (b) can control.
-  local?: "0",
   // The OUTER gate. `"0"` is (a)'s arm; (c) needs it ON, because with no pass there is nothing
   // to disclose and the switch's contract is that the run looks as if it never had one.
   preflight?: "0",
@@ -109,15 +104,11 @@ async function drive(
       toolUses: [submit("AC1", [TEST_REL])],
     });
   };
-  await (local === undefined && preflight === undefined
-    ? run()
-    : withEnv(
-        {
-          ...(local === undefined ? {} : { PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: local }),
-          ...(preflight === undefined ? {} : { PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: preflight }),
-        },
-        run,
-      ));
+  await (
+    preflight === undefined
+      ? run()
+      : withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: preflight }, run)
+  );
   return {
     threw: r?.threw,
     outcome: r?.outcome,
@@ -160,32 +151,24 @@ async function drive(
   );
 }
 
-// ── (b) the control: the same round, on the arm that asks git, cannot reach the submodule
+// ── (b) the control: the same round, on the arm that really did ask git
 {
   // The switch these files pin is the OUTER one, and the (a) arm is the release's argv with
   // that switch at `0` — the claim being that the step then issues NOTHING about submodules.
   // The control has to be the same reset on the arm that DOES ask git, or it is not a control:
-  // under #2319's local rule a sabotaged submodule with no local copy is a disclosure rather
-  // than a failure, so a local-arm round that quietly succeeds says nothing about whether the
-  // off arm abstained. `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL=0` selects the release's single
-  // `submodule update --init --recursive`, which is handed the recorded URL and must fail on it.
-  const on = await drive(902, "0");
+  // a sabotaged submodule with no local copy is a disclosure rather than a failure, so what
+  // separates the arms is the CALL the reset issued, not whether the round survived.
+  const on = await drive(902);
   assert(
     on.submoduleArgv.length > 0,
-    `(b) the same round DOES issue the submodule call with the switch on (got ${JSON.stringify(on.submoduleArgv.map((a) => a.slice(-3)))})`,
+    `(b) the same round DID issue the submodule call with the outer gate open (got ${JSON.stringify(on.submoduleArgv.map((a) => a.slice(-3)))})`,
   );
-  // (b) is the SAME drive as (a) — nothing here reaches into the reset — so its
-  // throw is the finding, not the fixture: a round that asks git for a submodule it
-  // genuinely cannot fetch is infrastructure, and that is the other half of the switch.
-  // Asserted as a throw naming the submodule step, which is what makes (a)'s clean run
-  // a property of the switch rather than of luck.
-  assert(
-    on.threw !== undefined && /submodule/i.test(on.threw.message),
-    `(b) and it ends as infrastructure naming the submodule step (${on.threw?.constructor.name ?? `outcome ${String(on.outcome?.kind)}`}: ${on.threw?.message?.split("\n")[0] ?? "no throw"})`,
-  );
+  // The call it made found nothing to seed, which is the other half of the control: (a)'s empty
+  // tree is the switch not asking, not this file's setup, because on this arm the pass ran over
+  // the same gone source and still put nothing back.
   assert(
     on.insideAfter === false,
-    `(b) and the call it issued could not put the submodule back (found ${String(on.insideAfter)}) — the source is gone for BOTH arms, so (a)'s empty tree is the switch not asking, not this file's setup`,
+    `(b) and the call it issued could not put the submodule back (found ${String(on.insideAfter)}) — the source is gone for BOTH arms`,
   );
 }
 
@@ -219,7 +202,7 @@ async function drive(
   // that arm sweeps the tree with `challenge`'s own `resetAndProvision` rather than the
   // pipeline's. Deleting the `submodule` entry from that clause in `challenge.ts` turns this red
   // and leaves (c) green, which is why both are needed.
-  const swept = await drive(904, undefined, undefined, "green");
+  const swept = await drive(904, undefined, "green");
   assert(
     swept.threw === undefined && swept.outcome?.kind === "none",
     `(d) the empty round ran to a verdict (${swept.threw?.message?.split("\n")[0] ?? `kind ${String(swept.outcome?.kind)}`})`,

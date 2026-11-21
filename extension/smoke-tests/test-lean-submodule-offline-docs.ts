@@ -33,7 +33,6 @@ const read = (rel: string): string => readFileSync(path.join(repo, rel), "utf8")
 
 const troubleshooting = read("docs/troubleshooting.md");
 const lean = read("docs/lean.md");
-const config = read("docs/configuration.md");
 
 // The bullet this PR exists to amend, located by its own heading rather than by a line number.
 /** The whole bullet, from its bold lead-in to the next one — a bullet wraps, a line does not. */
@@ -51,10 +50,6 @@ assert(
   "(troubleshooting) the bullet no longer tells the operator no flag exists",
 );
 assert(
-  bullet.includes("PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL"),
-  "(troubleshooting) the bullet names the knob that decides where submodules come from",
-);
-assert(
   /SUPERPROJECT|superproject/.test(bullet) && bullet.includes(".git/modules"),
   "(troubleshooting) and says where they come from by default: the superproject's module store or checkout",
 );
@@ -62,20 +57,12 @@ assert(
   /disclos/.test(bullet) && /never\s+held/.test(bullet),
   "(troubleshooting) and says a submodule this host never had is disclosed, not fetched",
 );
-assert(
-  /hand-back naming the submodule IS a network or a remote problem/.test(bullet),
-  "(troubleshooting) the network-or-remote advice is kept but scoped to the switch-off arm",
-);
 
 // The closing paragraph of the same entry, which named only the outer gate.
 assert(
   /PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT.*OUTER|OUTER\s*\n?\s*gate/s.test(troubleshooting) ||
     /that switch is the OUTER/.test(troubleshooting),
   "(troubleshooting) the entry says the runner-preflight switch is the outer gate",
-);
-assert(
-  /read only when preflight is on|observable only with preflight on/.test(troubleshooting),
-  "(troubleshooting) and that the submodule-local knob decides nothing with preflight off",
 );
 
 // The step table row an operator reads before they read the troubleshooting entry at all.
@@ -91,22 +78,4 @@ assert(
   ),
   "(lean.md) and that the depth rule is stated: deeper levels are used only where already present",
 );
-assert(
-  specifyRow.includes("PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL"),
-  "(lean.md) and it names the knob, with the outer gate named as the one that wins",
-);
-
-// The row the operator compares runs with: the off arm has to be described as the release's own
-// argv, probe included, or a byte-identity claim cannot be checked from the docs.
-const row = config.split("\n").find((l) => l.includes("`PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL`")) ?? "";
-assert(row !== "", "(configuration.md) the knob has a row");
-assert(
-  row.includes("git submodule update --init --recursive") && row.includes("--get-regexp"),
-  "(configuration.md) the row names both commands the off arm restores, the listing probe included",
-);
-assert(
-  row.includes("PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT"),
-  "(configuration.md) and the outer gate that wins over it",
-);
-
 process.exit(exit);

@@ -30,12 +30,10 @@
  */
 
 import { renderAcceptanceSection } from "../src/lean/review-acceptance.ts";
-import { leanReviewAcceptanceEnabled } from "../src/lean/review-acceptance-switch.ts";
 import { lensContext } from "../src/lean/review-deps.ts";
 import { ReviewInfraError } from "../src/lean/review.ts";
 import type { Step } from "../src/lean/state.ts";
 import type { DispatchResult, DispatchSpec } from "../src/types.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import {
   HEAD,
   ISSUE_BODY,
@@ -322,42 +320,6 @@ const section = (head: string): string => renderAcceptanceSection(logFor(head), 
   assert(lensCalls === 0, `(c2) and no child was bought (${String(lensCalls)})`);
   cleanupRoots();
 }
-
-// ── (d) the switch: off means no table anywhere, and no guard ──────────────
-await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_ACCEPTANCE: "0" }, async () => {
-  assert(!leanReviewAcceptanceEnabled(), "(d) the reader is off on the literal \"0\"");
-  const { repoRoot, baseSha } = makeRepo();
-  // Origin holds a head the log never certified — the exact shape (c) refuses.
-  // With the switch off the guard does not run, so the step passes.
-  await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
-  const posts: string[] = [];
-  const contexts: string[] = [];
-  const ctx = ctxFor(repoRoot, baseSha, BRANCH);
-  ctx.steps.push(...logFor("ffffffffffffffffffffffffffffffffffffffff"));
-  const { outcome, threw } = await runStep(
-    ctx,
-    depsWith({
-      fetchIssueBody: async () => ISSUE_BODY,
-      prComment: async (_repo, _pr, bodyText) => {
-        posts.push(bodyText);
-      },
-      lens: async (a) => {
-        contexts.push(a.context);
-        return lensRoundFor({ wave: a.wave, since: a.since, head: a.head }, "APPROVED", []);
-      },
-    }),
-  );
-  assert(
-    threw === undefined && outcome !== undefined,
-    `(d) with the switch at 0 the entry guard does not run and the step passes (${String(outcome?.kind)}${threw === undefined ? "" : ` / ${threw.message.slice(0, 90)}`})`,
-  );
-  assert(
-    contexts.length > 0 && contexts.every((c) => !c.includes("## The acceptance table")),
-    `(d) and no lens brief carries the table (${String(contexts.length)} briefs)`,
-  );
-  assert(posts.length === 0, `(d) and nothing is posted (${String(posts.length)})`);
-  cleanupRoots();
-});
 
 console.log(
   `\n${failures() === 0 ? "briefs green" : "briefs RED"} (${String(failures())} failing)`,

@@ -14,7 +14,6 @@ import { traceWarn } from "../trace.ts";
 import { deadlineStopShouldReport } from "./deadline-handback.ts";
 import { deadlineReason, handoffAllowanceMs } from "./deadline.ts";
 import { reportBoundSentence } from "./engine-report-bound.ts";
-import { leanReportBoundEnabled } from "./handback-report-bound-switch.ts";
 import { type RoutedReport, routeHandbackReport } from "./routed-report.ts";
 import type { LeanRun, LeanState, Outcome, Step } from "./state.ts";
 import { nextAttempt } from "./state.ts";
@@ -61,10 +60,10 @@ export interface ReportRequest {
   now: () => number;
   handler: HandbackHandler;
   /**
-   * The report's own wall in ms, or `undefined` for none. Present, the handler is raced against
-   * it and an overrun ends the run as the plain deadline stop.
+   * The report's own wall in ms: the handler is raced against it and an overrun ends the run as
+   * the plain deadline stop.
    */
-  boundMs?: number;
+  boundMs: number;
   /** Set by THIS module to the bound it ran out at, and ONLY on that arm: the overrun changes the
    * run's outcome, so the runner says so on the stamp it falls back to. A field rather than a
    * sentinel because `undefined` already means "the report threw". */
@@ -111,24 +110,20 @@ export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | u
       stepKey: key,
       now,
     });
-    if (boundMs === undefined) {
-      outcome = await call;
-    } else {
-      const overrun = new Promise<{ overrun: true }>((resolve) => {
-        boundTimer = setTimeout(() => resolve({ overrun: true }), boundMs);
-      });
-      // Branded object rather than a sentinel string: `Outcome.kind` is an open `string`.
-      const settled = await Promise.race([call, overrun]);
-      if ("overrun" in settled) {
-        // UNGATED channel, as the throw arm beside it: the run loses its report.
-        traceWarn(
-          `lean #${String(req.issue)} ${key} bound reached: ${reportBoundSentence(boundMs)} — the run takes the plain deadline stamp`,
-        );
-        req.boundFiredMs = boundMs;
-        return undefined;
-      }
-      outcome = settled;
+    const overrun = new Promise<{ overrun: true }>((resolve) => {
+      boundTimer = setTimeout(() => resolve({ overrun: true }), boundMs);
+    });
+    // Branded object rather than a sentinel string: `Outcome.kind` is an open `string`.
+    const settled = await Promise.race([call, overrun]);
+    if ("overrun" in settled) {
+      // UNGATED channel, as the throw arm beside it: the run loses its report.
+      traceWarn(
+        `lean #${String(req.issue)} ${key} bound reached: ${reportBoundSentence(boundMs)} — the run takes the plain deadline stamp`,
+      );
+      req.boundFiredMs = boundMs;
+      return undefined;
     }
+    outcome = settled;
   } catch (err) {
     // A throw is a handler bug: the run gets the stamp it would have got without the routing.
     // `traceWarn`, not `trace` — the outcome changed, so it must show without `PI_ENSEMBLE_DEBUG`.
@@ -190,7 +185,7 @@ export async function stopForDeadline(stop: DeadlineStop): Promise<LeanRun> {
   const { run, stoppedAt, deadline, now } = stop;
   if (stoppedAt !== "handback" && deadlineStopShouldReport(run.steps) && stop.request.handler) {
     const handler = stop.request.handler;
-    const boundMs = leanReportBoundEnabled() ? handoffReportBoundMs() : undefined;
+    const boundMs = handoffReportBoundMs();
     const routed: RoutedReport = await routeHandbackReport(
       {
         repoRoot: stop.request.repoRoot,

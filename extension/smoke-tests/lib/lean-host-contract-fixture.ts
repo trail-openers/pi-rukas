@@ -44,13 +44,6 @@ export const DAY = 24 * 60 * 60_000;
 /** The env keys these cases write, restored after every case. */
 export const ENV_KEYS = [
   "PI_ENSEMBLE_CYCLE_DEADLINE",
-  // The deadline switch decides whether a deadline stop routes into the report at all; it is
-  // read at call time and its off/on arms are pinned with this scope.
-  "PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK",
-  // The bound on the routed report is read at call time too, and the off/on arms of
-  // `test-lean-handback-report-bound.ts` are pinned with this scope: a pin that leaked
-  // into the next case would quietly test the unbounded await instead of the bound.
-  "PI_ENSEMBLE_LEAN_REPORT_BOUND",
   "PI_ENSEMBLE_CYCLE_BUDGET_MS",
   // #2362 — whether `work-lean`'s `--timeout` outranks the budget above. Read at call
   // time by `timeoutFlagPrecedenceEnabled`, and the off/on arms of

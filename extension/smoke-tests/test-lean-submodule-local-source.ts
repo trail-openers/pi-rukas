@@ -30,16 +30,13 @@
  *       the module store as the source, with no call anywhere carrying the URL;
  *   (c) the submodule is absent from the superproject → preparation proceeds and the
  *       disclosure names the path;
- *   (d) a nested submodule is populated too, at its own recorded gitlink;
- *   (e) `PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL=0` reproduces origin/main's failure and
- *       origin/main's message, with origin/main's argv.
+ *   (d) a nested submodule is populated too, at its own recorded gitlink.
  */
 
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { submoduleState as submoduleStateAt } from "../src/lean/specify-submodules.ts";
 import { ensureSpecifyWorktreeWithProvision } from "../src/lean/specify-tree.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   offlineExec,
@@ -61,17 +58,6 @@ import {
 } from "./lib/lean-submodule-local-fixture.ts";
 const { assert, failures } = makeAssert();
 
-/** origin/main's submodule call, transcribed — the off arm must match it exactly. */
-const MAIN_SUBMODULE_ARGV = [
-  "-c",
-  "core.hooksPath=/dev/null",
-  "-c",
-  "core.fsmonitor=false",
-  "submodule",
-  "update",
-  "--init",
-  "--recursive",
-];
 /**
  * The local arm's two calls, transcribed from the implementation the same way — a
  * control that reads the current code agrees with itself, so each is pinned as a
@@ -128,20 +114,10 @@ const expectedUpdate = (source: string): string[] =>
   LOCAL_UPDATE_ARGV.map((a) =>
     a === `submodule.${SUB}.url=<source>` ? `submodule.${SUB}.url=${source}` : a,
   );
-/** The opening of origin/main's handback for a submodule it could not populate. */
-const MAIN_HANDBACK = "the worktree's submodules could not be initialised in";
-
 type Calls = readonly { cmd: string; argv: readonly string[] }[];
 
 /** The submodule's own HEAD as git reports it, or `undefined` when it has none. */
 const headIn = (dir: string, rel?: string): string | undefined => submoduleHeadAt(dir, rel);
-
-/** The argv of the call that populates submodules, or `undefined` when none ran. */
-function updateArgv(calls: Calls): readonly string[] | undefined {
-  return calls.find(
-    (c) => c.cmd === "git" && c.argv.includes("submodule") && c.argv.includes("update"),
-  )?.argv;
-}
 
 /** The argv of the call that names where the bytes come from, on either arm. */
 function sourceArgv(calls: Calls): readonly string[] | undefined {
@@ -416,57 +392,6 @@ const carryingText = (calls: Calls, a: string): readonly (readonly string[])[] =
     `(d) and git's own submodule read of the seeded level lists nothing seeded (got ${JSON.stringify(
       nestedState,
     )})`,
-  );
-}
-
-// ── (e) `=0` is origin/main's behaviour: same argv, same failure, same message
-{
-  const { repoRoot, baseSha } = repoWithSubmodule("e");
-  const { exec, calls, network } = offlineExec();
-  const submoduleArgvs = () => calls.filter((c) => c.cmd === "git" && c.argv.includes("submodule"));
-  let off: { kind: "threw" | "ok"; message: string } | undefined;
-  await withEnv({ PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: "0" }, async () => {
-    try {
-      await ensureSpecifyWorktreeWithProvision(exec, {
-        repoRoot,
-        issue: 5,
-        fromRef: baseSha,
-        branch: "lean/issue-5",
-      });
-      off = { kind: "ok", message: "" };
-    } catch (err) {
-      off = { kind: "threw", message: (err as Error).message };
-    }
-  });
-  assert(
-    off?.kind === "threw" && off.message.includes(MAIN_HANDBACK),
-    `(e) with the switch at 0 the run hands back as origin/main does (got ${
-      off?.kind
-    }: ${off?.message.slice(0, 200)})`,
-  );
-  assert(
-    off?.message.includes("git submodule update --init --recursive") === true,
-    `(e) the message names the command it ran (got ${off?.message.slice(0, 200)})`,
-  );
-  const argv = updateArgv(calls);
-  assert(
-    JSON.stringify(argv) === JSON.stringify(MAIN_SUBMODULE_ARGV),
-    `(e) and the submodule call is origin/main's argv byte for byte (got ${JSON.stringify(argv)})`,
-  );
-  // The off arm asked git to populate the gitlink in git's own transport policy: no
-  // local source override anywhere in the argv it issued. With the switch ON the same
-  // repo shape is green without a single network-shaped call (cases a–d), which is
-  // what makes this arm the control rather than the same run twice.
-  const asked = submoduleArgvs();
-  assert(
-    asked.length > 0 && asked.every((c) => c.argv.every((a) => !a.startsWith("submodule."))),
-    `(e) the off arm gave git no local source to clone from (got ${JSON.stringify(
-      asked.map((c) => c.argv),
-    )})`,
-  );
-  assert(
-    readOrNull(path.join(repoRoot, ".gitmodules"))?.includes(UNREACHABLE_URL) === true,
-    "(e) and the off arm left .gitmodules alone, as it always did",
   );
 }
 

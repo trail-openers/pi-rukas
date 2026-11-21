@@ -32,10 +32,9 @@
  *     made is `null`. A reader that wants the verdict reads `prState`; a reader that
  *     wants the evidence reads these.
  *
- * The object is additive and switch-owned: absent entirely when
- * `PI_ENSEMBLE_LEAN_RESULT_GATES=0`, and then the document is the one this build wrote
- * before the object existed — which is why the projection builds it separately and the
- * caller decides whether to attach it, rather than filling fields conditionally.
+ * The object is additive: the projection builds it separately and the caller attaches it
+ * whole, rather than filling fields conditionally, so the document either carries the key
+ * or does not.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";

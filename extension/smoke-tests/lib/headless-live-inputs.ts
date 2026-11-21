@@ -25,22 +25,16 @@ import { COMMENT_RETENTION_PATHS } from "../../src/comment-retention.ts";
 import { forgeReadOffGuardEnabled } from "../../src/forge-read-off-switch.ts";
 import { glabMrCreateArgvEnabled } from "../../src/gl-mr-create-switch.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
-import { leanDeadlineHandbackEnabled } from "../../src/lean/deadline-handback.ts";
 import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
-import { leanReportBoundEnabled } from "../../src/lean/handback-report-bound-switch.ts";
 import { leanBuildIssueProseEnabled, leanIssueProseEnabled } from "../../src/lean/issue-prose.ts";
 import {
   leanPreflightProbeCollectableEnabled,
   leanPreflightProbeContainEnabled,
 } from "../../src/lean/preflight-probe-switch.ts";
-import { leanProtectedPathsEnabled } from "../../src/lean/protected-paths-switch.ts";
 import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.ts";
-import { leanResultGatesEnabled } from "../../src/lean/result-gates-switch.ts";
-import { leanReviewAcceptanceEnabled } from "../../src/lean/review-acceptance-switch.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
-import { leanSubmodulesLocalEnabled } from "../../src/lean/submodules-local-switch.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../../src/lens-evidence.ts";
 import { lensLargeDiffEnabled } from "../../src/lens-large-diff-switch.ts";
 import { lensIncompleteForcesFull } from "../../src/lens-review-incomplete-switch.ts";
@@ -190,42 +184,22 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // #2228 — the builder seat's issue-prose section. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE", leanBuildIssueProseEnabled],
-  ["PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK", leanDeadlineHandbackEnabled],
   // #2202 — the probe's collectable name and its exit-4 reading, and the probe
   // parent's containment check. Both readers are `v !== "0"`, so the gate's LIVE
   // loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_COLLECTABLE", leanPreflightProbeCollectableEnabled],
   ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN", leanPreflightProbeContainEnabled],
-  // The routed deadline report's wall. The reader is `v !== "0"`, so the LIVE loop
-  // (env deleted) pins "unset means on".
-  ["PI_ENSEMBLE_LEAN_REPORT_BOUND", leanReportBoundEnabled],
   // The lean review seats' spec split. The reader is `v !== "0"`, so the LIVE
   // assertion in the gate (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT", leanReviewSpecSplitEnabled],
-  // The executed acceptance table at the lean review seats and on the run's PR. The
-  // reader is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on".
-  ["PI_ENSEMBLE_LEAN_REVIEW_ACCEPTANCE", leanReviewAcceptanceEnabled],
   // #2212 — #2179's preflight/submodule behaviour. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT", leanRunnerPreflightEnabled],
-  // #2319 — where a lean worktree's submodules are seeded from. The reader is `v !== "0"`, so
-  // the gate's LIVE loop (env deleted) pins "unset means on"; the truth table, the docs row and
-  // the off arm's argv are pinned by test-lean-submodules-local-switch.ts and
-  // test-lean-submodule-local-source.ts (e).
-  ["PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL", leanSubmodulesLocalEnabled],
-  // #2365 — the project's own `lean.protectedPaths` globs in the lean folds. The reader
-  // is `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the
-  // truth table, the docs row, the fold's two arms and the built-in controls are pinned
-  // by test-lean-protected-paths.ts and test-lean-build-protected-paths-switch.ts.
-  ["PI_ENSEMBLE_LEAN_PROTECTED_PATHS", leanProtectedPathsEnabled],
   // #2428 — `verify` judges the project's own pre-existing tests. The reader is
   // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth
   // table, the off arm's bytes and the docs row are pinned by
   // test-AC5-project-roster-switch.ts and test-AC7-project-roster-docs.ts.
   ["PI_ENSEMBLE_LEAN_PROJECT_ROSTER", leanProjectRosterEnabled],
-  // The gate events on the host's result document. The reader is `v !== "0"`, so the
-  // gate's LIVE loop (env deleted) pins "unset means on".
-  ["PI_ENSEMBLE_LEAN_RESULT_GATES", leanResultGatesEnabled],
   // The truncated-fixer continuation: its default is pinned here, its truth table by
   // `test-lean-review-fix-reask-pure.ts` and its off arm by
   // `test-lean-review-fixer-truncation-off-arm.ts`.

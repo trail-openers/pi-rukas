@@ -65,7 +65,7 @@ const { assert, failures } = makeAssert();
  * the submodule is in every commit the reset can land on and the step's `clean
  * -fdx` is what empties it.
  */
-async function drive(tag: string, local?: "0", preflight?: "0") {
+async function drive(tag: string, preflight?: "0") {
   const { repoRoot, baseSha } = makeRepo();
   await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 2;\n" });
   // The submodule's source is deleted before ANY checkout of it exists — the run's
@@ -112,18 +112,11 @@ async function drive(tag: string, local?: "0", preflight?: "0") {
       },
     }));
   };
-  // The inner switch selects WHICH submodule call the integration's reset makes; `undefined`
-  // keeps the shipped local arm, `"0"` the release's own. See (b) for why the control needs it.
+  // The outer gate decides whether the integration's reset asks git about submodules at all.
   await (
-    local === undefined && preflight === undefined
+    preflight === undefined
       ? round()
-      : withEnv(
-          {
-            ...(local === undefined ? {} : { PI_ENSEMBLE_LEAN_SUBMODULES_LOCAL: local }),
-            ...(preflight === undefined ? {} : { PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: preflight }),
-          },
-          round,
-        )
+      : withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: preflight }, round)
   );
   return {
     outcome,
@@ -169,25 +162,20 @@ async function drive(tag: string, local?: "0", preflight?: "0") {
   );
 }
 
-// ── (b) the control: the same round on the arm that asks git, throwing
+// ── (b) the control: the same round on the arm that really did ask git
 {
   // (a) is the OUTER switch at `0`, whose claim is that the step then issues nothing about
-  // submodules; the control has to be the same round on the arm that DOES ask git. Under #2319's
-  // local rule a sabotaged submodule with no local copy is a disclosure rather than a failure,
-  // so a local-arm round that succeeds separates nothing. `=0` selects the release's single
-  // `submodule update --init --recursive`, which is handed the recorded URL and must fail on it.
-  const on = await drive("on", "0");
-  assert(
-    on.threw !== undefined && /submodule/i.test(on.threw.message),
-    `(b) the same round DOES throw with the switch on (${on.threw?.constructor.name}: ${on.threw?.message.split("\n")[0] ?? "no throw"})`,
-  );
+  // submodules; the control has to be the same round on the arm that DOES ask git. A sabotaged
+  // submodule with no local copy is a disclosure rather than a failure, so what separates the
+  // two arms is the CALL the reset issued and what it proved, not whether the round survived.
+  const on = await drive("on");
   assert(
     on.submoduleArgv.length > 0,
-    `(b) and it issued the submodule call the off arm never made (got ${JSON.stringify(on.submoduleArgv.map((a) => a.slice(-3)))})`,
+    `(b) the same round DID issue the submodule call the off arm never made (got ${JSON.stringify(on.submoduleArgv.map((a) => a.slice(-3)))})`,
   );
   assert(
     on.insideAfter === false,
-    "(b) and its recovery FAILED — the tree the step handed on still held no submodule, which is what the throw says",
+    "(b) and the call it made put nothing back — the tree the step handed on still held no submodule, which is what (c)'s disclosure says",
   );
 }
 

@@ -15,29 +15,19 @@
  *
  * The extra step is affordable precisely because `REPORT_STATES` is exempt from
  * `deadlineStopsSteps`, so the report is the one step past the line the deadline cannot refuse.
- *
- * The switch (`PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK`) is read at CALL time: with it off the engine
- * stamps where it stands.
  */
 
 import { handbackHeads } from "./handback-heads.ts";
 import type { LeanRun } from "./state.ts";
 
-/** Whether a deadline stop that left a fixed review unverified reports instead of stamping. */
-export function leanDeadlineHandbackEnabled(): boolean {
-  return process.env.PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK !== "0";
-}
-
 /**
  * Whether THIS stop should be answered by running the report.
  *
- * Two reads, deliberately both: the switch, because an operator must be able to get the old
- * behaviour back; and the head rule, because a stop whose newest work step is anything but an
- * uncertified `fixed` review has no head to say anything about.
+ * The head rule decides it, because a stop whose newest work step is anything but an uncertified
+ * `fixed` review has no head to say anything about.
  *
  * `steps` rather than a whole run: the predicate reads the log and nothing else.
  */
 export function deadlineStopShouldReport(steps: LeanRun["steps"]): boolean {
-  if (!leanDeadlineHandbackEnabled()) return false;
   return handbackHeads(steps).applies;
 }
