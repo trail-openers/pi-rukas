@@ -38,10 +38,6 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // token cap changes. The reader is `leanFixerTruncationReaskEnabled` in
   // fixer-truncation.ts.
   flag("LEAN_FIXER_TRUNCATION_REASK", true),
-  // The publishable-branch guard's fail-closed arm: a mainline neither the clone
-  // nor origin will name refuses the push instead of passing it. The reader is
-  // `leanGuardFailClosed` in lean/guard-fail-closed-switch.ts.
-  flag("LEAN_GUARD_FAIL_CLOSED", true),
   // #2279 — the handback's four origin reads (`ls-remote` for the record's head, the held
   // head, and the branch/keeping-ref pair that decide success) go through the driver's
   // network-git wrapper: non-interactive env, process-group kill, bounded wait. `0` puts
@@ -50,7 +46,6 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // `leanHandbackNetGitEnabled` in lean/handback-net-git-switch.ts; the push is not in
   // scope, `LEAN_REWIND_LEASE_BINDS` owns that argv.
   flag("LEAN_HANDBACK_NET_GIT", true),
-  flag("LEAN_HANDBACK_NOHEAD_RECORD", true),
   // #2171 — show the specify/challenge adversary the issue prose its frozen
   // tests were written from. 0 takes the section back out of both prompts.
   // The reader is `leanIssueProseEnabled` in lean/issue-prose.ts.
@@ -74,6 +69,15 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // worktree root (itself containment-checked, and infrastructure if THAT fails).
   // The reader is `leanPreflightProbeContainEnabled` in the same module.
   flag("LEAN_PREFLIGHT_PROBE_CONTAIN", true),
+  // The project's OWN pre-existing tests as a fourth thing `verify` judges: the suite the
+  // config's `verify.testDir` + `verify.testGlob` name is run at HEAD and at the run's base
+  // commit, its per-test verdicts read from the runner's report, and the BASE version of every
+  // pre-existing test file the run edited re-run against the head code. The verdict outranks the
+  // whole-line baseline excuse, and the land gate reads the roster off the record rather than
+  // trusting the verdict kind. `0` runs none of it and restores the pre-roster pass byte for byte.
+  // The reader is `leanProjectRosterEnabled` in lean/project-roster-switch.ts; the enumeration,
+  // both runs and the comparison are lean/verify-roster.ts.
+  flag("LEAN_PROJECT_ROSTER", true),
   // #2365 — the project's OWN protected paths. `.pi/work.json` `lean.protectedPaths`
   // names repo-relative gitignore-style globs whose paths the `build` fold and the
   // review fixer's fold revert, and name in the step reason, as the built-in protected
@@ -86,34 +90,12 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // lean/protected-paths-switch.ts; the list itself is `protectedPathsOf` in
   // lean/config.ts and the matcher is lean/protected-globs.ts.
   flag("LEAN_PROTECTED_PATHS", true),
-  // #2334 — whether `loadRun` rebuilds the ready step's own `derivedSpec` and `baseSha`.
-  // `buildOutcome` is the whitelist that rebuilds every step outcome field by field and
-  // had no clause for either, so the ready step's copy of the contract the run executed
-  // read back absent while the raw record carried it (the run-level copy survived, which
-  // is why derive mode worked). `0` puts the shipped release back byte for byte — the
-  // two fields drop on load exactly as v0.14.87 drops them — for an operator comparing
-  // a record against one written before the fix. The step's copy is an audit record: no
-  // production reader reads it off a step today. The reader is
-  // `leanReadyFactsOnLoadEnabled` in lean/ready-facts-switch.ts.
-  flag("LEAN_READY_FACTS_ON_LOAD", true),
   // The routed deadline report's own wall: the report is the step the deadline's stop
   // test exempts, so without this it is the one step nothing bounds. `0` puts the
   // unbounded await back byte for byte. The reader is `leanReportBoundEnabled` in
   // lean/handback-report-bound-switch.ts; the bound itself is `handoffReportBoundMs()`
   // in lean/engine-report.ts — `handoffAllowanceMs()` plus REPORT_BOUND_HEADROOM_RATIO.
   flag("LEAN_REPORT_BOUND", true),
-  // #2416 — `publish` re-pushes to the PR its OWN run opened, instead of handing back.
-  // A red `ci` routes the run back into `publish` with origin holding the sha its own
-  // last publish wrote and the forge's one unsettled row being the PR that publish made;
-  // the lease check refused on any unsettled row, so the round always ended at exit 10.
-  // On, the step compares origin's ref against the newest decided `publish`'s
-  // `publishedHead`/`prUrl` and the forge's rows, and pushes only when origin still holds
-  // that sha, it is an ANCESTOR of the head (so nothing is rewritten), and the single
-  // unsettled row is this branch's own PR. `0` restores the pre-fix refusal byte for
-  // byte — same origin read, one `prList`, no `merge-base` call. `isSettled` stays
-  // fail-closed on either arm. The reader is `leanRepublishOwnPrEnabled` in
-  // lean/republish-own-pr-switch.ts; the check itself is lean/publish-republish.ts.
-  flag("LEAN_REPUBLISH_OWN_PR", true),
   // The gate events on the host's result document (`issues[].gates`). `"0"` writes the
   // document exactly as it read before the object existed — no key, no placeholder — which
   // is what makes the object safe to ship on by default. Unset or any other value leaves
@@ -127,28 +109,12 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // certified does not run. The reader is `leanReviewAcceptanceEnabled` in
   // lean/review-acceptance-switch.ts.
   flag("LEAN_REVIEW_ACCEPTANCE", true),
-  // Whether a lean run whose review stopped with lanes unjudged gets its own cap: on (the
-  // default) such a `ready` PR reports `review-incomplete` and `issues[].reviewComplete:
-  // false`; `"0"` writes today's `awaiting-human-merge` and no field at all. The reader is
-  // `leanReviewIncompleteCapEnabled` in lean/review-incomplete-cap-switch.ts.
-  flag("LEAN_REVIEW_INCOMPLETE_CAP", true),
-  // #2265 — open the review seats' criteria section with the spec's `problem`, so
-  // a statement whose tail sits past the prose bound still reaches every seat.
-  // `0` takes the statement out and leaves every brief byte-identical to the
-  // render before it existed; the statement renders only when the split is on too.
-  // The reader is `leanReviewProblemEnabled` in lean/review-problem-switch.ts.
-  flag("LEAN_REVIEW_PROBLEM", true),
   // Show the lean review seats (six lenses, adversarial reviewer, review fixer)
   // the issue's prose and the spec's criteria as two sections, so a long
   // statement cannot cut the criteria by competing with its own block for one
   // bound. 0 restores the single bounded block. The reader is
   // `leanReviewSpecSplitEnabled` in lean/review-spec-split.ts.
   flag("LEAN_REVIEW_SPEC_SPLIT", true),
-  // #2262 — the rewind's lease: `"0"` puts the leading `+` back on the branch refspec,
-  // which makes git skip the lease and force-update a branch somebody else moved.
-  // Unset or any other value leaves the refspec unforced so the lease binds. The reader
-  // is `leanRewindLeaseBinds` in lean/rewind-lease-switch.ts.
-  flag("LEAN_REWIND_LEASE_BINDS", true),
   // #2212 — #2179's runner preflight and the reset's submodule init, both off
   // only on `"0"`, which restores v0.14.71's specify (no probe, no submodule
   // call, exit 11 where the preflight would have handed back at 10).
@@ -171,6 +137,4 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // code runs at all. The reader is `leanSubmodulesLocalEnabled` in
   // lean/submodules-local-switch.ts.
   flag("LEAN_SUBMODULES_LOCAL", true),
-  // The rewind rule itself: reader `leanVerifiedHandbackEnabled`, same module.
-  flag("LEAN_VERIFIED_HANDBACK", true),
 ];

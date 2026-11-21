@@ -19,7 +19,6 @@
  *   (a) the field shape: origin at the run's own `publishedHead`, ONE row whose url is
  *       the recorded `prUrl`, head descending from it -> ok, origin now at head, the
  *       lease bound to the sha the step read, and NO second PR opened
- *   (b) the same drive with the switch at "0" -> today's refusal, verbatim
  *   (c) origin moved by somebody else (not the recorded sha) -> refused
  *   (d) head does NOT descend from the recorded sha -> refused, origin unmoved
  *   (e) the row's url is not the recorded `prUrl` -> refused
@@ -31,14 +30,11 @@
  *   (k) the ancestry read cannot answer (exit 128) -> `PublishInfraError`, not a refusal
  *   (l) a settled row beside the run's own row -> exempt: only UNSETTLED rows are counted
  *
- * (b) is the load-bearing half of the AC1 pair: a switch that only ever measured the
- * on arm would pass on a build that ignored the env var entirely.
  */
 
 import { rmSync } from "node:fs";
 import { PublishInfraError } from "../src/lean/publish-deps.ts";
 import type { PublishDeps } from "../src/lean/publish-deps.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { ROOTS, originHead, runPublish } from "./lib/lean-publish-fixture.ts";
 import { fakePr, prWithState } from "./lib/lean-publish-forge.ts";
@@ -48,14 +44,10 @@ const SELF = "test-lean-publish-republish-own-pr.ts";
 const check = (cond: boolean, msg: string): void => assert(cond, `${SELF}: ${msg}`);
 
 /** Run one publish with the switch pinned to `value`, and hand the result back. */
-async function drive(
-  value: string,
-  opts: Parameters<typeof runPublish>[0],
-): Promise<Awaited<ReturnType<typeof runPublish>>> {
-  let out: Awaited<ReturnType<typeof runPublish>> | undefined;
-  await withEnv({ PI_ENSEMBLE_LEAN_REPUBLISH_OWN_PR: value }, async () => {
-    out = await runPublish(opts);
-  });
+async function drive(opts: Parameters<typeof runPublish>[0]): Promise<
+  Awaited<ReturnType<typeof runPublish>>
+> {
+  const out = await runPublish(opts);
   if (out === undefined) throw new Error("the drive produced no result");
   return out;
 }
@@ -65,15 +57,10 @@ const OWN_URL = "https://forge.example/pull/55";
 const ownRow = (branch: string, url = OWN_URL) => fakePr(55, url, branch);
 const branchOf = (issue: number): string => `lean/issue-${issue}`;
 
-/** Every case here pins the switch explicitly, so an operator's exported value cannot
- *  turn an ON case into an off one or the other way round. */
-const ON = "1";
-const OFF = "0";
-
 // ------------------------- (a) the field shape: the run's own PR, its own sha -> push
 {
   const issue = 901;
-  const r = await drive(ON, {
+  const r = await drive({
     issue,
     verify: { kind: "green" },
     originStale: "own-publish",
@@ -111,37 +98,13 @@ const OFF = "0";
   assert(r.forge.prListCalls > 0, "(a) the exempt arm still asked the forge for the branch's rows");
 }
 
-// ------------------ (b) the same drive with the switch at "0" -> today's refusal
-{
-  const issue = 902;
-  const r = await drive(OFF, {
-    issue,
-    verify: { kind: "green" },
-    originStale: "own-publish",
-    priorPublish: { prUrl: OWN_URL },
-    openPrs: [ownRow(`lean/issue-${issue}`)],
-  });
-  const branch = r.branch;
-  assert(
-    r.threw instanceof PublishInfraError && /refusing to rewrite/.test(r.threw.message),
-    `(b) "0" restores the refusal on the run's own PR (got ${r.threw?.name}: ${r.threw?.message})`,
-  );
-  assert(
-    r.threw?.message ===
-      `refusing to rewrite ${branch}: the forge returned an unsettled PR row (${OWN_URL})`,
-    `(b) the refusal is today's text, byte for byte (got ${JSON.stringify(r.threw?.message)})`,
-  );
-  assert(originHead(r.origin, branch) === r.priorHead, "(b) nothing was pushed on the off arm");
-  assert(r.forge.prCreateCalls.length === 0, "(b) the off arm opens no PR");
-}
-
-// -------------------------- (c) origin moved by somebody else -> refused, on the ON arm
+// -------------------------- (c) origin moved by somebody else -> refused
 //
 // The recorded sha is the whole licence: if origin holds anything else the step is not
 // looking at the branch it wrote, whatever the PR row says.
 {
   const issue = 903;
-  const r = await drive(ON, {
+  const r = await drive({
     issue,
     verify: { kind: "green" },
     // A foreign commit on the branch — origin is NOT at the run's recorded sha.
@@ -164,7 +127,7 @@ const OFF = "0";
 // descendant is a rewrite, and a rewrite needs the today-refusal.
 {
   const issue = 904;
-  const r = await drive(ON, {
+  const r = await drive({
     issue,
     verify: { kind: "green" },
     originStale: "own-publish",
@@ -184,7 +147,7 @@ const OFF = "0";
 // ------------------------ (e) the row's url is not the recorded prUrl -> refused
 {
   const issue = 905;
-  const r = await drive(ON, {
+  const r = await drive({
     issue,
     verify: { kind: "green" },
     originStale: "own-publish",
@@ -205,7 +168,7 @@ const OFF = "0";
 // so a row that would not be reused cannot be "the run's own PR".
 {
   const issue = 906;
-  const r = await drive(ON, {
+  const r = await drive({
     issue,
     verify: { kind: "green" },
     originStale: "own-publish",
@@ -224,7 +187,7 @@ const OFF = "0";
 {
   const issue = 907;
   const branch = branchOf(issue);
-  const r = await drive(ON, {
+  const r = await drive({
     issue,
     verify: { kind: "green" },
     originStale: "own-publish",
@@ -245,7 +208,7 @@ const OFF = "0";
 {
   const issue = 908;
   const branch = branchOf(issue);
-  const r = await drive(ON, {
+  const r = await drive({
     issue,
     verify: { kind: "green" },
     // A branch that is not absent and not the head, with NO decided publish in the log
@@ -268,7 +231,7 @@ const OFF = "0";
     ["no publishedHead", { kind: "ok", prUrl: OWN_URL }],
     ["a truncated publishedHead", { kind: "ok", prUrl: OWN_URL, publishedHead: "abc123" }],
   ] as const) {
-    const r = await drive(ON, {
+    const r = await drive({
       issue,
       verify: { kind: "green" },
       originStale: "own-publish",
@@ -295,7 +258,7 @@ for (const [label, state] of [
 ] as const) {
   const issue = label === "GitLab" ? 910 : 911;
   const branch = branchOf(issue);
-  const r = await drive(ON, {
+  const r = await drive({
     issue,
     verify: { kind: "green" },
     originStale: "own-publish",
@@ -324,7 +287,7 @@ for (const [label, state] of [
   // A rejection carrying git's exit code — the shape `execp` reports a non-zero child.
   const deadAncestry = (): Promise<never> =>
     Promise.reject(Object.assign(new Error("git merge-base died"), { code: 128 }));
-  const r = await drive(ON, {
+  const r = await drive({
     issue,
     verify: { kind: "green" },
     originStale: "own-publish",
@@ -367,7 +330,7 @@ for (const [label, state] of [
 {
   const issue = 913;
   const branch = branchOf(issue);
-  const r = await drive(ON, {
+  const r = await drive({
     issue,
     verify: { kind: "green" },
     originStale: "own-publish",

@@ -193,9 +193,8 @@ export interface IssueResult {
    * head against the newest decided publish, or log position for a record that names no head
    * of its own push — is `reviewCompleteOf`'s algorithm, stated once in its jsdoc
    * (`work-lean-pr.ts`); this field documents the host contract, not a second rule.
-   * Lean-only, like the two fields above, and written on one switch and only on the two arms
-   * that carry a cap: absent on a build running `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0`, on
-   * one from before the field existed, and on any run whose document carries no cap (a merge,
+   * Lean-only, like the two fields above, and written only on the two arms
+   * that carry a cap: absent on a build from before the field existed, and on any run whose document carries no cap (a merge,
    * a draft, a run that never reached `publish`) — where there is no cap to pair it with,
    * `prState` and `status` are the answer. Read it beside `cap`: `false` pairs with
    * `review-incomplete` and `true` with `awaiting-human-merge`, and no other document carries

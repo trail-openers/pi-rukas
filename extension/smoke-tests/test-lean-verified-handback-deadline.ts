@@ -23,11 +23,9 @@
  *       Before this file's second commit the record carried NONE of the four fields,
  *       which is the difference between "the rule fired and had no head" and "the rule
  *       never spoke" — the confusion the recording exists to remove;
- *   (c) `PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD=0`: the same (b) drive posts a body
- *       BYTE-IDENTICAL to the body captured once from a detached worktree of the
- *       parent commit, and records none of the four fields. The rule-ON control on the
- *       same log asserts that body DIFFERS, which is what keeps the equality from
- *       being a renderer compared with itself.
+ *   (c) the same (b) drive records the head origin really holds and calls it NOT
+ *       verified — the rule fires on the deadline route too, so it records rather
+ *       than staying silent.
  *
  * What makes these engine cases rather than rule cases, stated precisely: the
  * `rewindToVerified` and the real origin read run against a real bare origin; every
@@ -333,36 +331,6 @@ await withEnv(ENV, async () => {
     assert(
       String(ran.outcome?.report ?? "") !== PRE_RECORD_BODY,
       `(c) control: and the body DIFFERS from the pre-recording capture — the falsification that makes the off arm's equality mean something (got ${JSON.stringify((ran.outcome?.report ?? "").split("\n").slice(0, 3).join(" / "))})`,
-    );
-  });
-
-  const before = originBranchSha(off.origin);
-  if (before !== off.headSha)
-    throw new Error(`the off arm's origin does not hold the fix head: ${String(before)}`);
-  await withEnv({ ...ENV, PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD: "0" }, async () => {
-    const ran = await driveToDeadline(off.repoRoot, greenNoHead(), off.baseSha);
-    assert(
-      ran.crossed,
-      `(c) off: the clock crossed on the off drive too (crossed=${String(ran.crossed)})`,
-    );
-    assert(
-      ran.outcome?.report === PRE_RECORD_BODY,
-      `(c) off: the comment is the body the pre-recording handback posted, byte for byte (got ${JSON.stringify((ran.outcome?.report ?? "").split("\n").slice(-4).join(" / "))})`,
-    );
-    assert(
-      ran.outcome?.shippedHead === undefined &&
-        ran.outcome?.shippedVerified === undefined &&
-        ran.outcome?.unshippedHead === undefined &&
-        ran.outcome?.unshippedReason === undefined,
-      `(c) off: and the record carries NONE of the four head fields (${JSON.stringify([ran.outcome?.shippedHead, ran.outcome?.shippedVerified, ran.outcome?.unshippedHead, ran.outcome?.unshippedReason])})`,
-    );
-    assert(
-      originBranchSha(off.origin) === before,
-      `(c) off: origin still holds F, as it did before the drive (got ${String(originBranchSha(off.origin))})`,
-    );
-    assert(
-      originRefSha(off.origin, unverifiedRef(ISSUE)) === undefined,
-      "(c) off: and no keeping-ref was written",
     );
   });
 }

@@ -31,8 +31,6 @@
  *       strips only `origin/` and the guard compares bare names with `===` — so
  *       this case PINS already-correct behaviour rather than claiming a fix.
  *   (f) `assertSafeRef` still runs first.
- *   (g) `PI_ENSEMBLE_LEAN_GUARD_FAIL_CLOSED=0` restores the fail-open (R8): the
- *       same host (a) refuses passes quietly, and pays nothing for the new probe.
  *   (h) every probe the guard issues carries a timeout bound — a probe that can
  *       settle never is the fail-open wearing a different hat.
  *   (i) the PRODUCTION wiring (R6): `publishDeps()`'s own executor against a real
@@ -246,38 +244,6 @@ function refOrEmpty(dir: string, ref: string): string {
     `(f) and nothing was asked of git for a name already refused (${JSON.stringify(fake.calls.map((c) => c.argv))})`,
   );
 }
-
-/**
- * (g) THE OFF ARM IS TODAY (R8).
- *
- * Same host as (a) — every probe rejects — and with the switch at `"0"` the run
- * passes quietly, which is the fail-open the guard shipped with; and the off arm
- * must not pay for the probe the fix added. `main` is still refused by rule 1, so
- * the switch reaches the fail-closed half and nothing else.
- */
-await withEnv({ PI_ENSEMBLE_LEAN_GUARD_FAIL_CLOSED: "0" }, async () => {
-  const fake = mkGuardExec(() => ({ reject: "git: no such ref" }));
-  const quiet = await assertPublishableBranch("/no/such/clone", LEAN, fake.exec).then(
-    () => true,
-    () => false,
-  );
-  assert(
-    quiet,
-    "(g) with PI_ENSEMBLE_LEAN_GUARD_FAIL_CLOSED=0 an unreadable mainline passes quietly — the fail-open, restored",
-  );
-  assert(
-    !fake.saw("ls-remote", "origin", "HEAD"),
-    `(g) and the off arm never pays for the origin probe the fix added (${JSON.stringify(fake.calls.map((c) => [c.cmd, c.argv]))})`,
-  );
-  const mainErr = await assertPublishableBranch("/no/such/clone", "main", fake.exec).then(
-    () => undefined,
-    (e: unknown) => e as Error,
-  );
-  assert(
-    /work-lean pushes only lean\/ branches/.test(mainErr?.message ?? ""),
-    `(g) and the off arm still refuses \`main\` with rule 1's own sentence (${mainErr?.message})`,
-  );
-});
 
 /**
  * (h) Every probe the guard issues carries a timeout bound.

@@ -32,10 +32,6 @@ const { assert, failures } = makeAssert();
     names.includes("PI_ENSEMBLE_LEAN_RESULT_GATES"),
     "HEADLESS_INPUTS lists PI_ENSEMBLE_LEAN_RESULT_GATES",
   );
-  assert(
-    names.includes("PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP"),
-    "HEADLESS_INPUTS lists PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP",
-  );
   // The list's own order is the collation `test-headless-inputs.ts` enforces (the
   // `__`-to-space localeCompare that mostly ignores the separators), not ASCII order —
   // so the new entry has to sit where THAT rule puts it, and this is the same rule, not
@@ -58,10 +54,6 @@ const { assert, failures } = makeAssert();
   assert(
     docText.includes("`PI_ENSEMBLE_LEAN_RESULT_GATES`"),
     "docs/configuration.md carries a row for the switch",
-  );
-  assert(
-    docText.includes("`PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP`"),
-    "docs/configuration.md carries a row for the review-incomplete cap switch",
   );
 }
 

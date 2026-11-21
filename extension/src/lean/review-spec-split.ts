@@ -36,7 +36,6 @@ import {
   fencedIssuePromptBlock,
 } from "../adversarial-prompts.ts";
 import { renderSpecCriteriaSection } from "./review-criteria.ts";
-import { leanReviewProblemEnabled } from "./review-problem-switch.ts";
 import { specFor } from "./spec-for.ts";
 import { normalizeProse, stripPiSpecBlocks } from "./spec.ts";
 import type { ContractSource } from "./state-derived-spec.ts";
@@ -89,7 +88,6 @@ export function renderReviewIssueBlock(
   // on-arm test assertable against the pre-split golden.
   if (criteria === "") return fencedIssuePromptBlock(rawBody, rule, fencedIssueBody);
   const statementShown =
-    leanReviewProblemEnabled() &&
     normalizeProse(stripPiSpecBlocks(rawBody ?? "")) === normalizeProse(specProblem(rawBody, run));
   return `\n\n${ISSUE_PROMPT_LEAD} ${ADVERSARIAL_FINDING_RULE}${CRITERIA_CLAUSE} ${rule}\n\n${
     statementShown ? "" : `${prose}\n\n`

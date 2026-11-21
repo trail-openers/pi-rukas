@@ -11,7 +11,7 @@ import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
 import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { RedRecord, ReviewRecord } from "./state-outcome-gates.ts";
-import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
+import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
@@ -90,6 +90,17 @@ export interface Outcome {
    * `preexistingFailuresProblem` in `state-outcome-maps.ts`.
    */
   preexistingFailures?: Record<string, PreexistingTierRecord>;
+  /**
+   * `verify` only: the run's roster of the PROJECT's own pre-existing tests — the config pair
+   * `verify.testDir` + `verify.testGlob` listed at the run's base commit, run at head AND at the
+   * base, with the per-test verdicts read from the runner's machine-readable report, and the
+   * base version of every one of them the run edited run again against the head code. A green
+   * `verify` without this field never reaches `landed`: `landEarned` refuses it. Absent is
+   * therefore not "nothing failed" — it is "the gate never asked", which is why the roster is a
+   * field and not a default, and why an empty roster is refused on load rather than carried.
+   * Validated and rebuilt in `state-outcome-maps.ts`.
+   */
+  projectRoster?: ProjectRosterRecord;
   /**
    * `publish` only: the PR's https URL, as the forge returned it. Publish-only
    * by contract — no other step writes it, and `handback` reads no other field

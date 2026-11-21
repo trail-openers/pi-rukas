@@ -40,3 +40,12 @@ export function fixtureGitEnv(): Record<string, string> {
 export function sha(text: string | Buffer): string {
   return createHash("sha256").update(text).digest("hex");
 }
+
+/**
+ * Temp dirs the verify harness made; the case removes them at the end of its run.
+ *
+ * Lives here rather than in the fixture so the repo builder can register a dir as it makes one
+ * without importing the module that runs the step — the two would otherwise be each other's
+ * dependency, and a case would see one of their bindings still uninitialised.
+ */
+export const ROOTS: string[] = [];
