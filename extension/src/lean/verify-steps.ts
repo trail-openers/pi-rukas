@@ -42,7 +42,9 @@ export const TIER_TAIL_LINES = 40;
  * NOT a third shape: a real test can exit 127 after printing its failure, so routing on the number alone
  * hides genuine reds.
  *
- * and a green over it would be a green over an empty suite.
+ * The asymmetry that makes the split worth keeping: a `fail` is evidence a later green can answer, while
+ * an `infra` is the absence of evidence at all — so a caller that conflated them would let a suite that
+ * never started be reported as one that passed.
  */
 export type Executed =
   | { kind: "pass" }

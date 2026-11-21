@@ -20,7 +20,9 @@
  * RECORD: a roster that recorded a failing base version must never license a merge, and one that
  * recorded only passing base versions must never be refused for the edit alone.
  */
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { ProjectRosterRecord } from "../src/lean/state-outcome-maps.ts";
 import type { LeanRun } from "../src/lean/state.ts";
 import { ROOTS, runVerify } from "./lib/lean-verify-fixture.ts";
@@ -279,6 +281,140 @@ function baseScript(red: boolean): string {
     r.outcome?.kind === "green" && roster?.editedFiles === undefined,
     `(no edit) a run that touched no pre-existing test records no editedFiles (${String(r.outcome?.kind)}; ${JSON.stringify(roster?.editedFiles)})`,
   );
+}
+
+{
+  // A base blob that cannot be read must never be graded as an EMPTY test file. An empty file runs,
+  // passes, and records a base version that never existed as one this run did not break — which is the
+  // exact green the edited-file arm exists to refuse. The case makes the read fail by handing the gate
+  // a base commit that holds nothing at that path: git's own "no such path", which the gate must read
+  // as "no bytes" and hand back, not as an empty file. Asserted against the module directly, because
+  // the claim is about one blob read and the whole-step fixture could not distinguish the two answers.
+  const { runEditedBaseVersions } = await import("../src/lean/verify-roster-edited.ts");
+  const { mkdirSync, writeFileSync } = await import("node:fs");
+  const { execFileSync } = await import("node:child_process");
+  // The fixture's own git helper: it carries the identity, the isolated HOME and the
+  // fsmonitor/hooks guards, so these commits are the same kind of commit every other roster
+  // case makes rather than a second notion of what a git child needs.
+  const { git: gitRun } = await import("./lib/lean-verify-git.ts");
+  const g = (args: string[]): string =>
+    gitRun(dir, ...(args[0] === "-C" ? args.slice(2) : args));
+  const dir = mkdtempSync(path.join(tmpdir(), "roster-blob-"));
+  g(["init", "-q", "-b", "main", dir]);
+  mkdirSync(`${dir}/tests`, { recursive: true });
+  writeFileSync(`${dir}/tests/test-empty.sh`, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  g(["-C", dir, "add", "-A"]);
+  g(["-C", dir, "commit", "-q", "-m", "base"]);
+  const baseSha = g(["-C", dir, "rev-parse", "HEAD"]);
+  const { execp } = await import("../src/exec.ts");
+  const { gitTestEnv } = await import("./lib/git-test-env.ts");
+  const realExec = ((c: string, o: unknown) =>
+    execp(c, { ...(o as object), env: gitTestEnv() } as never)) as never;
+
+  // The honest empty case: the base REALLY holds a zero-byte file, git says so, and the run accepts it.
+  writeFileSync(`${dir}/tests/test-zero.sh`, "", { mode: 0o755 });
+  g(["-C", dir, "add", "-A"]);
+  g(["-C", dir, "commit", "-q", "-m", "zero"]);
+  const zeroSha = g(["-C", dir, "rev-parse", "HEAD"]);
+  const zero = await runEditedBaseVersions({
+    exec: realExec,
+    repoRoot: dir,
+    wt: dir,
+    baseSha: zeroSha,
+    template: "sh {file}",
+    timeoutMs: 5_000,
+    edited: ["tests/test-zero.sh"],
+  });
+  assert(
+    zero.ok === true && JSON.stringify(zero.editedFiles) === JSON.stringify(["tests/test-zero.sh"]),
+    `(zero blob) a base blob git reports as 0 bytes is accepted as the empty file it is (${JSON.stringify(zero).slice(0, 140)})`,
+  );
+
+  // A blob the commit does not hold is not an empty file: refusing is the only answer that cannot
+  // certify a contract nobody read.
+  const missing = await runEditedBaseVersions({
+    exec: realExec,
+    repoRoot: dir,
+    wt: dir,
+    baseSha,
+    template: "sh {file}",
+    timeoutMs: 5_000,
+    edited: ["tests/test-absent.sh"],
+  });
+  assert(
+    missing.ok === false && /could not read the base version/i.test(missing.reason),
+    `(unreadable blob) a base blob git would not answer is refused, not run as an empty file (${JSON.stringify(missing).slice(0, 160)})`,
+  );
+
+  // An executor that swallows the read — resolving with no stdout at all — is the same refusal: the
+  // gate has no bytes, and "no bytes" is not "an empty test file the base held".
+  const silent = await runEditedBaseVersions({
+    exec: (() =>
+      Promise.resolve({ stdout: "", stderr: "" })) as unknown as Parameters<
+      typeof runEditedBaseVersions
+    >[0]["exec"],
+    repoRoot: dir,
+    wt: dir,
+    baseSha,
+    template: "sh {file}",
+    timeoutMs: 5_000,
+    edited: ["tests/test-empty.sh"],
+  });
+  assert(
+    silent.ok === false,
+    `(empty read) a read that printed nothing is refused rather than graded as an empty pass (${JSON.stringify(silent).slice(0, 160)})`,
+  );
+  rmSync(dir, { recursive: true, force: true });
+}
+
+{
+  // Item 5: the base version of an edited file runs through the project's `verify.test` template, and it
+  // must run under the SAME scrubbed env the project's own suite gets. A base-version run that inherited
+  // the driver's environment could see a knob the project's runner is never handed, and a verdict reached
+  // under it is not the verdict the project's runner would have reached — the very asymmetry that lets a
+  // rewritten contract slip through.
+  const { runEditedBaseVersions } = await import("../src/lean/verify-roster-edited.ts");
+  const seen: { argv?: string[]; killGroup?: boolean; env?: Record<string, string | undefined> }[] = [];
+  // A spy executor: it answers the gate's `git show` with bytes the base really held and records the
+  // env of every child it started, so the assertion is about the RUNNER's environment rather than
+  // about a string the reason happens to contain.
+  const spy = ((_c: string, o: unknown) => {
+    const call = o as {
+      argv?: string[];
+      killGroup?: boolean;
+      env?: Record<string, string | undefined>;
+    };
+    seen.push(call);
+    if (call.argv?.includes("show")) return Promise.resolve({ stdout: "#!/bin/sh\n", stderr: "" });
+    if (call.argv?.[0] === "cat-file") return Promise.resolve({ stdout: "9\n", stderr: "" });
+    return Promise.resolve({ stdout: "ok\n", stderr: "" });
+  }) as unknown as Parameters<typeof runEditedBaseVersions>[0]["exec"];
+  // A real tree, because the gate MATERIALISES the base bytes there before running them: a wt that
+  // cannot be written makes the case assert about a run that never happened.
+  const wtDir = mkdtempSync(path.join(tmpdir(), "roster-env-"));
+  const result = await runEditedBaseVersions({
+    exec: spy,
+    repoRoot: wtDir,
+    wt: wtDir,
+    baseSha: "0".repeat(40),
+    template: "sh {file}",
+    timeoutMs: 5_000,
+    edited: ["tests/test-a.sh"],
+  });
+  // The runner's call is the one asked for a process-group kill: `runTestFile` always sets
+  // `killGroup`, the gate's git reads never do. That is what separates the project's runner from
+  // the bookkeeping around it.
+  const runner = seen.find((c) => (c as { killGroup?: boolean }).killGroup === true);
+  assert(
+    result.ok === true && runner !== undefined,
+    `(scrubbed env) the base version really reached the project's runner (${JSON.stringify(result).slice(0, 110)})`,
+  );
+  const leaked = Object.keys(runner?.env ?? {}).filter((k) => /^PI_ENSEMBLE_/.test(k));
+  assert(
+    (runner?.env ?? {}).PATH !== undefined && leaked.length === 0,
+    `(scrubbed env) the runner was handed the scrubbed verify env, with no driver knob left in it (leaked: ${JSON.stringify(leaked)})`,
+  );
+  rmSync(wtDir, { recursive: true, force: true });
 }
 
 for (const dir of ROOTS) rmSync(dir, { recursive: true, force: true });

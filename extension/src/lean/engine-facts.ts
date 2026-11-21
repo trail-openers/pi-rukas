@@ -83,7 +83,11 @@ function rosterEarnsLand(outcome: Outcome | undefined): boolean {
   const roster = outcome?.projectRoster;
   if (roster === undefined) return false;
   if (!Number.isSafeInteger(roster.total) || roster.total < 1) return false;
-  return !(roster.editedFiles !== undefined && roster.editedFiles.length > 0 && roster.failed.length > 0);
+  return !(
+    roster.editedFiles !== undefined &&
+    roster.editedFiles.length > 0 &&
+    roster.failed.length > 0
+  );
 }
 
 /** The reason the record gives for refusing the merge, for the handback line. */

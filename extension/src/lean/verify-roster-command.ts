@@ -75,8 +75,13 @@ export function retargetRosterCommand(
   return { bin: swap(rendered.bin), args: rendered.args.map(swap), report: toReport };
 }
 
-/** The report file a roster run writes, so a fixture can name it too. */
-export const ROSTER_REPORT_FILE = ".lean-roster-report.xml";
+/**
+ * The report file a roster run writes, so a fixture can name it too.
+ *
+ * One literal, exported: the fixtures that write a report by hand and the gate that reads it must name
+ * the same file, and a second copy of the string is a second thing that can disagree with the first.
+ */
+export const ROSTER_REPORT_FILE = JUNIT_REPORT_FILE;
 
 /**
  * `<testcase>` verdicts out of a JUnit XML report: each name (its `classname` prefixed when
@@ -168,9 +173,17 @@ export async function runProjectSuite(
     };
   if (typeof e.code === "string")
     return { ran: false, reason: "the roster command could not be started" };
-  const exitCode = typeof e.code === "number" ? e.code : e.__err === undefined ? 0 : undefined;
-  if (exitCode === undefined)
-    return { ran: false, reason: "the roster run produced no exit status" };
+  // A numeric exit is REQUIRED, not assumed. An exec that RESOLVED with no `code` at all — a wrapper
+  // that swallowed the status, a child whose status was never read — is not a run that exited 0, and
+  // reading it that way hands a green to a suite whose outcome nobody observed. The kill, signal,
+  // overflow and could-not-start shapes above answer themselves; this is the residue, and the residue
+  // is "did not run", never "passed".
+  if (typeof e.code !== "number" || !Number.isInteger(e.code))
+    return {
+      ran: false,
+      reason: `the roster run produced no exit status (${e.code === undefined ? "none" : `code ${String(e.code)}`})`,
+    };
+  const exitCode = e.code;
   const report = readReport(opts.reportCwd, opts.report);
   if (report === undefined)
     return {
