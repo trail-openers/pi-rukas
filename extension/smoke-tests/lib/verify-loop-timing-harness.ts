@@ -6,7 +6,8 @@
  * assertions and what they pin live with the cases in test-verify-loop-timing.ts.
  */
 import { spawnSync } from "node:child_process";
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import * as path from "node:path";
 
 // The harness sits in lib/ beside the loop's own halves, so HERE is one level up from
@@ -30,6 +31,13 @@ export const GENERATED = {
   slow1: "generated-timing-slow-1.ts",
   many: [0, 1, 2, 3, 4].map((i) => `generated-timing-many-${i}.ts`),
 };
+
+/** The committed ceiling fixtures (the AC1 pair), resolved here so the cases name
+ * only what they assert about. Unlike the generated set these are tracked files:
+ * an allow-list entry is a path, so the exempted arm has to be a path the shipped
+ * list can name and the shrink-only gate can check for existence. */
+export const CEILING_OVER = path.join(FIXTURES, "fixture-ceiling-over.ts");
+export const CEILING_LISTED = path.join(FIXTURES, "fixture-ceiling-listed.ts");
 
 /** The harness' own failures (a fixture it could not write) are fatal to a case
  * rather than counted: a case that cannot build its input has not tested anything,
@@ -114,6 +122,18 @@ export function runLoop(
 export const TIME_RE = /^TIME (\d+) (.+)$/;
 export const HEADER_RE = /^SLOWEST: top (\d+) of (\d+) \(N=(\d+)\)$/;
 export const TOTAL_RE = /^TOTAL wall (\d+)  sum (\d+)  max (\d+)$/;
+/** The ceiling line's shape, pinned exactly (R9): `CEILING: <secs>s <file> (ceiling <N>s)`. */
+export const CEILING_RE = /^CEILING: (\d+)s (.+) \(ceiling (\d+)s\)$/;
+
+/** Every `CEILING:` line on a channel, with its fields parsed. */
+export function ceilingLines(output: string): { secs: number; file: string; ceiling: number }[] {
+  const rows: { secs: number; file: string; ceiling: number }[] = [];
+  for (const line of output.split("\n")) {
+    const m = CEILING_RE.exec(line);
+    if (m) rows.push({ secs: Number(m[1]), file: m[2] ?? "", ceiling: Number(m[3]) });
+  }
+  return rows;
+}
 
 export type Row = { secs: number; file: string };
 
@@ -182,11 +202,43 @@ export function totalLine(stdout: string): string {
 }
 
 /** Every timing line on the channel the feature prints on, for the byte-for-byte
- * comparisons: the record, the block rows, the header and TOTAL together. */
+ * comparisons: the record, the block rows, the header and TOTAL together, and the
+ * ceiling lines — a line that survived an "off" run would otherwise slip through
+ * the comparison as an unrecognised line rather than as a timing leak. */
 export function timingOutput(stdout: string): string[] {
   return stdout.split("\n").filter(
-    (l) => TIME_RE.test(l) || HEADER_RE.test(l) || TOTAL_RE.test(l),
+    (l) => TIME_RE.test(l) || HEADER_RE.test(l) || TOTAL_RE.test(l) || CEILING_RE.test(l),
   );
+}
+
+/**
+ * Write a temporary allow-list naming `file` (repo-relative-from-`extension/`, the
+ * key the loop matches on — R4) and return the value to hand the loop as
+ * `TIMING_ALLOWLIST`.
+ *
+ * The list is a temp file rather than an edit to the committed one: the suite runs
+ * tests in parallel, so a mutation with a `finally` is a race another test could
+ * read, and a killed process would leave the shipped exemptions changed. The loop
+ * reads its path from the environment for exactly this reason.
+ */
+export function writeAllowlist(entries: { file: string; seconds: number }[]): string {
+  const dir = mkdtempSync(path.join(tmpdir(), "pi-ens-allowlist-"));
+  const p = path.join(dir, "timing-allowlist.json");
+  try {
+    writeFileSync(p, JSON.stringify({ entries }, null, 2));
+  } catch (e) {
+    harnessFatal(`could not write a temporary allow-list at ${p}: ${String(e)}`);
+  }
+  return p;
+}
+
+/** Remove a temporary allow-list dir from `writeAllowlist`. */
+export function removeAllowlist(p: string): void {
+  try {
+    rmSync(path.dirname(p), { recursive: true, force: true });
+  } catch {
+    /* a leftover temp dir is reaped with TMPDIR */
+  }
 }
 
 // The committed fixtures the cases run, resolved here so the case file names only
