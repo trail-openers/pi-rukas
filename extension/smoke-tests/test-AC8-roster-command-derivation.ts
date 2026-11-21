@@ -45,7 +45,10 @@ function derive(test: string): { bin: string; args: string[]; report: string } |
 {
   // R2's first named case: the pytest template the loader accepts, minus its `{file}` word.
   const r = derive("pytest -q {file}");
-  assert(r?.bin === "pytest", `(pytest) the bin is the template's own first word (${String(r?.bin)})`);
+  assert(
+    r?.bin === "pytest",
+    `(pytest) the bin is the template's own first word (${String(r?.bin)})`,
+  );
   assert(
     JSON.stringify(r?.args) === JSON.stringify(["-q", `--junitxml=${REPORT}`, TREE]),
     `(pytest) argv is -q --junitxml=<tree>/.lean-roster-report.xml <tree> (${JSON.stringify(r?.args)})`,
@@ -62,8 +65,7 @@ function derive(test: string): { bin: string; args: string[]; report: string } |
   // that kept the word handed the runner a path that does not exist.
   const r = derive("sh {file}");
   assert(
-    r?.bin === "sh" &&
-      JSON.stringify(r?.args) === JSON.stringify([`--junitxml=${REPORT}`, TREE]),
+    r?.bin === "sh" && JSON.stringify(r?.args) === JSON.stringify([`--junitxml=${REPORT}`, TREE]),
     `(bare {file}) sh {file} derives to sh --junitxml=… <tree> (${JSON.stringify(r?.args)})`,
   );
 }
@@ -77,7 +79,12 @@ function derive(test: string): { bin: string; args: string[]; report: string } |
   assert(
     r?.bin === "sh" &&
       JSON.stringify(r?.args) ===
-        JSON.stringify(["self-rewrite.sh", "tests/AC1-retry.test.sh", `--junitxml=${REPORT}`, TREE]),
+        JSON.stringify([
+          "self-rewrite.sh",
+          "tests/AC1-retry.test.sh",
+          `--junitxml=${REPORT}`,
+          TREE,
+        ]),
     `(middle) the {file} word is deleted in place, its neighbours keep their order (${JSON.stringify(r?.args)})`,
   );
 }
@@ -111,7 +118,10 @@ function derive(test: string): { bin: string; args: string[]; report: string } |
   // A configured `verify.roster` is used verbatim, exactly as before: the derivation belongs to the
   // ABSENT case only, and a project that named its own invocation keeps it.
   const rendered = renderRosterCommand(
-    { test: "pytest -q {file}", roster: "pytest -p no:cacheprovider --junitxml={report} {dir}" } as VerifyRosterConfig,
+    {
+      test: "pytest -q {file}",
+      roster: "pytest -p no:cacheprovider --junitxml={report} {dir}",
+    } as VerifyRosterConfig,
     TREE,
   );
   assert(

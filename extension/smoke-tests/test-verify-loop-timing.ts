@@ -75,7 +75,6 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-
 // ------------------------- Case 1: one TIME line per test, at both pool widths
 
 for (const jobs of ["1", "3"]) {
@@ -114,7 +113,10 @@ for (const jobs of ["1", "3"]) {
     );
     const total = totalLine(r.stderr);
     const m = TOTAL_RE.exec(total);
-    assert(m !== null, `case 1 (JOBS=${jobs}): the TOTAL line is present and well-formed (got ${JSON.stringify(total)})`);
+    assert(
+      m !== null,
+      `case 1 (JOBS=${jobs}): the TOTAL line is present and well-formed (got ${JSON.stringify(total)})`,
+    );
     if (m) {
       const wall = Number(m[1]);
       const sum = Number(m[2]);
@@ -123,7 +125,10 @@ for (const jobs of ["1", "3"]) {
         sum >= 8 && sum <= 25,
         `case 1 (JOBS=${jobs}): sum is the per-test times added up, not the run's clock (got ${sum})`,
       );
-      assert(max === Math.max(...rows.map((x) => x.secs)), `case 1 (JOBS=${jobs}): max is the slowest single test (got ${max})`);
+      assert(
+        max === Math.max(...rows.map((x) => x.secs)),
+        `case 1 (JOBS=${jobs}): max is the slowest single test (got ${max})`,
+      );
       assert(
         wall >= 6 && wall <= sum + rows.length,
         `case 1 (JOBS=${jobs}): wall is the run's clock and exceeds the summed per-test times by no more than one tick per test (got wall ${wall}, sum ${sum})`,
@@ -156,11 +161,17 @@ for (const jobs of ["1", "3"]) {
     );
     const wideHeader = summaryHeader(wide.stderr);
     assert(
-      wideHeader !== null && wideHeader.shown === 5 && wideHeader.total === 5 && wideHeader.n === 99,
+      wideHeader !== null &&
+        wideHeader.shown === 5 &&
+        wideHeader.total === 5 &&
+        wideHeader.n === 99,
       `case 2: N is reported as asked, and shown counts the files (got ${JSON.stringify(wideHeader)})`,
     );
     const wideTotal = TOTAL_RE.exec(totalLine(wide.stderr));
-    assert(wideTotal !== null, `case 2: the wide run prints TOTAL (got ${JSON.stringify(totalLine(wide.stderr))})`);
+    assert(
+      wideTotal !== null,
+      `case 2: the wide run prints TOTAL (got ${JSON.stringify(totalLine(wide.stderr))})`,
+    );
     if (wideTotal) {
       const sum = Number(wideTotal[2]);
       const max = Number(wideTotal[3]);
@@ -168,7 +179,10 @@ for (const jobs of ["1", "3"]) {
         sum === wideRows.reduce((a, x) => a + x.secs, 0),
         `case 2: sum is the per-test times of the same run added up (got ${sum} vs ${JSON.stringify(wideRows.map((x) => x.secs))})`,
       );
-      assert(max === Math.max(...wideRows.map((x) => x.secs)), `case 2: max is that run's slowest test (got ${max})`);
+      assert(
+        max === Math.max(...wideRows.map((x) => x.secs)),
+        `case 2: max is that run's slowest test (got ${max})`,
+      );
       assert(
         Number(wideTotal[1]) <= sum + wideRows.length,
         `case 2: the run's wall (${wideTotal[1]}) exceeds its summed per-test times (${sum}) by no more than one tick per test`,
@@ -182,7 +196,10 @@ for (const jobs of ["1", "3"]) {
       `case 2: N=2 shows two rows out of five (got ${JSON.stringify(header)})`,
     );
     const rows = blockRows(narrow.stderr);
-    assert(rows.length === 2, `case 2: the block carries exactly the N rows asked for (got ${JSON.stringify(rows)})`);
+    assert(
+      rows.length === 2,
+      `case 2: the block carries exactly the N rows asked for (got ${JSON.stringify(rows)})`,
+    );
     // The window is checked against the run's OWN record, not against the sleeps that
     // were asked for: the loop's clock is whole seconds, so two fixtures that were
     // meant to take 1s and 2s can legitimately both read 2 — which is why asserting
@@ -192,7 +209,10 @@ for (const jobs of ["1", "3"]) {
     // the window keeps the slowest recorded file first, and the whole record below is
     // not truncated by it.
     const record = timeLines(narrow.stderr);
-    const slowest = record.reduce((a, x) => (x.secs > a.secs ? x : a), record[0] ?? { secs: -1, file: "" });
+    const slowest = record.reduce(
+      (a, x) => (x.secs > a.secs ? x : a),
+      record[0] ?? { secs: -1, file: "" },
+    );
     assert(
       rows.length === 2 &&
         rows[0]?.file === files[3] &&
@@ -246,8 +266,14 @@ for (const jobs of ["1", "3"]) {
     rows.length === 3,
     `case 3: one TIME line per test, the timed-out one included (got ${JSON.stringify(rows.map((x) => path.basename(x.file)))})`,
   );
-  assert(outcomeOf(r.stderr, PASS) === "pass", `case 3: the passing test is labelled pass (got ${JSON.stringify(outcomeOf(r.stderr, PASS))})`);
-  assert(outcomeOf(r.stderr, FAIL) === "fail", `case 3: the failing test is labelled fail (got ${JSON.stringify(outcomeOf(r.stderr, FAIL))})`);
+  assert(
+    outcomeOf(r.stderr, PASS) === "pass",
+    `case 3: the passing test is labelled pass (got ${JSON.stringify(outcomeOf(r.stderr, PASS))})`,
+  );
+  assert(
+    outcomeOf(r.stderr, FAIL) === "fail",
+    `case 3: the failing test is labelled fail (got ${JSON.stringify(outcomeOf(r.stderr, FAIL))})`,
+  );
   assert(
     outcomeOf(r.stderr, HANG) === "timeout after 2s",
     `case 3: the watchdog's kill is labelled with the bound it fired at (got ${JSON.stringify(outcomeOf(r.stderr, HANG))})`,
@@ -324,8 +350,14 @@ for (const jobs of ["1", "3"]) {
   try {
     const on = runLoop([A, B, PASS]);
     const off = runLoop([A, B, PASS], { PI_ENSEMBLE_VERIFY_TIMING: "0" });
-    assert(on.status === 0 && off.status === 0, `case 5: the opt-out does not change the exit code (${on.status} / ${off.status})`);
-    assert(timingOutput(on.stderr).length > 0, `case 5: with the default on, lines and block both print`);
+    assert(
+      on.status === 0 && off.status === 0,
+      `case 5: the opt-out does not change the exit code (${on.status} / ${off.status})`,
+    );
+    assert(
+      timingOutput(on.stderr).length > 0,
+      `case 5: with the default on, lines and block both print`,
+    );
     assert(
       timingOutput(off.stderr).length === 0,
       `case 5: PI_ENSEMBLE_VERIFY_TIMING=0 prints neither (stdout: ${JSON.stringify(off.stdout)})`,
@@ -368,7 +400,10 @@ for (const jobs of ["1", "3"]) {
     exit = 1;
   } else {
     const r = runLoop([LIVE]);
-    assert(r.status === 3, `case 6: a run whose only argument was a live test exits 3 as before (got ${r.status})`);
+    assert(
+      r.status === 3,
+      `case 6: a run whose only argument was a live test exits 3 as before (got ${r.status})`,
+    );
     assert(
       timingOutput(r.stdout).length === 0,
       `case 6: the vacuous run prints no timing (stdout: ${JSON.stringify(r.stdout)})`,

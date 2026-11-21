@@ -35,13 +35,9 @@ const repo = path.resolve(here, "..", "..");
 const read = (rel: string): string => readFileSync(path.join(repo, rel), "utf8");
 
 const configuration = read("docs/configuration.md");
-/** The lever's row: the switch stays retained (#2438 R4), and this file is where its rule is stated. */
-const rosterRow = envRow("PI_ENSEMBLE_LEAN_PROJECT_ROSTER");
 const lean = read("docs/lean.md");
 const troubleshooting = read("docs/troubleshooting.md");
 
-/** The env table's row for one variable, so an assertion is about ITS row and not the file's. */
-/** The work.json row, which documents every config field including `verify.roster`. */
 /** The env table's row for one variable, so an assertion is about ITS row and not the file's. */
 function envRow(name: string): string {
   const line = configuration.split("\n").find((l) => l.startsWith(`| \`${name}\` |`));
@@ -49,6 +45,10 @@ function envRow(name: string): string {
   return line;
 }
 
+/** The lever's row: the switch stays retained (#2438 R4), and this file is where its rule is stated. */
+const rosterRow = envRow("PI_ENSEMBLE_LEAN_PROJECT_ROSTER");
+
+/** The work.json row, which documents every config field including `verify.roster`. */
 function workJsonRow(): string {
   const line = configuration.split("\n").find((l) => l.includes("`.pi/work.json`"));
   if (line === undefined) throw new Error("docs/configuration.md has no .pi/work.json row");
@@ -61,7 +61,6 @@ function verifyRow(): string {
   if (line === undefined) throw new Error("docs/lean.md has no verify step row");
   return line;
 }
-
 
 /** The lever's row states the rule the switch implements, in both directions. */
 function checkSwitchRow(): void {
@@ -234,13 +233,15 @@ function checkTroubleshooting(): void {
     "(troubleshooting) the entry names the `{file}` derivation as the cause of the exit-4 hand-back",
   );
   assert(
-    /recursive|recursively/.test(troubleshooting) && /test\/units|multi-segment/.test(troubleshooting),
+    /recursive|recursively/.test(troubleshooting) &&
+      /test\/units|multi-segment/.test(troubleshooting),
     "(troubleshooting) the missing-test cause reflects the recursive listing and a multi-segment testDir",
   );
 }
 
 checkSwitchRow();
 checkTroubleshooting();
+
 /**
  * The docs and the code agree on the default. A row that says ON while the switch reads off is the
  * drift this test exists to catch, so the assertion is against the real reader rather than the prose.

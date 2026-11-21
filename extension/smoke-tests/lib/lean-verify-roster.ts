@@ -9,7 +9,8 @@
  * three pieces that make the declaration legible to both sides: the option shape's serialiser
  * (`rosterReportXml`), the predicate that recognises the report read among the step's children
  * (`isRosterReportRead`), and the roster command the fixture renders from the config
- * (`rosterCommandFor`).
+ * (`rosterCommandFor`), which is the gate's own derivation rather than a copy of it — a second
+ * rendering of the same rule is a second thing that can disagree with the command the gate submits.
  *
  * The XML this writes is the shape a JUnit report has, so the gate's own parser is what reads it:
  * the fixture never hands the gate a verdict, only a report, and an unreadable report is the gate's
@@ -19,7 +20,7 @@
 import { rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { WorkConfig } from "../../src/lean/config.ts";
-import { ROSTER_REPORT_FILE } from "../../src/lean/verify-roster-command.ts";
+import { ROSTER_REPORT_FILE, deriveSuiteTemplate } from "../../src/lean/verify-roster-command.ts";
 import type { VerifyOpts } from "./lean-verify-types.ts";
 
 /**
@@ -108,24 +109,10 @@ export function rosterCommandFor(config: {
   test?: string;
 }): { bin: string } | undefined {
   const template =
-    config.roster ??
-    (config.test === undefined ? undefined : deriveRosterTemplate(config.test));
+    config.roster ?? (config.test === undefined ? undefined : deriveSuiteTemplate(config.test));
   if (template === undefined) return undefined;
   const bin = template.split(/\s+/).filter((w) => w !== "")[0];
   return bin === undefined ? undefined : { bin };
-}
-
-/**
- * The fixture's copy of the gate's derivation (`deriveSuiteTemplate` in `verify-roster-command.ts`):
- * `verify.test` with one whole-word `{file}` removed, plus the report pair. A fixture that appended
- * without removing would recognise its own roster runs by an argv the gate no longer submits, and
- * every roster case would silently stop counting the runs it asserts on.
- */
-export function deriveRosterTemplate(test: string): string {
-  const words = test.split(/\s+/).filter((w) => w !== "");
-  const at = words.indexOf("{file}");
-  const kept = at < 0 ? words : [...words.slice(0, at), ...words.slice(at + 1)];
-  return `${kept.join(" ")} --junitxml={report} {dir}`;
 }
 
 /**

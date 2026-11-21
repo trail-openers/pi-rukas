@@ -37,49 +37,48 @@ const PROSE_BODY = SPEC_BODY_WITH_PROSE;
 // rather than echoed somewhere else in it.
 
 await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: undefined }, async () => {
-    const r = await runBuild({
-      issue: 2228,
-      specBody: PROSE_BODY,
-      child: (wt) => put(wt, "src/retry.ts", "export const retry = () => 7;\n"),
-    });
-    const prompt = r.prompts[0] ?? "";
-    assert(
-      r.threw === undefined && r.outcome?.kind === "ok",
-      `(a) the round ran: ${r.threw?.message ?? r.outcome?.kind}`,
-    );
-    assert(r.fetched === 1, `(a) the issue was read exactly once (got ${r.fetched})`);
-    assert(
-      prompt.includes("Add retry to the meter's quota check."),
-      "(a) the prose ABOVE the spec block reaches the builder's brief",
-    );
-    assert(
-      prompt.includes('TAIL-ONLY: the exception message must remain exactly "quota exceeded"'),
-      "(a) the prose BELOW the block reaches it too — a strip or a renderer that lost the tail fails here",
-    );
-    assert(
-      prompt.indexOf("## The issue") < prompt.indexOf("TAIL-ONLY:") &&
-        prompt.indexOf("TAIL-ONLY:") < prompt.indexOf("## The acceptance criteria"),
-      "(a) the tail sits INSIDE the section, not echoed somewhere else in the brief",
-    );
-    assert(
-      !prompt.includes('"verify": "test"'),
-      "(a) the spec block itself is stripped — the criteria are printed below, not embedded twice",
-    );
-    assert(
-      prompt.includes("`pi-spec v1`"),
-      "(a) the prose that QUOTES the block format survives the strip and the fence guard — only a surviving spec-shaped FENCE refuses the section",
-    );
-    assert(
-      prompt.includes("```text") &&
-        prompt.indexOf("## The issue") < prompt.indexOf("## The acceptance criteria"),
-      "(a) the section sits between the problem and the criteria, behind the fence",
-    );
-    assert(
-      prompt.includes(LEAN_BUILD_ISSUE_LEAD),
-      "(a) the builder's own lead is the sentence that tells it what the prose is for",
-    );
-  },
-);
+  const r = await runBuild({
+    issue: 2228,
+    specBody: PROSE_BODY,
+    child: (wt) => put(wt, "src/retry.ts", "export const retry = () => 7;\n"),
+  });
+  const prompt = r.prompts[0] ?? "";
+  assert(
+    r.threw === undefined && r.outcome?.kind === "ok",
+    `(a) the round ran: ${r.threw?.message ?? r.outcome?.kind}`,
+  );
+  assert(r.fetched === 1, `(a) the issue was read exactly once (got ${r.fetched})`);
+  assert(
+    prompt.includes("Add retry to the meter's quota check."),
+    "(a) the prose ABOVE the spec block reaches the builder's brief",
+  );
+  assert(
+    prompt.includes('TAIL-ONLY: the exception message must remain exactly "quota exceeded"'),
+    "(a) the prose BELOW the block reaches it too — a strip or a renderer that lost the tail fails here",
+  );
+  assert(
+    prompt.indexOf("## The issue") < prompt.indexOf("TAIL-ONLY:") &&
+      prompt.indexOf("TAIL-ONLY:") < prompt.indexOf("## The acceptance criteria"),
+    "(a) the tail sits INSIDE the section, not echoed somewhere else in the brief",
+  );
+  assert(
+    !prompt.includes('"verify": "test"'),
+    "(a) the spec block itself is stripped — the criteria are printed below, not embedded twice",
+  );
+  assert(
+    prompt.includes("`pi-spec v1`"),
+    "(a) the prose that QUOTES the block format survives the strip and the fence guard — only a surviving spec-shaped FENCE refuses the section",
+  );
+  assert(
+    prompt.includes("```text") &&
+      prompt.indexOf("## The issue") < prompt.indexOf("## The acceptance criteria"),
+    "(a) the section sits between the problem and the criteria, behind the fence",
+  );
+  assert(
+    prompt.includes(LEAN_BUILD_ISSUE_LEAD),
+    "(a) the builder's own lead is the sentence that tells it what the prose is for",
+  );
+});
 
 // Off is off, at the step boundary too: same body, no section, and the brief is
 // the one a body-less run produces.
@@ -108,7 +107,8 @@ await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: "0" }, async () => {
     const x = a.split("\n");
     const y = b.split("\n");
     for (let i = 0; i < Math.max(x.length, y.length); i++) {
-      if (x[i] !== y[i]) return `line ${String(i)}: ${JSON.stringify(x[i])} vs ${JSON.stringify(y[i])}`;
+      if (x[i] !== y[i])
+        return `line ${String(i)}: ${JSON.stringify(x[i])} vs ${JSON.stringify(y[i])}`;
     }
     return "";
   };

@@ -66,12 +66,7 @@ export {
 // The repo builders (a real repo at its frozen head, its registered worktree, the project-test
 // stub the roster enumerates) live in `lean-verify-repo.ts`; this module runs the step against
 // what they build.
-import {
-  buildFixtureForWiring,
-  commitHere,
-  fixture,
-  fixtureSync,
-} from "./lean-verify-repo.ts";
+import { buildFixtureForWiring, commitHere, fixture, fixtureSync } from "./lean-verify-repo.ts";
 export { buildFixtureForWiring };
 import { type Fixture, provisionHookedTree } from "./lean-verify-hook-tree.ts";
 import {
@@ -218,8 +213,15 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const ctx: HandlerCtx = { ...f.ctx, steps: all };
   ctx.run = { ...ctx.run, steps: all };
 
-  const { exec, redRunsSeen, baseTierRunsSeen, frozenRunsSeen, rosterRunsSeen, rosterHeadRunsSeen, rosterBaseRunsSeen } =
-    makeVerifyExec({
+  const {
+    exec,
+    redRunsSeen,
+    baseTierRunsSeen,
+    frozenRunsSeen,
+    rosterRunsSeen,
+    rosterHeadRunsSeen,
+    rosterBaseRunsSeen,
+  } = makeVerifyExec({
     wt,
     probeDir,
     repoRoot,

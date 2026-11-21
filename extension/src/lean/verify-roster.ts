@@ -207,8 +207,8 @@ export async function buildProjectRoster(opts: {
     reportCwd: wt,
   });
   if (!head.ran) return none(`at head: ${head.reason}`);
-  // Deduped ONCE: the two red arms below and the record all read the head's failing names, and a
-  // stream-order dedupe asked three times is three chances to answer differently.
+  // Deduped ONCE: the two red arms below and the roster's own `failed` list all read the head's
+  // failing names, and a stream-order dedupe asked at each site is three chances to answer differently.
   const headFailed = dedupe(head.failed);
 
   // THE BASE-LEG SKIP. Both red arms range over `head.failed` — `newlyFailing` ∩ what the base

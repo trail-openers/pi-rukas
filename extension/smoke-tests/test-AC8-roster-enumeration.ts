@@ -75,7 +75,11 @@ const list = (paths: string[], testDir = "tests", testGlob = "test-*.sh") => {
   );
   assert(
     JSON.stringify("files" in r ? r.files : []) ===
-      JSON.stringify(["tests/test-top.sh", "tests/unit/test-a.sh", "tests/integration/deep/test-b.sh"]),
+      JSON.stringify([
+        "tests/test-top.sh",
+        "tests/unit/test-a.sh",
+        "tests/integration/deep/test-b.sh",
+      ]),
     `(nested) every matching file at any depth is listed, repo-relative, in git's tree order (${JSON.stringify(
       "files" in r ? r.files : [],
     )})`,
@@ -137,7 +141,11 @@ const list = (paths: string[], testDir = "tests", testGlob = "test-*.sh") => {
 {
   // A `testGlob` matches the BASENAME only, at any depth: a nested file whose basename matches is a
   // test, and one whose basename does not is not, whatever its directory looks like.
-  const { run } = list(["tests/unit/test-a.sh", "tests/unit/conftest.sh", "tests/unit/test-x.sh"], "tests", "test-*.sh");
+  const { run } = list(
+    ["tests/unit/test-a.sh", "tests/unit/conftest.sh", "tests/unit/test-x.sh"],
+    "tests",
+    "test-*.sh",
+  );
   const r = await run;
   assert(
     "files" in r &&

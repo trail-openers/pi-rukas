@@ -61,8 +61,11 @@ export function renderRosterCommand(
 /**
  * `verify.test` as a SUITE command: one whole-word `{file}` removed, the report pair appended. Only a
  * word EQUAL to `{file}` counts — the loader admits exactly one, and `test-{file}.ts` is a name.
+ *
+ * Exported because the verify fixture renders the same command to recognise its own roster runs: a
+ * second copy of this rule is a second thing that can disagree with the one the gate runs.
  */
-function deriveSuiteTemplate(test: string): string {
+export function deriveSuiteTemplate(test: string): string {
   const words = test.split(/\s+/).filter((word) => word !== "");
   const at = words.indexOf("{file}");
   const kept = at < 0 ? words : [...words.slice(0, at), ...words.slice(at + 1)];

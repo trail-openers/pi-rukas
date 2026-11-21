@@ -182,9 +182,9 @@ const NAMES = ["tests/test-a.sh::first", "tests/test-a.sh::second", "tests/test-
     roster: {
       files: PRE_EXISTING,
       headPassed: NAMES,
-      basePassed: NAMES,
       baseMissingDeps: ["node_modules"],
-      // As above: an unprovisioned base is only asked about on a run that owes a base suite.
+      // An unprovisioned base is only asked about on a run that owes a base suite, so head fails one
+      // name the base passed — the shape that makes the base run owed at all.
       headFailed: [`${PRE_EXISTING[0]}::green_at_base`],
       basePassed: NAMES,
     },

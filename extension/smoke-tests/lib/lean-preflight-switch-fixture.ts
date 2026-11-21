@@ -44,14 +44,12 @@ export function checkSwitch(opts: {
 }): { ok: boolean } {
   let ok = true;
   for (const [label, value, want] of CELLS) {
-    const env: Record<string, string | undefined> = value === undefined ? {} : { [opts.key]: value };
+    const env: Record<string, string | undefined> =
+      value === undefined ? {} : { [opts.key]: value };
     const got = opts.read(env);
     const cond = got === want;
     if (!cond) ok = false;
-    opts.assert(
-      cond,
-      `${opts.name} ${label} → ${String(got)} (want ${String(want)})`,
-    );
+    opts.assert(cond, `${opts.name} ${label} → ${String(got)} (want ${String(want)})`);
   }
   return { ok };
 }

@@ -196,7 +196,12 @@ const FROZEN = ["tests/AC1-retry.test.ts", "tests/AC2-bound.test.ts"];
     ] as const) {
       assert(
         prompt.includes("~~~") && !prompt.includes("\u02dc".repeat(3)),
-        `${name}: the tilde delimiters reach the brief as tildes and are never swapped for U+02DC look-alikes (${JSON.stringify(prompt.split("\n").filter((l) => l.includes("~")).slice(0, 2))})`,
+        `${name}: the tilde delimiters reach the brief as tildes and are never swapped for U+02DC look-alikes (${JSON.stringify(
+          prompt
+            .split("\n")
+            .filter((l) => l.includes("~"))
+            .slice(0, 2),
+        )})`,
       );
       assert(
         /^## The acceptance criteria$/m.test(prompt),
@@ -237,13 +242,23 @@ const FROZEN = ["tests/AC1-retry.test.ts", "tests/AC2-bound.test.ts"];
       const bareCloser = (s: string): boolean => /^`{3,}$/m.test(s);
       assert(
         backtickSection.includes("\u02cb".repeat(3)) && !bareCloser(interior(backtickSection)),
-        `and the same seat swaps a backtick run for U+02CB look-alikes, so the tilde case is a decision and not an omission (${JSON.stringify({ interior: interior(backtickSection).split("\n").filter((l) => l.includes("\u02cb") || /^`{3,}$/.test(l)), lookalikes: backtickSection.split("\n").filter((l) => l.includes("\u02cb")).length })})`,
+        `and the same seat swaps a backtick run for U+02CB look-alikes, so the tilde case is a decision and not an omission (${JSON.stringify(
+          {
+            interior: interior(backtickSection)
+              .split("\n")
+              .filter((l) => l.includes("\u02cb") || /^`{3,}$/.test(l)),
+            lookalikes: backtickSection.split("\n").filter((l) => l.includes("\u02cb")).length,
+          },
+        )})`,
       );
       const open = section.indexOf("```text");
       const close = section.lastIndexOf("```");
       const inside = section.slice(open + 7, close);
       assert(
-        open >= 0 && close > open && !inside.includes("```") && inside.includes("## The hidden heading"),
+        open >= 0 &&
+          close > open &&
+          !inside.includes("```") &&
+          inside.includes("## The hidden heading"),
         "and the injected heading sits INSIDE the one text fence the section opens, with no delimiter between them to close it early",
       );
     }

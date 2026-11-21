@@ -79,7 +79,7 @@ function assert(cond: boolean, msg: string): void {
     // Head failed, so the base run is owed and made: the two counters say 1 + 1 where a shared
     // count could only have said 2 and left a skipped base leg indistinguishable from a lost run.
     caught.rosterHeadRuns === 1 && caught.rosterBaseRuns === 1,
-    `(cell 1) the suite ran in both trees, not just the run's (${String(caught.rosterHeadRuns)} head, ${String(caught.rosterBaseRuns)} base)`,
+    `(cell 1) the project's suite ran once in the run's worktree and once in the base checkout, not just the run's (${String(caught.rosterHeadRuns)} head, ${String(caught.rosterBaseRuns)} base)`,
   );
 
   // The same tree with the roster lever taken off: no suite runs, and the step answers the way it
@@ -137,7 +137,7 @@ function assert(cond: boolean, msg: string): void {
   );
 
   // Off: the step runs the edited copy, sees it pass, and has no idea the original ever failed.
-    const blind = await withRosterOff(() =>
+  const blind = await withRosterOff(() =>
     runVerify({
       issue: 2463,
       implement: true,
