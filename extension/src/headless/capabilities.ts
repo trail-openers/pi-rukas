@@ -105,8 +105,7 @@ export const HEADLESS_FEATURES = {
    * `status`, `cap`, `failure`, `branch`, `prUrl`, `usage` (with `byRole`) and
    * the lean-only typed `prState` (`ready` | `draft` | `none`) and
    * `reviewComplete`, so a host needs no second reader to compare the two
-   * engines. While `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP` is on (its shipped default),
-   * `awaiting-human-merge` means `ready` WITH EVERY REVIEW LENS JUDGED ON THE HEAD THE PR NOW
+   * engines. `awaiting-human-merge` means `ready` WITH EVERY REVIEW LENS JUDGED ON THE HEAD THE PR NOW
    * STANDS ON: a `ready` PR whose newest `review` step recorded a stop (any lane list), ended
    * on a throw that recorded no verdict at all, does not cover the head the PR now stands
    * on (`machine.ts` re-runs `publish` after the review on TWO routes: a `fixed` review's own
@@ -150,8 +149,7 @@ export const HEADLESS_FEATURES = {
    * `docs/headless.md`'s `features.leanGates` row; this flag only says the object exists.
    *
    * A host reads `--capabilities` before it reads a field it may not have: with this flag
-   * absent the object is simply not there (a build running
-   * `PI_ENSEMBLE_LEAN_RESULT_GATES=0`, or one from before the object existed), and a host
+   * absent the object is simply not there (a build from before the object existed), and a host
    * that treated its absence as "the run froze nothing" would report a clean contract for
    * a run nobody looked at. Absent means "do not read `gates`", never "gates is empty".
    */

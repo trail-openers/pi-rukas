@@ -14,22 +14,12 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { handbackHeads } from "./handback-heads.ts";
-import {
-  NO_HEAD,
-  type Rewind,
-  SWITCHED_OFF,
-  originBranchHead,
-  rewindToVerified,
-} from "./handback-rewind.ts";
+import { NO_HEAD, type Rewind, originBranchHead, rewindToVerified } from "./handback-rewind.ts";
 import { postHandback } from "./io.ts";
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP, validPrUrl } from "./state-outcome.ts";
 import { type Outcome, REPORT_STATES, type Step } from "./state.ts";
 import { budgetSentence, budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
-import {
-  leanHandbackNoHeadRecordEnabled,
-  leanVerifiedHandbackEnabled,
-} from "./verified-handback-switch.ts";
 import { newestRedVerifyReason } from "./verify-deps.ts";
 
 /** A reason line long enough to be a wall is not a comment a human reads. */
@@ -241,26 +231,20 @@ interface Heads {
 }
 
 /**
- * The head facts one handback records, from the head origin holds and what the rewind settled on. `render` is
- * the renderer flag and travels to the body only.
+ * The head facts one handback records, from the head origin holds and what the rewind settled on.
+ * `render` is the renderer flag and travels to the body only. Called only where the rule applies.
  *
- * A rewind with no head to move records the head origin ACTUALLY holds under
- * `PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD`. `shippedVerified` includes `alreadyAtVerified` — origin held the
- * certified head already, and this is where the rewind's own pre-move `unshippedHead` is withheld rather than
- * printed as a head this step displaced.
+ * A rewind with no head to move records the head origin ACTUALLY holds — the rule fired, found no
+ * certified head, and origin still carries what the fix wave pushed. `shippedVerified` includes
+ * `alreadyAtVerified`: origin held the certified head already, which is where the rewind's own pre-move
+ * `unshippedHead` is withheld rather than printed as a head this step displaced.
  */
-function headFacts(
-  applies: boolean,
-  rewind: Rewind,
-  originHead: string | undefined,
-  noHeadRecords: boolean,
-): Heads {
-  if (!applies) return { render: false };
+function headFacts(rewind: Rewind, originHead: string | undefined): Heads {
   const shippedHead = originHead ?? rewind.unshippedHead;
-  // The arm with nothing to move: the rule fired, the log named no green head, and origin keeps the head the
-  // fix wave pushed.
+  // The arm with nothing to move: the rule fired, the log named no green head, and origin keeps the
+  // head the fix wave pushed.
   if (rewind.unshippedHead === undefined && !rewind.shipped) {
-    if (!noHeadRecords || originHead === undefined) return { render: false };
+    if (originHead === undefined) return { render: false };
     // The rule's words: the operator's question is why what shipped was never certified.
     const why = rewind.noHeadReason ?? rewind.reason;
     return {
@@ -305,22 +289,20 @@ export async function handbackOutcome(
     // This step never throws, so a body that failed to build is reported like a refused post.
     const prUrl = prUrlFromLog(ctx.steps);
     const heads = handbackHeads(ctx.steps);
-    // ONE read of the switch, so the arm that moves origin and the arm that only reports agree.
-    const ruleOn = heads.applies && leanVerifiedHandbackEnabled();
     // The rewind runs BEFORE the body is built, so the comment states where origin stands after it.
-    const moved =
-      ruleOn && heads.verifiedHead !== undefined
-        ? await rewind(heads.verifiedHead)
-        : ruleOn
-          ? // `NO_HEAD`'s own `reason` describes a push that did not run; this answers why what shipped was
-            // never certified.
+    let moved: Rewind | undefined;
+    let originHead: string | undefined;
+    if (heads.applies) {
+      moved =
+        heads.verifiedHead === undefined
+          ? // `NO_HEAD`'s own `reason` describes a push that did not run; this answers why what
+            // shipped was never certified.
             { ...NO_HEAD, noHeadReason: heads.reason }
-          : SWITCHED_OFF;
-    // Read AFTER the rewind, so it is origin's post-move value.
-    const originHead = ruleOn ? await readOrigin(ctx) : undefined;
-    const facts = ruleOn
-      ? headFacts(heads.applies, moved, originHead, leanHandbackNoHeadRecordEnabled())
-      : { render: false };
+          : await rewind(heads.verifiedHead);
+      // Read AFTER the rewind, so it is origin's post-move value.
+      originHead = await readOrigin(ctx);
+    }
+    const facts = moved === undefined ? { render: false } : headFacts(moved, originHead);
     const { render, ...record } = facts;
     body = handbackBody(ctx.issue, {
       needed: neededFromLog(ctx.steps),

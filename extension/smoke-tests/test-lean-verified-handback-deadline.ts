@@ -23,11 +23,9 @@
  *       Before this file's second commit the record carried NONE of the four fields,
  *       which is the difference between "the rule fired and had no head" and "the rule
  *       never spoke" — the confusion the recording exists to remove;
- *   (c) `PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD=0`: the same (b) drive posts a body
- *       BYTE-IDENTICAL to the body captured once from a detached worktree of the
- *       parent commit, and records none of the four fields. The rule-ON control on the
- *       same log asserts that body DIFFERS, which is what keeps the equality from
- *       being a renderer compared with itself.
+ *   (c) the same (b) drive records the head origin really holds and calls it NOT
+ *       verified — the rule fires on the deadline route too, so it records rather
+ *       than staying silent.
  *
  * What makes these engine cases rather than rule cases, stated precisely: the
  * `rewindToVerified` and the real origin read run against a real bare origin; every
@@ -309,18 +307,18 @@ await withEnv(ENV, async () => {
   );
 });
 
-// ── (c) the switch OFF: byte-identical to the pre-recording body, four fields absent.
-// TWO arms on the same log, so the equality in the off arm cannot be a renderer
-// compared with itself: with the recording ON the same drive must produce a body that
-// DIFFERS. Each arm owns its repo — one shared origin would let the control's rewind
-// move the branch the off arm is meant to leave exactly where it was.
+// ── (c) the rule firing with NO green head in the log: the record names the head origin
+// really holds and calls it NOT verified, and the body carries the head section. The
+// pre-recording body captured once from the parent commit is the comparison that makes this
+// mean something: a renderer that always printed the section would pass (b) alone.
+// Each arm owns its repo — one shared origin would let a rewind move the branch another
+// case is meant to find exactly where it was.
 {
   const on = repoWithFixHead();
-  const off = repoWithFixHead();
   const greenNoHead = (): Partial<Record<LeanState, Outcome[]>> =>
     walkToReview({ kind: "green", reason: "frozen tests and project tiers passed" });
 
-  await withEnv({ ...ENV, PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD: "1" }, async () => {
+  await withEnv(ENV, async () => {
     const ran = await driveToDeadline(on.repoRoot, greenNoHead(), on.baseSha);
     assert(
       ran.crossed,
@@ -328,94 +326,11 @@ await withEnv(ENV, async () => {
     );
     assert(
       ran.outcome?.shippedHead === on.headSha && ran.outcome?.shippedVerified === false,
-      `(c) control: with the recording on, the record names F and calls it unverified (got ${JSON.stringify([ran.outcome?.shippedHead, ran.outcome?.shippedVerified])})`,
+      `(c) control: the record names F and calls it unverified (got ${JSON.stringify([ran.outcome?.shippedHead, ran.outcome?.shippedVerified])})`,
     );
     assert(
       String(ran.outcome?.report ?? "") !== PRE_RECORD_BODY,
-      `(c) control: and the body DIFFERS from the pre-recording capture — the falsification that makes the off arm's equality mean something (got ${JSON.stringify((ran.outcome?.report ?? "").split("\n").slice(0, 3).join(" / "))})`,
-    );
-  });
-
-  const before = originBranchSha(off.origin);
-  if (before !== off.headSha)
-    throw new Error(`the off arm's origin does not hold the fix head: ${String(before)}`);
-  await withEnv({ ...ENV, PI_ENSEMBLE_LEAN_HANDBACK_NOHEAD_RECORD: "0" }, async () => {
-    const ran = await driveToDeadline(off.repoRoot, greenNoHead(), off.baseSha);
-    assert(
-      ran.crossed,
-      `(c) off: the clock crossed on the off drive too (crossed=${String(ran.crossed)})`,
-    );
-    assert(
-      ran.outcome?.report === PRE_RECORD_BODY,
-      `(c) off: the comment is the body the pre-recording handback posted, byte for byte (got ${JSON.stringify((ran.outcome?.report ?? "").split("\n").slice(-4).join(" / "))})`,
-    );
-    assert(
-      ran.outcome?.shippedHead === undefined &&
-        ran.outcome?.shippedVerified === undefined &&
-        ran.outcome?.unshippedHead === undefined &&
-        ran.outcome?.unshippedReason === undefined,
-      `(c) off: and the record carries NONE of the four head fields (${JSON.stringify([ran.outcome?.shippedHead, ran.outcome?.shippedVerified, ran.outcome?.unshippedHead, ran.outcome?.unshippedReason])})`,
-    );
-    assert(
-      originBranchSha(off.origin) === before,
-      `(c) off: origin still holds F, as it did before the drive (got ${String(originBranchSha(off.origin))})`,
-    );
-    assert(
-      originRefSha(off.origin, unverifiedRef(ISSUE)) === undefined,
-      "(c) off: and no keeping-ref was written",
-    );
-  });
-}
-
-// ── (d) `PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK=0`: the engine behaves as it did before
-// the routing existed. The same drive, the same clock, the same premise — and where
-// (a) reached a report, this run is stamped where the clock caught it and no
-// `handback` step is ever written. That is the byte-identical off arm of the second
-// commit's behaviour: not "the handback said less", but "the handback never ran".
-// Origin is untouched, because the step that moves it is the one that did not run —
-// which is exactly the gap the routing closes.
-{
-  const repo = repoWithFixHead();
-  const before = originBranchSha(repo.origin);
-  if (before !== repo.headSha)
-    throw new Error(`the (d) arm's origin does not hold the fix head: ${String(before)}`);
-  await withEnv({ ...ENV, PI_ENSEMBLE_LEAN_DEADLINE_HANDBACK: "0" }, async () => {
-    const ran = await driveToDeadline(
-      repo.repoRoot,
-      walkToReview({
-        kind: "green",
-        verifiedHead: repo.baseSha,
-        reason: `all frozen tests green at ${repo.baseSha}`,
-      }),
-      repo.baseSha,
-    );
-    assert(
-      ran.crossed && ran.arm !== undefined && ran.arm - ran.past <= handoffDispatchTimeoutMs(),
-      `(d) the stop is a deadline stop inside the pinned allowance (crossed=${String(ran.crossed)}, arm ${String(ran.arm)}, past ${ran.past})`,
-    );
-    // The engine's own words for the stop it took, not a handler's failure: the
-    // reason line names the deadline and the step it refused to start.
-    assert(
-      ran.state === "handed-back" &&
-        ran.reason.includes("cycle deadline") &&
-        ran.reason.includes("reached at verify"),
-      `(d) with the switch off the run is stamped where the clock caught it (got ${ran.state}: ${ran.reason})`,
-    );
-    assert(
-      !ran.steps.some((s2) => s2.state === "handback"),
-      `(d) and NO reporting step was written at all (steps ${ran.steps.map((s2) => `${s2.key}=${s2.outcome?.kind ?? "?"}`).join(",")})`,
-    );
-    assert(
-      ran.outcome === undefined,
-      `(d) so there is no handback outcome to read (got ${JSON.stringify(ran.outcome)})`,
-    );
-    assert(
-      originBranchSha(repo.origin) === before,
-      `(d) origin still holds F — nothing moved it, because nothing ran (got ${String(originBranchSha(repo.origin))})`,
-    );
-    assert(
-      originRefSha(repo.origin, unverifiedRef(ISSUE)) === undefined,
-      "(d) and no keeping-ref was written",
+      `(c) control: and the body DIFFERS from the pre-recording capture — the falsification that keeps the head section from being a renderer that always printed it (got ${JSON.stringify((ran.outcome?.report ?? "").split("\n").slice(0, 3).join(" / "))})`,
     );
   });
 }

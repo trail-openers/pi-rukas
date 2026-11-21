@@ -15,9 +15,13 @@
  *   3. **the toolchain canary** — before any tier is trusted as green, the pinned compiler is proven to still
  *      reject a known type error;
  *   4. **the frozen tests**, every one of them, with the project's runner;
- *   5. **the project tiers** — `verify.fast`, then `verify.full` when set, else the repo's committed
+ *   5. **the project's own pre-existing tests** — the roster (`verify-roster.ts`), run at head and at
+ *      `baseSha`, whose verdict ranks with the frozen contract's rather than behind the tiers: a test
+ *      the base showed passing and head fails is a builder-fixable `red`, and a run that produced no
+ *      roster at all is a **throw**, never a green;
+ *   6. **the project tiers** — `verify.fast`, then `verify.full` when set, else the repo's committed
  *      `.pi/verify-cmd`;
- *   6. **the spec's `command` criteria**, LAST: a preservation criterion is judged on the tree the project
+ *   7. **the spec's `command` criteria**, LAST: a preservation criterion is judged on the tree the project
  *      tiers left behind rather than the one they started from.
  *
  * `green` and `red` are verdicts about the work; a **throw** is infrastructure — an unreadable tree, a killed
@@ -30,18 +34,25 @@
  * throwaway checkout, and a tier red THERE hands the run back before a build round is billed. Only a base the
  * probe SAW red earns the hand-back: `unknown` is not a colour. The frozen tests and the `command` criteria
  * keep their first-word verdicts: exempting them would delete the run's only contract check.
+ *
+ * Where a tier's red is about the PROJECT's tests, the ROSTER is asked before the whole-line
+ * `baselineExcuse`: a failure the base roster shows PASSING is this run's regression and is `red`, whatever
+ * the line comparison made of it (parent #2410 R4). A tier whose report the roster cannot read — a typecheck
+ * tier, a lint tier — is not the roster's to judge and keeps the line rule.
  */
 
 import { existsSync } from "node:fs";
 import { trace } from "../trace.ts";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
+import { failureLines } from "../work-driver-verify-failures.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { porcelain } from "./build-git.ts";
 import { frozenFromLog, testsFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
-import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
+import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
 import type { Outcome, Step } from "./state.ts";
 import { baselineRedArm } from "./verify-baseline-arm.ts";
 import { preexistingReason } from "./verify-baseline-excuse.ts";
@@ -60,6 +71,12 @@ import {
 import { recheckAfterRuns } from "./verify-recheck.ts";
 import { redAttribution } from "./verify-red-attribution.ts";
 import { type FrozenClause, composedTierRed, frozenClause } from "./verify-red-reason.ts";
+import {
+  type RosterArbitration,
+  arbitrateTierWithRoster,
+  buildProjectRoster,
+  rosterHandbackReason,
+} from "./verify-roster.ts";
 import {
   type Executed,
   TIER_TIMEOUT_MS,
@@ -173,7 +190,36 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // BYTES against the base commit, because the base predates tests this run authored.
   const tests = await frozenTestFailure(frozen, config.verify.test, wt, deps.exec, deps.timeoutMs);
 
-  // 5. The project's own tiers, fast before full — the first red tier ends the loop, and its clause is
+  // 5. The project's OWN pre-existing tests, at head and at the base, before any tier runs: their verdict
+  // ranks with the frozen contract's, and a run that produced no roster must hand back rather than reach
+  // a tier that could grade it green. The base side of the roster runs in its own throwaway checkout, so
+  // it pays for itself once and is the only base read a GREEN depends on.
+  //
+  // The off arm runs NONE of this: no enumeration, no suite run, no roster on the record, and the land
+  // gate asks only the verdict kinds it asked before.
+  let roster: ProjectRosterRecord | undefined;
+  let rostered: Executed | undefined;
+  if (leanProjectRosterEnabled()) {
+    const built = await buildProjectRoster({
+      exec: deps.exec,
+      repoRoot,
+      wt,
+      baseSha: ctx.run.baseSha,
+      issue,
+      timeoutMs: deps.timeoutMs ?? TIER_TIMEOUT_MS,
+      config: config.verify,
+      frozen,
+    });
+    if (built.status === "none") throw new VerifyInfraError(rosterHandbackReason(built.reason));
+    if (built.status === "red") {
+      // Builder-fixable, and it names the tests: the round that can fix it is the point.
+      rostered = { kind: "fail", reason: built.reason };
+    } else {
+      roster = built.record;
+    }
+  }
+
+  // 6. The project's own tiers, fast before full — the first red tier ends the loop, and its clause is
   // reported BESIDE a red frozen contract rather than behind it, with one re-run and one base probe behind a
   // red. These run BEFORE the command criteria on purpose: the "after" the gate certifies is the tree the
   // project tiers produced.
@@ -241,6 +287,20 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
         exec: deps.exec,
         timeoutMs,
         issue,
+        // The roster is asked FIRST: where it read both runs, a name it saw passing at base is this
+        // run's regression and no line match excuses it. An `uninvolved` answer leaves the arm's own
+        // whole-line rule in charge, exactly as before the roster existed.
+        arbitrate: (): RosterArbitration =>
+          arbitrateTierWithRoster({
+            roster,
+            // The shared failure-line classifier, the same reader the whole-line excuse uses, so the
+            // roster and the excuse cannot disagree about what a stream said. A tier whose lines the
+            // classifier cannot read simply leaves the roster uninvolved.
+            headFailed: rerun.stream === undefined ? [] : failureLines(rerun.stream),
+            baseFailed: probe.stream === undefined ? [] : failureLines(probe.stream),
+            baseSha: ctx.run.baseSha,
+            cmd,
+          }),
       });
       if (arm.throwReason !== undefined) throw new VerifyInfraError(arm.throwReason);
       if (arm.red !== undefined) {
@@ -268,7 +328,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     break;
   }
 
-  // 6. The spec's `command` criteria — preservation checks the frozen tests do not make. The only file that can
+  // 7. The spec's `command` criteria — preservation checks the frozen tests do not make. The only file that can
   // evidence one is a file the run's base commit already held, byte for byte: `commandCriteriaOutcome` reads the
   // entry at both `baseSha` and HEAD with `git ls-tree` and hashes the WORKING file against the base blob — an
   // index trick like `--assume-unchanged` keeps the porcelain quiet about a rewritten file.
@@ -286,7 +346,12 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     verifyChildEnv(),
   );
 
-  const failed = firstFailure(tests, ...tierResults, commandsFailedAsExecuted(commands));
+  const failed = firstFailure(
+    tests,
+    ...(rostered === undefined ? [] : [rostered]),
+    ...tierResults,
+    commandsFailedAsExecuted(commands),
+  );
   // A red PROJECT TIER plus a freeze check that fails ON A FROZEN FILE is not a verdict the builder can act
   // on: the contract is defective and `build` may not edit a frozen file. Attribute it before any red is
   // returned — but only on the evidence that the check was green at HEAD without those files in place. Any
@@ -378,6 +443,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     kind: "green",
     reason: `frozen tests and project tiers passed at ${head}${note}${flake === undefined ? "" : ` — ${flake}`}${excuseNote}`,
     verifiedHead: head,
+    ...(roster === undefined ? {} : { projectRoster: roster }),
     ...(Object.keys(preexisting).length === 0 ? {} : { preexistingFailures: preexisting }),
     ...(executed.length === 0
       ? {}

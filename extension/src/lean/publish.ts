@@ -19,7 +19,7 @@
  *      reading origin again, never by parsing porcelain. The one unsettled row this
  *      run opened itself may be exempted — but only against all three reads at once
  *      (origin's ref, this run's own step log, and the forge's rows), in
- *      `publish-republish.ts`, behind `PI_ENSEMBLE_LEAN_REPUBLISH_OWN_PR`.
+ *      `publish-republish.ts`.
  *   5. the forge is asked for an OPEN PR on the branch FIRST and only then told to
  *      create one. A `prList` that throws aborts the step: creating without looking
  *      is how a resumed run opens a second PR for the same work.

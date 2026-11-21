@@ -18,13 +18,10 @@
  * are disarmed at the print site by `fenceText` (a criterion's text is issue
  * authorship; a `commandNotRunnable` reason is path-check prose) because this
  * section reaches six lens briefs, an adversarial brief and a public PR comment.
- * `leanReviewAcceptanceEnabled` gates all of it; this module never consults it, so
- * the step's call sites stay the only place the switch is read.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { testsFromLog } from "./build.ts";
-import { leanReviewAcceptanceEnabled } from "./review-acceptance-switch.ts";
 import type { ReviewDeps } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
 import { specFor } from "./spec-for.ts";
@@ -192,7 +189,6 @@ export function acceptanceSection(
   issueBody: string | undefined,
   run: ContractSource = {},
 ): string | undefined {
-  if (!leanReviewAcceptanceEnabled()) return undefined;
   if (issueBody === undefined || issueBody.trim() === "") return undefined;
   // The accessor, with the record consulted: a table printed for a derived run must
   // be a table of the criteria it was built to, and "nothing to say" stays the answer

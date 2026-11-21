@@ -19,6 +19,13 @@
  * `tests` is no evidence about the contract here, so that case re-runs it.
  *
  * The reason a red comes back with is composed by `verify-red-reason.ts`.
+ *
+ * The PROJECT ROSTER has precedence over the whole-line excuse (#2410 R4), and `arbitrate` is how
+ * the step hands that judgement in: it is asked BEFORE `baselineExcuse`, and a `red` from it ends
+ * the arm. An `uninvolved` answer — the roster could not read this tier's report — leaves the line
+ * rule in charge, which is what the arm did before the roster existed. The two judgements are
+ * never combined: a roster red is never made green by a line match, and a roster excuse is recorded
+ * rather than re-argued.
  */
 
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
@@ -26,6 +33,7 @@ import { baselineExcuse } from "./verify-baseline-excuse.ts";
 import { baselineProbeWorktreePath } from "./verify-baseline.ts";
 import { type BaseProbe, baselineRedReason, tierObserved } from "./verify-baseline.ts";
 import { type FrozenClause, composedBaselineRed } from "./verify-red-reason.ts";
+import type { RosterArbitration } from "./verify-roster.ts";
 import { FROZEN_TIMEOUT_HEAD, frozenTestFailure } from "./verify-steps.ts";
 import type { Executed } from "./verify-steps.ts";
 import type { VerifyExec } from "./verify-types.ts";
@@ -62,6 +70,13 @@ export async function baselineRedArm(opts: {
   timeoutMs: number;
   /** Identifies the probe's throwaway tree, which the excuse's two-tree test reads. */
   issue: number;
+  /**
+   * The roster's answer about this tier, asked before the line excuse. Optional because the arm is
+   * also reached on the roster switch's off arm, where there is no roster to ask; the step passes a
+   * function that answers `uninvolved` in that case rather than making the hook optional at the call
+   * site, so no caller can forget it.
+   */
+  arbitrate: () => RosterArbitration;
 }): Promise<BaselineRedArm> {
   const { name, cmd, baseSha, tests } = opts;
   const frozenRan =
@@ -79,6 +94,15 @@ export async function baselineRedArm(opts: {
     return { red: reason ?? baselineRedReason(name, cmd, baseSha) };
   }
   if (frozenRan.kind === "infra") return { throwReason: frozenRan.reason };
+  // The roster before the line excuse: where it saw a name passing at base now failing, no line
+  // match may excuse it. It comes AFTER the observation question because both its answers are read
+  // from the re-run's stream, and a killed or un-startable run still prints text that can name those
+  // tests — grading one would read bytes nobody saw produced.
+  const arbitration = tierObserved(opts.rerun.ran)
+    ? opts.arbitrate()
+    : { kind: "uninvolved" as const };
+  if (arbitration.kind === "red") return { red: arbitration.reason };
+  if (arbitration.kind === "excused") return { preexisting: arbitration.record };
   // The excuse reads the re-run's OUTPUT, so the re-run must have OBSERVED the work. A kill, an overflow
   // or an un-startable command still arrives with a `stdout` — the text the tier printed before the signal
   // — and that text can name the very tests the base printed.

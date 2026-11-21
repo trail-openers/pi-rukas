@@ -36,15 +36,26 @@ import { execp } from "../../src/exec.ts";
 import type { VerifyExec } from "../../src/lean/verify-types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { namesProbeTree } from "./lean-verify-probe-tree.ts";
+import { canonicalRosterProbeDir } from "./lean-verify-probe-tree.ts";
 import type { VerifyOpts } from "./lean-verify-types.ts";
 
 export { canonicalProbeDir } from "./lean-verify-probe-tree.ts";
 
+import { rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import {
   baseTierHangCommand,
   isProbeBlobRead,
   probeBlobReadTimeoutError,
 } from "./lean-verify-probe-shapes.ts";
+import {
+  NO_REPORT_SENTINEL,
+  bareDepsOf,
+  isRosterReportRead,
+  rosterReportXml,
+  rosterSideOf,
+  writeDeclaredReport,
+} from "./lean-verify-roster.ts";
 
 export function makeVerifyExec(opts: {
   wt: string;
@@ -56,7 +67,28 @@ export function makeVerifyExec(opts: {
   hookMarks?: string;
   /** The run's base sha — what identifies the probe's `<base>:<path>` blob reads. */
   baseSha?: string;
-}): { exec: VerifyExec; redRunsSeen: () => number; baseTierRunsSeen: () => number; frozenRunsSeen: () => number } {
+  /**
+   * The roster command this case configured, as `{bin, rest}`: the first word is the executable the
+   * roster's argv begins with. Absent means the case configured no roster command at all.
+   */
+  rosterCmd?: { bin: string };
+  /**
+   * The names each side's roster report holds, as the case declared them. Given for a side, the stub
+   * writes that side's report itself rather than running the configured command — "this test passed at
+   * head and failed at the base" is a fact about one tree's verdicts, not bytes both trees share.
+   * Absent for a side, the configured command really runs and its own output is what the gate reads.
+   */
+  rosterNames?: {
+    head?: { passed: string[]; failed: string[] };
+    base?: { passed: string[]; failed: string[] };
+  };
+}): {
+  exec: VerifyExec;
+  redRunsSeen: () => number;
+  baseTierRunsSeen: () => number;
+  frozenRunsSeen: () => number;
+  rosterRunsSeen: () => number;
+} {
   const { wt, probeDir, repoRoot, tiers, opts: o } = opts;
   const hookMarks = opts.hookMarks;
   const baseSha = opts.baseSha;
@@ -99,9 +131,86 @@ export function makeVerifyExec(opts: {
   let frozenRuns = 0;
   /** Runs of the tier the BASE PROBE has made in its throwaway checkout. */
   let baseTierRuns = 0;
+  /** Runs of the roster's project suite, at head and at the base probe (see `VerifyRun.rosterRuns`). */
+  let rosterRuns = 0;
+  /**
+   * The roster command this case configured, if any.
+   *
+   * The gate renders the project's roster command into argv and runs it, and the stub must be able
+   * to tell that call from a tier's shell string and from a frozen run's `sh <file>`: the roster is
+   * the only caller that submits argv whose first word is the configured command's own binary AND
+   * whose argv holds the tree it runs in. Recorded per case so the identity is one thing, not a
+   * guess at dispatch time.
+   */
+  const rosterCmd = opts.rosterCmd;
+  /**
+   * Is this exec call the roster running the project's suite?
+   *
+   * Command identity again, in the same spirit as `isTierCommand`: the roster reaches the executor
+   * in ARGV form (so no shell re-parses the tree's path), its first word is the configured roster
+   * command's binary, and its cwd is one of the two trees the roster runs in. A frozen run is also
+   * argv form, so the binary is what separates the two — and the roster's own report read is
+   * recognised earlier, by `isRosterReportRead`.
+   */
+  const isRosterSuiteRun = (cmd: string, o2: Parameters<VerifyExec>[1] | undefined): boolean => {
+    if (rosterCmd === undefined || cmd !== rosterCmd.bin) return false;
+    if (!Array.isArray(o2?.argv)) return false;
+    // The report flag is what separates the roster's run from a FROZEN run of the same runner
+    // template: `sh <file>` and `sh <file> --junitxml=… {dir}` are the same binary and the same
+    // shape, and only one of them is being asked for a machine-readable report.
+    if (!o2.argv.some((a) => a.startsWith("--junitxml="))) return false;
+    // Any cwd: the base run happens in the roster's OWN throwaway checkout of the base commit, whose
+    // path the step derives and the fixture does not know. Requiring the fixture's baseline dir would
+    // silently miss every base run, and a base run the stub misses is a run whose report nobody wrote.
+    return true;
+  };
+  /**
+   * Run the roster's project suite in one tree.
+   *
+   * The suite itself is a real child: what it does is the configured command's own doing. The one
+   * thing the stub adds is the per-side choice of WHICH tests the report names, because "the base
+   * carried this test and it passed there, and at head it fails" is the fact a case is asserting and
+   * cannot be deduped from bytes both trees share. Absent that override, the configured command's
+   * real output is what the gate reads back.
+   */
+  const runRosterSuite = (
+    command: string,
+    o2: Parameters<VerifyExec>[1],
+    side: "head" | "base",
+  ) => {
+    rosterRuns++;
+    const killed = side === "head" ? o.roster?.headRunKilled : o.roster?.baseRunKilled;
+    if (killed === true) {
+      // The executor's OWN kill shape: no numeric code, `killed` and `timedOutKill` stamped. A run
+      // with no exit status has no per-test verdicts, whatever its report might have said.
+      return Promise.reject(
+        Object.assign(new Error(`Command failed: ${command}`), {
+          code: null,
+          killed: true,
+          timedOutKill: true,
+          stdout: "",
+          stderr: "",
+        }),
+      );
+    }
+    const declared = side === "head" ? opts.rosterNames?.head : opts.rosterNames?.base;
+    // The tree is the run's OWN cwd, which is the probe's throwaway checkout rather than the
+    // fixture's baseline dir: writing the report where the gate will look for it is the whole point.
+    if (declared !== undefined)
+      return writeDeclaredReport(String(o2?.cwd ?? treeOf(side)), declared, side);
+    return execp(command, { ...o2, env: o2?.env ?? childEnv() });
+  };
+  /** The tree a roster run of this side belongs to. */
+  const treeOf = (side: "head" | "base") => (side === "base" ? probeDir : wt);
+  /**
+   * The roster's OWN throwaway checkout of the base commit. The step derives its path from the repo
+   * root, so the stub recognises the `worktree add` that makes it rather than guessing at a name.
+   */
+  const rosterProbeDir = canonicalRosterProbeDir(repoRoot, o.issue);
   /** The tier's own marker, so a stubbed red prints the identity of ITS tier. A command
    * with no `tier-said-` marker has no stamp at all — the stub invents none. */
-  const markerOf = (cmd: string): string | undefined => cmd.match(/tier-said-([A-Za-z0-9_-]+)/)?.[1];
+  const markerOf = (cmd: string): string | undefined =>
+    cmd.match(/tier-said-([A-Za-z0-9_-]+)/)?.[1];
   /**
    * Is this exec call the step running a project tier's shell command?
    *
@@ -132,7 +241,7 @@ export function makeVerifyExec(opts: {
    * the base commit rather than of how many runs came before it.
    */
   const runCountedTier = (command: string, o2: Parameters<VerifyExec>[1], headRun: boolean) => {
-    let cmd = command;
+    const cmd = command;
     if (!headRun) {
       // The base probe's own run of the tier, counted separately: `tierRuns` counts the
       // STEP's runs at HEAD, and a case that wants to know whether the probe reached its
@@ -173,7 +282,7 @@ export function makeVerifyExec(opts: {
     tierRuns++;
     // The hung re-run: only the second run of the tier gets the shortened bound, so the
     // executor's own group kill fires on it and on nothing else.
-    let bound = o.headRerunKilled === true && run === 1 ? (o.timeoutMs ?? 2_000) : o.timeoutMs;
+    const bound = o.headRerunKilled === true && run === 1 ? (o.timeoutMs ?? 2_000) : o.timeoutMs;
     if (o.headRerunSilentReject === true && run === 1) return Promise.reject(new Error("nope"));
     if (o.headRerunRejects !== undefined && run === 1) return Promise.reject(o.headRerunRejects);
     // A case whose tier must NAME failing tests owns the stream both of HEAD's runs
@@ -200,6 +309,27 @@ export function makeVerifyExec(opts: {
   };
 
   const exec: VerifyExec = (cmd, o2) => {
+    // The roster's report read: the gate's own bounded `cat <tree>/.lean-roster-report.xml`. It
+    // goes to a REAL child, because the report is a file the roster's runner wrote in that tree —
+    // a stub that answered it would let a step that never ran a suite look like it had. The one
+    // thing this stub does for the read is refuse it when the case asked for a run that produced no
+    // report: git's own missing-file shape, which the gate reads as no roster and hands back.
+    const reportSide = String(o2?.cwd ?? "") === probeDir ? "base" : "head";
+    if (
+      isRosterReportRead(o2) &&
+      (reportSide === "head"
+        ? o.roster?.headReportMissing === true
+        : o.roster?.baseReportMissing === true)
+    )
+      return Promise.reject(
+        Object.assign(new Error("cat: no such file"), {
+          code: 1,
+          stderr: "cat: no such file or directory\n",
+          stdout: "",
+        }),
+      );
+    if (isRosterSuiteRun(cmd, o2))
+      return runRosterSuite(cmd, o2, rosterSideOf(String(o2?.cwd ?? ""), wt, probeDir));
     // A frozen-test run is the argv-form call the runner template makes: `runTestFile`
     // renders `<bin> <args…>` and submits it as `exec(bin, { argv })` with the kill-group
     // bound, so the file path reaches the executor in argv and never in the command string.
@@ -240,7 +370,16 @@ export function makeVerifyExec(opts: {
     ) {
       // The fixture's own `worktree add` for the run's tree, plus the probe's: both go to
       // the real git, since a registration the stub invented could not be read back.
-      return execp(cmd, { ...o2, env: o2?.env ?? childEnv(), cwd: o2?.cwd ?? repoRoot });
+      const isRosterProbe = o2?.argv?.includes(rosterProbeDir) === true;
+      return execp(cmd, { ...o2, env: o2?.env ?? childEnv(), cwd: o2?.cwd ?? repoRoot }).then(
+        (r) => {
+          // Bared the moment the checkout exists — before the gate provisions it and before it asks the
+          // checkout anything — so the whole production sequence (checkout, link, judge, run) sees the
+          // same tree a link that never landed would leave.
+          if (isRosterProbe) bareDepsOf(rosterProbeDir, o.roster?.baseMissingDeps ?? []);
+          return r;
+        },
+      );
     }
     if (namesProbeTree(repoRoot, probeDir, o2) || isProbeBlobRead(o2, baseSha)) {
       // The base's blob reads are the ONE place a case answers for the base commit rather
@@ -263,7 +402,10 @@ export function makeVerifyExec(opts: {
           return Promise.resolve({ stdout: o.baseBlobBytes ?? "", stderr: "" });
         }
       }
-      if ((o.baseRunTimesOut === true || o.baseRunOverflows === true) && !isTierCommand(cmd, o2?.argv)) {
+      if (
+        (o.baseRunTimesOut === true || o.baseRunOverflows === true) &&
+        !isTierCommand(cmd, o2?.argv)
+      ) {
         // The probe's frozen-test run at the base is NOT the run under test — it goes to
         // the real git of the base checkout, exactly as every other case's does. Without
         // this the hung/overflow command below would be substituted for it too, the probe
@@ -281,10 +423,7 @@ export function makeVerifyExec(opts: {
         // from a stub, which is the only way to show what the base classifier does with a
         // run that produced no exit code at all. The tier's own marker is echoed first, so
         // the red the case reads back is the tier's, not the harness's.
-        const { cmd: hungCmd, maxBuffer } = baseTierHangCommand(
-          tiers,
-          o.baseRunOverflows === true,
-        );
+        const { cmd: hungCmd, maxBuffer } = baseTierHangCommand(tiers, o.baseRunOverflows === true);
         // Routed through `runCountedTier` with `headRun: false`, so the base-tier counter
         // sees it: the case asserts the probe REACHED its classifier, and a substitution
         // that reported nothing would let the case pass without ever getting there.
@@ -295,9 +434,7 @@ export function makeVerifyExec(opts: {
             killGroup: true,
             maxBuffer,
             timeout:
-              o.baseRunOverflows === true
-                ? (o.timeoutMs ?? 2_000) * 4
-                : (o.timeoutMs ?? 2_000),
+              o.baseRunOverflows === true ? (o.timeoutMs ?? 2_000) * 4 : (o.timeoutMs ?? 2_000),
           },
           false,
         );
@@ -348,5 +485,6 @@ export function makeVerifyExec(opts: {
     redRunsSeen: () => tierRuns,
     baseTierRunsSeen: () => baseTierRuns,
     frozenRunsSeen: () => frozenRuns,
+    rosterRunsSeen: () => rosterRuns,
   };
 }

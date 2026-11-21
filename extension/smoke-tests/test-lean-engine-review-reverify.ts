@@ -33,6 +33,7 @@ import {
   tempDir,
   ticking,
 } from "./lib/lean-engine-fixtures.ts";
+import { greenWithRoster } from "./lib/lean-roster-fixture.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -63,7 +64,9 @@ async function drive(issue: number, over: Partial<Record<LeanState, Outcome[]>> 
 {
   const { result, calls, stored } = await drive(40, {
     // Two verifies: the one before the review, and the one the moved head earns.
-    verify: [{ kind: "green" }, { kind: "green" }],
+    // The queue is drained in visit order, so every entry a case keeps must carry the roster:
+    // the land gate reads the newest green verify's RECORD, not only its kind.
+    verify: [greenWithRoster(FIXTURE_BASE_SHA), greenWithRoster(FIXTURE_BASE_SHA)],
     // Two publishes: the moved head's re-verify has to reach the forge again, and
     // the SECOND one must go to `ci` rather than back through the six lenses.
     publish: [{ kind: "ok" }, { kind: "ok" }],

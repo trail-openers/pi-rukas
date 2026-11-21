@@ -14,7 +14,6 @@
 import { isFullCommitSha } from "../commit-sha.ts";
 import type { DispatchUsage } from "../types.ts";
 import { HANDOFF_CHANNELS, type HandoffChannel } from "../work-driver-handoff-channel.ts";
-import { leanReadyFactsOnLoadEnabled } from "./ready-facts-switch.ts";
 import { CRITERION_ID } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
 import { canonicalDerivedSpec } from "./state-derived-spec.ts";
@@ -40,10 +39,12 @@ import {
   commandCriteriaProblem,
   commandNotRunnableProblem,
   preexistingFailuresProblem,
+  projectRosterProblem,
   validatedBlockedBy,
   validatedCommandCriteria,
   validatedCommandNotRunnable,
   validatedPreexistingFailures,
+  validatedProjectRoster,
 } from "./state-outcome-maps.ts";
 // The two print caps for a `blockedBy` entry live with the validator that enforces the
 // record's own bound; re-exported so a caller need not know which file holds them.
@@ -184,6 +185,10 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // The tiers a verify/ci step excused over the base commit: they license a GREEN over a
   // tier that exited non-zero, so a step that never ran that tier may not carry the record.
   preexistingFailures: ["verify", "ci"],
+  // The project-test roster. `verify` alone: it is the roster of the suite the GATE ran, and a
+  // step that ran no suite carrying one would report a gate's evidence on a step that made none
+  // — `ci` re-probes its own full tier and records `preexistingFailures`, never a roster.
+  projectRoster: "verify",
   // Owned by whichever dispatching step hit its ceiling: a handback inventing a ceiling the
   // step never crossed would print it as the run's cause.
   limit: BUDGET_STATES,
@@ -348,6 +353,13 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     const problem = preexistingFailuresProblem(oc.preexistingFailures);
     if (problem !== undefined) return problem;
   }
+  // The roster licenses the MERGE (`landEarned` reads it), so it is refused rather than carried:
+  // a record whose totals disagree with its own names, or whose name lists are empty, is a claim
+  // no gate could have produced.
+  if (oc.projectRoster !== undefined) {
+    const problem = projectRosterProblem(oc.projectRoster);
+    if (problem !== undefined) return problem;
+  }
   if (oc.dispatches !== undefined) {
     const problem = dispatchesProblem(oc.dispatches);
     if (problem !== undefined) return problem;
@@ -399,9 +411,7 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
 export function buildOutcome(oc: Record<string, unknown>): Outcome {
   const tests = oc.tests as Record<string, string[]> | undefined;
   // Computed ONCE so the two clauses below cannot disagree about which arm they are on.
-  const derived: DerivedSpec | undefined = leanReadyFactsOnLoadEnabled()
-    ? canonicalDerivedSpec(oc.derivedSpec)
-    : undefined;
+  const derived: DerivedSpec | undefined = canonicalDerivedSpec(oc.derivedSpec);
   return {
     kind: oc.kind as string,
     ...(typeof oc.reason === "string" ? { reason: oc.reason } : {}),
@@ -424,6 +434,11 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     ...(oc.preexistingFailures === undefined
       ? {}
       : { preexistingFailures: validatedPreexistingFailures(oc.preexistingFailures) }),
+    // A roster that fails any rule is DROPPED rather than carried, and a dropped roster is the
+    // same refusal as a missing one: `landEarned` refuses the merge on either.
+    ...(oc.projectRoster === undefined
+      ? {}
+      : { projectRoster: validatedProjectRoster(oc.projectRoster) }),
     ...(typeof oc.prUrl === "string" ? { prUrl: oc.prUrl } : {}),
     ...(typeof oc.publishedHead === "string" ? { publishedHead: oc.publishedHead } : {}),
     ...(typeof oc.shippedHead === "string" ? { shippedHead: oc.shippedHead } : {}),
@@ -448,8 +463,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     // `ready` may carry either field, and `outcomeProblem` has refused it anywhere else BEFORE
     // this runs — so each clause here rebuilds only what that judgement already passed. The
     // contract goes through the reader that canonicalises it rather than carrying the file's
-    // shape. `PI_ENSEMBLE_LEAN_READY_FACTS_ON_LOAD=0` leaves the pair out, which is how every
-    // release through v0.14.87 loaded a ready step.
+    // shape, so the executed document is the reader's shape rather than the file's.
     ...(derived === undefined ? {} : { derivedSpec: derived }),
     ...(derived === undefined
       ? {}

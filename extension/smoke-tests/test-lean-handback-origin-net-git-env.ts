@@ -34,8 +34,8 @@
  * the suite goes red when it is not taken.
  *
  * The push is asserted untouched in the same breath: this change routes reads, and a fix
- * that also reached the push would break the `LEAN_REWIND_LEASE_BINDS` off arm's promise
- * to restore the pre-fix push byte for byte.
+ * that also reached the push would move the rewind's `--atomic`, lease-bound argv, which
+ * ships with the rule and has no lever of its own.
  */
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -80,9 +80,6 @@ await withEnv(
     // Absent, so the bound the reads are clamped to is the shipped default and the
     // recorded timeout is `min(60 s, 300 s)` rather than whatever the shell pinned.
     PI_ENSEMBLE_GIT_NET_TIMEOUT_MS: undefined,
-    // The lease switch is this change's neighbour, not its subject: pin it on so the
-    // on-arm drive measures the routed reads and nothing else.
-    PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS: "1",
     PI_ENSEMBLE_LEAN_HANDBACK_NET_GIT: "1",
   },
   async () => {

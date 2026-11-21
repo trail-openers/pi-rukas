@@ -51,22 +51,43 @@ export {
   pytestFailTier,
   writeTier,
 } from "./lean-verify-tiers.ts";
+import { canonicalProbeDir, makeVerifyExec } from "./lean-verify-exec.ts";
+import { FROZEN_FILE } from "./lean-verify-frozen.ts";
+// The handback step-log builders live in `lean-verify-handback-log.ts`: a case that only needs a
+// log should not provision a repo to get one. Re-exported so every case still imports the harness
+// from this module.
+export {
+  type HandbackPost,
+  decided,
+  handbackCtx,
+  publishStep,
+  redLog,
+} from "./lean-verify-handback-log.ts";
+// The repo builders (a real repo at its frozen head, its registered worktree, the project-test
+// stub the roster enumerates) live in `lean-verify-repo.ts`; this module runs the step against
+// what they build.
+import {
+  buildFixtureForWiring,
+  commitHere,
+  fixture,
+  fixtureSync,
+} from "./lean-verify-repo.ts";
+export { buildFixtureForWiring };
 import { type Fixture, provisionHookedTree } from "./lean-verify-hook-tree.ts";
 import {
-  type VerifyOpts,
-  type VerifyRun,
-} from "./lean-verify-types.ts";
-import {
-  canonicalProbeDir,
-  makeVerifyExec,
-} from "./lean-verify-exec.ts";
+  rosterCommandFor,
+  rosterSideNames,
+  rosterTemplate,
+  rosterTestFiles,
+} from "./lean-verify-roster.ts";
+import type { VerifyOpts, VerifyRun } from "./lean-verify-types.ts";
 
 /** The shapes a verify case is configured with and answers with, re-exported here so a
  * case imports the whole harness from one module. */
 export type { VerifyOpts, VerifyRun };
 
-/** Temp dirs this module made; the caller removes them at the end of the run. */
-export const ROOTS: string[] = [];
+/** Temp dirs the harness made; the caller removes them at the end of the run. */
+export { ROOTS };
 
 /**
  * The frozen-test and runner-helper bytes, re-exported so a case imports the whole
@@ -87,6 +108,7 @@ export {
   TEST,
   commitFrozenFiles,
 } from "./lean-verify-bytes.ts";
+import { ROSTER_REPORT_FILE } from "../../src/lean/verify-roster-command.ts";
 import {
   NAMING_RUNNER_FILE,
   NAMING_RUNNER_SCRIPT,
@@ -100,174 +122,28 @@ import {
   TEST,
   commitFrozenFiles,
 } from "./lean-verify-bytes.ts";
-import { fixtureGitEnv, git, sha } from "./lean-verify-git.ts";
+import { ROOTS, fixtureGitEnv, git, sha } from "./lean-verify-git.ts";
 
 export { git, sha };
 
-/**
- * The frozen contract of the BASE: an acceptance test the mainline carries and cannot
- * pass. Its bytes live in `lean-verify-bytes.ts` beside the rest of the contract.
- */
-/** The one acceptance-test path the fixture freezes, and the baseline probe judges. */
-const FROZEN_FILE = "tests/AC1-retry.test.sh";
-
-/**
- * Commit the acceptance test in `dir` and return the resulting head. This is the
- * freeze: the sha the step log records is the sha of the bytes this commit holds,
- * so every tamper case has to change a real byte to be red.
- */
-function commitFreeze(dir: string, issue: number, text: string): string {
-  const target = path.join(dir, FROZEN_FILE);
-  mkdirSync(path.dirname(target), { recursive: true });
-  writeFileSync(target, text, { mode: 0o755 });
-  chmodSync(target, 0o755);
-  git(dir, "add", "-A");
-  git(dir, "commit", "-q", "-m", `test: acceptance tests for #${issue}`);
-  return git(dir, "rev-parse", "HEAD");
-}
-
-/**
- * A repo whose HEAD holds the frozen acceptance test, and a registered worktree
- * on the run's branch at that HEAD.
- *
- * The worktree is built first and the branch is handed to it outright, so a case
- * can commit inside the tree — moving the very head the step is about to judge —
- * without git refusing to move a branch `repoRoot` holds.
- *
- * `fixtureSync` builds the repo and its worktree; `fixture` layers the optional
- * hook-provisioned tree on top, which is the only reason the repo build is not all
- * synchronous.
- */
-/** What building a fixture yields: the repo, its worktree, the frozen record and the ctx. */
-async function fixture(
-  issue: number,
-  baseRedContract: boolean,
-  hook?: { script: string; marksDir: string },
-  frozenText?: string,
-  extraFrozen: Record<string, string> = {},
-): Promise<Fixture> {
-  const built = fixtureSync(issue, baseRedContract, hook, frozenText, extraFrozen);
-  if (hook !== undefined) await provisionHookedTree(built, hook, fixtureGitEnv());
-  return built;
-}
-
-/**
- * Build the repo, its single acceptance-test commit, and the run's worktree. Synchronous
- * because most cases need nothing else; `fixture` adds the hook-provisioned tree on top.
- */
-function fixtureSync(
-  issue: number,
-  baseRedContract: boolean,
-  hook?: { script: string; marksDir: string },
-  frozenText?: string,
-  extraFrozen: Record<string, string> = {},
-): Fixture {
-  const repoRoot = mkdtempSync(path.join(tmpdir(), "lean-verify-"));
-  ROOTS.push(repoRoot);
-  git(repoRoot, "init", "-q", "-b", "main");
-  const dir = (rel: string) => path.join(repoRoot, rel);
-  mkdirSync(dir("src"), { recursive: true });
-  mkdirSync(dir("tests"), { recursive: true });
-  writeFileSync(dir("src/retry.ts"), SRC);
-  git(repoRoot, "add", "-A");
-  git(repoRoot, "commit", "-q", "-m", "base");
-  if (hook !== undefined) {
-    // A project hook COMMITTED AT THE BASE, so both trees this case involves are
-    // hook-provisioned trees: the run's own worktree (which the driver must provision
-    // through the hook) and the probe's throwaway checkout (which it must not). The hook
-    // is an `sh` script that marks its `$PI_RUKAS_TEST_HOOK_MARKS` directory, so the case
-    // reads evidence of WHERE it ran rather than trusting a stub's word for it.
-    mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
-    const hookFile = path.join(repoRoot, ".pi", "worktree-setup");
-    writeFileSync(hookFile, hook.script, { mode: 0o755 });
-    chmodSync(hookFile, 0o755);
-    git(repoRoot, "add", "-A");
-    git(repoRoot, "commit", "-q", "-m", "chore: project worktree-setup hook");
-  }
-  if (baseRedContract === true) {
-    // The incident's shape, made of real bytes rather than of a stub's say-so, and put
-    // where a baseline probe can actually reach it: at the SAME path the run goes on to
-    // freeze, the base commit holds a test that fails UNCONDITIONALLY. That is exactly a
-    // mainline whose acceptance suite is red on this host, seen through the run's own
-    // contract — the one comparison the probe can make without running the run's tests
-    // at a commit that predates them. The freeze then records the run's PASSING bytes at
-    // the same path, so the tamper guard's rule ("HEAD's blob is the frozen blob") still
-    // holds at HEAD while the base holds other, failing, bytes.
-    mkdirSync(dir("tests"), { recursive: true });
-    writeFileSync(dir(FROZEN_FILE), RED_BASE_TEST, { mode: 0o755 });
-    chmodSync(dir(FROZEN_FILE), 0o755);
-    git(repoRoot, "add", "-A");
-    git(repoRoot, "commit", "-q", "-m", "test: the mainline's own suite is red on this host");
-  }
-  const baseSha = git(repoRoot, "rev-parse", "HEAD");
-  const branch = `lean/issue-${issue}`;
-  git(repoRoot, "checkout", "-q", "main");
-  // The worktree is created BEFORE the freeze commit and the branch is handed to
-  // it outright, so a case that commits inside the tree moves a head nothing
-  // else holds. `--no-checkout` + a hand-written checkout is how git is told to
-  // put the branch on a tree without also checking it out in `repoRoot`.
-  const wt = path.join(repoRoot, ".worktrees", `lean-${issue}`);
-  git(repoRoot, "worktree", "add", "-q", "-B", branch, wt, baseSha);
-  // The frozen contract's bytes: the fixture's own red-until-implemented test, or the
-  // case's, for the pair that fixes the ACCEPTANCE half of a verdict (green for an
-  // excuse case, red for the case asking what an acceptance-red run does on the
-  // excuse path).
-  const head = commitFreeze(wt, issue, frozenText ?? TEST);
-  // The case's own extra frozen files, committed ON TOP of the freeze: they must be
-  // the bytes the record names, or the step's tamper guard reports a hang as an
-  // edited contract.
-  if (Object.keys(extraFrozen).length > 0) commitFrozenFiles(wt, extraFrozen);
-
-  const run = createRun({ issue, version: "test", models: {}, baseSha, branch });
-  // The record is what the step reads back, so it must be the bytes the FREEZE holds at
-  // HEAD — which is the run's own contract. The base's red acceptance test is NOT part
-  // of it: it belongs to the mainline, and a run cannot freeze a test it did not author.
-  // What makes the base red is that the base carries a test at all whose bytes the run's
-  // contract does not satisfy, which the probe reads off the base commit itself.
-  // The record must hold the sha of the bytes the FREEZE actually holds — the case's
-  // bytes when the case fixed them — or the integrity check reads a green contract as
-  // a tampered one.
-  const frozen: Record<string, string> = { [FROZEN_FILE]: sha(frozenText ?? TEST) };
-  for (const [rel, text] of Object.entries(extraFrozen)) frozen[rel] = sha(text);
-  const extraPaths = Object.keys(extraFrozen);
-  const steps: Step[] = [
-    { key: `${issue}:ready:0`, state: "ready", startedAt: 1, outcome: { kind: "ok" } },
-    {
-      key: `${issue}:specify:0`,
-      state: "specify",
-      startedAt: 2,
-      outcome: {
-        kind: "ok",
-        frozen,
-        tests: { AC1: [FROZEN_FILE, ...extraPaths] },
-      },
-    },
-  ];
-  const withSteps = { ...run, steps };
-  return {
-    repoRoot,
-    wt,
-    head,
-    frozen,
-    ctx: {
-      repoRoot,
-      issue,
-      run: withSteps,
-      steps,
-      stepKey: `${issue}:verify:0`,
-      now: () => 4,
-    },
-  };
-}
-
 /** Run `verify` against a fixture repo; a throw comes back as `threw`. */
 export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
+  // Each declared pre-existing test file is committed at the BASE as a script reporting the names
+  // this case declared for the BASE run — which is what makes "pre-existing" a fact the case states
+  // once and both trees then honour, rather than one the harness invents at read time.
+  const rosterFiles = rosterTestFiles(opts);
   const f = await fixture(
     opts.issue,
     opts.baseRedContract === true,
     opts.hookAtBase,
     opts.frozenText,
     opts.extraFrozen ?? {},
+    rosterFiles,
+    opts.baseProjectTestFails === true,
+    // The dep tree is laid down whenever the case names dirs to bare from the base checkout:
+    // `lean-verify-exec.ts` bares them the moment the checkout exists, so the tree must be
+    // there to bare — a candidate git never ignores is one the link was never asked for.
+    opts.roster?.baseMissingDeps !== undefined,
   );
 
   const wt = f.wt;
@@ -302,6 +178,17 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   }
   if (opts.dirty === true) writeFileSync(path.join(wt, "notes.txt"), "a stray file\n");
 
+  // The run EDITS these pre-existing test files: their HEAD bytes become the case's text, committed,
+  // so the tree is clean and the roster must run each file's BASE version against the head code.
+  // Bench cell 2's shape, made of real commits rather than of a stub's say-so.
+  if (opts.editProjectTests !== undefined) {
+    for (const [rel, text] of Object.entries(opts.editProjectTests)) {
+      writeFileSync(path.join(wt, rel), text, { mode: 0o755 });
+      chmodSync(path.join(wt, rel), 0o755);
+    }
+    commitHere(wt, "test: the run rewrote an existing test's expectation");
+  }
+
   const head = git(wt, "rev-parse", "HEAD");
   // The tier commands this case configured, as strings: a tier runs as a shell
   // command, so the only thing that identifies one to the executor is its own text.
@@ -331,7 +218,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const ctx: HandlerCtx = { ...f.ctx, steps: all };
   ctx.run = { ...ctx.run, steps: all };
 
-  const { exec, redRunsSeen, baseTierRunsSeen, frozenRunsSeen } = makeVerifyExec({
+  const { exec, redRunsSeen, baseTierRunsSeen, frozenRunsSeen, rosterRunsSeen } = makeVerifyExec({
     wt,
     probeDir,
     repoRoot,
@@ -339,6 +226,15 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     opts,
     baseSha: f.ctx.run.baseSha,
     ...(opts.hookAtBase === undefined ? {} : { hookMarks: opts.hookAtBase.marksDir }),
+    // The roster's project suite reaches the executor in argv form, so the stub needs the
+    // command's binary to tell that call from a frozen run's `sh <file>`.
+    rosterCmd: rosterCommandFor({ roster: rosterTemplate(opts, configured) }),
+    // What each side's report says. The default is one test that passes in BOTH trees; a case
+    // declares names to ask for a red, a missing report, or a test that only the base ran.
+    rosterNames: {
+      head: rosterSideNames(opts, "head"),
+      base: rosterSideNames(opts, "base"),
+    },
   });
 
   const deps: VerifyDeps = {
@@ -346,6 +242,15 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     loadConfig: async () => ({
       verify: {
         ...configured,
+        // The roster's inventory comes from the config pair, so a case that declares pre-existing
+        // tests has to say where they live — the same `testDir`/`testGlob` the real loader reads at
+        // the base commit. Absent, the roster cannot enumerate anything and the step hands back.
+        roster: rosterTemplate(opts, configured),
+        testDir: opts.testDir ?? "tests",
+        testGlob: opts.testGlob ?? "test-*.sh",
+        // A case that wants the ROSTERLESS hand-back takes the pair away, as a project that
+        // configured no test location would.
+        ...(opts.noTestLocation === true ? { testDir: undefined, testGlob: undefined } : {}),
         test:
           opts.frozenRunner ??
           (opts.silentRunner === true
@@ -374,6 +279,8 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       tierRuns: redRunsSeen(),
       baseTierRuns: baseTierRunsSeen(),
       frozenRuns: frozenRunsSeen(),
+      rosterRuns: rosterRunsSeen(),
+      baseSha: f.ctx.run.baseSha,
     };
   } catch (err) {
     return {
@@ -385,98 +292,8 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       tierRuns: redRunsSeen(),
       baseTierRuns: baseTierRunsSeen(),
       frozenRuns: frozenRunsSeen(),
+      rosterRuns: rosterRunsSeen(),
+      baseSha: f.ctx.run.baseSha,
     };
   }
-}
-
-/** Commit everything in `dir`, as the fixture's identity. */
-function commitHere(dir: string, message: string): void {
-  git(dir, "add", "-A");
-  git(dir, "commit", "-q", "-m", message);
-}
-
-export interface HandbackPost {
-  repoRoot: string;
-  issue: number;
-  body: string;
-}
-
-/** A HandlerCtx for a handback case, carrying the log the case asked for. */
-export function handbackCtx(
-  issue: number,
-  steps: Step[],
-  repoRoot = "/tmp/lean-handback-repo",
-): HandlerCtx {
-  const run = createRun({
-    issue,
-    version: "test",
-    models: {},
-    baseSha: "a".repeat(40),
-    branch: `lean/issue-${issue}`,
-  });
-  const withSteps = { ...run, steps };
-  return {
-    repoRoot,
-    issue,
-    run: withSteps,
-    steps: withSteps.steps,
-    stepKey: `${issue}:handback:0`,
-    now: () => 5,
-  };
-}
-
-/**
- * A fixture in the state `verify` expects, for the wiring tests: the real repo,
- * the real registered worktree, and a HandlerCtx whose step log froze the test.
- * Nothing runs, so the case can call a handler directly and watch it refuse.
- */
-export function buildFixtureForWiring(issue: number): {
-  repoRoot: string;
-  wt: string;
-  ctx: HandlerCtx;
-} {
-  // The wiring cases never provision a tree, so they take the synchronous path.
-  const f = fixtureSync(issue, false);
-  return { repoRoot: f.repoRoot, wt: f.wt, ctx: f.ctx };
-}
-
-/** A decided step for the handback cases. */
-export function decided(state: Step["state"], outcome: Outcome, n = 0): Step {
-  return { key: `7:${state}:${n}`, state, startedAt: 1, endedAt: 2, outcome };
-}
-
-/**
- * A publish step that recorded its PR the only sanctioned way: `prUrl`.
- * `url`/`htmlUrl` are the fields the old guess list read, and a step that
- * reaches for one of them is refused by `state.ts` on load.
- *
- * `issue` names the branch the step belongs to, so a hand-built log can carry a
- * publish step whose `prUrl` the handback under test would print for that run.
- */
-export function publishStep(
-  url: string,
-  field: "prUrl" | "url" | "htmlUrl" = "prUrl",
-  issue?: number,
-): Step {
-  const outcome = { kind: "ok", ...(field === "prUrl" ? { prUrl: url } : { [field]: url }) };
-  return decided("publish", outcome as Outcome, issue ?? 7);
-}
-
-/** The log a run carries when it reaches handback after its gate said red. */
-export function redLog(prUrl?: string): Step[] {
-  const steps: Step[] = [
-    decided("ready", { kind: "ok" }),
-    decided("specify", {
-      kind: "ok",
-      frozen: { [FROZEN_FILE]: "a".repeat(64) },
-      tests: { AC1: [FROZEN_FILE] },
-    }),
-    decided("build", { kind: "ok", reason: "1 file(s) changed" }),
-    decided("verify", {
-      kind: "red",
-      reason: "frozen tests failing: tests/AC1-retry.test.sh (exited 1)",
-    }),
-  ];
-  if (prUrl !== undefined) steps.push(decided("publish", { kind: "ok", prUrl } as Outcome));
-  return steps;
 }

@@ -17,7 +17,6 @@ import { MAINLINE_PROBE_TIMEOUT_MS, type MainlineExecFn, resolveMainline } from 
 import { causeOf } from "../probe-cause.ts";
 import { netGitEnv, runNetGit } from "../work-driver-net-git.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
-import { leanGuardFailClosed } from "./guard-fail-closed-switch.ts";
 import { fetchIssueBody, forgeFor } from "./io.ts";
 import type { VerifyExec } from "./verify-types.ts";
 
@@ -94,7 +93,6 @@ export async function assertPublishableBranch(
     if (local.branch === branch) throw mainlineRefusal(branch);
     return;
   }
-  if (!leanGuardFailClosed()) return;
   // The policy's second half: ask origin, over the transport the push will use.
   const remote = await originHeadBranch(repoRoot, exec);
   if (remote === undefined) {

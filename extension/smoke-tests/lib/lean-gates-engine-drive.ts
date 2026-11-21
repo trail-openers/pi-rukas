@@ -14,8 +14,10 @@
  * out of script and the case asserts on a log no real run produced.
  */
 
-import type { Outcome, Step } from "../../src/lean/state.ts";
+import { type Outcome, type Step } from "../../src/lean/state.ts";
 import { driveRun } from "./lean-real-log-fixture.ts";
+import { FIXTURE_BASE_SHA } from "./lean-engine-fixtures.ts";
+import { greenWithRoster } from "./lean-roster-fixture.ts";
 import type { DrivenRun } from "./lean-real-log-fixture.ts";
 import { HEAD, URL } from "./lean-result-fixture.ts";
 
@@ -105,7 +107,7 @@ export function engineGatesPlan(r: EngineGatesRun): Record<string, Outcome[]> {
         : [{ kind: r.challenge ?? "none" }],
     verify: Array.from({ length: gateVisits }, (_, i) =>
       (verify[Math.min(i, verify.length - 1)] ?? "green") === "green"
-        ? { kind: "green", verifiedHead: r.verifiedHead ?? HEAD }
+        ? greenWithRoster(FIXTURE_BASE_SHA)
         : {
             kind: "red",
             reason: "frozen tests failing: tests/AC1-retry.test.sh (exited 1)",

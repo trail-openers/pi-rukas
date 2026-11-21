@@ -26,10 +26,6 @@
  *       cannot be a bound of zero — while the hung arm of the same allowance is
  *       cut at that number within the case's own guard, a guard that fails the case
  *       rather than hanging the suite;
- *   (c) `PI_ENSEMBLE_LEAN_REPORT_BOUND=0` awaits the handler with no wall at all:
- *       the same hung handler, and the drive only ends when the handler is let
- *       settle, at a time PAST the bound. The bound's sentence appears nowhere in
- *       the record, and the verdict the bound refused lands;
  *   (d) the bound's timer is a ref'd timer and is cleared on the way out of the race
  *       — read off the source, because both properties are invisible to a drive from
  *       outside (a passing drive exits either way). Ref'd is the direction the timer
@@ -291,71 +287,6 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
       );
     }
   });
-}
-
-// ── (c) `PI_ENSEMBLE_LEAN_REPORT_BOUND=0`: the await is unbounded, exactly as before.
-{
-  // The off arm cannot be shown by a hang — a hang is what the bound exists to cut,
-  // and on the off arm it would never end. So the handler is held pending past the
-  // bound and let settle, and the case asserts the run waited for it: the stamp it
-  // carries is the report's verdict, and the bound's own sentence appears nowhere.
-  const repo = repoWithFixHead();
-  const hung = hungHandler();
-  const ALLOWANCE_MS = 2_000;
-  const warns: string[] = [];
-  await withEnv(
-    rigEnv(ALLOWANCE_MS, { PI_ENSEMBLE_LEAN_REPORT_BOUND: "0" }),
-    async () => {
-      const started = Date.now();
-      let ran: Driven | string = "NOT_RUN";
-      await captureWarns("[pi-rukas] WARN", warns, async () => {
-        // Past the bound by more than the bound itself, so the drive cannot have
-        // been cut at it and simply waited out the case's own clock.
-        const hold = setTimeout(() => hung.release(), ALLOWANCE_MS * 3);
-        try {
-          ran = await guarded("c:unbounded", () =>
-            driveToDeadline(repo.repoRoot, greenAt(repo.baseSha), repo.baseSha, {
-              handback: hung.handler,
-            }),
-          );
-        } finally {
-          clearTimeout(hold);
-          hung.release();
-        }
-      });
-      const waited = Date.now() - started;
-      assert(
-        typeof ran === "object",
-        `(c) with the bound off the drive is the drive it always was — it ends when the handler does (got ${JSON.stringify(ran)})`,
-      );
-      const cDrive: Driven | undefined = typeof ran === "object" ? ran : undefined;
-      assert(
-        cDrive !== undefined,
-        `(c) with the bound off the drive ended at all (got ${JSON.stringify(ran)})`,
-      );
-      if (cDrive !== undefined) {
-        const ran = cDrive as Driven;
-        assert(
-          waited >= ALLOWANCE_MS,
-          `(c) and it really waited for the handler past the allowance the ON arm would have cut at (${String(waited)}ms, allowance ${String(ALLOWANCE_MS)}ms)`,
-        );
-        assert(
-          ran.reason.includes("cycle deadline reached at verify") &&
-            ran.outcome?.kind === "done" &&
-            ran.outcome.reason === `posted late for ${ISSUE}:handback:0`,
-          `(c) the report's own verdict landed — the engine awaited the handler and nothing else (got ${JSON.stringify([ran.reason, ran.outcome])})`,
-        );
-        assert(
-          !ran.reason.includes("timed out"),
-          `(c) and the bound's sentence is nowhere in the record — the off arm writes nothing the bound says (got ${JSON.stringify(ran.reason)})`,
-        );
-        assert(
-          warns.length === 0,
-          `(c) and nothing was warned about a bound — the off arm emits no bound disclosure either (warns ${JSON.stringify(warns)})`,
-        );
-      }
-    },
-  );
 }
 
 // ── (d) the bound's timer cannot hold the process, and cannot outlive the race (R3).

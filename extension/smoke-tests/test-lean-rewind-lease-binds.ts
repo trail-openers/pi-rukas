@@ -16,13 +16,13 @@
  * So this file pins four things, each on the surface where it can actually be
  * falsified:
  *
- *   (a) the ARGV. With the switch on, the branch refspec carries no leading `+` and
- *       the keeping-ref refspec keeps its; with the switch off, the whole argv is
- *       compared ARRAY FOR ARRAY against the pre-fix argv — prefix, verb, lease
- *       argument, remote, both refspecs, in that order. An off arm that also renamed
- *       the keeping-ref or reordered the refspecs is still caught by that equality,
- *       which an absence check would not be. Both halves were observed red on a
- *       mutant that put the `+` back unconditionally, so neither is a tautology.
+ *   (a) the ARGV. The branch refspec carries no leading `+` and the keeping-ref
+ *       refspec keeps its; the whole argv is compared ARRAY FOR ARRAY against the
+ *       argv the fix intends — prefix, verb, lease argument, remote, both refspecs,
+ *       in that order. An argv that also renamed the keeping-ref or reordered the
+ *       refspecs is still caught by that equality, which an absence check would not
+ *       be. It was observed red on a mutant that put the `+` back unconditionally,
+ *       so it is not a tautology.
  *   (b) the moved branch the run's clone cannot supply: the rewind must report nothing
  *       shipped, origin's branch must stand at the stranger, and no keeping-ref may be
  *       written. The reason it prints is git's own (`the rewind push failed`, naming the
@@ -33,12 +33,9 @@
  *       reclaims it under the fix, where the push git refused is no longer one git would
  *       have obeyed.
  *   (b2) the arm the fix is for: the objects ARE present, on both sides, and origin's
- *       branch has moved. Same repo shape driven twice, differing only in the leading
- *       `+`: with the switch on the unforced push is authorised by its lease, rewinds
+ *       branch has moved. The unforced push is authorised by its lease, rewinds
  *       the branch non-fast-forward, and keeps the head it displaced under
- *       `refs/lean/unverified/<issue>`; with the switch off the forced push rewrites a
- *       branch this step merely read. The defect is therefore pinned as the difference
- *       between two arms, and the on arm is simultaneously the control that keeps (b)
+ *       `refs/lean/unverified/<issue>`. It is also the control that keeps (b)
  *       from being a pass which only proves the rule stopped working — git's
  *       `Everything up-to-date` exit-0 no-op, which the code comment used to cite as the
  *       reason the `+` was necessary, is not what an authorised rewind prints.
@@ -76,15 +73,12 @@
  * refused while the UNLEASED keeping-ref still landed, so the refusal left `refs/lean/
  * unverified/<issue>` naming a head the branch never held here. That partial refusal is what
  * acceptance criterion 2 forbids, and (c) pins its opposite — the keeping-ref is ABSENT —
- * which holds only while the on-arm push carries `--atomic`. The off arm has no `--atomic`
- * and still writes that ref; (a2) pins that argv byte for byte, so the leak staying there is
- * the switch doing its job, not a gap in the fix.
- * With the switch on the rewind ships nothing and says `the lease refused the rewind`; with
- * it off the same race moves origin to V, which is the defect pinned as the difference.
+ * which holds only while the rewind's push carries `--atomic`.
+ * A branch that moved between the step's read and its push is refused and ships nothing,
+ * saying `the lease refused the rewind`, with origin left where the stranger put it.
  *
  * The env is pinned only through `lib/env-scope.ts`, which restores exactly what was
- * there: every lean smoke file runs in one bun process, so a leaked `"0"` here would
- * silently disarm the rule in the files sorted after it.
+ * there: every lean smoke file runs in one bun process.
  */
 
 import { spawnSync } from "node:child_process";
@@ -94,7 +88,6 @@ import path from "node:path";
 import { rewindToVerified, unverifiedRef } from "../src/lean/handback-rewind.ts";
 import type { Rewind } from "../src/lean/handback-rewind.ts";
 import { NO_HOOKS } from "../src/lean/specify-reset.ts";
-import { leanRewindLeaseBinds } from "../src/lean/rewind-lease-switch.ts";
 import type { VerifyExec } from "../src/lean/verify-types.ts";
 import { BRANCH, ISSUE, ROOTS, exec } from "./lib/lean-verified-handback-fixture.ts";
 import { gitEnv } from "./lib/lean-review-fixtures.ts";
@@ -107,8 +100,6 @@ import {
   repoWithFixHead,
   strangerOnTop,
 } from "./lib/lean-verified-handback-repo.ts";
-import { withEnv } from "./lib/env-scope.ts";
-
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
   if (cond) console.log(`✓ ${msg}`);
@@ -116,11 +107,6 @@ function assert(cond: boolean, msg: string): void {
     console.error(`✗ ${msg}`);
     exit = 1;
   }
-}
-
-/** The switch's own reader, asserted alongside every argv claim. */
-async function withSwitch(value: string | undefined, body: () => Promise<void>): Promise<void> {
-  await withEnv({ PI_ENSEMBLE_LEAN_REWIND_LEASE_BINDS: value }, body);
 }
 
 /**
@@ -191,10 +177,8 @@ function pendingStranger(
   return { sha, pushTo };
 }
 
-// ── (a1) the switch ON: no `+` on the branch refspec, nothing else changed ──
+// ── (a1) the shipped rule: no `+` on the branch refspec, nothing else changed ──
 {
-  if (leanRewindLeaseBinds() !== true)
-    throw new Error("the operator's env has the lease switch off, so the ON arm measures nothing");
   const repo = repoWithFixHead();
   const { exec: spy, pushes } = capturingExec();
   const rewind = await rewinder(spy, repo.repoRoot)(repo.baseSha);
@@ -229,7 +213,7 @@ function pendingStranger(
     args.includes(`--force-with-lease=${branchRefspec}:${repo.branchHeadSha}`),
     `(a1) the lease argument is the same expected-value lease as before (${args.join(" ")})`,
   );
-  // The byte-identical-off guarantee has an on-arm half: the switch moves the `+`
+  // The retirement's other half: the rule moves the `+`
   // and NOTHING else — no --porcelain, no new option, same prefix, same remote, same
   // refspec order. Every element is compared against the on-arm argv written out in
   // full below, so a claim that only the `+` moved is checked rather than asserted.
@@ -252,30 +236,6 @@ function pendingStranger(
   assert(
     originRefSha(repo.origin, unverifiedRef(ISSUE)) === repo.branchHeadSha,
     `(a1) and the head it displaced is kept under ${unverifiedRef(ISSUE)} (${String(originRefSha(repo.origin, unverifiedRef(ISSUE)))})`,
-  );
-}
-
-// ── (a2) the switch OFF: argv array-for-array identical to the pre-fix argv ──
-{
-  const repo = repoWithFixHead();
-  const { exec: spy, pushes } = capturingExec();
-  await withSwitch("0", async () => {
-    await rewinder(spy, repo.repoRoot)(repo.baseSha);
-  });
-  const argv = pushArgv(pushes);
-  // The pre-fix argv, written out here rather than derived from the code under test:
-  // a comparison against the same expression the fix builds would move with it.
-  const PRE_FIX = [
-    ...NO_HOOKS,
-    "push",
-    `--force-with-lease=refs/heads/${BRANCH}:${repo.branchHeadSha}`,
-    "origin",
-    `+${repo.baseSha}:refs/heads/${BRANCH}`,
-    `${repo.branchHeadSha}:${unverifiedRef(ISSUE)}`,
-  ];
-  assert(
-    JSON.stringify(argv) === JSON.stringify(PRE_FIX),
-    `(a2) with the switch off the rewind's push argv is the pre-fix argv, element for element in order (got ${JSON.stringify(argv)})`,
   );
 }
 
@@ -337,7 +297,7 @@ function pendingStranger(
   // holds them, and the step's `ls-remote` names the sha origin really holds — so the
   // lease matches what origin holds and git, with no `+`, still has to decide the move on
   // the lease alone. The two arms differ in the leading `+` and in nothing else, which is
-  // what makes this the defect pinned as a difference rather than as one arm's silence.
+  // what makes the lease the only thing standing between this push and somebody else's commit.
   const on = repoWithFixHead();
   const onStranger = commitOnTop(on.repoRoot, on.branchHeadSha, "someone else's work, object-complete");
   moveOriginBehindClone(on, onStranger);
@@ -353,29 +313,6 @@ function pendingStranger(
     `(b2) with the lease matching origin's own value, the unforced rewind is authorised and lands (${JSON.stringify([onRewind.shipped, onRewind.reason])})`,
   );
 
-  const off = repoWithFixHead();
-  const offStranger = commitOnTop(off.repoRoot, off.branchHeadSha, "someone else's work, object-complete");
-  // Origin is moved to the stranger BEFORE the off-arm rewind, so the step reads the
-  // stranger as origin's value exactly as the on arm above did: same shape, same lease
-  // value, the `+` the only difference.
-  moveOriginBehindClone(off, offStranger);
-  const offBefore = originBranchSha(off.origin);
-  const { exec: offSpy, pushes: offPushes } = capturingExec();
-  let offRewind: Rewind | undefined;
-  await withSwitch("0", async () => {
-    offRewind = await rewinder(offSpy, off.repoRoot)(off.baseSha);
-  });
-  const offArgv = pushArgv(offPushes);
-  assert(
-    offArgv !== undefined && offArgv.includes(`+${off.baseSha}:refs/heads/${BRANCH}`),
-    `(b2) off arm: the forced refspec is back in the argv (${JSON.stringify(offArgv ?? null)})`,
-  );
-  assert(
-    offRewind?.shipped === true &&
-      originBranchSha(off.origin) === off.baseSha &&
-      offBefore === offStranger,
-    `(b2) off arm: and that is the arm that rewrites a branch it only read — the lease git never consulted (${JSON.stringify([offRewind?.shipped, originBranchSha(off.origin), offBefore])})`,
-  );
 }
 
 // ── (c) the race the lease exists for: origin moves between the step's read and its push ──
@@ -442,32 +379,6 @@ function pendingStranger(
   assert(
     keptAfterRefusal === undefined,
     `(c) and a refused rewind wrote NO keeping-ref on origin — origin unchanged, as the acceptance criterion demands (${String(keptAfterRefusal)})`,
-  );
-
-  // The off arm is the same race, and it MOVES origin to the verified head: git forced the
-  // ref without consulting the lease and a stranger's commit was thrown off the branch by a
-  // step that had read origin before they pushed. The defect is pinned as this difference.
-  const off = repoWithFixHead();
-  const offScratch = pendingStranger(off, "moved after the step read origin");
-  let offMoved = false;
-  const offRacing = ((cmd: string, opts?: Parameters<VerifyExec>[1]) => {
-    if (cmd === "git" && opts?.argv?.includes("push") === true && !offMoved) {
-      offMoved = true;
-      offScratch.pushTo();
-    }
-    return exec(cmd, opts);
-  }) as VerifyExec;
-  let offRewind: Rewind | undefined;
-  await withSwitch("0", async () => {
-    offRewind = await rewinder(offRacing, off.repoRoot)(off.baseSha);
-  });
-  assert(
-    offMoved,
-    `(c) off arm: the same race was raced (${String(offMoved)})`,
-  );
-  assert(
-    offRewind?.shipped === true && originBranchSha(off.origin) === off.baseSha,
-    `(c) off arm: and the forced push moved origin to the verified head over the stranger's commit — the defect, in the arm that never had a lease consulted (${JSON.stringify([offRewind?.shipped, originBranchSha(off.origin), off.baseSha])})`,
   );
 }
 

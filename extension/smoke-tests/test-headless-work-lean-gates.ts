@@ -12,10 +12,9 @@
  *
  * Five rules the cases below are built around:
  *
- *   - **the switch** (G12) and **the off arm's byte-equality** live together in
- *     `test-headless-work-lean-gates-switch.ts` — the object is absent entirely under
- *     `PI_ENSEMBLE_LEAN_RESULT_GATES=0`, and the document is then the one this build wrote
- *     before the object existed, proved against the WHOLE serialisation, key order included;
+ *   - **the object is attached whole or not at all** — the projection builds it and the
+ *     caller attaches it, so the document either carries the `gates` key or does not, never
+ *     one holding `undefined` (pinned by the `on`/`off` pair in section (2) below);
  *   - **every field is read from the durable record** (G1), and a field the record
  *     does not answer is an explicit `null`, never an omitted key (G7) — a host must
  *     be able to tell "this run had no challenge" from "this build did not look";
@@ -34,7 +33,6 @@
 
 import { leanGates } from "../src/headless/work-lean-gates.ts";
 import { leanIssueResult, leanResultDocument } from "../src/headless/work-lean-result.ts";
-import { leanResultGatesEnabled } from "../src/lean/result-gates-switch.ts";
 import { loadRun, saveRun } from "../src/lean/state.ts";
 import { CLOCK, makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
 import { HEAD, URL, driveLean, stepWith } from "./lib/lean-result-fixture.ts";
@@ -56,10 +54,25 @@ import {
 
 const { assert, failures } = makeAssert();
 
-// ─── (2) the switch and its two arms live in `test-headless-work-lean-gates-switch.ts ─
-// The truth table (default on, only the literal `"0"` off, read at CALL time) and the
-// off-arm byte-equality are the pair that owns the knob, so they are pinned together there;
-// the per-field readings below are the other half of this file's subject.
+// ─── (2) the object is attached whole ───────────────────────────────────────────
+// `gates` is additive on a published document, so the one thing its shape must guarantee
+// is that it never arrives half-built: a projection that filled fields conditionally would
+// leave a `gates` key holding `undefined`, absent to a field check and present to a host
+// that string-compares the file.
+{
+  const r = await driveLean("handed-back", 10, gatesLog({}));
+  const doc = leanResultDocument(r.run, 10).doc;
+  const issues = (doc.issues ?? []) as Record<string, unknown>[];
+  assert(
+    issues[0]?.hasOwnProperty("gates"),
+    "the projected issue carries a `gates` key",
+  );
+  const json = JSON.stringify(doc);
+  assert(
+    !/"gates":\s*(null|undefined)/.test(json),
+    "`gates` is never published as null or undefined — the key arrives whole or not at all",
+  );
+}
 
 // ─── (3) G5: `specify` — the frozen files, and the tests kept per criterion ─────
 // `build` reads the union of the frozen maps from the log and `handoff` renders the

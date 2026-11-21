@@ -1,14 +1,11 @@
 /**
- * lib/lean-review-incomplete-cap-golden — today's lean result document, frozen before the
- * `review-incomplete` cap, and the review steps the cases share.
+ * lib/lean-review-incomplete-cap-golden — the review steps the lean result cases share.
  *
- * The off arm's promise is that `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_CAP=0` writes the
- * document this build wrote before the cap existed. That cannot be compared against the ON
- * arm with a key deleted: with two independent switches on the document (`gates` and this
- * one's `reviewComplete`) an arm that dropped the wrong key on both sides would still
- * compare equal to itself. So the bytes each off arm must produce are captured here, from
- * the projection BEFORE the cap existed, and
- * `test-headless-work-lean-review-incomplete-cap-switch.ts` asserts `===` against them.
+ * One fixed run — `goldenLog()` below: a ready PR whose `review` step bought a fix wave and
+ * then stopped with lanes unjudged, so the head-binding arm really has something to say. The
+ * steps are named here rather than typed per case because the cap and the `reviewComplete`
+ * field are read off the SAME record, and two cases that hand-wrote their own `review` rows
+ * could disagree about what that record said.
  *
  * The two constants are one document over one fixed run — `goldenLog()` below, a ready PR
  * whose `review` step bought a fix wave and then stopped with lanes unjudged, so the
@@ -419,15 +416,3 @@ export function goldenLog(): Step[] {
     };
   });
 }
-
-/** The pre-change document over the golden's run, `gates` ON (the shipped default).
- * Typed `string`, not the literal: the switch test's anti-vacuity guard compares the two
- * goldens for difference, and a literal-typed pair makes that comparison statically
- * always-true (TS2367), i.e. a guard that can never fail. */
-export const GOLDEN_GATES_ON: string =
-  '{"schemaVersion":5,"issues":[{"issue":7,"status":"handoff","stateFile":".pi/lean-state/7.json","durationMs":7,"steps":[{"step":"ready","startedAt":"2023-11-14T22:13:20.001Z","endedAt":"2023-11-14T22:13:20.002Z"},{"step":"specify","startedAt":"2023-11-14T22:13:20.002Z","endedAt":"2023-11-14T22:13:20.003Z"},{"step":"build","startedAt":"2023-11-14T22:13:20.003Z","endedAt":"2023-11-14T22:13:20.004Z"},{"step":"verify","startedAt":"2023-11-14T22:13:20.004Z","endedAt":"2023-11-14T22:13:20.005Z"},{"step":"publish","startedAt":"2023-11-14T22:13:20.005Z","endedAt":"2023-11-14T22:13:20.006Z"},{"step":"review","startedAt":"2023-11-14T22:13:20.006Z","endedAt":"2023-11-14T22:13:20.007Z"},{"step":"handback","startedAt":"2023-11-14T22:13:20.007Z","endedAt":"2023-11-14T22:13:20.008Z"}],"exitCode":10,"resumable":false,"driver":"lean","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0,"turns":0,"toolCalls":0,"toolErrors":0,"dispatches":0,"byRole":{}},"branch":"feature/issue-7-thing","prState":"ready","cap":"awaiting-human-merge","reviewBound":"review STEP stopped: minutes budget 20 exceeded (used 24); wave full; unreviewed: 3 of 6 lenses unjudged","prUrl":"https://example.test/pull/7","handoff":{"channel":"forge","marker":"<!-- pi-rukas:handoff issue=7 cap=awaiting-human-merge -->","labelApplied":false,"body":"<!-- pi-rukas:handoff issue=7 cap=awaiting-human-merge -->\\n\\nhandback comment posted"},"gates":{"specify":{"frozen":{"tests/AC1-retry.test.sh":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","tests/AC2-backoff.test.sh":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"tests":{"AC1":["tests/AC1-retry.test.sh"],"AC2":["tests/AC2-backoff.test.sh"]}},"challenge":null,"verify":[{"state":"verify","kind":"green","tiers":null,"tiersTotal":null,"criteria":null,"criteriaTotal":null}],"review":{"kind":"fixed","rounds":[{"CRITICAL":1,"HIGH":2,"MEDIUM":3,"LOW":4},{"CRITICAL":0,"HIGH":0,"MEDIUM":0,"LOW":1}],"waves":[{"wave":"fix","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2"}],"wavesTotal":1,"reviewBound":{"wave":"full","reason":"review STEP stopped: minutes budget 20 exceeded (used 24)","unreviewedLanes":["3 of 6 lenses unjudged"],"unreviewedLanesTotal":1}},"handback":{"reason":"handback comment posted","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1","verified":true,"unshipped":null}}}]}';
-
-/** The pre-change document over the same run with BOTH switches at `"0"` — `string` for
- * the same reason as above. */
-export const GOLDEN_GATES_OFF: string =
-  '{"schemaVersion":5,"issues":[{"issue":7,"status":"handoff","stateFile":".pi/lean-state/7.json","durationMs":7,"steps":[{"step":"ready","startedAt":"2023-11-14T22:13:20.001Z","endedAt":"2023-11-14T22:13:20.002Z"},{"step":"specify","startedAt":"2023-11-14T22:13:20.002Z","endedAt":"2023-11-14T22:13:20.003Z"},{"step":"build","startedAt":"2023-11-14T22:13:20.003Z","endedAt":"2023-11-14T22:13:20.004Z"},{"step":"verify","startedAt":"2023-11-14T22:13:20.004Z","endedAt":"2023-11-14T22:13:20.005Z"},{"step":"publish","startedAt":"2023-11-14T22:13:20.005Z","endedAt":"2023-11-14T22:13:20.006Z"},{"step":"review","startedAt":"2023-11-14T22:13:20.006Z","endedAt":"2023-11-14T22:13:20.007Z"},{"step":"handback","startedAt":"2023-11-14T22:13:20.007Z","endedAt":"2023-11-14T22:13:20.008Z"}],"exitCode":10,"resumable":false,"driver":"lean","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0,"turns":0,"toolCalls":0,"toolErrors":0,"dispatches":0,"byRole":{}},"branch":"feature/issue-7-thing","prState":"ready","cap":"awaiting-human-merge","reviewBound":"review STEP stopped: minutes budget 20 exceeded (used 24); wave full; unreviewed: 3 of 6 lenses unjudged","prUrl":"https://example.test/pull/7","handoff":{"channel":"forge","marker":"<!-- pi-rukas:handoff issue=7 cap=awaiting-human-merge -->","labelApplied":false,"body":"<!-- pi-rukas:handoff issue=7 cap=awaiting-human-merge -->\\n\\nhandback comment posted"}}]}';

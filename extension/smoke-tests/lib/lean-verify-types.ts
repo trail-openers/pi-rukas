@@ -41,8 +41,16 @@ export interface VerifyRun {
    * would pay a second one to prove it was not paid.
    */
   frozenRuns?: number;
+  /**
+   * How many times the step ran the PROJECT's rostered suite, across the run's worktree and the
+   * base probe. The roster cases assert on this: a run that graded green without ever running the
+   * project's suite is the defect Part A exists to close, and the count is the evidence.
+   */
+  rosterRuns?: number;
   /** The run's repo root, for a case that wants to ask git about its worktrees. */
   repoRoot?: string;
+  /** The commit the run branched from — what a roster's `baseSha` must name. */
+  baseSha?: string;
 }
 
 export interface VerifyOpts extends ProbeShapeOpts {
@@ -192,6 +200,99 @@ export interface VerifyOpts extends ProbeShapeOpts {
    * output, which is every case that came before the baseline-excuse cases.
    */
   headTierOutput?: string;
+  /**
+   * The project roster, as the case declares it: which pre-existing test files the base carries,
+   * and which tests each roster run's report named.
+   *
+   * The two roster runs happen in trees the case built — the run's worktree and the probe's
+   * throwaway checkout — so only the case can say what a runner there reported. That is the same
+   * reason `baseTierOutput` answers for the base tier's stream and `baseBlobBytes` for the base's
+   * bytes: the stub answers the gate's report READ from these declarations, so the roster a case
+   * reads back is the one it asked for rather than one the harness invented.
+   *
+   * Absent means the case declares no roster, and the rosterless hand-back is what the step must
+   * then raise.
+   */
+  roster?: {
+    /** The pre-existing test files the base commit carries under `testDir`/`testGlob`. */
+    files?: string[];
+    /** Test names the HEAD run's report says passed. */
+    headPassed?: string[];
+    /** Test names the HEAD run's report says failed. */
+    headFailed?: string[];
+    /** Test names the BASE run's report says passed. */
+    basePassed?: string[];
+    /** Test names the BASE run's report says failed. */
+    baseFailed?: string[];
+    /**
+     * Make the HEAD roster run produce no exit status at all — the executor's kill shape. A run
+     * nobody watched has no per-test verdicts, and the gate must hand back rather than read a
+     * missing report as "nothing failed".
+     */
+    headRunKilled?: boolean;
+    /** Make the BASE roster run reject the same way.
+     */
+    baseRunKilled?: boolean;
+    /**
+     * Make the report unreadable after a run that exited 0 — a suite that collected nothing, or a
+     * report the runner never wrote. Either way there is no roster and no green: the stub refuses
+     * the gate's own `cat` with git's missing-file shape rather than answering it, so the gate sees
+     * the same answer a real missing report gives.
+     */
+    headReportMissing?: boolean;
+    /** Make the base report unreadable after a run that exited 0. */
+    baseReportMissing?: boolean;
+    /**
+     * Gitignore and create these dependency directories (`node_modules`, `.venv`, `vendor`) EMPTY at
+     * the base commit. The provisioner links them, verifies the link resolves to a non-empty directory,
+     * and reports that it does not — the failure shape a swallowed link leaves. The roster's gate must
+     * hand back naming the dependencies rather than let a base that cannot import its own suite excuse
+     * a head failure as already failing there.
+     */
+    baseMissingDeps?: string[];
+    /**
+     * The names the HEAD run's report names, verbatim. Given, the stub writes that report itself
+     * rather than running the configured command, because "this test passed at head" is a fact about
+     * one tree's verdicts that no shared bytes can carry. Absent, the configured command really runs.
+     */
+    headNames?: string[];
+    /** The names the BASE run's report names. Same mechanism, base tree. */
+    baseNames?: string[];
+  };
+  /**
+   * Pre-existing test files whose HEAD bytes the case rewrites (committed on top of the
+   * implementation), so the run EDITS them and the roster must run their BASE versions against
+   * the head code. The replacement is the case's text; the base keeps the file's original bytes.
+   */
+  editProjectTests?: Record<string, string>;
+  /** Where the case's declared pre-existing tests live; defaults to `tests` / `test-*.sh`. */
+  testDir?: string;
+  testGlob?: string;
+  /**
+   * Take the config's `testDir` + `testGlob` pair away, which is the shape of a project that never
+   * said where its tests live: the roster cannot enumerate anything, and the step must hand back
+   * naming the roster rather than grading a green on the frozen tests alone.
+   */
+  noTestLocation?: boolean;
+  /**
+   * The `verify.roster` report command the case configures, verbatim. Absent means the fixture's
+   * own derived runner (`sh {file} --junitxml={report} {dir}`), whose script writes the JUnit report
+   * the gate reads back.
+   */
+  rosterTemplate?: string;
+  /**
+   * Make the base commit's copy of each declared pre-existing test EXIT NON-ZERO. The roster's
+   * base-version run executes the base's own bytes through `verify.test`, so this is how a case asks
+   * "what if the file as the mainline wrote it fails against the head code" — bench cell 2.
+   */
+  baseProjectTestFails?: boolean;
+  /**
+   * The roster's throwaway base checkout is made to lack these dependency directories (the fixture
+   * commits a real non-empty tree of each name at the base first, so there is something to lack).
+   * That is the state where provisioning never happened: the base suite cannot import, every test
+   * fails there, and a head failure naming the same tests is then excused as already failing at base.
+   */
+  baseMissingDeps?: string[];
   /**
    * The bytes to freeze as the run's acceptance test, for the case that fixes the
    * ACCEPTANCE half of the verdict rather than deriving it (`GREEN_TEST` and

@@ -44,6 +44,7 @@ import {
   newestDecided,
 } from "../../src/lean/state.ts";
 import { stepGitEnv } from "./lean-review-fixtures.ts";
+import { landedRoster } from "./lean-verified-handback-step.ts";
 
 /** The run's branch; `specifyBranch` prints it verbatim, so the rewind's ref is this. */
 export const BRANCH = "lean/issue-2242";
@@ -125,9 +126,16 @@ function walkPlan(verifyQueue: Outcome[]): Partial<Record<LeanState, Outcome[]>>
   };
 }
 
-/** The green the walk earns before the review, naming the head the rule ships. */
+/** The green the walk earns before the review, naming the head the rule ships. It carries a
+ * roster because the land gate reads the RECORD, not only the verdict kind: a green with no
+ * project-test roster is refused, and these walks are here to reach `landed`. */
 function green(head: string, reason = `all frozen tests green at ${head}`): Outcome {
-  return { kind: "green", verifiedHead: head, reason };
+  return {
+    kind: "green",
+    verifiedHead: head,
+    reason,
+    projectRoster: landedRoster(FAKE_VERIFIED),
+  };
 }
 
 /** The red the gate returns on the walk's first visit, which buys another round. */

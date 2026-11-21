@@ -89,3 +89,12 @@ export function bodyLine(body: string, prefix: string): string {
 export function showRewind(r: Rewind): string {
   return `${String(r.shipped)}${r.reason === undefined ? "" : `: ${r.reason}`}`;
 }
+
+/**
+ * The roster a handback walk's green verify carries.
+ *
+ * Re-exported from `lib/lean-roster-fixture.ts` rather than restated here: the land gate reads the
+ * RECORD, not only the verdict kind, and a second spelling of the minimum it accepts is a second
+ * definition of what the gate reads — only the copy a case happens to call would ever be checked.
+ */
+export { landedRoster } from "./lean-roster-fixture.ts";

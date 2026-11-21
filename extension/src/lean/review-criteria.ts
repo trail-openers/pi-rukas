@@ -24,7 +24,6 @@
  * today's raw bounded fallback (`readiness()`, not `parsePiSpec()`, is what makes
  * that shape unreachable on a real run).
  */
-import { leanReviewProblemEnabled } from "./review-problem-switch.ts";
 import { criteriaBlock } from "./spec-blocks.ts";
 import { specFor } from "./spec-for.ts";
 import type { ContractSource } from "./state-derived-spec.ts";
@@ -96,8 +95,6 @@ export function renderSpecCriteriaSection(
   if (!read.ok) return "";
   const block = criteriaBlock(read.spec);
   if (block.trim() === "") return "";
-  const lead = leanReviewProblemEnabled()
-    ? `${LEAN_REVIEW_PROBLEM_LEAD}\n\n${fenceProblem(read.spec.problem)}\n\n`
-    : "";
+  const lead = `${LEAN_REVIEW_PROBLEM_LEAD}\n\n${fenceProblem(read.spec.problem)}\n\n`;
   return `${LEAN_REVIEW_CRITERIA_HEADING}\n\n${LEAN_REVIEW_CRITERIA_LEAD}\n\n${lead}${fenceCriteria(block)}`;
 }

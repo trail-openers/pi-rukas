@@ -45,8 +45,6 @@
  */
 
 import { redactClip } from "../decision-log.ts";
-import { leanResultGatesEnabled } from "../lean/result-gates-switch.ts";
-import { leanReviewIncompleteCapEnabled } from "../lean/review-incomplete-cap-switch.ts";
 import { specifyBranch } from "../lean/specify-tree.ts";
 import { type LeanRun, type Outcome, REPORT_STATES, type Step } from "../lean/state.ts";
 import { budgetSentence, budgetTrio } from "../lean/step-budget.ts";
@@ -345,12 +343,9 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
   const failure = leanFailure(run);
   const prState = prStateOf(steps, run.counters.draft);
   // The one read of the review record, feeding both the cap and the field: they cannot
-  // disagree because neither of them decides the question on its own. Under the off arm
-  // the cap sees a complete review (today's single name) and the field is not written,
-  // which is what leaves the off document byte-identical to the pre-cap build.
-  const reviewSwitch = leanReviewIncompleteCapEnabled();
+  // disagree because neither of them decides the question on its own.
   const reviewComplete = reviewCompleteOf(steps);
-  const cap = leanCap(status, prUrl, prState, !reviewSwitch || reviewComplete);
+  const cap = leanCap(status, prUrl, prState, reviewComplete);
   // The head this run's PR stands on, worked out ONCE here by the reader `prStateOf`
   // itself uses. `gates.handback.head` asks a different question — the head that actually
   // SHIPPED, which after a rewind is no longer this one — so it reads the handback step's
@@ -394,7 +389,7 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
   // no key — `prState`/`status` are its answer — and a key beside them would assert a review
   // verdict this document does not make. Attached whole or not at all, so the off arm leaves no
   // key holding `undefined` for a host that string-compares the file.
-  if (reviewSwitch && cap !== undefined) result.reviewComplete = reviewComplete;
+  if (cap !== undefined) result.reviewComplete = reviewComplete;
   // `failedStep` is reported ONLY when the cap names it: `capStep()` is the
   // driver's own rule for a step-template cap, and lean's states are not
   // `WorkStep`s, so a guessed step would be a wrong answer rather than a
@@ -405,11 +400,11 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
   if (prUrl !== undefined) result.prUrl = prUrl;
   const handoff = leanHandoff(run, cap);
   if (handoff !== undefined) result.handoff = handoff;
-  // The gate events, on one switch, and attached whole or not at all. Building the
-  // object separately and deciding here is what makes the off arm the byte-identical
-  // document: a field filled conditionally leaves a key holding `undefined` behind for
-  // a host that string-compares the JSON.
-  if (leanResultGatesEnabled()) result.gates = leanGates(steps, (s) => redactClip(s, TEXT_MAX));
+  // The gate events, attached whole or not at all. The projection builds the object
+  // separately so the document either carries the key or does not: a field filled
+  // conditionally leaves a key holding `undefined` behind for a host that string-compares
+  // the JSON.
+  result.gates = leanGates(steps, (s) => redactClip(s, TEXT_MAX));
   return result;
 }
 
