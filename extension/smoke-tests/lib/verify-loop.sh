@@ -412,6 +412,12 @@ for ((i = 0; i < total; i++)); do
   t="${JOB_TESTS[$i]}"
   cap="${JOB_CAP[$i]}"
   rc="${JOB_EXIT[$i]}"
+  timed_out=0
+  if [ -f "$RUN_DIR/$i.timeout" ]; then timed_out=1; fi
+  # #1878 — the test's duration, from the two clocks the pool took. The marker is
+  # read once above and handed in so the timing's outcome and the `FAILED:` suffix
+  # below are one fact that cannot name different tests.
+  record_job_timing "$i" "$rc" "$timed_out"
   if [ "$rc" -eq 0 ]; then
     if [ "$DIGEST" -eq 0 ]; then
       cat "$cap"
@@ -420,8 +426,6 @@ for ((i = 0; i < total; i++)); do
     names+=("$t")
     # The timeout is the MARKER, not the exit code: rc==214 is an ordinary exit
     # code a test may return, and only this file says the watchdog fired.
-    timed_out=0
-    if [ -f "$RUN_DIR/$i.timeout" ]; then timed_out=1; fi
     if [ "$DIGEST" -eq 0 ]; then
       if [ "$timed_out" -eq 1 ]; then
         echo "FAILED: $t (timed out after ${VERIFY_TEST_TIMEOUT_S}s)"
@@ -460,6 +464,12 @@ for ((i = 0; i < total; i++)); do
     fi
   fi
 done
+
+# #1878 — the `TIME <seconds> <file>` lines, one per test, in argument order, after
+# the replay rather than inside it: that loop's ordering is load-bearing for two
+# consumers (the `FAILED:` markers and the names/_extra_captures pairing) and a block
+# after it disturbs neither. Normal mode only — the digest's stdout is pinned.
+if [ "$DIGEST" -eq 0 ]; then emit_timing_lines; fi
 
 # Nothing ran (every argument was skipped): refuse rather than pass vacuously.
 if [ "$total" -eq 0 ]; then
