@@ -481,6 +481,8 @@
     "smoke-tests/test-build-prompt-writes-atomic.ts",
     "smoke-tests/test-built-prompts.ts",
     "smoke-tests/lib/verify-loop-timing-harness.ts",
-    "smoke-tests/test-verify-loop-timing.ts"
+    "smoke-tests/test-verify-loop-timing.ts",
+    "smoke-tests/test-ci-verify-loop-jobs.ts",
+    "smoke-tests/test-verify-loop-jobs-from-host.ts"
   ]
 }
