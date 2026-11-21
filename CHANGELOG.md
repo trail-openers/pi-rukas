@@ -8,6 +8,19 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.96](https://github.com/trail-openers/pi-rukas/compare/v0.14.95...v0.14.96) (2026-11-21)
+
+
+### Features
+
+* **verify:** record per-test wall-clock time and print the slowest files ([#2434](https://github.com/trail-openers/pi-rukas/issues/2434)) ([2b3b52f](https://github.com/trail-openers/pi-rukas/commit/2b3b52fc0fdb7b772940dc21aa4847aafe8a9fe8)), closes [#1878](https://github.com/trail-openers/pi-rukas/issues/1878)
+
+
+### Bug Fixes
+
+* **build:** publish each prompt by atomic rename instead of delete-then-rewrite ([#2431](https://github.com/trail-openers/pi-rukas/issues/2431)) ([f807a83](https://github.com/trail-openers/pi-rukas/commit/f807a83406da0cbb771460a1e3a0353f48d94565))
+* **lean:** verify judges the project's own tests by a per-test roster ([#2437](https://github.com/trail-openers/pi-rukas/issues/2437)) ([df1164c](https://github.com/trail-openers/pi-rukas/commit/df1164ce080c05b8254bf6d19ab423a87a3a68a7))
+
 ## [0.14.95](https://github.com/trail-openers/pi-rukas/compare/v0.14.94...v0.14.95) (2026-11-20)
 
 
