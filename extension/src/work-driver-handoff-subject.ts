@@ -145,9 +145,13 @@ export function parseConventionalTitle(title: string): {
  *    breaking change.
  *
  * @param title the issue's title (fetched verbatim; may be empty or malformed)
+ * @param description replaces the title's own description (a spec-written PR title)
  * @returns the subject for `git commit -m <subject>` — a `type(scope): description`
  */
-export function deriveConsolidationSubject(title: string): string | undefined {
+export function deriveConsolidationSubject(
+  title: string,
+  description?: string,
+): string | undefined {
   // Nothing to describe — a caller that reaches this with an empty title has
   // no usable subject and keeps the old `chore(handoff):` line rather than
   // emitting a bare `type(scope):`.
@@ -182,7 +186,7 @@ export function deriveConsolidationSubject(title: string): string | undefined {
   // Description: the conventional description, or the raw title when there
   // is no prefix. A cycle that reaches this point has an issue number to
   // name, so the subject is never a bare `type(scope):`.
-  const description = parsed.description || parsed.raw;
+  const text = description ?? (parsed.description || parsed.raw);
 
-  return `${type}${breaking ? "!" : ""}(${scope}): ${description}`;
+  return `${type}${breaking ? "!" : ""}(${scope}): ${text}`;
 }

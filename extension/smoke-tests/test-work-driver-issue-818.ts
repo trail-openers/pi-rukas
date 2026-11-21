@@ -12,7 +12,8 @@
  *   - "fix(spawn): Y" unchanged
  *   - title unavailable (no cached artifact) → live-forge fallback exercised
  *   - all sources fail → conventional chore fallback, NEVER /^implement issue/
- *   - long titles keep the type(scope): prefix after clipping
+ *   - #1773: never clipped; spec title first, then the whole issue title;
+ *     the prefix only on a repo whose history is conventional
  *
  * Assertions are on the `gh pr create` argv recorded by the fake exec seam —
  * the TITLE argument actually handed to the forge, not a helper.
@@ -184,18 +185,90 @@ process.env.PI_ENSEMBLE_VERIFY = "0";
       assert(!/^implement issue/.test(t), "all-sources-fail fallback is NOT implement issue #N");
     }
 
-    // (g) Long titles: derive FIRST, then clip — the type(scope): prefix is
-    //     never cut. A long description must keep its `fix(spawn):` prefix.
+    // (g) #1773: a long title is never clipped — it keeps its prefix and every word.
     {
-      const long = `fix(spawn): ${"x".repeat(200)}`;
+      const long = `fix(spawn): ${"word ".repeat(40)}end`;
       const state = await makeState(`${long}\n\nbody`);
       const t = await deriveCommitPrTitle(state, { repoRoot: tmp, issue: 818 }, deadExec);
-      assert(t.length <= 64, `long title clipped to the 64 budget (got ${t.length} chars)`);
-      assert(
-        t.startsWith("fix(spawn):"),
-        `the type(scope): prefix survives clipping (got ${JSON.stringify(t)})`,
+      assert(t === long, `#1773: a long title is used whole (got ${t.length} chars)`);
+      assert(!t.includes("\u2026"), "#1773: no ellipsis in the PR title");
+    }
+
+    // #1773: the repo's own history decides the prefix. `git log` answers with
+    // these subjects; every other call fails like the dead forge.
+    const historyExec =
+      (subjects: string[]) =>
+      async (cmd: string): Promise<{ stdout: string }> => {
+        if (cmd.startsWith("git log")) return { stdout: `${subjects.join("\n")}\n` };
+        throw new Error("no forge in this test");
+      };
+    const plainRepo = historyExec([
+      "Settings library with tests",
+      "Fix the login page",
+      "fix: one",
+    ]);
+    const conventionalRepo = historyExec(["feat(work): a", "fix: b", "Plain subject"]);
+    const withSpec = (st: Awaited<ReturnType<typeof makeState>>, title: string) =>
+      ({
+        ...st,
+        pipelineState: { ...st.pipelineState, normalisedSpec: { intent: "x", title } },
+      }) as typeof st;
+    const t560 = "A refine session names its own issue as the duplicate and stops at turn 1";
+
+    // (h) AC1: the #560 issue title on a repo without conventional commits.
+    {
+      const t = await deriveCommitPrTitle(
+        await makeState(`${t560}\n\nbody`),
+        { repoRoot: tmp, issue: 560 },
+        plainRepo,
       );
-      assert(t.endsWith("\u2026"), "clipped title ends in the ellipsis");
+      assert(
+        t === t560,
+        `#1773 AC1: whole issue title, no prefix, no ellipsis (got ${JSON.stringify(t)})`,
+      );
+    }
+
+    // (i) AC2: a fitting spec title is used as is; the type still maps (AC3).
+    {
+      const st = withSpec(
+        await makeState(`Bug: ${t560}\n\nbody`),
+        "Stop refine from naming its own issue as a duplicate",
+      );
+      const plain = await deriveCommitPrTitle(st, { repoRoot: tmp, issue: 560 }, plainRepo);
+      assert(
+        plain === "Stop refine from naming its own issue as a duplicate",
+        `#1773 AC2: the spec title as is (got ${JSON.stringify(plain)})`,
+      );
+      const conv = await deriveCommitPrTitle(st, { repoRoot: tmp, issue: 560 }, conventionalRepo);
+      assert(
+        conv === "fix(work): Stop refine from naming its own issue as a duplicate",
+        `#1773 AC3: a conventional repo keeps the #818 Bug→fix prefix (got ${JSON.stringify(conv)})`,
+      );
+    }
+
+    // (j) AC2: a spec title over 72 chars is not used — the whole issue title is.
+    {
+      const st = withSpec(await makeState(`${t560}\n\nbody`), "x ".repeat(40).trim());
+      const t = await deriveCommitPrTitle(st, { repoRoot: tmp, issue: 560 }, plainRepo);
+      assert(
+        t === t560,
+        `#1773 AC2: an over-long spec title falls back to the issue title (got ${JSON.stringify(t)})`,
+      );
+    }
+
+    // (k) The settings knob overrides history both ways.
+    {
+      const st = await makeState(`${t560}\n\nbody`);
+      process.env.PI_ENSEMBLE_CONVENTIONAL_COMMITS = "1";
+      const on = await deriveCommitPrTitle(st, { repoRoot: tmp, issue: 560 }, plainRepo);
+      process.env.PI_ENSEMBLE_CONVENTIONAL_COMMITS = "0";
+      const off = await deriveCommitPrTitle(st, { repoRoot: tmp, issue: 560 }, conventionalRepo);
+      delete process.env.PI_ENSEMBLE_CONVENTIONAL_COMMITS;
+      assert(
+        on === `chore(work): ${t560}`,
+        `#1773: the knob turns the prefix on (got ${JSON.stringify(on)})`,
+      );
+      assert(off === t560, `#1773: the knob turns the prefix off (got ${JSON.stringify(off)})`);
     }
   } finally {
     rmSync(tmp, { recursive: true, force: true });

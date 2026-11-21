@@ -5,8 +5,7 @@
  *
  * Covers:
  *   - tldrSectionOf: happy path, empty spec, no intent, no deliverables,
- *     long intent (400-char cap), multi-sentence intent (first-sentence
- *     extraction)
+ *     whole sentences only (at most three, 400 chars, never cut, no `…`)
  *   - hasTldrSection: present/absent detection, case sensitivity,
  *     heading variants (## TL;DR, ## TLDR)
  *   - prependTldr: idempotency (existing heading → no-op), normal prepend,
@@ -95,34 +94,42 @@ const baseSpec: PipelineStateNormalisedSpec = {
   assert(tldrSectionOf(spec) === "", "no deliverables → empty string");
 }
 
-// 6. Long intent (>400 chars) → clipped with ellipsis
+// 6. #1773: a single sentence over 400 chars is kept whole — never cut, never `…`
 {
-  // Use a single long sentence with no internal period so firstSentence
-  // is the whole thing (the regex anchors on the first period + whitespace
-  // or end-of-string).
   const longIntent =
     "This is a very long intent that goes on and on about the TLDR feature and how it works and why it matters to the user and the developer and the reviewer and the operator who reads the PR body and the issue body and the handoff and the event log and all the other parts of the system that this feature touches in various ways with no period anywhere in the middle just a long unbroken run of words that keeps going and going until it finally reaches the end of the budget cap which is four hundred characters total";
-  const spec = { ...baseSpec, intent: longIntent };
-  const tldr = tldrSectionOf(spec);
-  const text = tldr.replace("## TL;DR\n\n", "");
-  assert(text.length <= 400, `long intent clipped to ≤400 chars (got ${text.length})`);
-  assert(text.endsWith("\u2026"), "clipped text ends with ellipsis");
+  const text = tldrSectionOf({ ...baseSpec, intent: longIntent }).replace("## TL;DR\n\n", "");
+  assert(text === `${longIntent}.`, "#1773: a long first sentence stands whole");
+  assert(!text.includes("\u2026"), "#1773: no ellipsis on a long sentence");
 }
 
-// 7. Multi-sentence intent → first sentence used
+// 6b. #1773 AC4: a complete first sentence plus a deliverable that pushes the
+// total over 400 → the sentence alone, with no trailing `…`
+{
+  const spec = {
+    ...baseSpec,
+    intent: "Stop a refine planning turn from naming its own issue as the duplicate.",
+    deliverables: [{ id: "d1", description: `${"word ".repeat(80)}end.`, paths: [] }],
+  };
+  const text = tldrSectionOf(spec).replace("## TL;DR\n\n", "");
+  assert(
+    text === "Stop a refine planning turn from naming its own issue as the duplicate.",
+    `#1773: the complete sentence is returned as is (got ${JSON.stringify(text)})`,
+  );
+}
+
+// 7. #1773: whole sentences, at most three, intent first
 {
   const spec = {
     ...baseSpec,
     intent: "Fix the race condition in the dispatch loop. This also updates the event log schema.",
+    deliverables: [{ id: "d1", description: "Add a lock. Add a test. Update docs.", paths: [] }],
   };
-  const tldr = tldrSectionOf(spec);
+  const text = tldrSectionOf(spec).replace("## TL;DR\n\n", "");
   assert(
-    tldr.includes("Fix the race condition in the dispatch loop"),
-    "multi-sentence intent → first sentence extracted",
-  );
-  assert(
-    !tldr.includes("also updates the event log schema"),
-    "second sentence not included when first is long enough",
+    text ===
+      "Fix the race condition in the dispatch loop. This also updates the event log schema. Add a lock.",
+    `#1773: three whole sentences (got ${JSON.stringify(text)})`,
   );
 }
 

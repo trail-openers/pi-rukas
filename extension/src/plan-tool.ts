@@ -61,7 +61,8 @@ import {
 } from "./plan-provenance.ts";
 import { DRY_RUN_HEAD, renderPlanResult } from "./plan-report.ts";
 import { planTargetFacts, resolvePlanTarget } from "./plan-target.ts";
-import type { PlanDriverInput, PlanResult } from "./plan-types.ts";
+import { planTitleAsk } from "./plan-title-ask.ts";
+import type { PlanDriverInput, PlanResult, PlanType } from "./plan-types.ts";
 import { trace } from "./trace.ts";
 import { piSessionHost } from "./work-driver-host.ts";
 import { resolveRepoRoot } from "./work-entry.ts";
@@ -234,17 +235,16 @@ export function registerPlanTool(pi: ExtensionAPI) {
           },
         ),
       ),
+      title: Type.Optional(
+        Type.String({
+          description:
+            "The issue title: one complete phrase saying what the change does, at most 72 characters including the type prefix the driver adds (`Bug: `, `feat: `, …). Never cut. Omitted → the descriptor's first sentence, whole. A title that does not fit is asked for once.",
+        }),
+      ),
     }),
     async execute(_id, raw, _signal, _onUpdate, ctx: ExtensionContext) {
-      // Pi hands the tool a JSON value. Widening to `Record<string, unknown>`
-      // says exactly that — "fields not yet examined" — and every field is then
-      // narrowed by a validator before use: `descriptor`/`dryRun`/`reviewedDigest`
-      // by the guards here, `labels` by `normalizeLabels` (which rejects a
-      // non-array, a non-string member and a sparse array), `provenance` by
-      // `validateProvenance` (which requires a plain object with own string
-      // keys). An earlier shape-named cast here claimed a `labels: string[]`
-      // that nothing had checked yet, which is how a malformed caller would
-      // reach the create call with bytes this module never examined.
+      // Pi hands the tool a JSON value: every field is "not yet examined" until a
+      // validator below narrows it, so no unchecked byte reaches the create call.
       const params = raw as Record<string, unknown>;
       const descriptor = params.descriptor;
       if (typeof descriptor !== "string" || descriptor.trim().length === 0) {
@@ -254,11 +254,15 @@ export function registerPlanTool(pi: ExtensionAPI) {
         };
       }
       const dryRun = params.dryRun === true;
-      // #1856: the source issue is the one input whose ABSENCE changes behaviour,
-      // so a malformed value is refused rather than quietly dropped — a caller
-      // that passes "eighteen fifty six" would otherwise get back the very
-      // self-duplicate halt the field exists to prevent, with no signal that its
-      // number never arrived.
+      if (params.title !== undefined && typeof params.title !== "string") {
+        return invalidInput("title", ["title must be a string"]);
+      }
+      const title = params.title?.trim() || undefined;
+      const titleAsk = planTitleAsk(descriptor, params.type as PlanType | undefined, title);
+      if (titleAsk !== undefined) {
+        return { content: [{ type: "text", text: titleAsk }], details: { started: false } };
+      }
+      // #1856: a malformed source issue is refused, not dropped: its ABSENCE changes behaviour.
       const sourceIssueCheck = parseSourceIssueParam(params.sourceIssue);
       if (!sourceIssueCheck.ok) {
         return invalidInput("sourceIssue", [sourceIssueCheck.problem]);
@@ -285,12 +289,8 @@ export function registerPlanTool(pi: ExtensionAPI) {
       const labels = labelCheck.labels;
       const provenance = provenanceCheck.provenance;
       const sessionRepoRoot = await resolveRepoRoot(ctx.cwd);
-      // #1854: the target repository, resolved HERE — before the job is launched,
-      // so before any child is dispatched, any forge is built, and any label list
-      // is read. A supplied target the driver cannot use is a refusal that files
-      // nothing anywhere; the pre-#1854 defect was a run that resolved to the
-      // session repo, passed every internal check, and minted a real issue number
-      // in the wrong tracker.
+      // #1854: the target is resolved before the job launches, so a target the driver
+      // cannot use is a refusal that files nothing anywhere.
       const targetRepository =
         typeof params.targetRepository === "string" ? params.targetRepository : undefined;
       const resolution = await resolvePlanTarget(params.targetRepository, sessionRepoRoot);
@@ -330,9 +330,10 @@ export function registerPlanTool(pi: ExtensionAPI) {
       const driverInput: PlanDriverInput = {
         ...(params as Omit<
           PlanDriverInput,
-          "labels" | "provenance" | "descriptor" | "sourceIssue" | "targetRepository"
+          "labels" | "provenance" | "descriptor" | "sourceIssue" | "targetRepository" | "title"
         >),
         descriptor,
+        ...(title !== undefined ? { title } : {}),
         labels,
         provenance,
         ...(sourceIssue !== undefined ? { sourceIssue } : {}),

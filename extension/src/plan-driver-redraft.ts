@@ -20,6 +20,7 @@ import { type ResolvedDecision, buildResolvedDecisions } from "./plan-writeback.
 export interface CorrectiveRedraftCtx {
   type: PlanType;
   descriptor: string;
+  title?: string;
   findings: AngleFindings[];
   inventoryContext: { source: string; fact: string }[];
   openQuestions: string[];
@@ -57,6 +58,7 @@ export function correctiveRedraft(blocking: PlanGap[], ctx: CorrectiveRedraftCtx
       decisions,
       writebackMap,
       ctx.chosenBudget,
+      ctx.title,
     );
     if (redraft.operatorOmitted.length) throw new Error("redraft truncated operator items");
     // Marked decisions (writtenBack from the splice, never predicted).

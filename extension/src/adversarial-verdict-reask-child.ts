@@ -298,15 +298,16 @@ async function runReaskChild(
 }
 
 /** The role's system prompt, written to a temp file the way `spawnSpecialist`
- * does, so the re-ask child is configured the same as the reviewer it resumes.
- * A role that is not a reviewer has no business being re-asked, and gets none.
+ * does, so the re-ask child is configured the same as the child it resumes.
+ * Only a reviewer (for its verdict) and explore (for its spec title, see
+ * work-title-ask.ts) are re-asked; any other role gets none.
  * The temp DIRECTORY travels with the file because the caller owns its removal:
  * the ask outlives this call, and a prompt file left in a shared /tmp per round
  * is a role's system prompt nobody cleans up. */
 async function writeReviewerPromptFile(
   role: string,
 ): Promise<{ dir: string; promptFile: string } | undefined> {
-  if (!isReviewerRole(role)) return undefined;
+  if (!isReviewerRole(role) && role !== "explore") return undefined;
   const roleDef = ROLES[role as keyof typeof ROLES];
   if (roleDef === undefined) return undefined;
   const fs = await import("node:fs/promises");

@@ -24,12 +24,13 @@ import { planTitle } from "./plan-types.ts";
 export function needsClarificationHalt(args: {
   type: PlanType;
   descriptor: string;
+  title?: string;
   questions: string[];
   timings: PlanPhaseTiming[];
 }): PlanResult {
   return haltResult({
     type: args.type,
-    title: planTitle(args.descriptor, args.type),
+    title: planTitle(args.descriptor, args.type, args.title),
     spec: `(spec not drafted — the descriptor is too thin to ground an investigation)\n\nAnswer these and re-run start_plan_driver with a fuller descriptor or a context param:\n${args.questions.map((q) => `- ${q}`).join("\n")}`,
     priorContext: [],
     failure: {
@@ -50,6 +51,7 @@ export function needsClarificationHalt(args: {
 export function duplicateRiskHalt(args: {
   type: PlanType;
   descriptor: string;
+  title?: string;
   rationale: string;
   priorContext: { source: string; fact: string }[];
   failedAngles: { name: string; detail: string }[];
@@ -57,7 +59,7 @@ export function duplicateRiskHalt(args: {
 }): PlanResult {
   return haltResult({
     type: args.type,
-    title: planTitle(args.descriptor, args.type),
+    title: planTitle(args.descriptor, args.type, args.title),
     spec: `(spec not drafted — duplicate risk HIGH)\n\nRationale from the risk check:\n${args.rationale}\n\nIf this ticket deliberately reverses or extends the named issue, re-run start_plan_driver with a context param acknowledging it (e.g. "this deliberately reverses #103 because …") — an acknowledged issue is reconciled, not a duplicate. Full rationale: /runs → plan-duplicate-risk.`,
     priorContext: args.priorContext,
     failure: {
@@ -116,6 +118,7 @@ export function draftInvalidHalt(args: {
 export function correctiveRedraftHalt(args: {
   type: PlanType;
   descriptor: string;
+  title?: string;
   priorContext: { source: string; fact: string }[];
   failedAngles: { name: string; detail: string }[];
   error: unknown;
@@ -124,7 +127,7 @@ export function correctiveRedraftHalt(args: {
   const detail = args.error instanceof Error ? args.error.message : String(args.error);
   return haltResult({
     type: args.type,
-    title: planTitle(args.descriptor, args.type),
+    title: planTitle(args.descriptor, args.type, args.title),
     spec: `(spec not filed — the corrective re-draft threw)\n\nThe gap gate returned blocking findings and the re-draft that was meant to carry their resolutions failed. What had been computed before the throw is disclosed below verbatim, so the loss is visible:\n\n${detail}\n\nRe-run start_plan_driver (the angles and the gate are re-dispatched); if it recurs, the disclosure above names which decision's writeback the re-draft died on.`,
     priorContext: args.priorContext,
     capHit: true,

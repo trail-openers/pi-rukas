@@ -42,6 +42,7 @@ export interface GateRunArgs {
   signal?: AbortSignal;
   type: PlanType;
   descriptor: string;
+  title?: string;
   /** The draft under review; the corrective re-draft replaces it in place. */
   getBody: () => string;
   setTitleBody: (title: string, body: string) => void;
@@ -167,6 +168,7 @@ export async function runGate(args: GateRunArgs): Promise<GateRunResult> {
           redraftFor(args.correctiveRedraft)(blocking, {
             type: args.type,
             descriptor: args.descriptor,
+            title: args.title,
             findings: args.findings,
             inventoryContext: args.inventoryContext,
             openQuestions: args.openQuestions,
@@ -251,6 +253,7 @@ export async function phase4GapGate(
       halt: correctiveRedraftHalt({
         type: args.type,
         descriptor: args.descriptor,
+        title: args.title,
         priorContext: args.priorContext,
         failedAngles: args.failedAngles,
         error: gate.error,

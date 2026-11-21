@@ -175,6 +175,7 @@ export function allAnglesFailedSpec(angleNames: string, findings: AngleFindings[
 export function allAnglesFailedHalt(args: {
   type: PlanType;
   descriptor: string;
+  title?: string;
   findings: AngleFindings[];
   priorContext: { source: string; fact: string }[];
   failedAngles: { name: string; detail: string }[];
@@ -189,7 +190,7 @@ export function allAnglesFailedHalt(args: {
   );
   const angleNames = findings.map((f) => f.name).join(", ");
   const spec = allAnglesFailedSpec(angleNames, findings);
-  const title = planTitle(descriptor, type);
+  const title = planTitle(descriptor, type, args.title);
   trace(
     `plan-driver: type=${type} angles=${findings.length} structured=${withItems} gaps=0 filed=false dryRun=${!!dryRun} ALL-ANGLES-FAILED`,
   );

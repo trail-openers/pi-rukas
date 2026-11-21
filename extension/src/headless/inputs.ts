@@ -147,6 +147,8 @@ export const HEADLESS_INPUTS_A: readonly HostInput[] = [
   // even when its probe tree is provably the tree the per-worktree verify just
   // judged. Default ON.
   flag("CONSOLIDATED_VERIFY_SKIP", true),
+  // Unset: the repo's recent history decides whether a /work title is prefixed.
+  input("CONVENTIONAL_COMMITS", "boolean", null),
   flag("CONVERGE", true),
   flag("CROSS_GROUP_CONFLICTS", true),
   ms("CYCLE_BUDGET_MS", null),

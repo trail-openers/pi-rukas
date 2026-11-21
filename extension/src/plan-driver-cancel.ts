@@ -36,7 +36,7 @@ export function cancelledResult(
   return {
     ...haltResult({
       type,
-      title: planTitle(input.descriptor, type),
+      title: planTitle(input.descriptor, type, input.title),
       spec: "(spec not drafted — the run was killed before it completed)",
       priorContext,
       failure: { reason: "cancelled", detail: `killed during the ${phase} phase` },

@@ -47,6 +47,7 @@ import {
   VERDICT_RULES,
   type VerdictRule,
 } from "./work-driver-intent.ts";
+import { fitsTitle } from "./work-title.ts";
 import { dispatchArtifactPath, writeDispatchArtifact } from "./workflow-state.ts";
 
 /**
@@ -327,6 +328,9 @@ function validateSpec(raw: unknown): NormalisedSpec | undefined {
     // their content is taken on trust. `assumptions` and `openPoints` are rewritten below
     // with the same helper; these are the fields that previously passed through raw.
     intent: boundReadText(v.intent),
+    ...(fitsTitle(typeof v.title === "string" ? v.title : undefined)
+      ? { title: boundReadText(v.title as string) }
+      : {}),
     deliverables: (v.deliverables as SpecDeliverable[]).map((d) => ({
       ...d,
       id: boundReadText(d.id),
