@@ -8,6 +8,15 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.97](https://github.com/trail-openers/pi-rukas/compare/v0.14.96...v0.14.97) (2026-11-21)
+
+
+### Bug Fixes
+
+* **lean:** make the project-test roster work on nested Python projects in one suite run ([#2444](https://github.com/trail-openers/pi-rukas/issues/2444)) ([558e2d6](https://github.com/trail-openers/pi-rukas/commit/558e2d6c72525167de480cbb3b6e2917d120e7d9)), closes [#2439](https://github.com/trail-openers/pi-rukas/issues/2439) [#2410](https://github.com/trail-openers/pi-rukas/issues/2410) [#2438](https://github.com/trail-openers/pi-rukas/issues/2438)
+* **verify:** bound the timing test's wall by sum plus one tick per test ([#2442](https://github.com/trail-openers/pi-rukas/issues/2442)) ([bf283d5](https://github.com/trail-openers/pi-rukas/commit/bf283d5e0313795f3f26235c5a2254524cace0d6))
+* **verify:** run a nested verify slot inside the slot it holds ([#2445](https://github.com/trail-openers/pi-rukas/issues/2445)) ([eee7396](https://github.com/trail-openers/pi-rukas/commit/eee739634d24f155f06cbba8319bb7fa37799735))
+
 ## [0.14.96](https://github.com/trail-openers/pi-rukas/compare/v0.14.95...v0.14.96) (2026-11-21)
 
 
