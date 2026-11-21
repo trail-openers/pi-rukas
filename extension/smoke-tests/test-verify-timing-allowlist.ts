@@ -24,10 +24,11 @@
  *      against and when.
  *   4. No duplicate `file`. Two rows for one path is a list that does not mean what it
  *      says and would double-count the ratchet.
- *   5. The seed set is committed BY NAME (R1/AC3). The issue's seed rule is "every file
- *      whose higher of two readings exceeded 20 s", which a reader cannot check against
- *      a date; the paths below are the seed, so an entry cannot be swapped for a file
- *      that never ran slow. Its canary is observed RED on a mutant that drops one.
+ *   5. The seed set is committed BY NAME (R1/AC3). The seed rule is "every file whose
+ *      highest reading exceeded 20 s" — for the 2026-11-22 re-seed, over THREE full
+ *      green main CI runs rather than one measurement — which a reader cannot check
+ *      against a date; the paths below are the seed, so an entry cannot be swapped for
+ *      a file that never ran slow. Its canary is observed RED on a mutant that drops one.
  *   6. The count gate is observed RED on a mutant list carrying one entry beyond its
  *      own baseline — an unexecuted gate proves nothing.
  *   7. AC4: the knob has its row in `docs/configuration.md` and troubleshooting
@@ -148,41 +149,54 @@ function rawBaseline(): number {
 }
 
 /**
- * R1/AC3 — the seed set, committed BY NAME. The issue's rule for who belongs here is a
- * measurement ("every file whose higher of two 2026-11-21 readings exceeded 20 s"),
- * which no reader can re-check against a date. Naming the paths is what turns "seeded
- * from that run" into an assertion: an entry cannot quietly become a file that never
- * ran slow, and a swap-out reddens here rather than at the next ceiling failure.
+ * R1/AC3 — the seed set, committed BY NAME. The rule for who belongs here is a
+ * measurement ("every file whose highest reading exceeded 20 s"), which no reader can
+ * re-check against a date. Naming the paths is what turns "seeded from those runs" into
+ * an assertion: an entry cannot quietly become a file that never ran slow, and a
+ * swap-out reddens here rather than at the next ceiling failure.
+ *
+ * This is the list as RE-SEEDED on 2026-11-22, the single re-seed taken at the moment
+ * the ceiling was turned on: the union of every offline test whose `TIME` reading
+ * exceeded 20 s in ANY of three full green main CI runs on 2026-11-21/22 (runs
+ * 44958757907 at 457d7e3b, 44957264868, and 44953824025 at dfb68ef3 — each four shards
+ * at `PI_ENSEMBLE_VERIFY_TEST_JOBS=4`), plus every path the original 27-entry 11-21
+ * seed named. No prior entry was dropped, because a re-seed that also shrank would
+ * quietly retire exemptions on one day's host load; shrinking stays the ratchet's job.
  * Order matters — the whole list is compared against this list below.
  */
 const SEED_FILES = [
   "smoke-tests/test-work-driver-adversarial-fix-routing.ts",
+  "smoke-tests/test-plan-body-budget.ts",
   "smoke-tests/test-work-driver-transient-retry.ts",
-  "smoke-tests/test-work-driver-adversarial-reporting.ts",
   "smoke-tests/test-lean-build-nowork-retry.ts",
+  "smoke-tests/test-work-driver-adversarial-reporting.ts",
+  "smoke-tests/test-verify-timing-ceiling.ts",
+  "smoke-tests/test-plan-provenance.ts",
+  "smoke-tests/test-plan-pi-spec-filing.ts",
   "smoke-tests/test-work-driver-adversarial-writeahead-persist.ts",
+  "smoke-tests/test-work-driver-adversarial-reentry.ts",
   "smoke-tests/test-host-park-signal.ts",
   "smoke-tests/test-verify-loop-timing.ts",
-  "smoke-tests/test-work-driver-adversarial-reentry.ts",
-  "smoke-tests/test-merge-guard-ci-holes-2107.ts",
   "smoke-tests/test-merge-guard-ci-evidence-gitlab.ts",
+  "smoke-tests/test-merge-guard-ci-holes-2107.ts",
   "smoke-tests/test-work-driver-offloaded-spec.ts",
+  "smoke-tests/test-headless-supervised-child.ts",
   "smoke-tests/test-headless-interrupt-explore.ts",
   "smoke-tests/test-work-driver-adv-retry-t6.ts",
   "smoke-tests/test-lens-provider-refusal.ts",
   "smoke-tests/test-explore-body-retry.ts",
-  "smoke-tests/test-headless-supervised-child.ts",
+  "smoke-tests/test-headless-supervise.ts",
   "smoke-tests/test-verify-loop-parallel.ts",
   "smoke-tests/test-work-driver-corrective-round.ts",
   "smoke-tests/test-tool-inactivity.ts",
-  "smoke-tests/test-plan-body-budget.ts",
   "smoke-tests/test-work-driver-continue-pr-lookup.ts",
-  "smoke-tests/test-lean-handback-report-bound.ts",
   "smoke-tests/test-verify-loop-jobs-from-host.ts",
+  "smoke-tests/test-lens-review-head-sha.ts",
+  "smoke-tests/test-lean-handback-report-bound.ts",
   "smoke-tests/test-cancel.ts",
   "smoke-tests/test-git-state-report.ts",
-  "smoke-tests/test-public-hygiene-target-bound.ts",
   "smoke-tests/test-public-hygiene-visibility.ts",
+  "smoke-tests/test-public-hygiene-target-bound.ts",
 ];
 
 // ---- 1. The file exists and the loop's parser reads it.
@@ -193,6 +207,10 @@ assert(
 
 const entries = rawEntries();
 assert(Array.isArray(entries) && entries.length > 0, "the allow-list carries at least one entry");
+
+// The baseline is the count of the named seed, not a second number the file may carry:
+// an inflated `baseline_count` is the whole shrink-only rule removed by a one-line edit,
+// so the constant below is the authority and the file's own field is checked against it.
 
 // ---- 2. Shrink-only: the entry count may not exceed the baseline recorded in the file.
 const baseline = rawBaseline();
@@ -311,34 +329,42 @@ assert(
 // in the seed for a reason — the reason being that reading exceeded 20 s. An entry at
 // 1 s would exempt a file from any ceiling a run could plausibly set, and a sub-20 s
 // entry is not a file the seed rule selected, so it does not belong on the list at all.
+// Each value is the max of the file's 2026-11-21 reading and its three readings in the
+// 2026-11-22 re-seed runs, read out of the CI logs by tmp/reseed/extract.py rather than
+// transcribed by hand.
 const seedSeconds = new Map<string, number>([
-  ["smoke-tests/test-work-driver-adversarial-fix-routing.ts", 190],
+  ["smoke-tests/test-work-driver-adversarial-fix-routing.ts", 250],
+  ["smoke-tests/test-plan-body-budget.ts", 206],
   ["smoke-tests/test-work-driver-transient-retry.ts", 182],
-  ["smoke-tests/test-work-driver-adversarial-reporting.ts", 127],
-  ["smoke-tests/test-lean-build-nowork-retry.ts", 99],
-  ["smoke-tests/test-work-driver-adversarial-writeahead-persist.ts", 96],
+  ["smoke-tests/test-lean-build-nowork-retry.ts", 161],
+  ["smoke-tests/test-work-driver-adversarial-reporting.ts", 148],
+  ["smoke-tests/test-verify-timing-ceiling.ts", 134],
+  ["smoke-tests/test-plan-provenance.ts", 133],
+  ["smoke-tests/test-plan-pi-spec-filing.ts", 131],
+  ["smoke-tests/test-work-driver-adversarial-writeahead-persist.ts", 124],
+  ["smoke-tests/test-work-driver-adversarial-reentry.ts", 86],
   ["smoke-tests/test-host-park-signal.ts", 75],
   ["smoke-tests/test-verify-loop-timing.ts", 68],
-  ["smoke-tests/test-work-driver-adversarial-reentry.ts", 62],
+  ["smoke-tests/test-merge-guard-ci-evidence-gitlab.ts", 61],
   ["smoke-tests/test-merge-guard-ci-holes-2107.ts", 61],
-  ["smoke-tests/test-merge-guard-ci-evidence-gitlab.ts", 60],
   ["smoke-tests/test-work-driver-offloaded-spec.ts", 57],
+  ["smoke-tests/test-headless-supervised-child.ts", 55],
   ["smoke-tests/test-headless-interrupt-explore.ts", 51],
   ["smoke-tests/test-work-driver-adv-retry-t6.ts", 48],
-  ["smoke-tests/test-lens-provider-refusal.ts", 45],
-  ["smoke-tests/test-explore-body-retry.ts", 37],
-  ["smoke-tests/test-headless-supervised-child.ts", 36],
+  ["smoke-tests/test-lens-provider-refusal.ts", 46],
+  ["smoke-tests/test-explore-body-retry.ts", 42],
+  ["smoke-tests/test-headless-supervise.ts", 33],
   ["smoke-tests/test-verify-loop-parallel.ts", 32],
   ["smoke-tests/test-work-driver-corrective-round.ts", 29],
-  ["smoke-tests/test-tool-inactivity.ts", 27],
-  ["smoke-tests/test-plan-body-budget.ts", 26],
+  ["smoke-tests/test-tool-inactivity.ts", 28],
   ["smoke-tests/test-work-driver-continue-pr-lookup.ts", 26],
-  ["smoke-tests/test-lean-handback-report-bound.ts", 24],
   ["smoke-tests/test-verify-loop-jobs-from-host.ts", 24],
-  ["smoke-tests/test-cancel.ts", 22],
+  ["smoke-tests/test-lens-review-head-sha.ts", 24],
+  ["smoke-tests/test-lean-handback-report-bound.ts", 24],
+  ["smoke-tests/test-cancel.ts", 23],
   ["smoke-tests/test-git-state-report.ts", 21],
-  ["smoke-tests/test-public-hygiene-target-bound.ts", 21],
   ["smoke-tests/test-public-hygiene-visibility.ts", 21],
+  ["smoke-tests/test-public-hygiene-target-bound.ts", 21],
 ]);
 const wrongSeconds = entries.filter(
   (e) => typeof e.file === "string" && seedSeconds.get(e.file) !== e.seconds,
@@ -379,8 +405,9 @@ assert(
 
 // ---- 9. Canaries: the gates above observed RED, on mutants of the shipped bytes.
 // A gate nobody has watched fail proves nothing, and the count gate's whole value is
-// that it refuses a 12th (here: 28th) entry — so the mutant is one entry beyond the
-// baseline, pushed through the loop's OWN parser rather than a copy of it in this file.
+// that it refuses one entry past the baseline (here: a 33rd against a 32-entry seed) —
+// so the mutant is one entry beyond the baseline, pushed through the loop's OWN parser
+// rather than a copy of it in this file.
 const shippedText = readFileSync(ALLOWLIST, "utf8");
 const shippedRows = JSON.parse(shippedText) as {
   baseline_count: number;
