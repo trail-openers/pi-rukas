@@ -191,7 +191,7 @@ async function handleNoCommittedFix(
       lensWorktreePath: fixTree,
       restoredToRef: preIntegrationRef,
       committedFixSha: fixSha,
-      evidence: `committed fix ${fixSha?.slice(0, 8) ?? "(sha unreadable)"} in ${fixTree} (${fix.count} commit(s) ahead of ${branchName}) — integration genuinely failed: ${landed.error}. repoRoot condition after the restore: ${landed.error.includes("repoRoot was verified restored") || landed.error.includes("repoRoot was restored") ? "restored" : landed.error.includes("repoRoot was NOT restored") ? "NOT restored — manual repair required" : "unknown"}${preIntegrationRef ? ` (the cycle started from ${preIntegrationRef})` : ""}. The fix is committed at the worktree's HEAD and survives the park (also recorded in the handoff snapshot's committedWork).`,
+      evidence: `committed fix ${fixSha?.slice(0, 8) ?? "(sha unreadable)"} in ${fixTree} (${fix.count} commit(s) ahead of ${branchName}) — integration genuinely failed: ${landed.error}. repoRoot condition after the restore: ${landed.error.includes("repoRoot was verified restored") || landed.error.includes("repoRoot was restored") ? "restored" : landed.error.includes("repoRoot was NOT restored") ? "NOT restored — manual repair required" : "unknown"}${preIntegrationRef ? ` (the cycle started from ${preIntegrationRef})` : ""}.`,
     });
   }
   const evidence =

@@ -56,6 +56,10 @@ export function lastCapShape(state: WorkState): string | undefined {
   return last?.kind === "cap-hit" ? last.cap : undefined;
 }
 
+/** A provider park re-enters the halted step inside its recorded trees. */
+export const isResumablePark = (s: WorkState): boolean =>
+  lastCapShape(s) === "provider-unavailable";
+
 /**
  * Set the cycle's terminal status from the cap that ended it, and re-park a
  * provider outage as the one status the driver re-enters. Pure apart from the
@@ -63,7 +67,7 @@ export function lastCapShape(state: WorkState): string | undefined {
  */
 export function terminaliseHandoff(state: WorkState, at: number): WorkState {
   const cap = lastCapShape(state);
-  if (cap === "provider-unavailable") {
+  if (isResumablePark(state)) {
     return parkProviderInterrupt(state, providerParkResumeStep(state), at);
   }
   if (isMidFlightCap(cap)) {

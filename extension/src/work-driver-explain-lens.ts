@@ -6,10 +6,23 @@
  * bodies of work-driver-explain.ts.
  */
 
+import { existsSync } from "node:fs";
 import { inlineCodeSafe } from "./work-driver-conflict-evidence.ts";
+import { withoutRemovedTrees } from "./work-driver-handoff-snapshot.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
 type Cap = Extract<WorkEvent, { kind: "cap-hit" }>["cap"];
+
+/**
+ * Where the inspected tree is, never naming one the handoff teardown removed. The
+ * path is untrusted data inside a code span, so it goes through `inlineCodeSafe`.
+ */
+function treeSentence(label: string, tree: string): string {
+  const safe = inlineCodeSafe(tree);
+  return existsSync(tree)
+    ? `The ${label} inspected was \`${safe}\` (\`git -C ${safe} status\`).`
+    : `The ${label} was removed at handoff; any work no branch held is on the stop-salvage ref named under the worktree state.`;
+}
 
 /**
  * Explains the lens family of caps (`lens-diff-unreadable`,
@@ -34,13 +47,15 @@ export function explainLens(cap: Cap, state: WorkState): string {
             e.kind === "cap-hit" && e.cap === "lens-fix-not-integrated",
         );
       const worktree = hit?.lensWorktreePath ?? state.pipelineState.worktrees?.default;
-      const cause =
+      const cause = withoutRemovedTrees(
+        state.pipelineState,
         hit?.evidence ??
-        (hit
-          ? "(no git evidence recorded — this cycle predates #492's cause classification)"
-          : "(no lens-fix-not-integrated cap recorded in the event log)");
+          (hit
+            ? "(no git evidence recorded — this cycle predates #492's cause classification)"
+            : "(no lens-fix-not-integrated cap recorded in the event log)"),
+      );
       const where = worktree
-        ? `The worktree inspected was \`${worktree}\` (\`git -C ${worktree} status\`).`
+        ? treeSentence("worktree", worktree)
         : "The inspected worktree path was not recorded.";
       // #797 — the repoRoot condition is stated in the handoff body itself,
       // not only in the evidence. The operator following the recovery steps
@@ -64,7 +79,7 @@ export function explainLens(cap: Cap, state: WorkState): string {
       const fixSha = hit?.committedFixSha;
       if (fixSha && worktree) {
         const branch = state.pipelineState.branchName ?? "the feature branch";
-        return `the lens-fix round did not reach the branch — ${cause}. ${where} ${rootCondition} ${halted} The fix itself is written and committed: \`${fixSha.slice(0, 12)}\` at the HEAD of \`${inlineCodeSafe(worktree)}\`, not yet on ${branch} — the PR does not contain it. \`git log --oneline ${branch}..${fixSha.slice(0, 12)}\` lists what is missing. Land it by hand (check out ${branch}, cherry-pick those commits, resolve whatever the evidence above names, push) before merging the PR or re-running`;
+        return `the lens-fix round did not reach the branch — ${cause}. ${where} ${rootCondition} ${halted} The fix itself is written and committed: \`${fixSha.slice(0, 12)}\` at the HEAD of ${existsSync(worktree) ? `\`${inlineCodeSafe(worktree)}\`` : "its removed worktree"}, not yet on ${branch} — the PR does not contain it. \`git log --oneline ${branch}..${fixSha.slice(0, 12)}\` lists what is missing. Land it by hand (check out ${branch}, cherry-pick those commits, resolve whatever the evidence above names, push) before merging the PR or re-running`;
       }
       return `the lens-fix round did not reach the branch — ${cause}. ${where} ${rootCondition} ${halted} If the fix is still on disk, commit and push it there and re-run; if nothing exists, the findings were likely false positives and should be adjudicated before re-running`;
     }
@@ -84,13 +99,12 @@ export function explainLens(cap: Cap, state: WorkState): string {
             e.kind === "cap-hit" && e.cap === "lens-fix-reposition",
         );
       const worktree = hit?.lensWorktreePath ?? state.pipelineState.worktrees?.default;
-      const cause = hit?.evidence ?? "(no detail recorded)";
-      // #981 — the worktree path is interpolated into a backtick code span
-      // below; a backtick or newline in it would break the span, so it is
-      // sanitised via inlineCodeSafe (the worktree path is untrusted data).
-      const safeWorktree = worktree ? inlineCodeSafe(worktree) : undefined;
-      const where = safeWorktree
-        ? `The worktree inspected was \`${safeWorktree}\` (\`git -C ${safeWorktree} status\`).`
+      const cause = withoutRemovedTrees(
+        state.pipelineState,
+        hit?.evidence ?? "(no detail recorded)",
+      );
+      const where = worktree
+        ? treeSentence("worktree", worktree)
         : "The inspected worktree path was not recorded.";
       const ref = hit?.restoredToRef;
       const backup = ref
@@ -115,10 +129,12 @@ export function explainLens(cap: Cap, state: WorkState): string {
             e.kind === "cap-hit" && e.cap === "lens-fix-scope",
         );
       const worktree = hit?.lensWorktreePath ?? state.pipelineState.worktrees?.default;
-      const cause = hit?.evidence ?? "(no evidence recorded for this cap)";
-      const safeWorktree = worktree ? inlineCodeSafe(worktree) : undefined;
-      const where = safeWorktree
-        ? `The lens-fix tree inspected was \`${safeWorktree}\` (\`git -C ${safeWorktree} status\`).`
+      const cause = withoutRemovedTrees(
+        state.pipelineState,
+        hit?.evidence ?? "(no evidence recorded for this cap)",
+      );
+      const where = worktree
+        ? treeSentence("lens-fix tree", worktree)
         : "The lens-fix tree path was not recorded.";
       const reverted = state.eventLog.some(
         (e) =>

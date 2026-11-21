@@ -117,14 +117,12 @@ export function buildOwnerIndex(repoRoot: string): OwnerIndex {
       continue;
     }
     const claims: string[] = claimedWorktreePaths(state);
-    // #861 — `integrateWorktree` is the one worktree path the driver records
-    // OUTSIDE the `worktrees` map (`work-driver-commit-fallback.ts` writes it,
+    // `integrateWorktree` is the one worktree path the driver records OUTSIDE
+    // the `worktrees` map (`work-driver-commit-fallback.ts` writes it,
     // `work-driver-commit-pr-audit.ts` clears it). It lives under `.worktrees/`
-    // like any other tree, so it is exactly as sweepable, and until now it was
-    // the only state-file path the owner index never saw: a tree left behind by
-    // a crashed commit-pr step was invisible to the reap by construction, and
-    // the teardown loop — which does read it — applied the containment gate
-    // while the sweep did not. Indexing it here puts both loops behind one gate.
+    // like any other tree, so it is exactly as sweepable; the stop teardown
+    // (`work-driver-stop-teardown.ts`) reads it through the same
+    // `claimUnderWorktrees` gate.
     const integrate = (state.pipelineState as { integrateWorktree?: unknown }).integrateWorktree;
     if (typeof integrate === "string" && integrate.length > 0) claims.push(integrate);
     for (const claimed of claims) {

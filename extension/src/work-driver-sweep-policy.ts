@@ -2,7 +2,7 @@
  * work-driver-sweep-policy — the dead-worktree decision ladder and its
  * executor. Split out of `work-driver-worktree-sweep.ts` for the 500-line
  * gate (AGENTS.md §12); that module keeps the path gate (`resolveSweepTarget`),
- * the owner lookup and the two loops that call this.
+ * the owner lookup and the launch-sweep loop that calls this.
  *
  * The seam is the one the code already had: everything below takes an
  * already-validated `SweepTargetResult` and decides/executes, and nothing here
@@ -134,7 +134,7 @@ export async function decideSweepAction(opts: DecideOpts): Promise<SweepAction> 
 /**
  * Check if the state indicates an awaiting-human-merge park.
  */
-function isAwaitingHumanMerge(state: WorkState): boolean {
+export function isAwaitingHumanMerge(state: WorkState): boolean {
   // Find the last cap-hit event (highest array index)
   const capHits = state.eventLog.filter(
     (e): e is Extract<WorkEvent, { kind: "cap-hit"; cap: string }> => e.kind === "cap-hit",

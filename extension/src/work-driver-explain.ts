@@ -13,6 +13,7 @@ import { explainClaimsLock, explainCrossGroupConflict } from "./work-driver-expl
 import {
   commitPrConsolidationBlurb,
   explainConsolidation,
+  worktreeList,
 } from "./work-driver-explain-consolidation.ts";
 import { explainConvergeIncomplete } from "./work-driver-explain-converge.ts";
 import {
@@ -286,10 +287,7 @@ export function explainCap(
       // combination and the specific biome/tsc/test line.
       const hit = lastCapHit(state, "consolidated-verify-consolidation-created");
       const ev = hit?.evidence ?? "(no classification detail recorded)";
-      const wts = state.pipelineState.worktrees ?? {};
-      const wtList = Object.entries(wts)
-        .map(([id, p]) => `${id}: ${p}`)
-        .join(", ");
+      const wtList = worktreeList(state);
       return `the develop step's consolidated verify failed on a specific assertion that NEITHER workstream tripped alone — the combination created the defect (classification: consolidation-created). ${ev} Worktrees: ${wtList || "(none recorded)"}. This is NOT the same as a cherry-pick conflict or a per-workstream verify failure: the work builds in each worktree in isolation; the combination does not. The specific failing assertion is named in the evidence above — fix the interaction between the two workstreams (dedupe, adjust the scaffold expectation, or resolve the design conflict by hand) and re-run`;
     }
     case "consolidated-verify-conflict":

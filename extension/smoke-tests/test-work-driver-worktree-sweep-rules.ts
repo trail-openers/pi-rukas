@@ -17,10 +17,8 @@
  * The cases here use real `WorkState` objects and assert on argv, cwd and the
  * count of commands issued.
  *
- * The in-cycle `runWorktreeTeardown` pass that used to sit in this file moved
- * to `test-worktree-teardown-retention.ts` when the #1265 assertions pushed
- * this file past §12's cap: no case was deleted, and both files exit through
- * the shared `finish()` in `lib/worktree-sweep-assert.ts`.
+ * The stop teardown has its own file, `test-stop-teardown.ts`; both exit
+ * through the shared `finish()` in `lib/worktree-sweep-assert.ts`.
  */
 
 import { execFileSync } from "node:child_process";

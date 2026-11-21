@@ -19,7 +19,8 @@
  *  - adopts a CLEAN leftover at the cycle's own target path (reused
  *    knowingly, re-provisioned);
  *  - PRESERVES a dirty leftover (salvage patch into the cycle's scratch
- *    dir + a durable `pi-rukas-salvage/<name>/<ts>` tag on its HEAD)
+ *    dir + a durable `refs/pi-rukas/stop-salvage/issue-<N>/<name>/<sha>`
+ *    ref on its HEAD)
  *    BEFORE `git worktree remove --force`;
  *  - removes a clean non-adoptable leftover (nothing to preserve).
  *
@@ -191,15 +192,15 @@ try {
       tests?.action === "removed" && tests.refs.length === 1,
       `a committed (unpushed) sibling gets exactly one durable ref — got ${tests?.refs.length} refs`,
     );
-    const tag = tests?.refs[0]?.split(" → ")[0] ?? "";
+    const ref = tests?.refs[0]?.split(" → ")[0] ?? "";
     assert(
-      tag.startsWith("pi-rukas-salvage/issue-724-task-tests"),
-      `the durable ref is a pi-rukas-salvage tag (${tag})`,
+      ref.startsWith("refs/pi-rukas/stop-salvage/issue-724/issue-724-task-tests/"),
+      `the durable ref is a stop-salvage ref (${ref})`,
     );
-    const tagSha = await gitOut(repo, ["rev-parse", `${tag}^{commit}`]).catch(() => "");
+    const refSha = await gitOut(repo, ["rev-parse", `${ref}^{commit}`]).catch(() => "");
     assert(
-      tagSha.trim() === testsHeadBefore,
-      "the tag points at the worktree's pre-removal HEAD (the work is recoverable)",
+      refSha.trim() === testsHeadBefore,
+      "the ref points at the worktree's pre-removal HEAD (the work is recoverable)",
     );
     assert(!afterList.includes("issue-724-task-tests"), "the committed sibling is removed");
 
@@ -222,6 +223,30 @@ try {
       leftoverScan === undefined,
       "after the pass, the branch step's own dirty-sibling scan is clean (no collision)",
     );
+  }
+
+  // =============== 1b. a ref that cannot be written keeps the tree
+  // A bare ref at the tree's own name makes the `<name>/<sha>` ref a D/F conflict.
+  {
+    const { repo, baseSha } = await fixture("ref-refused");
+    const scratch = path.join(repo, "tmp", "issue-724");
+    mkdirSync(scratch, { recursive: true });
+    const wt = path.join(repo, ".worktrees", "issue-724-task-tests");
+    await git(repo, ["worktree", "add", "-q", "--detach", wt, baseSha]);
+    writeFileSync(path.join(wt, "a.txt"), "base\nunpushed\n");
+    await git(wt, ["commit", "-q", "-am", "w1"]);
+    await git(repo, [
+      "update-ref",
+      "refs/pi-rukas/stop-salvage/issue-724/issue-724-task-tests",
+      baseSha,
+    ]);
+    const res = await handleSameIssueLeftovers(realExec, repo, baseSha, [724], scratch);
+    assert(
+      res.unresolved.length === 1 && res.actions.length === 0,
+      `a tree whose commits could not be kept is unresolved, not removed (${JSON.stringify(res)})`,
+    );
+    const { stdout: list } = await git(repo, ["worktree", "list"]);
+    assert(list.includes("issue-724-task-tests"), "and it is still on disk");
   }
 
   // =============== 2. runBranch end-to-end — the acceptance criterion

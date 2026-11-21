@@ -22,7 +22,7 @@ import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
 import { handoffLabelVerdict } from "./work-driver-handoff-label-state.ts";
 import { openPointsChat } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsChat } from "./work-driver-handoff-recovery.chat.ts";
-import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { stopSalvageLines, unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { describeBranchState } from "./work-driver-handoff-view.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
@@ -293,6 +293,7 @@ export function renderHandoffUserMessage(
       ),
     );
   }
+  if (snap) lines.push(...stopSalvageLines(snap, "  ", (r) => `    ${r}`));
   // #543 F5 — the driver-owned checkpoint block for loop/token-budget cap
   // kills, mirroring the markdown renderer (shared renderer, same facts).
   // Empty for every other cap and for pre-#543 state files.

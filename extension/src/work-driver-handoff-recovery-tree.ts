@@ -64,6 +64,11 @@ export function genericRecoveryLines(state: WorkState): string[] {
     `rm .pi/work-state/${state.issue}.json`,
   ];
   const wts = recoveryWorktrees(ps);
+  const refs = ps.handoffSnapshot?.stopSalvage ?? [];
+  const inspectRefs = refs.map((r) => `git log --oneline ${r} --not --branches`);
+  const takeRefs = refs.map(
+    (r, i) => `git switch -c ${branch}-salvage${refs.length > 1 ? `-${i + 1}` : ""} ${r}`,
+  );
   if (wts.length > 0) {
     // Same suffix rule as `unreadableSnapshotLines`: decided by the RECORDED
     // workstreams, so one retained worktree of two never pushes as the branch.
@@ -76,6 +81,8 @@ export function genericRecoveryLines(state: WorkState): string[] {
     return [
       "# 1. Inspect what survived in each workstream worktree before deciding:",
       ...wts.flatMap(([, wt]) => [`git -C ${wt} status`, `git -C ${wt} diff --stat`]),
+      // A tree removed beside a retained one left its work on a ref.
+      ...inspectRefs,
       "",
       ...discard,
       "",
@@ -89,6 +96,20 @@ export function genericRecoveryLines(state: WorkState): string[] {
           ? `git -C ${wt} log --oneline HEAD --not origin/${branch}`
           : `git -C ${wt} push origin HEAD:refs/heads/${several ? `${branch}-${id}` : branch}`,
       ]),
+      ...takeRefs,
+    ];
+  }
+  // Every tree was removed and its unbranched work kept on a ref: recover from that.
+  if (refs.length > 0) {
+    return [
+      "# 1. Inspect the work each stop-salvage ref holds that no branch does:",
+      ...inspectRefs,
+      "",
+      "# 2. Discard the cycle and start over (the stop-salvage refs are kept):",
+      `rm .pi/work-state/${state.issue}.json`,
+      "",
+      "# 3. Take over manually — put each ref's work on a branch, push it, open the PR yourself:",
+      ...takeRefs,
     ];
   }
   if (provedNotARepo(ps, "git rev-parse HEAD in ")) {

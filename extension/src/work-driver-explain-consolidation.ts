@@ -10,6 +10,7 @@ import { describeSiblingFenceViolations } from "./work-develop-fence-verdicts.ts
 import { commitPrRootBlurb } from "./work-driver-commit-inspect.ts";
 // #875 blurb (moved here from work-driver-explain.ts for the 500-line gate).
 import { cherryPickRecoveryFor } from "./work-driver-handoff-cherry-pick.ts";
+import { removedAtHandoff } from "./work-driver-handoff-snapshot.ts";
 import type { FenceViolationRecord } from "./work-driver-scope-fence.ts";
 import type { WorkEvent, WorkState } from "./workflow-state.ts";
 
@@ -57,10 +58,7 @@ export function explainConsolidation(cap: Cap, state: WorkState): string {
             e.kind === "cap-hit" && e.cap === "consolidated-verify-consolidation-created",
         );
       const ev = hit?.evidence ?? "(no classification detail recorded)";
-      const wts = state.pipelineState.worktrees ?? {};
-      const wtList = Object.entries(wts)
-        .map(([id, p]) => `${id}: ${p}`)
-        .join(", ");
+      const wtList = worktreeList(state);
       return `the develop step's consolidated verify failed on a specific assertion that NEITHER workstream tripped alone — the combination created the defect (classification: consolidation-created). ${ev} Worktrees: ${wtList || "(none recorded)"}. This is NOT the same as a cherry-pick conflict or a per-workstream verify failure: the work builds in each worktree in isolation; the combination does not. The specific failing assertion is named in the evidence above — fix the interaction between the two workstreams (dedupe, adjust the scaffold expectation, or resolve the design conflict by hand) and re-run`;
     }
     case "consolidated-verify-conflict": {
@@ -97,10 +95,7 @@ export function explainConsolidation(cap: Cap, state: WorkState): string {
       // is the reachable one).
       const ev = hit?.evidence?.trim() || undefined;
       const evText = ev ?? "no conflict detail was recorded on the cap — inspect the worktrees";
-      const wts = state.pipelineState.worktrees ?? {};
-      const wtList = Object.entries(wts)
-        .map(([id, p]) => `${id}: ${p}`)
-        .join(", ");
+      const wtList = worktreeList(state);
       // #794 — stacked cycle: the pick is OWN-range (each workstream's
       // commits against its dependency's tip), so a conflict here is a
       // genuine overlap or a diverged dependency tip, never an ancestor
@@ -149,6 +144,17 @@ export function explainConsolidation(cap: Cap, state: WorkState): string {
     default:
       return `unhandled consolidation cap: ${cap}`;
   }
+}
+
+const REMOVED =
+  "its worktree was removed at handoff; any work no branch held is on the stop-salvage ref named under the worktree state";
+
+/** The recorded trees as `id: path`, never naming one the handoff teardown removed. */
+export function worktreeList(state: WorkState): string {
+  const ps = state.pipelineState;
+  return Object.entries(ps.worktrees ?? {})
+    .map(([id, p]) => `${id}: ${removedAtHandoff(ps, p) ? `(${REMOVED})` : p}`)
+    .join(", ");
 }
 
 /**
@@ -365,6 +371,10 @@ export function commitPrConsolidationBlurb(
   const wts = ps.worktrees ?? {};
   const lines: string[] = [`the committed diff is missing declared files from: ${which}.`];
   for (const id of opts.missingIds) {
+    if (removedAtHandoff(ps, wts[id])) {
+      lines.push(`  - ${id}: ${REMOVED}.`);
+      continue;
+    }
     const v = verdicts.find((x) => x.id === id);
     const isClean = !Array.isArray(ic) && !!v && v.status === "uncovered" && v.dirty === false;
     const wtSuffix = wts[id] ? ` (${wts[id]})` : "";
