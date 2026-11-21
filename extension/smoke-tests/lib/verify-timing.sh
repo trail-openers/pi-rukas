@@ -190,9 +190,10 @@ timing_key() {
   echo "$k"
 }
 
-# Is <secs> over the ceiling? `secs` is a record field, so anything but a decimal run
-# is refused rather than evaluated: a junk value has no business answering a bound it
-# was never measured against.
+# `secs` is a record field, so anything but a decimal is refused rather than
+# evaluated: a junk value has no business answering a bound it was never measured
+# against. No knob gate here: its only caller, `timing_ceiling_offenders`, is gated
+# first, and a second one would add a branch that cannot be reached to decide anything.
 timing_over_ceiling() {
   local secs="${1:-}"
   [[ "$secs" =~ ^[0-9]+$ ]] || return 1
@@ -209,13 +210,14 @@ timing_over_ceiling() {
 # forks / ~21 s on this repo's own suite). `TIMING_ALLOWLIST_PROBE` names a file that
 # gets one line per read — a caller cannot see a fork, so the read announces itself,
 # and case 7g of test-verify-timing-ceiling.ts runs a whole loop with the knob unset
-# and asserts that file stays EMPTY. `TIMING_ALLOWLIST_EAGER=1` is its mutant twin: it
-# forces the ceiling's parse to a bound where the operator named none, so the same
-# assertion is observed RED — a gate nobody has watched fail proves nothing. It forces
-# the ceiling ONLY, and here where the parse lands: a `$(…)` is a subshell, so forcing
-# it in a caller would be discarded before the next gate read it. It can never invent
-# an exemption — the list still has to exist and name the file. Both knobs are unset in
-# the shipped state and pinned off by the harness `env()`, the way the ceiling is.
+# and asserts that file stays EMPTY. `TIMING_ALLOWLIST_EAGER=1` is its mutant twin and
+# the reason the same assertion is observed RED rather than argued: a gate nobody has
+# watched fail proves nothing. It forces the parsed ceiling once, where the parse
+# lands, so every gate in the chain below reads one fact — forcing it inside a caller
+# would be discarded with that frame's `$(…)` subshell before the next gate read it.
+# It can never invent an exemption: the list still has to exist and name the path. Both
+# knobs are unset in the shipped state and pinned off by the harness `env()`, the way
+# the ceiling itself is.
 #
 # The fields ACCUMULATE ACROSS LINES: the file may carry one entry per line, or the
 # same JSON pretty-printed with one field per line (what a formatter does to it), and
