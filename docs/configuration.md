@@ -90,6 +90,7 @@ Rendering the backlog itself — a panel at `/start`, so you see the agreed orde
 | `PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD` | unset | Set to `1` to opt out of auto-forwarding installed extensions to subagents (subagents inherit nothing — disables pi-claude-auth, MCP bridges, etc.). |
 | `PI_ENSEMBLE_USER_EXTENSION` | unset | Absolute path or `npm:<pkg>` ref of an extra extension to forward to subagents, on top of the auto-discovered list. |
 | `PI_ENSEMBLE_AUTOSAVE` | unset | Set to `1` to opt into a deterministic session summary written to `vipune` on session quit ([#23](https://github.com/trail-openers/pi-rukas/issues/23)). Pure local extract — no LLM call. Off by default. |
+| `PI_ENSEMBLE_CHILD_CODEMODE_MAX_WORKERS` | `4` | How many codemode scripts one subagent child runs at once, stamped into the child's env as Pi's own `PI_CODEMODE_MAX_WORKERS` (Pi's default is `2`; each worker may use up to 256 MB). From Pi 1.4.0 a script that finds every worker busy waits up to 60 s for a free one instead of failing, so parallel codemode calls in a child queue rather than cost it a turn; below 1.4.0 the variable is inert. A value that is not a positive integer keeps the default. The stamp overrides an inherited `PI_CODEMODE_MAX_WORKERS`, and is absent when `PI_ENSEMBLE_CHILD_CODEMODE=0`. Reader: `childCodemodeWorkersEnv` (`child-codemode.ts`). |
 
 **Outcome verification (PR17+):**
 

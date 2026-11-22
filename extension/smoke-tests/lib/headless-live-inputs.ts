@@ -19,7 +19,7 @@
  */
 import { adversarialPhaseBudgetMs } from "../../src/adversarial-retry.ts";
 import { adversarialVerdictReaskEnabled } from "../../src/adversarial-verdict-reask.ts";
-import { childCodemodeEnabled } from "../../src/child-codemode.ts";
+import { childCodemodeEnabled, childCodemodeWorkersEnv } from "../../src/child-codemode.ts";
 import { commentRetentionEnabled } from "../../src/comment-retention.ts";
 import { COMMENT_RETENTION_PATHS } from "../../src/comment-retention.ts";
 import { forgeReadOffGuardEnabled } from "../../src/forge-read-off-switch.ts";
@@ -169,6 +169,10 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_ACCEPTANCE_COVERAGE", acceptanceCoverageEnabled],
   ["PI_ENSEMBLE_AUTO_STEER", autoSteerEnabled],
   ["PI_ENSEMBLE_CHILD_CODEMODE", childCodemodeEnabled],
+  [
+    "PI_ENSEMBLE_CHILD_CODEMODE_MAX_WORKERS",
+    () => Number(childCodemodeWorkersEnv().PI_CODEMODE_MAX_WORKERS),
+  ],
   ["PI_ENSEMBLE_CLAIM_SCAN", claimScanEnabled],
   ["PI_ENSEMBLE_COMMENT_RETENTION", commentRetentionEnabled],
   ["PI_ENSEMBLE_CONVERGE", convergeGateEnabled],
@@ -280,4 +284,5 @@ export const SWITCHES: Record<string, string> = {
   PI_ENSEMBLE_SLOW_NOTICE_MS: "PI_ENSEMBLE_SLOW_NOTICE",
   PI_ENSEMBLE_SLOW_NOTICE_TOKENS: "PI_ENSEMBLE_SLOW_NOTICE",
   PI_ENSEMBLE_SLOW_NOTICE_TURNS: "PI_ENSEMBLE_SLOW_NOTICE",
+  PI_ENSEMBLE_CHILD_CODEMODE_MAX_WORKERS: "PI_ENSEMBLE_CHILD_CODEMODE",
 };

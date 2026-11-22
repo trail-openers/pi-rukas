@@ -119,6 +119,9 @@ export const HEADLESS_INPUTS_A: readonly HostInput[] = [
   // #1560 — the per-child run bound: wrap-up steer at the bound, kill this long after.
   ms("CHILD_BOUND_GRACE_MS", 600_000),
   flag("CHILD_CODEMODE", true),
+  // The codemode worker cap stamped into a codemode child as Pi's
+  // `PI_CODEMODE_MAX_WORKERS`. Reader: `childCodemodeWorkersEnv` (child-codemode.ts).
+  int("CHILD_CODEMODE_MAX_WORKERS", 4),
   // #2352 R11 — the stamp of the dispatched role into the child's own env. The
   // switch gates the WHOLE set of role-scoped child guards (the #1879 read-only
   // dependency rule, the #2200 deletion rule's roots and `ops` carve-out, the

@@ -11,7 +11,7 @@
  *      (spawn-permission.ts → child-forge-env.ts). The caller awaits
  *      `plan.ready` BEFORE calling this, so the forge socket named here is one
  *      the parent really bound.
- *   2. the vipune and write-fence additions the dispatch owns;
+ *   2. the vipune, write-fence and codemode-worker additions the dispatch owns;
  *   3. `scrubGitLocation` — an inherited GIT_DIR & co. would point the child's
  *      git at another tree (git-env.ts, #1571);
  *   4. the GIT_* non-interactive pins — they MUST come after the inherited copy
@@ -29,6 +29,7 @@
  * plan object, so the seam stays free of the permission module's types.
  */
 
+import { childCodemodeWorkersEnv } from "./child-codemode.ts";
 import { CHILD_ROLE_ENV, childRoleEnvEnabled, childRoleEnvValue } from "./child-role-env.ts";
 import { scrubGitLocation } from "./git-env.ts";
 import {
@@ -93,7 +94,12 @@ export function buildChildEnv(
   // pointed at is the one it was meant to be kept out of, so it is not a writable
   // root. Absent unless the choke point marked this dispatch (see `DispatchSpec`).
   if (failOpen === true) childEnv[UNISOLATED_CHILD_ENV] = "1";
-  Object.assign(childEnv, vipuneChildEnv(), writeFenceChildEnv(writeFence));
+  Object.assign(
+    childEnv,
+    vipuneChildEnv(),
+    writeFenceChildEnv(writeFence),
+    childCodemodeWorkersEnv(),
+  );
   // #1571 — the child works in `cwd`; an inherited GIT_DIR & co. would point
   // its git at another tree (git-env.ts).
   scrubGitLocation(childEnv);
