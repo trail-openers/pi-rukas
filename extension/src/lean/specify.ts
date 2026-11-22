@@ -83,7 +83,7 @@ import { joinNotes } from "./text-fence.ts";
 /** The dispatch seam: one child, one result. `spawnSpecialist` in production. */
 type SpecifyDispatch = (
   spec: DispatchSpec,
-  opts: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
+  opts: { writeFence?: WriteFence; extraArgs?: readonly string[]; runId?: string } & BudgetOpts,
 ) => Promise<DispatchResult>;
 
 export interface SpecifyDeps {

@@ -258,11 +258,13 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
     exec: (cmd, opts) => execp(cmd, opts ?? {}),
     dispatch: (
       spec: DispatchSpec,
-      o: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
+      o: { writeFence?: WriteFence; extraArgs?: readonly string[]; runId?: string } & BudgetOpts,
     ) =>
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
+        // The child's session: a specify re-ask passes its first dispatch's id to resume it.
+        ...(o.runId === undefined ? {} : { runId: o.runId }),
         // Forwarded so the ceiling binds the child, `budgetTurns` included: it is the turns
         // ceiling read as the denominator of the budget-progress steer, and a seam that forwards
         // the arms key by key must forward that one too or the child is killed at its ceiling
