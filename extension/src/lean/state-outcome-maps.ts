@@ -274,6 +274,13 @@ export interface ProjectRosterRecord {
   baseSkipped?: boolean;
   /** Pre-existing files this run edited whose base version PASSED against the head code. */
   editedFiles?: string[];
+  /**
+   * Pre-existing files this run edited whose base version FAILS against the head code: a contract the
+   * run changed. Not a red — no build round can make the old expectation pass — so the run reaches
+   * review, and land refuses until the newest review accepts every one (`review-test-accept.ts`).
+   * Capped at {@link PREEXISTING_NAMES_CAP}; past it the step hands back rather than cut the list.
+   */
+  baseVersionRed?: string[];
 }
 
 /** Why one roster name is not a name, or undefined. */
@@ -361,6 +368,14 @@ export function projectRosterProblem(value: unknown): string | undefined {
     const problem = rosterListProblem(r.editedFiles, "editedFiles", ROSTER_FILES_CAP);
     if (problem !== undefined) return problem;
   }
+  if (r.baseVersionRed !== undefined) {
+    const problem = rosterRequiredListProblem(
+      r.baseVersionRed,
+      "baseVersionRed",
+      PREEXISTING_NAMES_CAP,
+    );
+    if (problem !== undefined) return problem;
+  }
   // A count beside a capped list can only be AT LEAST that list: fewer describes a suite it did not run.
   if (
     r.fileCount !== undefined &&
@@ -392,6 +407,9 @@ export function validatedProjectRoster(value: unknown): ProjectRosterRecord | un
     ...(r.fileCount === undefined ? {} : { fileCount: r.fileCount as number }),
     ...(r.baseSkipped === undefined ? {} : { baseSkipped: r.baseSkipped as boolean }),
     ...(r.editedFiles === undefined ? {} : { editedFiles: [...(r.editedFiles as string[])] }),
+    ...(r.baseVersionRed === undefined
+      ? {}
+      : { baseVersionRed: [...(r.baseVersionRed as string[])] }),
   };
 }
 

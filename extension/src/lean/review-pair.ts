@@ -185,6 +185,7 @@ export async function buyFullReview(
       findings: gate.findings ?? "",
       open: gate.open === true,
       blocking: gate.blocking === true,
+      accepted: gate.accepted ?? [],
       stop: undefined,
     },
     review: lensSettled.value,

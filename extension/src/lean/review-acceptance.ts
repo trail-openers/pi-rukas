@@ -24,6 +24,7 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import { testsFromLog } from "./build.ts";
 import type { ReviewDeps } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
+import { pendingTestEdits, testEditSection } from "./review-test-accept.ts";
 import { specFor } from "./spec-for.ts";
 import { gitQuiet } from "./specify-reset.ts";
 import type { ContractSource } from "./state-derived-spec.ts";
@@ -209,11 +210,14 @@ export function acceptanceSection(
         ? "Verified head: none — the newest decided `verify` of this run came back RED, so no green gate covers these rows."
         : "Verified head: none — no decided green `verify` step of this run named one."
       : `Verified head: \`${head.slice(0, HEAD_CLIP)}\``;
+  // The edited tests that need a reviewer's acceptance ride the same section, so every seat that
+  // reads the table — six lenses, both adversarial passes — is told which grants are open.
+  const edits = testEditSection(pendingTestEdits(steps));
   return `${LEAN_REVIEW_ACCEPTANCE_HEADING}\n\n${LEAN_REVIEW_ACCEPTANCE_LEAD}\n\n${anchor}\n\n${fenceText(
     [HEADER, DIVIDER, ...rows.map(rowLine)].join("\n"),
     MAX_TABLE_CHARS,
     TABLE_TRUNCATION_MARKER,
-  )}`;
+  )}${edits === "" ? "" : `\n\n${edits}`}`;
 }
 
 /** The section with the switch not consulted, for the renderers that own their own

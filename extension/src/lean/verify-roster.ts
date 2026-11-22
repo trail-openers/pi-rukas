@@ -260,11 +260,14 @@ export async function buildProjectRoster(opts: {
     edited,
   });
   if (!baseVersions.ok) return none(baseVersions.reason);
-  if (baseVersions.redFiles.length > 0)
-    return {
-      status: "red",
-      reason: `the base versions of these test files fail against the head code: ${clip(baseVersions.redFiles)} — the run changed the contract its own tests were written against, and Part A has no acceptance path for that`,
-    };
+  // A failing base version is not builder-fixable — no build round makes the old expectation pass —
+  // so it is RECORDED for review to accept or withhold, and land refuses it unaccepted. A list past
+  // the cap is a hand-back: land could not tell an accepted list from a cut one.
+  const red = baseVersions.redFiles;
+  if (red.length > PREEXISTING_NAMES_CAP)
+    return none(
+      `the base versions of ${String(red.length)} edited test files fail against the head code, more than the ${String(PREEXISTING_NAMES_CAP)} a review may accept: ${clip(red)}`,
+    );
 
   const recordedFiles = preexisting.slice(0, ROSTER_FILES_CAP);
   const roster: ProjectRosterRecord = {
@@ -278,12 +281,12 @@ export async function buildProjectRoster(opts: {
     // Carried only when the cap actually cut the list: a record naming every file has none to disclose.
     ...(preexisting.length > recordedFiles.length ? { fileCount: preexisting.length } : {}),
     ...(skipBase ? { baseSkipped: true } : {}),
-    // The files whose BASE version was run against the head code and PASSED. A run that edited a
-    // pre-existing test and whose base version fails never gets this far: it returned `red` above,
-    // so land can never see a roster that recorded a failing base version as a green.
+    // The edited files whose BASE version passed against the head code, and those whose base version
+    // failed — the second list is what land needs the newest review to accept.
     ...(baseVersions.editedFiles.length === 0
       ? {}
       : { editedFiles: baseVersions.editedFiles.slice(0, ROSTER_NAMES_CAP) }),
+    ...(red.length === 0 ? {} : { baseVersionRed: red }),
   };
   // The step log's reader is the last word on what a durable roster may assert; asking it here
   // turns a would-be-unloadable record into a hand-back an operator can read.

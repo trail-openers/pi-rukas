@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * #2428 AC3 / #2410 R5 — every pre-existing test file the run EDITED has its BASE version run against
- * the head code, and land refuses only when one of those base versions is NEWLY FAILING.
+ * the head code, and land never rests on an edited contract the record does not vouch for.
  *
  * Bench cell 2 is the whole reason: the build edits an existing test's expectation, `verify` runs the
  * edited copy and passes, and the hidden run restores the original and fails. A gate that only ever
@@ -9,12 +9,12 @@
  * roster is what closes it — the file's base bytes, materialised and run against the head code, with
  * the project's own `verify.test` template.
  *
- * R5 is the refusal's CONDITION, and it is narrower than "the run touched a test": land refuses a
- * roster with at least one test and NO newly failing edited-file base version. An edited file whose
+ * R5 is the refusal's CONDITION, and it is narrower than "the run touched a test". An edited file whose
  * base version still passes is the honest case — the run rewrote a test and the old contract still
- * held — so it must LAND, with `editedFiles` kept as the record of what was put through that. Refusing
- * land on any non-empty `editedFiles` would refuse every legitimate test edit, which is Part B's
- * subject, not Part A's.
+ * held — so it must LAND, with `editedFiles` kept as the record of what was put through that. A file
+ * whose base version fails is recorded under `baseVersionRed` instead, and lands only on a review's
+ * explicit acceptance (test-lean-accept-test-edit.ts). Refusing land on any non-empty `editedFiles`
+ * would refuse every legitimate test edit.
  *
  * The land half is asserted through `landEarned` rather than a comment, because the gate reads the
  * RECORD: a roster that recorded a failing base version must never license a merge, and one that
@@ -110,8 +110,9 @@ function baseScript(red: boolean): string {
 
 {
   // Bench cell 2 proper: the base version of the edited file FAILS against the head code. The run
-  // rewrote the contract its own tests were written against, so there is nothing for a build round to
-  // fix and the answer is a refusal that names the file — not a green, and not a silent pass.
+  // changed the contract its own tests were written against, so no build round can fix it: the step
+  // records the file for review to accept or withhold, and land refuses it unaccepted
+  // (`test-lean-accept-test-edit.ts` owns the acceptance path).
   const r = await runVerify({
     issue: 2451,
     implement: true,
@@ -122,18 +123,14 @@ function baseScript(red: boolean): string {
     editProjectTests: { [FILE]: baseScript(false) },
     baseProjectTestFails: true,
   });
-  const said = `${r.threw?.message ?? ""}${r.outcome?.reason ?? ""}`;
-  assert(
-    r.outcome?.kind === "red" || r.threw !== undefined,
-    `(edited red) a base version that fails against the head code is never a green (got ${r.outcome?.kind ?? "threw"})`,
-  );
-  assert(
-    /base version/i.test(said) && said.includes(FILE),
-    `(edited red) the refusal names the file whose base version broke (${said.slice(0, 160)})`,
-  );
   const roster = r.outcome?.projectRoster as ProjectRosterRecord | undefined;
   assert(
-    r.outcome?.kind !== "green" || roster?.editedFiles === undefined,
+    r.outcome?.kind === "green" &&
+      JSON.stringify(roster?.baseVersionRed) === JSON.stringify([FILE]),
+    `(edited red) a base version that fails against the head code is recorded under baseVersionRed (got ${r.outcome?.kind ?? "threw"}; ${JSON.stringify(roster?.baseVersionRed)})`,
+  );
+  assert(
+    roster?.editedFiles === undefined,
     "(edited red) no green ever carries an editedFiles entry for a file whose base version failed",
   );
 }
@@ -219,9 +216,9 @@ function baseScript(red: boolean): string {
     JSON.stringify(roster.editedFiles) === JSON.stringify([FILE]),
     `(land) the control's record names the file this run edited (${JSON.stringify(roster.editedFiles)})`,
   );
-  // The same record with the edited file's base version FAILING — the shape the step refuses to
-  // write, and the one R5 says land must refuse. Built by hand because the step cannot reach it: the
-  // gate went `red` at `runEditedBaseVersions` before any roster existed.
+  // The same record vouching for the edited file beside a FAILING head test — the shape
+  // `rosterEarnsLand` refuses. Built by hand because the step never writes it: a failing base version
+  // goes under `baseVersionRed`, not `editedFiles`.
   const forgedFailingBase: ProjectRosterRecord = {
     ...roster,
     editedFiles: [FILE],

@@ -126,14 +126,12 @@ function assert(cond: boolean, msg: string): void {
     editProjectTests: { [FILE]: "#!/bin/sh\nexit 0\n" },
     baseProjectTestFails: true,
   });
-  const said = `${edited.threw?.message ?? ""}${edited.outcome?.reason ?? ""}`;
+  // Not a red a build round could clear: the file is RECORDED, and land refuses it until a review
+  // accepts it (`test-lean-accept-test-edit.ts`).
   assert(
-    edited.outcome?.kind !== "green" && edited.outcome?.kind !== undefined,
-    `(cell 2) an edited test whose base version fails the head code is not green (got ${edited.outcome?.kind ?? "threw"})`,
-  );
-  assert(
-    /base version/i.test(said) && said.includes(FILE),
-    `(cell 2) the refusal names the file whose base version broke (${said.slice(0, 150)})`,
+    edited.outcome?.kind === "green" &&
+      JSON.stringify(edited.outcome.projectRoster?.baseVersionRed) === JSON.stringify([FILE]),
+    `(cell 2) an edited test whose base version fails the head code is recorded for review (got ${edited.outcome?.kind ?? "threw"}; ${JSON.stringify(edited.outcome?.projectRoster?.baseVersionRed)})`,
   );
 
   // Off: the step runs the edited copy, sees it pass, and has no idea the original ever failed.

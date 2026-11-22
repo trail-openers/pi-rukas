@@ -21,6 +21,8 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import type { OutcomeKind } from "../lean/machine.ts";
+import { leanProjectRosterEnabled } from "../lean/project-roster-switch.ts";
+import { unacceptedTestEdits } from "../lean/review-test-accept.ts";
 import { reviewRoundProblem } from "../lean/state-outcome-gates.ts";
 import { validPrUrl } from "../lean/state-outcome.ts";
 import type { Outcome, Step } from "../lean/state.ts";
@@ -216,6 +218,10 @@ const REVIEW_FIXED: OutcomeKind<"review"> = "fixed";
  *     `handed-back` without it): the same silence one level up, and the arm this cap exists to
  *     refuse.
  *
+ * A review that withheld an acceptance the land gate asks for — an edited pre-existing test whose
+ * base version fails, with no grant for it on the verified head in the newest review — is not a
+ * finished one either: land refuses that head, so the cap a host merges on must not offer it.
+ *
  * So `true` is never a default — only ever something a step's own record said, either the
  * head it pushed matching the head that shipped, or (having named no head) its own position
  * ahead of every push. Nothing here is read off a reason line.
@@ -223,6 +229,7 @@ const REVIEW_FIXED: OutcomeKind<"review"> = "fixed";
 export function reviewCompleteOf(steps: Step[]): boolean {
   const review = lastAttempt(steps, "review");
   if (review < 0) return false;
+  if (leanProjectRosterEnabled() && unacceptedTestEdits(steps).length > 0) return false;
   const outcome = steps[review]?.outcome;
   if (outcome?.reviewBound !== undefined) return false;
   if (outcome?.kind !== REVIEW_DONE && outcome?.kind !== REVIEW_FIXED) return false;

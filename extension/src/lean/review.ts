@@ -298,6 +298,7 @@ async function reviewPass(
       // no other consumer: with no wave there is no fixer's brief and no re-review, and the
       // residual post is the LENS layer's, which posts nothing on an APPROVED round. So the
       // gate's words ride the reason, neutralised by `disclosureNote`.
+      tally.noteAccepted(gate.accepted);
       return withRecord(
         cleanPass(
           review,
@@ -461,6 +462,7 @@ async function reviewPass(
       budget,
     });
     if (reGate.stop !== undefined) throw budgetStopped(reGate.stop, rows);
+    tally.noteAccepted(reGate.accepted);
     // Both the re-review round and the second adversarial pass have run: every lane judged
     // once, so a stop here can only be a disclosure. What the pass disclosed, and each
     // refusal it can still raise, are read by `reviewedPass` off the rounds' own records.
