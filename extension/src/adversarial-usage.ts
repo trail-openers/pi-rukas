@@ -16,7 +16,7 @@
  */
 
 import type { AdversarialVerdict, DispatchResult, DispatchUsage } from "./types.ts";
-import { addCount } from "./usage-fold.ts";
+import { addCount, andFromProvider } from "./usage-fold.ts";
 
 /** What a result carries when nothing ran at all. Module-local: the loop reads
  * the tally's `usage`, and nothing outside this file needs a zeroed shape. */
@@ -77,6 +77,7 @@ export function createUsageTally(): UsageTally {
     usage.cacheRead += r.usage.cacheRead;
     usage.cacheWrite += r.usage.cacheWrite;
     usage.cost += r.usage.cost;
+    usage.costFromProvider = andFromProvider(usage.costFromProvider, r.usage.costFromProvider);
     usage.turns += r.usage.turns;
     usage.toolCalls = addCount(usage.toolCalls, r.usage.toolCalls);
     usage.toolErrors = addCount(usage.toolErrors, r.usage.toolErrors);

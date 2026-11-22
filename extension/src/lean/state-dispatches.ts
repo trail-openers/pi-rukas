@@ -124,6 +124,7 @@ function isUsageRow(value: unknown): boolean {
   // The tool counts are optional (a row written before they existed has none),
   // but a present one is a count like the others.
   if (!TOOL_COUNTERS.every((k) => u[k] === undefined || isCount(u[k]))) return false;
+  if (u.costFromProvider !== undefined && typeof u.costFromProvider !== "boolean") return false;
   // `cost` is the one field that is NOT an integer count: `addUsage` in `pi-usage.ts` accumulates a
   // currency total, so a real report carries fractions. It is still finite and non-negative.
   return isMeasure(u.cost);
@@ -194,6 +195,9 @@ export function validatedDispatches(value: unknown): DispatchUsageRow[] {
         cacheRead: count("cacheRead"),
         cacheWrite: count("cacheWrite"),
         cost: count("cost"),
+        ...(u.costFromProvider === undefined
+          ? {}
+          : { costFromProvider: u.costFromProvider as boolean }),
         turns: count("turns"),
         ...(u.toolCalls === undefined ? {} : { toolCalls: u.toolCalls as number }),
         ...(u.toolErrors === undefined ? {} : { toolErrors: u.toolErrors as number }),

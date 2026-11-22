@@ -214,6 +214,8 @@ function normaliseUsage(usage: DispatchUsageRow["usage"] | undefined): DispatchU
     cost: isMeasure(cost) ? cost : 0,
     turns: count("turns"),
   };
+  const fromProvider = usage?.costFromProvider;
+  if (typeof fromProvider === "boolean") out.costFromProvider = fromProvider;
   for (const key of USAGE_TOOLS) {
     const value = usage?.[key];
     if (value === undefined) continue;
