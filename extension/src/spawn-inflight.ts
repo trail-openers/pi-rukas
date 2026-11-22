@@ -232,6 +232,8 @@ export function createStdoutLineHandler(opts: {
   onProgress?: (snapshot: RunningState) => void;
   onRawEvent?: (event: PiJsonEvent) => void;
   onAgentEnd: (parsed: PiJsonEvent) => void;
+  /** Every `agent_settled`, for the child bound's cancel-vs-done bit. */
+  onAgentSettled?: (parsed: PiJsonEvent) => void;
   /**
    * #1827 — the reviewer skill re-read guard, fed from the same hot path as the
    * cap observers. Absent (every non-reviewer role, or no driver-supplied skill
@@ -254,6 +256,7 @@ export function createStdoutLineHandler(opts: {
     onProgress,
     onRawEvent,
     onAgentEnd,
+    onAgentSettled,
     skillRead,
   } = opts;
   return (line: string) => {
@@ -325,6 +328,8 @@ export function createStdoutLineHandler(opts: {
       agentEnd = parsed;
       // Not while the child is retrying — see `willRetryAfter`.
       if (!willRetryAfter(parsed)) onAgentEnd(parsed);
+    } else if (parsed.type === "agent_settled") {
+      onAgentSettled?.(parsed);
     } else if (
       parsed.type === "message_end" &&
       (parsed as { message?: { role?: string } }).message?.role === "assistant"

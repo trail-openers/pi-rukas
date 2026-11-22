@@ -340,6 +340,7 @@ async function spawnSpecialistInner(
         lastAgentEnd = parsed;
         if (!willRetryAfter(parsed)) completePrompt();
       },
+      onAgentSettled: (parsed) => childBound.onSettled(parsed),
       // #1827 — counts reads of the child's own skill file, from the same calls.
       ...(reviewBounds.skillRead ? { skillRead: reviewBounds.skillRead } : {}),
     }),

@@ -267,6 +267,12 @@ export interface PiJsonEvent {
    */
   willRetry?: boolean;
   /**
+   * Pi (>= 1.1.0) stamps this on `agent_settled`: true when the run ended
+   * because it was aborted, false when it finished. Read through
+   * `settledAborted` (spawn-child-bound.ts), never directly.
+   */
+  aborted?: boolean;
+  /**
    * Present on `tool_execution_start` / `tool_execution_end` / `tool_execution_update`
    * events (flat events, not message-bearing). The unique id of the tool call —
    * for nested (codemode) calls the id is `<callerId>/<n>`.

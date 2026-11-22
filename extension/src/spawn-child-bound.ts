@@ -29,6 +29,11 @@
  *     later is ended as done rather than left for the inactivity watchdog to
  *     kill as a hang 25 minutes on (`onReported`).
  *
+ * "Reported" is the child's own word when Pi gives one: an `agent_settled`
+ * whose `aborted` is true says the run was cancelled, not finished, so that
+ * child is not done — the reap still ends it, as nothing. Without the bit
+ * (Pi < 1.1.0, or a settle that never arrived) `agent_end` alone decides.
+ *
  * The bound timers are armed only when a bound is passed; all of it is inert
  * under `PI_ENSEMBLE_DISPATCH_CAPS=0` (the caps master switch). One instance
  * per spawn.
@@ -38,6 +43,7 @@ import { type ChildProcess, execFile } from "node:child_process";
 import type { Writable } from "node:stream";
 import { clampToCycleDeadline } from "./cycle-deadline-clock.ts";
 import type { SteerSource } from "./dispatch-steer.ts";
+import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { killProcessTree } from "./spawn-kill.ts";
 import { childHasExited } from "./spawn-support.ts";
 import { trace, traceWarn } from "./trace.ts";
@@ -122,6 +128,16 @@ function wrapUpText(stopInMs: number): string {
   return `You have reached your time bound. Wrap up now: stop starting new work, commit what works, and send your final report. You will be stopped in ${min} minute(s).`;
 }
 
+/**
+ * The child's own cancel-vs-done bit: `agent_settled.aborted`. Undefined for
+ * any other event and on a Pi that does not stamp it, so a caller can tell "no
+ * evidence" from either answer and keep its fallback.
+ */
+export function settledAborted(event: PiJsonEvent | null | undefined): boolean | undefined {
+  if (event?.type !== "agent_settled") return undefined;
+  return typeof event.aborted === "boolean" ? event.aborted : undefined;
+}
+
 /** Why a child at its bound counted as done rather than killed. */
 export type DoneSignal = NonNullable<DispatchResult["endedAsDone"]>;
 
@@ -140,6 +156,8 @@ export interface ChildBound {
   atBackstop(timedOut: () => void): boolean;
   /** The prompt's `agent_end` arrived: reap the child if it does not exit. */
   onReported(): void;
+  /** An `agent_settled` arrived; a cancelled run no longer counts as reported. */
+  onSettled(event: PiJsonEvent): void;
   stop(): void;
 }
 
@@ -191,6 +209,8 @@ export function armChildBound(o: {
   const boundMs = o.boundMs ?? 0;
   let killed = false;
   let done: DoneSignal | undefined;
+  let aborted: boolean | undefined;
+  const reported = () => o.reported() && aborted !== true;
   const timers: ReturnType<typeof setTimeout>[] = [];
   const result: ChildBound = {
     killed: () => killed,
@@ -201,6 +221,9 @@ export function armChildBound(o: {
       return false;
     },
     onReported: () => undefined,
+    onSettled: (event) => {
+      aborted = settledAborted(event) ?? aborted;
+    },
     stop: () => {
       for (const t of timers) clearTimeout(t);
     },
@@ -214,7 +237,7 @@ export function armChildBound(o: {
   // bound must not end it a second time.
   const gone = () => childHasExited(o, o.child) || o.preempted();
   const settled = async (): Promise<DoneSignal | undefined> => {
-    if (o.reported()) return "reported";
+    if (reported()) return "reported";
     if (!o.commits) return undefined;
     const [before, now] = await Promise.all([headAtStart, head(o.cwd)]);
     return before && now && before !== now ? "committed" : undefined;
@@ -235,11 +258,11 @@ export function armChildBound(o: {
   result.onReported = () =>
     arm(() => {
       if (gone() || done || killed) return;
-      done = "reported";
-      kill("reaped a child that reported but did not exit");
+      if (reported()) done = "reported";
+      kill(`reaped a child that ${done ? "reported" : "was cancelled"} but did not exit`);
     }, settledReapMs());
   result.atBackstop = (timedOut) => {
-    if (!o.reported() && !o.commits) {
+    if (!reported() && !o.commits) {
       timedOut();
       return false;
     }
