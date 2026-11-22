@@ -9,6 +9,7 @@ import {
   PREEXISTING_NAME_MAX_CHARS,
   ROSTER_FILES_CAP,
   ROSTER_NAMES_CAP,
+  preexistingFailuresProblem,
   projectRosterProblem,
 } from "./state-outcome-maps.ts";
 import { probeWorktreePath } from "./verify-baseline.ts";
@@ -104,6 +105,11 @@ async function runProjectSuiteAtBase(opts: {
         }) as const,
     );
     const undelivered = await undeliveredDeps(exec, repoRoot, baseSha, abs);
+    if (undelivered === undefined)
+      return {
+        ran: false,
+        reason: `the base commit's dependency listing could not be read at ${baseSha.slice(0, 12)}, so no base run may excuse a head failure`,
+      };
     if (provisioned.problem !== undefined || undelivered.length > 0)
       return {
         ran: false,
@@ -332,7 +338,8 @@ export type RosterArbitration =
  *
  * `headFailed` and `baseFailed` are the failing names each run's report read — the same sets the
  * roster was built from, so the tier and the roster cannot disagree about what the suite did. A
- * name the roster saw PASSING at base and head fails is this run's regression and answers `red`;
+ * name verify's roster saw PASSING, and its base run did not fail, is this run's regression when the
+ * tier fails it: `red`;
  * names that failed at base on both sides answer `excused`, with the record the disclosure renders;
  * anything else answers `uninvolved` and the line rule decides.
  */
@@ -347,20 +354,47 @@ export function arbitrateTierWithRoster(opts: {
   const roster = opts.roster;
   if (roster === undefined) return { kind: "uninvolved" };
   if (opts.headFailed.length === 0) return { kind: "uninvolved" };
-  const basePassed = new Set(roster.passed);
-  const newlyFailing = opts.headFailed.filter((name) => basePassed.has(name));
+  // The tier's lines and the report's labels are two spellings of one test; compared unnormalised
+  // they never meet and the roster's precedence never fires. A name the base roster failed is the
+  // mainline's own, never this run's regression.
+  const baseFailedNames = new Set(roster.baseFailed.map(testIdOf));
+  const passedNames = new Set(roster.passed.map(testIdOf).filter((n) => !baseFailedNames.has(n)));
+  const newlyFailing = opts.headFailed.filter((line) => passedNames.has(testIdOf(line)));
   if (newlyFailing.length > 0)
-    return { kind: "red", reason: newlyFailingReason(newlyFailing, opts.baseSha) };
-  const baseFailed = new Set(opts.baseFailed);
-  if (opts.headFailed.every((name) => baseFailed.has(name)))
     return {
-      kind: "excused",
-      record: {
-        cmd: opts.cmd,
-        names: opts.headFailed.slice(0, PREEXISTING_NAMES_CAP).map(boundedName),
-        total: opts.headFailed.length,
-        baseSha: opts.baseSha,
-      },
+      kind: "red",
+      // `passed` is verify's head run: the record keeps no base passes, so the reason claims none.
+      reason: `project tests the verify roster saw passing fail this tier: ${clip(newlyFailing.map(testIdOf))} — a name the roster saw pass is this run's to fix, whatever the base printed at ${opts.baseSha.slice(0, 12)}`,
     };
-  return { kind: "uninvolved" };
+  const baseFailed = new Set(opts.baseFailed);
+  if (!opts.headFailed.every((name) => baseFailed.has(name))) return { kind: "uninvolved" };
+  const record: PreexistingTierRecord = {
+    cmd: opts.cmd,
+    names: opts.headFailed.slice(0, PREEXISTING_NAMES_CAP).map(boundedName),
+    total: opts.headFailed.length,
+    baseSha: opts.baseSha,
+  };
+  // A record the step log's reader would refuse licenses nothing: the arm keeps its hand-back.
+  if (preexistingFailuresProblem({ tier: record }) !== undefined) return { kind: "uninvolved" };
+  return { kind: "excused", record };
+}
+
+/**
+ * One test's identity, whether spelled as a tier's failure line or as a report's label.
+ *
+ * pytest prints `FAILED tests/x_test.py::TestC::test_a - AssertionError` and its report labels the
+ * same test `tests.x_test.TestC::test_a`; both become the dotted form before the last `::`. A line
+ * that names no `::` test (a TAP or go line) is kept whole, which is what it was compared as before.
+ */
+function testIdOf(text: string): string {
+  const id =
+    text
+      .trim()
+      .replace(/^(?:FAILED|ERROR)\s+/, "")
+      .split(/\s+-\s/)[0] ?? "";
+  const parts = id.split("::");
+  const name = parts.pop() ?? "";
+  if (parts.length === 0 || /\s/.test(id)) return text.trim();
+  const scope = parts.map((p) => p.replace(/\.py$/, "").replace(/\//g, ".")).join(".");
+  return `${scope}::${name}`;
 }

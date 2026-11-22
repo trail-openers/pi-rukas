@@ -18,7 +18,10 @@
  * real output is what the gate reads back.
  */
 
+import { writeFileSync } from "node:fs";
+import path from "node:path";
 import { execp } from "../../src/exec.ts";
+import { ROSTER_REPORT_FILE } from "../../src/lean/verify-roster-command.ts";
 import type { VerifyExec } from "../../src/lean/verify-types.ts";
 import type { VerifyOpts } from "./lean-verify-types.ts";
 import { writeDeclaredReport } from "./lean-verify-roster.ts";
@@ -98,6 +101,11 @@ export function makeRosterRuns(opts: {
           stderr: "",
         }),
       );
+    }
+    const raw = side === "head" ? o?.headReportXml : o?.baseReportXml;
+    if (raw !== undefined) {
+      writeFileSync(path.join(String(o2?.cwd ?? opts.treeOf(side)), ROSTER_REPORT_FILE), raw);
+      return Promise.resolve({ stdout: `roster-said-${side}\n`, stderr: "" });
     }
     const declared = side === "head" ? rosterNames?.head : rosterNames?.base;
     // The tree is the run's OWN cwd, which is the probe's throwaway checkout rather than the

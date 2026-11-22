@@ -84,11 +84,31 @@ export function deriveSuiteTemplate(test: string): string {
  * too, and spells the same command as its `verify.roster`.
  */
 export function rosterStartProblem(config: VerifyRosterConfig): string | undefined {
-  if (!leanProjectRosterEnabled() || config.roster !== undefined || config.test === undefined)
-    return undefined;
+  if (!leanProjectRosterEnabled()) return undefined;
+  if (config.roster !== undefined) return escapingReportProblem(config.roster);
+  if (config.test === undefined) return undefined;
   if (config.test.split(/\s+/).some((word) => /^py\.?test$/.test(path.basename(word))))
     return undefined;
   return "verify.roster is unset and verify.test is not pytest, so the derived --junitxml={report} writes no JUnit report: set verify.roster to write one to {report}, or PI_ENSEMBLE_LEAN_PROJECT_ROSTER=0 for a project with no suite to roster";
+}
+
+/**
+ * Why a configured `verify.roster` names its report outside the tree it runs in, or undefined.
+ *
+ * Each leg reads its report from inside its own tree, so a `--junitxml` path that is absolute or climbs
+ * out with `..` names a file both legs share and neither may read: refused before build spends its
+ * budget, rather than handed back after.
+ */
+function escapingReportProblem(template: string): string | undefined {
+  const words = template.split(/\s+/);
+  for (const [i, word] of words.entries()) {
+    const flag = /^--junit-?xml(?:=(.*))?$/.exec(word);
+    if (flag === null) continue;
+    const value = flag[1] ?? words[i + 1] ?? "";
+    if (value.startsWith("/") || value.split("/").includes(".."))
+      return `verify.roster writes its report to ${value}, outside the tree each roster run reads it from: name the report {report}`;
+  }
+  return undefined;
 }
 
 /**
@@ -128,11 +148,15 @@ export const ROSTER_REPORT_FILE = JUNIT_REPORT_FILE;
  * A scan, not an XML parser — one dependency to read one report is not worth it, and the only
  * answers returned are "these names ran", "these names failed", and (when neither set can be
  * built) nothing, which the caller reads as a hand-back. A malformed report yields nothing.
+ *
+ * A name is judged over EVERY occurrence: a runner that retries writes one `<testcase>` per attempt
+ * (or nests the earlier attempts as `<rerunFailure>`/`<flakyFailure>`), and an attempt that failed is
+ * a failure whichever attempt the report lists first. Any child other than the neutral ones counts as
+ * a failure — report families name their retry markers differently, and an unknown marker read as a
+ * pass is a green nobody observed. A name whose every occurrence was skipped ran nowhere: neither set.
  */
 export function parseJUnitCases(xml: string): { passed: string[]; failed: string[] } {
-  const passed: string[] = [];
-  const failed: string[] = [];
-  const seen = new Set<string>();
+  const verdict = new Map<string, "passed" | "failed" | "skipped">();
   const open = /<testcase\b[^>]*>/g;
   for (let match = open.exec(xml); match !== null; match = open.exec(xml)) {
     const tag = match[0];
@@ -145,13 +169,31 @@ export function parseJUnitCases(xml: string): { passed: string[]; failed: string
     if (name === "") return { passed: [], failed: [] };
     const classname = /<testcase\b[^>]*\bclassname="([^"]*)"/.exec(body)?.[1] ?? "";
     const label = classname === "" ? name : `${classname}::${name}`;
-    if (seen.has(label)) continue;
-    seen.add(label);
-    if (/<(failure|error)\b/i.test(body)) failed.push(label);
-    else passed.push(label);
+    // Captured output and comments are text, not markers: a log line that prints `<div>` is not a child.
+    const children = [
+      ...body
+        .slice(tag.length)
+        // Two passes: a captured-output element is cut only after the CDATA it may wrap is gone, so
+        // a `/>` or `</system-out>` printed inside the CDATA cannot end it early.
+        .replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->/g, "")
+        .replace(/<(system-out|system-err)\b(?:[^>]*\/>|[\s\S]*?<\/\1>)/g, "")
+        .matchAll(/<([A-Za-z_][\w.:-]*)/g),
+    ].map((m) => m[1]);
+    const now = children.some((c) => !NEUTRAL_CHILDREN.has(c ?? ""))
+      ? "failed"
+      : children.includes("skipped")
+        ? "skipped"
+        : "passed";
+    const before = verdict.get(label);
+    if (before === "failed" || (before === "passed" && now === "skipped")) continue;
+    verdict.set(label, now);
   }
-  return { passed, failed };
+  const named = (v: string) => [...verdict].filter(([, at]) => at === v).map(([label]) => label);
+  return { passed: named("passed"), failed: named("failed") };
 }
+
+/** The `<testcase>` children that say nothing about whether the test passed. */
+const NEUTRAL_CHILDREN = new Set(["skipped", "properties", "property", "system-out", "system-err"]);
 
 /** One roster run's verdicts: which tests ran and which failed. */
 export type SuiteRun =
@@ -268,6 +310,9 @@ async function runAndRead(
  */
 function readReport(cwd: string, file: string): string | undefined {
   const abs = path.resolve(cwd, file);
+  // A report outside the tree it is read from is bytes another tree's run wrote.
+  const rel = path.relative(cwd, abs);
+  if (rel.split(path.sep)[0] === ".." || path.isAbsolute(rel)) return undefined;
   try {
     const st = lstatSync(abs);
     if (st.isSymbolicLink() || !st.isFile()) return undefined;

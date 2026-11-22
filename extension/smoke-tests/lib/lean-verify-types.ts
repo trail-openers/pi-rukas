@@ -271,6 +271,15 @@ export interface VerifyOpts extends ProbeShapeOpts {
     headNames?: string[];
     /** The names the BASE run's report names. Same mechanism, base tree. */
     baseNames?: string[];
+    /**
+     * The HEAD run's report, verbatim, in place of the serialiser's: the shape a declared name list
+     * cannot carry — a retried case, a skipped-only case, a marker nested in another.
+     */
+    headReportXml?: string;
+    /** The BASE run's report, verbatim. */
+    baseReportXml?: string;
+    /** Make the base commit's dependency listing (`git ls-tree` of the shareable deps) reject. */
+    baseDepListingRejects?: boolean;
   };
   /**
    * Pre-existing test files whose HEAD bytes the case rewrites (committed on top of the
