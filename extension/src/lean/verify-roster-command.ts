@@ -187,8 +187,11 @@ export async function runProjectSuite(
     killGroup: true,
     env: verifyChildEnv(),
   }).catch((err: unknown) => ({ __err: err }) as never);
-  const e = ran as {
-    __err?: unknown;
+  // The executor's contract decides the reading: `execp` RESOLVES only when the child exited 0
+  // (with no `code` on the result) and REJECTS otherwise, carrying `code`/`signal`/`killed` and the
+  // streams on the error. So a rejection is observed through its error, and a resolution is exit 0.
+  const rejected = (ran as { __err?: unknown }).__err;
+  const e = (rejected !== undefined ? rejected : ran) as {
     code?: unknown;
     stdout?: unknown;
     stderr?: unknown;
@@ -211,17 +214,16 @@ export async function runProjectSuite(
     };
   if (typeof e.code === "string")
     return { ran: false, reason: "the roster command could not be started" };
-  // A numeric exit is REQUIRED, not assumed. An exec that RESOLVED with no `code` at all — a wrapper
-  // that swallowed the status, a child whose status was never read — is not a run that exited 0, and
-  // reading it that way hands a green to a suite whose outcome nobody observed. The kill, signal,
-  // overflow and could-not-start shapes above answer themselves; this is the residue, and the residue
-  // is "did not run", never "passed".
-  if (typeof e.code !== "number" || !Number.isInteger(e.code))
+  // A resolution with no `code` is the child's exit 0. A REJECTION that carries no numeric exit — a
+  // child whose status was never read — is the residue the observation arms above do not answer, and
+  // the residue is "did not run", never "passed".
+  const code = rejected === undefined && e.code === undefined ? 0 : e.code;
+  if (typeof code !== "number" || !Number.isInteger(code))
     return {
       ran: false,
-      reason: `the roster run produced no exit status (${e.code === undefined ? "none" : `code ${String(e.code)}`})`,
+      reason: `the roster run produced no exit status (${code === undefined ? "none" : `code ${String(code)}`})`,
     };
-  const exitCode = e.code;
+  const exitCode = code;
   const report = readReport(opts.reportCwd, opts.report);
   if (report === undefined)
     return {
