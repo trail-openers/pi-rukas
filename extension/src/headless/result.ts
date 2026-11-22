@@ -16,6 +16,7 @@ import type { CauseVerdict } from "../work-driver-cause-class.ts";
 import { causeForCycle } from "../work-driver-cause-for.ts";
 import type { CauseClass } from "../work-driver-cause-table.ts";
 import { handoffMarker, parseHandoffMarker } from "../work-driver-handoff-channel.ts";
+import { withoutRemovedTrees } from "../work-driver-handoff-snapshot.ts";
 import { type CommentsReport, commentsReport } from "../work-driver-issue-comments.ts";
 import { resumeEnabled } from "../work-driver-resume.ts";
 import type { WorkStep } from "../workflow-state-events.ts";
@@ -376,7 +377,8 @@ function bulletsOf(evidence: string | undefined): string[] {
 /** Open questions for an exit-11 handoff, numbered q1, q2… */
 export function questionsOf(state: WorkState): string[] {
   const cap = lastEvent(state, "cap-hit");
-  return cap ? bulletsOf(cap.evidence).map((q, n) => `q${n + 1}: ${q}`) : [];
+  const scrubbed = cap?.evidence && withoutRemovedTrees(state.pipelineState, cap.evidence);
+  return bulletsOf(scrubbed).map((q, n) => `q${n + 1}: ${q}`);
 }
 
 /** #1675 — the cause fields, set only when the verdict has them. */

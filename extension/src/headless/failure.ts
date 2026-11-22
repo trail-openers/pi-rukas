@@ -13,6 +13,7 @@ import { redactClip } from "../decision-log.ts";
 import { PROVIDER_MAX } from "../provider-text-budget.ts";
 import type { DispatchFailureCause } from "../types.ts";
 import { classifyFailureCause, failureCauseReason } from "../work-driver-failure-taxonomy.ts";
+import { withoutRemovedTrees } from "../work-driver-handoff-snapshot.ts";
 import type { WorkEvent, WorkStep } from "../workflow-state-events.ts";
 import type { WorkState } from "../workflow-state.ts";
 import type { HeadlessCap } from "./caps.ts";
@@ -257,7 +258,9 @@ export function failureOf(
   const capHit = capIdx >= 0 ? log[capIdx] : undefined;
   const hit = capHit?.kind === "cap-hit" ? capHit : undefined;
   const failed = isDispatchCap(cap) ? failedDispatchBefore(log, capIdx, step) : undefined;
-  const evidence = hit?.evidence ? redactClip(hit.evidence, EVIDENCE_MAX) : undefined;
+  // Scrubbed before the clip, so a host never reads a tree the handoff removed.
+  const raw = hit?.evidence ? withoutRemovedTrees(state.pipelineState, hit.evidence) : undefined;
+  const evidence = raw ? redactClip(raw, EVIDENCE_MAX) : undefined;
   const f: ResultFailure = {
     kind: failed && !CAP_KIND_WINS.has(cap) ? dispatchKind(failed) : capKind(cap),
     message: "",
@@ -288,7 +291,7 @@ export function failureOf(
       if (failed.exitCode !== undefined) f.exitCode = failed.exitCode;
     }
   } else {
-    f.message = redactClip(firstLine(hit?.evidence) ?? cap, MESSAGE_MAX);
+    f.message = redactClip(firstLine(raw) ?? cap, MESSAGE_MAX);
   }
   if (evidence) f.evidence = evidence;
   return f;
