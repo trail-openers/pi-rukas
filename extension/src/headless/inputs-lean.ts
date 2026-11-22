@@ -11,7 +11,8 @@
  *
  * The rows live together because they share a reader convention as well as a
  * prefix: each is one exported predicate in `extension/src/lean/`, read at CALL
- * time, whose only off value is the literal `"0"`. A name goes here when its
+ * time, whose only off value is the literal `"0"` (`LEAN_DETECT_VERIFY` alone is
+ * off by default and on only at `"1"`). A name goes here when its
  * reader lives under `lean/`; the builders are `entry.ts`'s.
  */
 
@@ -29,6 +30,12 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // derive output with no guards. The reader is
   // `leanDeriveRegressionGuardsEnabled` in lean/derive-guards.ts.
   flag("LEAN_DERIVE_REGRESSION_GUARDS", true),
+  // Default OFF, on only at `1`: a repo with neither `.pi/work.json` nor `.pi/verify-cmd`
+  // gets verify tiers detected at the base (pytest, or a package.json test script) instead
+  // of `ready`'s setup refusal — the refusal a host's driver fallback keys on. The shared
+  // loader also hands it to classic /work's command-criteria tier. The reader is
+  // `leanDetectVerifyEnabled` in lean/config-detect.ts.
+  flag("LEAN_DETECT_VERIFY", false),
   // A review fixer whose last turn ended at the model's output-token limit with no edit made is
   // continued ONCE, in its own session, in its own tree behind the same write fence, before the wave
   // is judged "produced no change". The detector reads the child's own recorded `stopReason` and its

@@ -91,6 +91,8 @@ export interface VerifyOpts extends ProbeShapeOpts {
   alwaysRedFrozen?: boolean;
   /** Nothing configured at all: the frozen tests alone decide. */
   noCommand?: boolean;
+  /** The loader's `detection` sentence, as `PI_ENSEMBLE_LEAN_DETECT_VERIFY` sets it. */
+  detection?: string;
   /** Bounds every tier and frozen-test run, so a hang is observable in seconds. */
   timeoutMs?: number;
   /** Make the worktree dirty before the step looks at it. */

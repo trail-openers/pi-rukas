@@ -260,6 +260,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
               ? NAMING_RUNNER_TEMPLATE
               : "sh {file}"),
       },
+      ...(opts.detection === undefined ? {} : { detection: opts.detection }),
     }),
     readVerifyCmd: async () => undefined,
     // The lean contract lives in the issue body, and the verify gate now reads it
