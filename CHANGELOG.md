@@ -8,6 +8,15 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.6](https://github.com/trail-openers/pi-rukas/compare/v0.15.5...v0.15.6) (2026-11-22)
+
+
+### Bug Fixes
+
+* **lean:** fail closed when the HEAD ancestry probe is unreadable ([#2567](https://github.com/trail-openers/pi-rukas/issues/2567)) ([eec6047](https://github.com/trail-openers/pi-rukas/commit/eec6047ddc56979a2b15238a66adcf5a03fda2b1))
+* **lean:** post the derived spec inside a single pi-spec fence ([#2563](https://github.com/trail-openers/pi-rukas/issues/2563)) ([b4cf266](https://github.com/trail-openers/pi-rukas/commit/b4cf2666c43f1ec605fc47abc7aa5129219a8c97))
+* **lean:** remove the roster's report around each run ([#2566](https://github.com/trail-openers/pi-rukas/issues/2566)) ([58eee16](https://github.com/trail-openers/pi-rukas/commit/58eee161af88521a0c643348ab0183bd4ae236c6))
+
 ## [0.15.5](https://github.com/trail-openers/pi-rukas/compare/v0.15.4...v0.15.5) (2026-11-22)
 
 
