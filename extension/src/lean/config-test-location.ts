@@ -5,17 +5,20 @@
  * at the same boundary. The three questions here are the three a project answers when it wants its OWN CI
  * to run the tests a lean run freezes:
  *
- *   - `validateTestDir` — is this a repo-relative directory, or something that only looks like one?
+ *   - `validateTestDir` — is this a repo-relative directory, or something that only looks like one? Each
+ *     `verify.testDirs` entry answers the same question.
  *   - `validateTestGlob` — is this a single-`*` BASENAME pattern?
  *   - `testLocationProblem` — does a submitted test path sit directly inside that directory under that
  *     name? What the boundary in `specify-tree.ts` calls.
  *
- * The pair is configured together or not at all: `loadWorkConfig` refuses a half-set.
+ * The pair is configured together or not at all: `loadWorkConfig` refuses a half-set. `verify.testDirs` is
+ * `testDir` for a repo whose tests sit in several roots (one `tests/` per package); the two are exclusive,
+ * and one `testGlob` names the files in every root.
  */
 
-/** The pair of settings that say where the adversary's tests live. */
+/** Where the adversary's tests live: directly inside any of `testDirs`, named to match `testGlob`. */
 export interface TestLocation {
-  testDir: string;
+  testDirs: readonly string[];
   testGlob: string;
 }
 
@@ -47,28 +50,28 @@ const TEST_DIR_FORBIDDEN = /[?*]/;
  * prints the form to write rather than quietly normalising: a config whose value the code rewrites is one
  * nobody can read off the file.
  */
-export function validateTestDir(dir: string): string | undefined {
-  if (dir.trim() === "") return ".pi/work.json verify.testDir must not be empty";
+export function validateTestDir(dir: string, field = "verify.testDir"): string | undefined {
+  if (dir.trim() === "") return `.pi/work.json ${field} must not be empty`;
   if (dir !== dir.trim())
-    return `.pi/work.json verify.testDir must not have surrounding whitespace — the value is used verbatim, so \`${dir}\` would name a directory that does not exist`;
+    return `.pi/work.json ${field} must not have surrounding whitespace — the value is used verbatim, so \`${dir}\` would name a directory that does not exist`;
   if (TEST_LOCATION_FORBIDDEN.test(dir))
-    return `.pi/work.json verify.testDir must be a plain repo-relative directory: ; & | \` $ < > " ' \\ and newline are not allowed, and neither is an invisible/control character (${dir})`;
+    return `.pi/work.json ${field} must be a plain repo-relative directory: ; & | \` $ < > " ' \\ and newline are not allowed, and neither is an invisible/control character (${dir})`;
   if (TEST_DIR_FORBIDDEN.test(dir))
-    return `.pi/work.json verify.testDir must be a plain repo-relative directory with no wildcard: * and ? are what verify.testGlob is for (${dir})`;
+    return `.pi/work.json ${field} must be a plain repo-relative directory with no wildcard: * and ? are what verify.testGlob is for (${dir})`;
   if (dir.startsWith("/") || dir.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(dir))
-    return `.pi/work.json verify.testDir must be repo-relative, not absolute (${dir})`;
+    return `.pi/work.json ${field} must be repo-relative, not absolute (${dir})`;
   if (dir.endsWith("/") || dir.endsWith("\\"))
-    return `.pi/work.json verify.testDir must not end in a slash (${dir})`;
+    return `.pi/work.json ${field} must not end in a slash (${dir})`;
   const segments = dir.split(/[\\/]+/).filter((s) => s !== "");
-  if (segments.length === 0) return `.pi/work.json verify.testDir must name a directory (${dir})`;
-  if (segments.includes("..")) return `.pi/work.json verify.testDir must not contain ".." (${dir})`;
+  if (segments.length === 0) return `.pi/work.json ${field} must name a directory (${dir})`;
+  if (segments.includes("..")) return `.pi/work.json ${field} must not contain ".." (${dir})`;
   // Against the NORMALISED form, so a `.` segment reads as the spelling mistake it is.
   const normalised = segments.filter((s) => s !== ".").join("/");
   // `.` alone normalises to nothing — the repo root, not a directory the author named.
   if (normalised !== "" && dir !== normalised)
-    return `.pi/work.json verify.testDir has exactly one spelling — write \`${normalised}\` (the value is compared verbatim against a submitted test's directory, so \`${dir}\` would match nothing)`;
+    return `.pi/work.json ${field} has exactly one spelling — write \`${normalised}\` (the value is compared verbatim against a submitted test's directory, so \`${dir}\` would match nothing)`;
   if (segments.some((s) => s.startsWith(".")))
-    return `.pi/work.json verify.testDir must not sit inside a hidden directory (${dir})`;
+    return `.pi/work.json ${field} must not sit inside a hidden directory (${dir})`;
   return undefined;
 }
 
@@ -138,11 +141,18 @@ export function globNamesPythonFiles(glob: string): boolean {
  */
 export function testLocationOf(verify: {
   testDir?: string;
+  testDirs?: readonly string[];
   testGlob?: string;
 }): TestLocation | undefined {
   const { testDir, testGlob } = verify;
-  if (testDir === undefined || testGlob === undefined) return undefined;
-  return { testDir, testGlob };
+  const testDirs = verify.testDirs ?? (testDir === undefined ? undefined : [testDir]);
+  if (testDirs === undefined || testGlob === undefined) return undefined;
+  return { testDirs, testGlob };
+}
+
+/** The configured directories as a refusal or prompt names them: `a/` or `b/`. */
+export function testDirsNamed(loc: TestLocation, quote = ""): string {
+  return loc.testDirs.map((d) => `${quote}${d}/${quote}`).join(" or ");
 }
 
 /**
@@ -167,15 +177,15 @@ export function globMatches(pattern: string, name: string): boolean {
 
 /**
  * Why this worktree-relative test path is not inside the configured test location, or undefined when it
- * is. Two questions on the NORMALISED path: is the file DIRECTLY inside `testDir` (a nested subdirectory
+ * is. Two questions on the NORMALISED path: is the file DIRECTLY inside a `testDirs` entry (a nested subdirectory
  * is outside it — the project's CI glob would not reach it), and does its basename match `testGlob`.
  */
 export function testLocationProblem(loc: TestLocation, rel: string): string | undefined {
   const segments = rel.split("/");
   const base = segments[segments.length - 1] ?? "";
   const dir = segments.slice(0, -1).join("/");
-  if (dir !== loc.testDir)
-    return `test ${rel} is not directly inside the configured test directory ${loc.testDir}/ (.pi/work.json verify.testDir)`;
+  if (!loc.testDirs.includes(dir))
+    return `test ${rel} is not directly inside the configured test directory ${testDirsNamed(loc)} (.pi/work.json verify.testDir or verify.testDirs)`;
   if (!globMatches(loc.testGlob, base))
     return `test ${rel} does not match the configured test name pattern ${loc.testGlob} (.pi/work.json verify.testGlob)`;
   return undefined;

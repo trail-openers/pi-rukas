@@ -35,9 +35,10 @@ export interface VerifyTiers {
   /**
    * The directory the project keeps its tests in, and the basename pattern they match — the pair
    * that says WHICH files the roster considers pre-existing. Read at the run's base commit, so a
-   * run cannot choose its own judges by editing the pair.
+   * run cannot choose its own judges by editing the pair. `testDirs` is several roots in place of `testDir`.
    */
   testDir?: string;
+  testDirs?: string[];
   testGlob?: string;
 }
 
@@ -53,4 +54,7 @@ export class VerifyInfraError extends Error {
  * A subset of `VerifyTiers` rather than the whole, because the roster's module must be able to
  * say what it reads and a module that takes the config object reads all of it by accident.
  */
-export type VerifyRosterConfig = Pick<VerifyTiers, "roster" | "test" | "testDir" | "testGlob">;
+export type VerifyRosterConfig = Pick<
+  VerifyTiers,
+  "roster" | "test" | "testDir" | "testDirs" | "testGlob"
+>;

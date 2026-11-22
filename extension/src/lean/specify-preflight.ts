@@ -20,11 +20,12 @@
  * TWO shapes, one per language family, because the probe's NAME is part of whether a runner can read it at
  * all:
  *
- *   - the original: `.lean-runner-probe.test` at the worktree root, or just outside a configured
- *     `verify.testDir`. Hidden, so no `testGlob` (none may start with `.`) mistakes it for an acceptance
+ *   - the original: `.lean-runner-probe.test` at the worktree root, or just outside the probe's test
+ *     directory — `verify.testDir`, or the first `verify.testDirs` root on the tree (else the first
+ *     listed). Hidden, so no `testGlob` (none may start with `.`) mistakes it for an acceptance
  *     test; extensionless, so extension-keyed runners ignore it. Right for every family except Python.
- *   - Python's: `_lean_runner_probe.py` INSIDE the configured `verify.testDir`, or at the root where none is
- *     on the tree. A hidden file cannot be IMPORTED — pytest's default prepend import mode dies on the dot.
+ *   - Python's: `_lean_runner_probe.py` INSIDE that test directory, or at the root where it is not on the
+ *     tree. A hidden file cannot be IMPORTED — pytest's default prepend import mode dies on the dot.
  *     The stem is dot-free, visible, and checked against the project's OWN `testGlob` with the boundary's
  *     matcher, so it can never be collected as one of the project's tests.
  *
@@ -93,11 +94,11 @@ const PY_PROBE_BASENAME = "_lean_runner_probe.py";
  *
  * The root satisfies both whatever the config says, and the hidden name needs no further check because
  * `validateTestGlob` refuses a pattern starting with `.`. A project whose tests live in a SUBDIRECTORY
- * already has a directory free of the constraint — `testDir`'s parent — and the config vouches it exists;
+ * already has a directory free of the constraint — the test directory's parent — and the config vouches it exists;
  * the preflight confirms it on the tree, since an uncreated directory is an untracked byte the step must
  * then account for. A parent not on the tree falls back to the root.
  *
- * A Python probe sits INSIDE `testDir` instead, since a runner that must import the file must be pointed at
+ * A Python probe sits INSIDE the test directory instead, since a runner that must import the file must be pointed at
  * a real one. It is checked against the project's own pattern: a repo whose `testGlob` matches
  * `_lean_runner_probe.py` would collect the probe as one of its tests, so this refuses rather than writing
  * a probe the CI would grade.
@@ -116,27 +117,28 @@ function probeRelative(wt: string, testLocation?: TestLocation): { rel: string; 
         `matches .pi/work.json verify.testGlob (${loc.testGlob}) in ${dir}/`,
     );
   };
-  if (testLocation !== undefined) {
-    if (globNamesPythonFiles(testLocation.testGlob)) {
-      // A Python probe has to be a file the runner can IMPORT, so it goes INSIDE the folder —
-      // at the root only when that folder is not on the tree at all.
-      const inside = existsSync(path.join(wt, testLocation.testDir));
-      const dir = inside ? testLocation.testDir : ".";
-      refuses(testLocation, dir);
-      return {
-        rel: inside ? `${testLocation.testDir}/${PY_PROBE_BASENAME}` : PY_PROBE_BASENAME,
-        py: true,
-      };
-    }
-    const parent = path.posix.dirname(testLocation.testDir);
-    if (parent !== "." && !existsSync(path.join(wt, parent))) refuses(testLocation, ".");
-  }
   if (testLocation === undefined) return { rel: PROBE_BASENAME, py: false };
-  const parent = path.posix.dirname(testLocation.testDir);
+  // The cast is safe because the loader refuses an empty `testDirs`.
+  const { testDirs } = testLocation;
+  const testDir = testDirs.find((d) => existsSync(path.join(wt, d))) ?? (testDirs[0] as string);
+  if (globNamesPythonFiles(testLocation.testGlob)) {
+    // A Python probe has to be a file the runner can IMPORT, so it goes INSIDE the folder —
+    // at the root only when that folder is not on the tree at all.
+    const inside = existsSync(path.join(wt, testDir));
+    const dir = inside ? testDir : ".";
+    refuses(testLocation, dir);
+    return {
+      rel: inside ? `${testDir}/${PY_PROBE_BASENAME}` : PY_PROBE_BASENAME,
+      py: true,
+    };
+  }
+  const parent = path.posix.dirname(testDir);
   if (parent === ".") return { rel: PROBE_BASENAME, py: false };
-  return existsSync(path.join(wt, parent))
-    ? { rel: `${parent}/${PROBE_BASENAME}`, py: false }
-    : { rel: PROBE_BASENAME, py: false };
+  if (!existsSync(path.join(wt, parent))) {
+    refuses(testLocation, ".");
+    return { rel: PROBE_BASENAME, py: false };
+  }
+  return { rel: `${parent}/${PROBE_BASENAME}`, py: false };
 }
 
 /**

@@ -57,7 +57,7 @@ export interface ChallengeDispatchOpts {
   repoRoot: string;
   /** The project's `verify.test` runner template, if configured. */
   testRunner?: string;
-  /** The project's `verify.testDir` + `verify.testGlob`, if configured. */
+  /** The project's `verify.testDir` (or `verify.testDirs`) + `verify.testGlob`, if configured. */
   testLocation?: TestLocation;
   /** Preflight for the reporter companion; `statReporterPath` in production. */
   statReporter?: (p: string) => Promise<unknown>;

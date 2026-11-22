@@ -132,7 +132,7 @@ if (!pytestAvailable(PYTHON)) {
   const got = await runPreflight({
     wt: dir,
     template: `${PYTHON} -m pytest {file}`,
-    testLocation: { testDir: "tests", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "test_*.py" },
     limits: { timeoutMs: 60_000 },
   });
   assert(
@@ -172,7 +172,7 @@ if (!pytestAvailable(PYTHON)) {
   const got = await runPreflight({
     wt: dir,
     template: `${PYTHON} -m pytest -q -p leanprobe_plugin {file}`,
-    testLocation: { testDir: "tests", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "test_*.py" },
     limits: {
       timeoutMs: 60_000,
       env: { ...process.env, ...pythonUserEnv(), PYTHONPATH: ".pi" },
@@ -198,7 +198,7 @@ if (!pytestAvailable(PYTHON)) {
   const got = await runPreflight({
     wt: dir,
     template: `${PYTHON} -m pytest -q -p no:cacheprovider -p no:randomly {file}`,
-    testLocation: { testDir, testGlob: "test_*.py" },
+    testLocation: { testDirs: [testDir], testGlob: "test_*.py" },
     limits: {
       timeoutMs: 60_000,
       env: {

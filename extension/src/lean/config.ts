@@ -34,13 +34,15 @@ export interface WorkConfig {
    * contain exactly one whole-word `{file}`. It is executed as an executable plus argv, never through a shell.
    *
    * `testDir` is a repo-relative DIRECTORY and `testGlob` a basename pattern with exactly one `*`. Both absent
-   * — the default — means the child may write its tests anywhere in the worktree.
+   * — the default — means the child may write its tests anywhere in the worktree. `testDirs` replaces
+   * `testDir` where tests sit in several roots; setting both is refused.
    */
   verify: {
     fast?: string;
     full?: string;
     test?: string;
     testDir?: string;
+    testDirs?: string[];
     testGlob?: string;
     /**
      * A shell command the project runs over the whole tree to judge test-file CONTENT. `specify`/`challenge`
@@ -307,12 +309,24 @@ function validate(obj: unknown): string | undefined {
       if (v[key] !== undefined && typeof v[key] !== "string")
         return `.pi/work.json verify.${key} must be a string`;
     }
+    if (v.testDirs !== undefined) {
+      if (v.testDir !== undefined)
+        return ".pi/work.json verify.testDir and verify.testDirs are exclusive: set one or the other";
+      if (!Array.isArray(v.testDirs) || v.testDirs.length === 0)
+        return ".pi/work.json verify.testDirs must be a non-empty array of directories";
+      for (const [i, dir] of v.testDirs.entries()) {
+        if (typeof dir !== "string") return `.pi/work.json verify.testDirs[${i}] must be a string`;
+        const reason = validateTestDir(dir, `verify.testDirs[${i}]`);
+        if (reason !== undefined) return reason;
+      }
+    }
     // The test location is a PAIR: prompts name both the folder and the naming pattern, and the boundary
     // refuses on both.
-    if (v.testDir !== undefined && v.testGlob === undefined)
-      return ".pi/work.json verify.testDir requires verify.testGlob (the file-name pattern, e.g. test-*.ts)";
-    if (v.testGlob !== undefined && v.testDir === undefined)
-      return ".pi/work.json verify.testGlob requires verify.testDir (the directory the tests live in)";
+    const dirs = v.testDir ?? v.testDirs;
+    if (dirs !== undefined && v.testGlob === undefined)
+      return `.pi/work.json verify.${v.testDir === undefined ? "testDirs" : "testDir"} requires verify.testGlob (the file-name pattern, e.g. test-*.ts)`;
+    if (v.testGlob !== undefined && dirs === undefined)
+      return ".pi/work.json verify.testGlob requires verify.testDir or verify.testDirs (the directory the tests live in)";
     if (typeof v.testDir === "string") {
       const reason = validateTestDir(v.testDir);
       if (reason !== undefined) return reason;
