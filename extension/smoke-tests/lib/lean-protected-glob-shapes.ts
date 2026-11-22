@@ -26,14 +26,13 @@ import { protectedGlobMatches } from "../../src/lean/protected-globs.ts";
  *  wildcards backtracks, so this is the one cost a project's own config file can choose. */
 const SLOW_CEILING_MS = 50;
 
-/** How many timed passes each row makes per probe, of which the WORST decides the verdict.
+/** How many timed passes each row makes per probe, of which the FASTEST decides the verdict.
  *  A single pass is a coin flip against this ceiling on a loaded host: the same entry on the same
- *  path measured 12 ms and 52 ms minutes apart while another team's timed trials shared the machine,
- *  which is a gate that reports a confident wrong answer in both directions. Repeating and taking the
- *  maximum removes the fluke in the direction that matters (a real regression is caught on any pass)
- *  while the ceiling's headroom over the measured worst case (~13 ms against 50 ms) keeps a merely
- *  busy host from turning the row red. */
-const TIMED_PASSES = 3;
+ *  path measured 12 ms and 52 ms minutes apart while other timed work shared the machine. Host
+ *  noise only ever adds time to a pass, while backtracking is paid on every pass, so the minimum
+ *  is the entry's own cost: a real regression is slow on all of them and still turns the row red,
+ *  and a descheduled pass does not. */
+const TIMED_PASSES = 5;
 
 /** The same characters as a COLUMN of 400 one-character segments. Kept because a doublestar's
  *  cost does turn on the number of segment splits a path offers for the DEPTH-refused shapes
@@ -182,16 +181,15 @@ export function runSlowShapeCases(): number {
     let worst = 0;
     let worstProbe = "";
     for (const [probeName, probe, probeKind] of PROBES) {
-      // Repeated passes, worst kept: one pass on a shared host is noise, and the verdict has to be
-      // the entry's cost rather than the machine's mood. The matcher caches its regex per entry, so
-      // every pass after the first measures backtracking alone — the cost this ceiling is for.
-      let ms = 0;
+      // Repeated passes, fastest kept (see TIMED_PASSES). The matcher caches its regex per entry,
+      // so every pass after the first measures backtracking alone — the cost this ceiling is for.
+      let ms = Number.POSITIVE_INFINITY;
       let hit = false;
       for (let pass = 0; pass < TIMED_PASSES; pass++) {
         const started = performance.now();
         hit = protectedGlobMatches(pattern, probe);
         const elapsed = performance.now() - started;
-        if (elapsed > ms) ms = elapsed;
+        if (elapsed < ms) ms = elapsed;
       }
       // The two over-limit probes are answered PROTECTED whatever the entry, so they are timed but
       // assert nothing. On the rest the answer is whatever the row STATES for that probe: a row
