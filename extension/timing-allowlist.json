@@ -10,15 +10,19 @@
     "Seed: the two 2026-11-21 width-4/width-6 measurements recorded in #2424, every file",
     "whose higher of the two readings exceeded 20 s (the margin covers the measured",
     "~±50% per-file swing between runs).",
-    "Re-seed (2026-11-22): done ONCE, at the moment the ceiling was turned on. Three full",
+    "Re-seed (2026-11-22): done ONCE, from three green main CI runs taken before the",
+    "ceiling was turned on. Three full",
     "green main CI runs on 2026-11-21/22 — runs 44958757907 (457d7e3b), 44957264868 and",
     "44953824025 (dfb68ef3), each four shards at width 4 — and the list is the union of",
     "every offline test whose TIME reading exceeded 20 s in ANY of the three, plus every",
     "entry the 11-21 seed already named (no entry was dropped: shrinking is the ratchet's",
     "job, not a re-seed's). Each entry's seconds is the max of its 11-21 value and its",
-    "three CI readings. Turning the ceiling on against the stale 11-21 list would have",
-    "failed CI on files that postdate that seed with no regression behind them. From here",
-    "on the list only shrinks; there is no scheduled re-seed."
+    "three readings, taken from the TIME lines of CI runs 44958757907, 44957264868 and",
+    "44953824025 rather than transcribed by hand; an entry keeps its earlier `measured`",
+    "date whenever no re-seed reading exceeded the value already stored. Turning the",
+    "ceiling on against the stale 11-21 list would have failed CI on files that postdate",
+    "that seed with no regression behind them. From here on the list only shrinks; there",
+    "is no scheduled re-seed."
   ],
   "baseline_count": 32,
   "entries": [
