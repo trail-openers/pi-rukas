@@ -15,8 +15,9 @@
  *   - the file is read at a COMMIT, never a tree (the #406 rule): every spec is
  *     `<sha>:<path>`, so a PR that adds a permissive gate file cannot widen its own
  *     allowlist;
- *   - the three merge paths reach the SAME function, so the rule cannot be
- *     implemented twice and drift.
+ *   - the driver and the guard reach the SAME function, so the rule cannot be
+ *     implemented twice and drift (lean's wiring is proven by behaviour, in
+ *     test-lean-land-author-opt-in.ts).
  *
  * Comments are stripped before every name scan on purpose: both gate modules
  * document, in their own headers, the switches they deliberately do NOT consult, and
@@ -119,17 +120,14 @@ function stripComments(text: string): string {
 
 // --------------------------------------------------- the driver/lean wiring reads the file
 {
-	// Structural: the three paths all reach the SAME function, so the rule cannot be
-	// implemented twice and drift. The per-path behaviour tests in the sibling file are
-	// what prove the gate decides; these prove the wiring calls it.
+	// Structural: the driver and the guard reach the SAME function, so the rule cannot
+	// be implemented twice and drift. Lean's wiring is proven by behaviour instead:
+	// test-lean-land-author-opt-in.ts drives the real `landDeps()` against a real clone.
 	const driver = await Bun.file(
 		new URL("../src/work-driver-merged.ts", import.meta.url),
 	).text();
 	const land = await Bun.file(
 		new URL("../src/lean/land.ts", import.meta.url),
-	).text();
-	const landDeps = await Bun.file(
-		new URL("../src/lean/land-deps.ts", import.meta.url),
 	).text();
 	const guard = await Bun.file(
 		new URL("../src/merge-guard.ts", import.meta.url),
@@ -137,11 +135,6 @@ function stripComments(text: string): string {
 	assert(
 		driver.includes("heldForMergeAuthor") && driver.includes("authorGate"),
 		"the driver's merged step consults the shared gate",
-	);
-	assert(
-		land.includes("heldForMergeAuthor") &&
-			landDeps.includes("heldForMergeAuthor"),
-		"lean's land step consults it through its injected deps, so a case can name an author without a forge",
 	);
 	assert(
 		guard.includes("guardMergeAuthorRefusal"),

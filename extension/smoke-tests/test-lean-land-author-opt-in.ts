@@ -14,13 +14,17 @@
  * let real git answer: no file at the base → the merge proceeds; a file that names
  * nobody → refused; a file that lists the author → lands; a file that does not →
  * refused. The forge stays a recorder, because the question is the gate, not the PR.
+ *
+ * Those cases carry a COPY of the production wiring, so they cannot see that wiring
+ * break. The `production` cases spread the real `landDeps()` and replace only the
+ * forge seams, so `checkAuthor` is the one `command-post-publish.ts` lands through.
  */
 
 import { execFile } from "node:child_process";
 import { rmSync } from "node:fs";
 import { promisify } from "node:util";
 import type { HandlerCtx } from "../src/lean/engine.ts";
-import type { LandDeps } from "../src/lean/land-deps.ts";
+import { type LandDeps, landDeps } from "../src/lean/land-deps.ts";
 import { landOutcome } from "../src/lean/land.ts";
 import { heldForMergeAuthor } from "../src/merge-guard-author.ts";
 import type { MergeEvidence } from "../src/work-driver-merge-evidence.ts";
@@ -69,7 +73,7 @@ function evidence(over: Partial<MergeEvidence> = {}): MergeEvidence {
 async function landWithRepo(
   issue: number,
   allowlist: string | undefined,
-  opts: { author?: string | null } = {},
+  opts: { author?: string | null; production?: boolean } = {},
 ) {
   const gate = repoWithOptionalGateFile({ allowlist });
   const f = ciLandLog(issue, {});
@@ -79,8 +83,9 @@ async function landWithRepo(
   // holds the base and the clone the log was built in need not be one repo — what
   // must agree is the sha the run cites and the commit the file is (or is not) in.
   f.ctx.run = { ...f.ctx.run, baseSha: gate.baseSha };
+  f.ctx.repoRoot = gate.repoRoot;
   const calls: unknown[] = [];
-  const deps: LandDeps = {
+  const forge = {
     evidence: async () =>
       evidence(
         opts.author === null
@@ -93,14 +98,20 @@ async function landWithRepo(
     },
     stateAfter: async () => "MERGED",
     loadConfig: async () => ({ autoMerge: true }),
-    checkAuthor: (_repo, sha, author) =>
-      heldForMergeAuthor({
-        exec: execp,
-        cwd: gate.repoRoot,
-        baseSha: sha,
-        author,
-      }),
-  };
+  } satisfies Partial<LandDeps>;
+  const deps: LandDeps = opts.production
+    ? // `mergeSubject` is forge-derived like the seams above; `checkAuthor` is never replaced.
+      { ...landDeps(), ...forge, mergeSubject: () => undefined }
+    : {
+        ...forge,
+        checkAuthor: (_repo, sha, author) =>
+          heldForMergeAuthor({
+            exec: execp,
+            cwd: gate.repoRoot,
+            baseSha: sha,
+            author,
+          }),
+      };
   const outcome = await landOutcome(f.ctx as HandlerCtx, deps);
   gate.dispose();
   return { outcome, calls, baseSha: gate.baseSha };
@@ -161,6 +172,26 @@ const ALLOWED_BODY = `# the maintainers\n${LEAN_FIXTURE_AUTHOR}\n`;
   assert(
     withFile.outcome.kind === "refused" && withFile.calls.length === 0,
     `A7 lean: with the file present, the same unreadable author is refused (${JSON.stringify(withFile.outcome)})`,
+  );
+}
+
+{
+  // The production wiring: a stranger is refused by the real `landDeps().checkAuthor`…
+  const r = await landWithRepo(9407, ALLOWED_BODY, { author: "mallory", production: true });
+  const reason = r.outcome.kind === "refused" ? (r.outcome.reason ?? "") : "";
+  assert(
+    r.outcome.kind === "refused" && r.calls.length === 0,
+    `lean production deps: a stranger is refused and nothing merges (${JSON.stringify(r.outcome)})`,
+  );
+  assert(
+    reason.includes("mallory") && reason.includes(GATE_FILE),
+    "…and the refusal names the login and the gate file",
+  );
+  // …and the control: the listed author lands through the same deps, exactly once.
+  const ok = await landWithRepo(9408, ALLOWED_BODY, { production: true });
+  assert(
+    ok.outcome.kind === "merged" && ok.calls.length === 1,
+    `lean production deps: an allowlisted author lands once (${JSON.stringify(ok.outcome)})`,
   );
 }
 
