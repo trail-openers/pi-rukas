@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.101](https://github.com/trail-openers/pi-rukas/compare/v0.14.100...v0.14.101) (2026-11-22)
+
+
+### Features
+
+* **lean:** add start_lean_driver, the agent-callable lean start ([#2482](https://github.com/trail-openers/pi-rukas/issues/2482)) ([7718c35](https://github.com/trail-openers/pi-rukas/commit/7718c351ff58a003836198dcc0c38516ee39bceb))
+
 ## [0.14.100](https://github.com/trail-openers/pi-rukas/compare/v0.14.99...v0.14.100) (2026-11-22)
 
 
