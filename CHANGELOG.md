@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.2](https://github.com/trail-openers/pi-rukas/compare/v0.15.1...v0.15.2) (2026-11-22)
+
+
+### Bug Fixes
+
+* **lean:** read a roster run through the executor's contract ([#2548](https://github.com/trail-openers/pi-rukas/issues/2548)) ([f8cf498](https://github.com/trail-openers/pi-rukas/commit/f8cf498d8c698f0e6763cefb6a1284f3fa6e47b7))
+* **lean:** stop the blocked-report rerun loop on either clock ([#2544](https://github.com/trail-openers/pi-rukas/issues/2544)) ([465f44a](https://github.com/trail-openers/pi-rukas/commit/465f44a99944483e82b9534896e77c2984707a80))
+
 ## [0.15.1](https://github.com/trail-openers/pi-rukas/compare/v0.15.0...v0.15.1) (2026-11-22)
 
 
