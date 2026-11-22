@@ -251,6 +251,10 @@ export async function driveOffArm(
     const saved = process.env.PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT;
     if (opts.switchOff) process.env.PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT = "0";
     else delete process.env.PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT;
+    // The record predates the project roster, whose run-start check refuses this shell runner
+    // (it writes no JUnit report): both arms run with the roster off, as v0.14.71 had none.
+    const savedRoster = process.env.PI_ENSEMBLE_LEAN_PROJECT_ROSTER;
+    process.env.PI_ENSEMBLE_LEAN_PROJECT_ROSTER = "0";
     try {
       const result = await withStubForge(fakeGhDir(GOLDEN_BODY), () =>
         runLean({
@@ -269,6 +273,8 @@ export async function driveOffArm(
     } finally {
       if (saved === undefined) delete process.env.PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT;
       else process.env.PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT = saved;
+      if (savedRoster === undefined) delete process.env.PI_ENSEMBLE_LEAN_PROJECT_ROSTER;
+      else process.env.PI_ENSEMBLE_LEAN_PROJECT_ROSTER = savedRoster;
       // The engine's state file and lock live under the repo the run was driven
       // at, and so does the step's worktree. They are the run's output, not its
       // input: a second arm over the same repo would resume the first one's record.

@@ -48,6 +48,7 @@ import type { Step } from "./state.ts";
 import type { BudgetArms, BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
 import { oneLine } from "./text-fence.ts";
 import { verifyDeps } from "./verify-deps.ts";
+import { rosterStartProblem } from "./verify-roster-command.ts";
 import { verifyOutcome } from "./verify.ts";
 import { leanVersion } from "./version.ts";
 
@@ -230,7 +231,9 @@ export async function readyOutcome(
     return { kind: "fail", facts: { spec: parsed.spec, failedRules: [proof.rule] } };
   }
   try {
-    await d.loadConfig(repoRoot, base.baseSha);
+    // A roster that can never get its report is refused HERE, before build spends a budget on it.
+    const rosterProblem = rosterStartProblem((await d.loadConfig(repoRoot, base.baseSha)).verify);
+    if (rosterProblem !== undefined) throw new Error(rosterProblem);
     return {
       kind: "ok",
       facts: {

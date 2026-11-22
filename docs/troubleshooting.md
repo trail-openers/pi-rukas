@@ -4594,7 +4594,10 @@ template by deleting one whole-word `{file}` and appending `--junitxml={report} 
 Before #2439 the derivation only appended, the literal `{file}` survived into the argv, and the
 runner exited 4 on a file that does not exist: the symptom was this hand-back and the wording blamed
 the missing report. Set `verify.roster` when the project's report invocation differs from its
-per-file one. `{report}` is the absolute path the runner must write its JUnit XML to and `{dir}` the
+per-file one. With the roster on, `ready` refuses a run whose `verify.roster` is unset and whose
+`verify.test` names no `pytest`/`py.test` word (`.pi/work.json is unusable: verify.roster is unset
+and verify.test is not pytest …`), so a runner that cannot take `--junitxml` is caught before build
+rather than at every verify; the shell and `cargo nextest` recipes are in [lean.md](lean.md). A project with no `verify.testDir`/`verify.testGlob` pair (the bare `sh {file}` runner) has no suite for a `verify.roster` to report, so its way out is the lever below. `{report}` is the absolute path the runner must write its JUnit XML to and `{dir}` the
 tree it runs in; both must
 appear as whole words, and the command is argv form, never a shell — a `;`, `|`, `$`, backtick or
 quote in it is refused at load. Keep the report out of the index (`.gitignore` the path, as a

@@ -4,20 +4,17 @@
  * Bench cell 2: a build rewrites one of the project's own existing tests, `verify` runs the EDITED
  * copy and passes, and restoring the original fails. The only observation that sees it is the file's
  * BASE bytes run against the head code, per file, through the project's `verify.test` template. Bytes
- * come from `git show <baseSha>:<path>` (the object store, never the tree the run may have rewritten);
- * the scratch that materialises them is the gate's own and is removed before this returns, so the
- * step's clean-tree re-check never reports them as a tier's. Rules stated where judged: roster.ts.
+ * come from `git show <baseSha>:<path>` (the object store, never the tree the run may have rewritten)
+ * and stand in the file's own path only for that run; the head copy is put back before this returns,
+ * so the step's clean-tree re-check never reports them as a tier's. Rules stated where judged: roster.ts.
  */
 
-import { rmSync } from "node:fs";
+import { chmodSync, lstatSync, readFileSync, rmSync, utimesSync } from "node:fs";
 import path from "node:path";
 import { verifyChildEnv, verifyHostEnv } from "../work-driver-verify-cmd.ts";
-import { renderTestCommand, runTestFile, sha256 } from "./specify-proof.ts";
+import { runTestFile } from "./specify-proof.ts";
 import { NO_HOOKS, writeCaptured } from "./specify-reset.ts";
 import type { VerifyExec } from "./verify-types.ts";
-
-/** Scratch directory (inside the worktree) a base-version test file is materialised into. */
-const ROSTER_SCRATCH_DIR = ".lean-roster-base";
 
 /**
  * The pre-existing test files this run changed, deletion included.
@@ -114,9 +111,10 @@ async function gitShowBlob(
  * The base version of every edited pre-existing test file, run against the HEAD code.
  *
  * Bench cell 2: the fold edits an existing test's expectation, verify runs the EDITED copy and
- * passes, and the hidden run restores the original and fails. Each original is materialised
- * under a scratch directory inside the worktree — named so its own failure output still names
- * it — and run through `runTestFile`, the project's own `verify.test` template in argv form.
+ * passes, and the hidden run restores the original and fails. Each original is put AT ITS OWN
+ * PATH for the run and the head copy put back after, because only that path is one `verify.test`
+ * is known to run: a cargo wrapper resolves a target from it and pytest applies the directory's
+ * conftest to it, so a relocated copy reads as a red the base version never had.
  *
  * `redFiles` is what makes land refuse: a base-version file green at base and red against the
  * head code is a contract this run broke, and Part A has NO acceptance path for it.
@@ -142,15 +140,15 @@ export async function runEditedBaseVersions(opts: {
         ok: false,
         reason: `could not read the base version of ${rel} at ${baseSha.slice(0, 12)}`,
       };
-    // The scratch name keeps the file's own basename, so a runner that names the failing file
-    // names it, and `runTestFile`'s red/unclear test still works.
-    const probe = `${ROSTER_SCRATCH_DIR}/${sha256(rel).slice(0, 12)}/${baseName(rel)}`;
+    const head = headCopy(path.join(wt, rel));
+    if (head === null)
+      return { ok: false, reason: `the head copy of ${rel} is not a plain file to put back` };
     try {
-      writeCaptured(wt, new Map([[probe, Buffer.from(bytes, "utf8")]]));
+      writeCaptured(wt, new Map([[rel, Buffer.from(bytes, "utf8")]]));
       const proof = await runTestFile(exec, {
         wt,
         template,
-        file: probe,
+        file: rel,
         // The SAME scrubbed env `runProjectSuite` gives the project's suite. A base version run that
         // inherited the driver's environment could see knobs the real tier never passes, and a
         // verdict it reached under them is not the verdict the project's runner would have reached.
@@ -165,30 +163,37 @@ export async function runEditedBaseVersions(opts: {
     } catch {
       return { ok: false, reason: `could not write the base version of ${rel} for its run` };
     } finally {
-      // The gate's own bytes, in the tree it is judging: left behind, the step's clean-tree
-      // re-check reports them as a tier that dirtied the worktree. Removed per file, on every
-      // exit path, so an early return cannot strand one.
+      // Put back on every exit path. The mode and mtime travel with the bytes: a changed mode is a
+      // dirty tree, and a bytecode cache keyed on mtime and size would otherwise serve the base
+      // version to every later tier. A failed put-back is left for the step's clean-tree re-check,
+      // which reads base bytes in a tracked file as a dirty tree and hands back.
       try {
-        rmSync(path.join(wt, ROSTER_SCRATCH_DIR), { recursive: true, force: true });
+        if (head === undefined) rmSync(path.join(wt, rel), { force: true });
+        else {
+          writeCaptured(wt, new Map([[rel, head.bytes]]));
+          chmodSync(path.join(wt, rel), head.mode);
+          utimesSync(path.join(wt, rel), head.atime, head.mtime);
+        }
       } catch {
-        // Nothing to do about it: the re-check is the backstop, not this line.
+        // Nothing to do about it here: the re-check is the backstop.
       }
     }
   }
   return { ok: true, editedFiles: [...edited], redFiles };
 }
 
-/** The final path segment of a repo-relative path. */
-function baseName(rel: string): string {
-  const parts = rel.split("/");
-  return parts[parts.length - 1] ?? rel;
-}
-
 /**
- * The roster: the project's pre-existing tests at head and at base, plus the base version of
- * every one of them the run edited, run against the head code.
- *
- * Ordered so the cheap refusals come first — the config pair, the base listing, the report
- * command — because each makes the expensive runs pointless. A `red` here is builder-fixable
- * and names the tests; a `none` is the hand-back.
+ * The head copy of a file, `undefined` when the run deleted it, `null` when it is something other
+ * than a plain file — a symlink or a directory is not a copy this step may write through.
  */
+function headCopy(
+  abs: string,
+): { bytes: Buffer; mode: number; atime: Date; mtime: Date } | undefined | null {
+  try {
+    const st = lstatSync(abs);
+    if (!st.isFile()) return null;
+    return { bytes: readFileSync(abs), mode: st.mode, atime: st.atime, mtime: st.mtime };
+  } catch (err) {
+    return (err as { code?: unknown }).code === "ENOENT" ? undefined : null;
+  }
+}
