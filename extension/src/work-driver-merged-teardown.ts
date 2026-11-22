@@ -27,7 +27,8 @@
  */
 
 import { execp } from "./exec.ts";
-import { trace } from "./trace.ts";
+import { isPlainObject } from "./plain-object.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { withIntegrationLock } from "./work-driver-lock.ts";
 import { clearHostParkSignals } from "./work-driver-park-memory-host.ts";
@@ -105,8 +106,9 @@ export async function runMergedTeardown(
  *    reached `merged` has proven its merge, so no such resume case exists.
  *
  * Shape tolerance: `worktrees` is typed `Record<string, string>` but the state
- * file is operator-editable JSON, so non-string values and empty keys are
- * filtered before use — same tolerance the sweep's owner index applies.
+ * file is operator-editable JSON, so a non-object value is rejected by the
+ * shared `isPlainObject` leaf and non-string values / empty keys are filtered
+ * before use — the same check the sweep's owner index applies.
  *
  * Every candidate goes through the two gates in order — `claimUnderWorktrees`
  * (containment under `.worktrees/`) then `resolveSweepTarget` (real directory,
@@ -115,7 +117,10 @@ export async function runMergedTeardown(
  * path with `path.join`, which does not collapse `..`, so a traversal-shaped key
  * would reach git verbatim. A candidate either gate refuses is traced and
  * skipped: a since-removed integrate tree, a plain directory, the repo-root
- * fallback shape and a `../..` key are all refusals, never failures.
+ * fallback shape and a `../..` key are all refusals, never failures. Refusals
+ * are debug-gated bookkeeping; a removal that was attempted and FAILED is not,
+ * and goes to `traceWarn`, so an operator sees a tree the cycle left behind
+ * without `PI_ENSEMBLE_DEBUG`.
  *
  * The empty-candidate-set case returns before taking the lock, so a cycle that
  * owns no tree issues no git command at all.
@@ -124,8 +129,8 @@ async function removeCycleWorktrees(ctx: CycleContext, next: WorkState): Promise
   const ps = next.pipelineState;
   const recorded: string[] = [];
   const worktrees: unknown = ps.worktrees;
-  if (worktrees !== null && typeof worktrees === "object" && !Array.isArray(worktrees)) {
-    for (const [id, value] of Object.entries(worktrees as Record<string, unknown>)) {
+  if (isPlainObject(worktrees)) {
+    for (const [id, value] of Object.entries(worktrees)) {
       if (typeof value === "string" && value.length > 0) recorded.push(value);
       if (id.length > 0) recorded.push(worktreePath(ctx.repoRoot, `issue-${ctx.issue}-${id}`));
     }
@@ -138,12 +143,14 @@ async function removeCycleWorktrees(ctx: CycleContext, next: WorkState): Promise
     const claimed = claimUnderWorktrees(ctx.repoRoot, p);
     const target = claimed === null ? undefined : resolveSweepTarget(ctx.repoRoot, claimed);
     if (!target?.ok) {
-      trace(
-        `work-driver: merged teardown skipped ${p}: ${target ? target.reason : "outside-worktrees"}`,
-      );
+      // Which gate refused matters to the reader: containment failure is gate 1,
+      // anything else is gate 2's own reason (`claimed` is non-null exactly when
+      // `target` is set, so the two branches cannot disagree).
+      const reason = target ? target.reason : "containment";
+      trace(`merged-teardown: skipped ${p}: ${reason}`);
       continue;
     }
-    if (!targets.has(target.realPath)) targets.set(target.realPath, target);
+    targets.set(target.realPath, target);
   }
   if (targets.size === 0) return;
   const execFn: ExecFn = ctx.verifyExecFn ?? execp;
@@ -152,7 +159,9 @@ async function removeCycleWorktrees(ctx: CycleContext, next: WorkState): Promise
   await withIntegrationLock(ctx.repoRoot, async () => {
     for (const target of targets.values()) {
       await executeSweepAction({ type: "remove", target }, execFn).catch((err) =>
-        trace(`work-driver: worktree cleanup for ${target.realPath} failed: ${err}`),
+        traceWarn(
+          `merged-teardown: worktree cleanup for ${target.realPath} failed: ${(err as Error).message?.slice(0, 300)}`,
+        ),
       );
     }
     await worktreePrune(execFn, ctx.repoRoot).catch(() => undefined);

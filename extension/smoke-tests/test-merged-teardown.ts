@@ -10,10 +10,13 @@
  * `worktrees[violator]`, so the derived `issue-<N>-<owner>` removes the owner's
  * ORIGINAL tree while the violator's tree is named by no key at all.
  *
- * Every case asserts through `recordingExec()`'s call log on WHICH removals were
- * ATTEMPTED, not merely that a removal happened: the old silent path could not
- * distinguish "the gate refused it" from "gathering dropped it", which is how
- * this shipped. The repo root is asserted to survive with HEAD on its start ref
+ * The positive set is pinned by per-path ATTEMPTED-REMOVAL counts from
+ * `recordingExec()`'s call log — not merely that a removal happened — and the
+ * negative arms by "no removal attempted" plus filesystem survival proved
+ * against real `git worktree list`. A refused candidate additionally has to
+ * announce itself: the refusal arms run with `PI_ENSEMBLE_DEBUG=1` and assert
+ * the named refusal trace fired, because an absence alone is what a gather bug
+ * produces too. The repo root is asserted to survive with HEAD on its start ref
  * in every case that could have touched it.
  */
 
@@ -25,6 +28,7 @@ import { runMergedTeardown } from "../src/work-driver-merged-teardown.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import { appendEvent, initialState } from "../src/workflow-state.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import { assertEquals, assertFalse, assertTrue, finish } from "./lib/worktree-sweep-assert.ts";
 import { makeSweepRepo, makeSweepWorktree, recordingExec } from "./lib/worktree-sweep-fixture.ts";
 
@@ -42,6 +46,25 @@ function git(cwd: string, args: string[]): string {
 /** True while git still lists `tree` as a worktree of `repo`. */
 const listed = (repo: string, tree: string) =>
   git(repo, ["worktree", "list", "--porcelain"]).includes(`worktree ${tree}\n`);
+
+/**
+ * Run `body` with the debug trace on, capturing stderr, so a refusal can be
+ * asserted by NAME rather than inferred from the absence of a removal.
+ */
+async function traced(fn: () => Promise<void>): Promise<string> {
+  let captured = "";
+  const real = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    await withEnv({ PI_ENSEMBLE_DEBUG: "1" }, fn);
+  } finally {
+    process.stderr.write = real;
+  }
+  return captured;
+}
 
 /** The post-merge state: the driver's own trees are recorded on `next`. */
 function nextState(ps: Partial<WorkState["pipelineState"]>, cap?: string): WorkState {
@@ -135,35 +158,78 @@ async function testGateRefusals() {
 
   const rec = recordingExec();
   const ctx = { repoRoot, issue: ISSUE, verifyExecFn: rec.exec } as unknown as CycleContext;
-  await runMergedTeardown(
-    ctx,
-    nextState({}),
-    nextState({
-      worktrees: { "../..": "", default: repoRoot, p: plain, l: link },
-      integrateWorktree: gone,
-    }),
-    true,
-  );
+  const log = await traced(async () => {
+    await runMergedTeardown(
+      ctx,
+      nextState({}),
+      nextState({
+        worktrees: { "../..": "", default: repoRoot, p: plain, l: link },
+        integrateWorktree: gone,
+      }),
+      true,
+    );
+  });
 
-  const attempted = (needle: string) =>
-    rec.calls.filter((c) => c.cmd.includes("worktree remove") && c.cmd.includes(needle)).length;
+  // Substring-free helpers: the negative arms must not be satisfiable by a
+  // needle that merely happens to appear in some other candidate's path.
+  const removalLines = () =>
+    rec.calls
+      .map((c) => (c.argv ? [c.cmd, ...c.argv].join(" ") : c.cmd))
+      .filter((l) => l.includes("worktree remove"));
+  const attempted = (needle: string) => removalLines().filter((l) => l.includes(needle)).length;
+  // A removal attempt carries the target as `git worktree remove --force
+  // <JSON.stringify(realPath)>`, so matching the quoted argument is the only
+  // form that cannot match a neighbouring path by substring.
+  const attemptedPath = (path: string) => attempted(`remove ${JSON.stringify(path)}`);
   // Substring-free: a traversal attempt would carry the literal `..` component
   // into the quoted path, so the whole transcript is scanned, not one call.
   assertEquals(
-    rec.calls.filter((c) => c.cmd.includes("worktree remove") && c.cmd.includes("..")).length,
+    removalLines().filter((l) => l.includes("..")).length,
     0,
     "a: no traversal removal was attempted",
   );
   assertTrue(listed(repoRoot, traversal), "a: the tree the traversal key could have reached is intact");
   assertTrue(existsSync(join(repoRoot, ".git", "HEAD")), "a: the repo root survived it");
-  assertEquals(attempted(repoRoot), 0, "b: no removal attempted for the repo-root fallback");
+  assertEquals(attemptedPath(repoRoot), 0, "b: no removal attempted for the repo-root fallback");
   assertEquals(git(repoRoot, ["symbolic-ref", "--short", "HEAD"]), "main", "b: still on main");
   assertEquals(attempted("issue-9-integrate"), 0, "c: an absent integrate tree is skipped, not an error");
   assertTrue(existsSync(plain), "d: the plain directory is untouched");
-  assertEquals(attempted("issue-9-plain"), 0, "d: and no removal was attempted for it");
+  assertEquals(attemptedPath(plain), 0, "d: and no removal was attempted for it");
   assertTrue(existsSync(outside), "e: the symlink's target tree is intact");
-  assertEquals(attempted("issue-9-link"), 0, "e: the symlink itself was never a removal target");
+  assertEquals(attemptedPath(link), 0, "e: the symlink itself was never a removal target");
   assertEquals(rec.countMatching("worktree remove"), 0, "not one removal was attempted");
+  // Every refusal above has to have actually FIRED, by name. An absence of
+  // removal is also what a gather bug produces, so the arms are pinned on the
+  // named trace the gate writes (the removal is a no-op either way — this only
+  // proves which branch ran). Containment is gate 1; the rest are gate 2's own
+  // reasons. `../..` resolves OUT of `.worktrees/`, so containment is the only
+  // branch that can refuse it; the symlink resolves to the foreign tree, which
+  // containment also refuses — gate 2 would call it `not-our-worktree`.
+  const refused = (path: string, reason: string) =>
+    log.includes(`merged-teardown: skipped ${path}: ${reason}`);
+  // The `../..` key gathers TWO candidates: the derived name collapses to
+  // `<repoRoot>/.worktrees`, and the map value is the empty string, so it
+  // contributes nothing. Both refusals are asserted.
+  assertTrue(
+    refused(join(repoRoot, ".worktrees"), "containment"),
+    "a: the traversal key was refused by containment, not dropped by gathering",
+  );
+  assertTrue(
+    refused(repoRoot, "containment"),
+    "b: the repo-root fallback was refused by containment, not dropped by gathering",
+  );
+  assertTrue(
+    refused(gone, "unresolvable"),
+    "c: the absent integrate tree was refused as unresolvable, not silently gathered away",
+  );
+  assertTrue(
+    refused(plain, "not-our-worktree"),
+    "d: the plain directory was refused as not our worktree",
+  );
+  assertTrue(
+    refused(link, "containment"),
+    "e: the symlink was refused by containment, not dropped by gathering",
+  );
   rmSync(repoRoot, { recursive: true, force: true });
 }
 
@@ -264,17 +330,19 @@ async function testEmptySetIssuesNoGit() {
   ];
   await Promise.all(arms.map((a) => a.run));
   for (const arm of arms) {
-    // The pre-merge argument carries no active-issue override, so
-    // `activeIssuesOf` returns `[9]` and each claim/park clear is a filesystem
-    // op that issues no git — which is what makes "zero calls" the assertion
-    // for the worktree half rather than a weaker one.
+    // The worktree half returns at `targets.size === 0`, before the lock and
+    // before any git call, so it issues zero commands — whatever the other
+    // arguments do.
     assertEquals(arm.calls.length, 0, "an empty candidate set runs no git command whatsoever");
   }
   rmSync(repoRoot, { recursive: true, force: true });
 }
 
-await testRemovesEveryOwnedTree();
-await testGateRefusals();
-await testCapShapeAndMergeProven();
-await testEmptySetIssuesNoGit();
-finish();
+try {
+  await testRemovesEveryOwnedTree();
+  await testGateRefusals();
+  await testCapShapeAndMergeProven();
+  await testEmptySetIssuesNoGit();
+} finally {
+  finish();
+}
