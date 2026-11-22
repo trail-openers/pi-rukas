@@ -15,11 +15,17 @@
  * symlinks, be excluded from `git status`, and the child's file hidden behind
  * the base's own ignore rule must be gone.
  *
+ * Case (t): lean's trees under `.worktrees/` are excluded per clone, so neither the repo root's
+ * status nor a `git add -A` there during a base probe picks them up.
+ *
  * The fixture is lib/lean-specify-fixture.ts.
  */
 
 import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { execp } from "../src/exec.ts";
+import { probeTierAtBase, probeWorktreePath } from "../src/lean/verify-baseline.ts";
+import type { VerifyExec } from "../src/lean/verify-types.ts";
 import {
   ROOTS,
   RUNNER,
@@ -94,6 +100,42 @@ function assert(cond: boolean, msg: string): void {
   assert(
     !existsSync(path.join(r.worktree, "junk.log")),
     "(s) the file hidden by the base's ignore rule is gone",
+  );
+}
+
+// -------- (t) lean's trees under `.worktrees/` are invisible to the repo root's status
+{
+  const { repoRoot, baseSha } = makeRepo({ "src/a.ts": "1\n" });
+  await runSpecify({
+    repoRoot,
+    baseSha,
+    issue: 19,
+    config: configWith({ test: RUNNER }),
+    writes: (wt) => {
+      mkdirSync(path.join(wt, "tests"), { recursive: true });
+      writeFileSync(path.join(wt, "tests/AC1-retry.test.sh"), redScript(), { mode: 0o755 });
+    },
+    toolUses: [submit("AC1", ["tests/AC1-retry.test.sh"])],
+  });
+  const status = git(repoRoot, "status", "--porcelain", "--untracked-files=all");
+  assert(
+    existsSync(path.join(repoRoot, ".worktrees")) && !status.includes(".worktrees"),
+    `(t) the repo root's status does not list .worktrees/ (${JSON.stringify(status).slice(0, 160)})`,
+  );
+  // A `git add -A` at the repo root while verify's base probe tree is checked out stages none of it.
+  const probe = await probeTierAtBase({
+    repoRoot,
+    baseSha,
+    issue: 19,
+    cmd: `git -C '${repoRoot}' add -A && test -d '${probeWorktreePath(repoRoot, 19, "baseline")}'`,
+    timeoutMs: 30_000,
+    exec: ((cmd: string, o?: object) => execp(cmd, o ?? {})) as unknown as VerifyExec,
+    frozen: {},
+  });
+  const staged = git(repoRoot, "diff", "--cached", "--name-only");
+  assert(
+    probe.status === "green" && !staged.includes(".worktrees"),
+    `(t) git add -A during a base probe stages nothing under .worktrees/ (${probe.status}; ${JSON.stringify(staged).slice(0, 160)})`,
   );
 }
 
