@@ -83,6 +83,8 @@ export const HEADLESS_FEATURES = {
    * `toolErrors`, and each issue names its `driver` (`classic` | `lean`).
    */
   usageTools: true,
+  /** `usage` and each `usage.byRole` row carry `costFromProvider` where Pi (>= 1.5) marks billed cost. */
+  usageCostFromProvider: true,
   /** #1468 — `work --continue-pr` continues the issue's open PR; the result's `continuedPr`. */
   continuePr: true,
   /** #1471 — `plan --start` / `--resume`: a planning session, one turn per run, filed only on a confirm. */

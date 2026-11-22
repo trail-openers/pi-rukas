@@ -83,6 +83,19 @@ export function addCount(a: number | undefined, b: number | undefined): number |
 }
 
 /**
+ * Combine two `costFromProvider` flags: a sum is provider-billed only when every
+ * part is (Pi's own rule for combined usage). A side that carries no flag has no
+ * claim either way — Pi before 1.5 never sets it, and Pi from 1.5 sets it on every
+ * usage — so it neither confirms nor denies; both absent stays absent.
+ */
+export function andFromProvider(
+  a: boolean | undefined,
+  b: boolean | undefined,
+): boolean | undefined {
+  return a === undefined ? b : b === undefined ? a : a && b;
+}
+
+/**
  * Add one dispatch to a totals row.
  *
  * `dispatches` increments BEFORE the usage guard and regardless of it: the
@@ -102,6 +115,7 @@ export function addUsage(t: UsageTotals, u: DispatchUsage | undefined): void {
   t.cacheRead += u.cacheRead;
   t.cacheWrite += u.cacheWrite;
   t.cost += u.cost;
+  t.costFromProvider = andFromProvider(t.costFromProvider, u.costFromProvider);
   t.turns += u.turns;
   t.toolCalls = addCount(t.toolCalls, u.toolCalls);
   t.toolErrors = addCount(t.toolErrors, u.toolErrors);

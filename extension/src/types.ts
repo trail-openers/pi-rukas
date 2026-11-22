@@ -67,6 +67,12 @@ export interface DispatchUsage {
   cacheRead: number;
   cacheWrite: number;
   cost: number;
+  /**
+   * Whether `cost` is what the provider billed: true only when every summed part
+   * carried Pi's `cost.totalFromProvider: true`. Absent when no part carried the
+   * flag at all (Pi before 1.5), which is unknown, not an estimate claim.
+   */
+  costFromProvider?: boolean;
   turns: number;
   /**
    * Tool calls the child started, a codemode script's nested calls included,

@@ -9,6 +9,7 @@
 
 import type { PiUsage } from "./pi-event-shapes.ts";
 import type { DispatchUsage } from "./types.ts";
+import { andFromProvider } from "./usage-fold.ts";
 
 export function addUsage(
   acc: Omit<DispatchUsage, "turns">,
@@ -19,6 +20,11 @@ export function addUsage(
   acc.output += u.output ?? 0;
   acc.cacheRead += u.cacheRead ?? 0;
   acc.cacheWrite += u.cacheWrite ?? 0;
+  // Pi (>= 1.5) already puts the billed figure in `total` when the provider reports one;
+  // the flag says which it is. A non-boolean is not a claim.
+  const billed = u.cost?.totalFromProvider;
+  if (typeof billed === "boolean")
+    acc.costFromProvider = andFromProvider(acc.costFromProvider, billed);
   acc.cost += u.cost?.total ?? 0;
   // #543 F6 — running cumulative total, the token-budget quantity.
   const added = (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);

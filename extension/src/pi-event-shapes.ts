@@ -211,7 +211,9 @@ export interface PiUsage {
   output?: number;
   cacheRead?: number;
   cacheWrite?: number;
-  cost?: { total?: number };
+  /** `totalFromProvider` (Pi >= 1.5) is true when `total` is the provider's billed figure
+   * rather than the catalog estimate; absent on older Pi. */
+  cost?: { total?: number; totalFromProvider?: boolean };
 }
 export interface PiMessage {
   /**

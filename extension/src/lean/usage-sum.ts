@@ -46,6 +46,7 @@ export function leanUsage(steps: Step[]): LeanUsage {
               cacheRead: row.usage.cacheRead,
               cacheWrite: row.usage.cacheWrite,
               cost: row.usage.cost,
+              costFromProvider: row.usage.costFromProvider,
               turns: row.usage.turns,
               toolCalls: row.usage.toolCalls,
               toolErrors: row.usage.toolErrors,

@@ -166,12 +166,18 @@ function usageFromTurn(usage: unknown): DispatchUsage | undefined {
     return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
   };
   if (typeof u.input !== "number" && typeof u.output !== "number") return undefined;
+  // Pi's per-turn `cost` is an object: `total`, and from Pi 1.5 `totalFromProvider`.
+  const c =
+    typeof u.cost === "object" && u.cost !== null ? (u.cost as Record<string, unknown>) : {};
+  const total = c.total;
+  const fromProvider = c.totalFromProvider;
   return {
     input: num("input"),
     output: num("output"),
     cacheRead: num("cacheRead"),
     cacheWrite: num("cacheWrite"),
-    cost: num("cost"),
+    cost: typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : 0,
+    ...(typeof fromProvider === "boolean" ? { costFromProvider: fromProvider } : {}),
     turns: 1,
     toolCalls: 0,
     toolErrors: 0,
