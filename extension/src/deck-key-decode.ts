@@ -54,7 +54,7 @@
  * and are swallowed — no raw escape sequence ever reaches the buffer.
  */
 
-import { decodeKittyPrintable, isKeyRelease } from "@earendil-works/pi-tui/dist/keys.js";
+import { decodeKittyPrintable, isKeyRelease } from "@earendil-works/pi-tui";
 
 /** The bracketed-paste markers pi-tui's ProcessTerminal wraps pastes in. */
 const PASTE_START = "\u001b[200~";
