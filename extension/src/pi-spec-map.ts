@@ -133,13 +133,20 @@ export function problemText(problem: string): string {
  * `scope` (the load gate for a spec a model could never have made executable) — and
  * must not answer them twice. Only `size` is checked against the count, never the
  * count itself: this leaf bounds what a mapping embeds, it does not decide when a
- * change is too big for one run — `readiness`'s size-`L` rule owns that. */
-export function mappingDisagrees(spec: Pick<PiSpec, "criteria" | "size">): string | undefined {
+ * change is too big for one run — `readiness`'s size-`L` rule owns that. A derived
+ * contract's regression guards count toward the band (`guards`), so splitting one off
+ * never moves it. */
+export function mappingDisagrees(
+  spec: Pick<PiSpec, "criteria" | "size">,
+  guards = 0,
+): string | undefined {
   const n = spec.criteria.length;
   if (n > MAX_CRITERIA)
     return `carries ${String(n)} criteria where a mapping embeds ${String(MAX_CRITERIA)}`;
-  if (spec.size !== sizeOf(n))
-    return `is stamped ${spec.size} for ${String(n)} criteria where the mapping says ${sizeOf(n)}`;
+  const counted =
+    guards === 0 ? `${String(n)} criteria` : `${String(n)} criteria and ${String(guards)} guards`;
+  if (spec.size !== sizeOf(n + guards))
+    return `is stamped ${spec.size} for ${counted} where the mapping says ${sizeOf(n + guards)}`;
   return undefined;
 }
 

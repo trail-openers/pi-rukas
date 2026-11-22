@@ -103,7 +103,13 @@ export interface ReadyDeps {
   /** Why the mainline probe failed, for a record whose seed carried no cause. */
   mainlineWhy: (repoRoot: string) => Promise<string | undefined>;
   /** Post the derived contract where an author will read it. */
-  post: (repoRoot: string, issue: number, spec: PiSpec, model: string) => Promise<void>;
+  post: (
+    repoRoot: string,
+    issue: number,
+    spec: PiSpec,
+    model: string,
+    guards?: DerivedSpec["guards"],
+  ) => Promise<void>;
 }
 
 /** Production wiring: the real forge reads, the real config load, the real child. */
@@ -349,7 +355,8 @@ export function phase1Handlers(
       // fatal: a run is not destroyed over a comment.
       if (facts.derived !== undefined && handoffChannel() !== "host") {
         try {
-          await d.post(repoRoot, issue, facts.derived.spec, facts.derived.model);
+          const { spec, model, guards } = facts.derived;
+          await d.post(repoRoot, issue, spec, model, guards);
         } catch (err) {
           traceDerive(issue, "unposted", (err as Error).message);
         }
