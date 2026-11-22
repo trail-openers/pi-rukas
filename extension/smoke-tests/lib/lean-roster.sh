@@ -9,11 +9,13 @@
 # <testcase>, named by its tree-relative path (`smoke-tests/test-x.ts`), which is the same
 # string in both trees, and failing when verify-loop recorded it as anything but `pass`.
 #
-# The verdicts come from verify-loop's slowest-first summary block, raised to cover every
-# file (`PI_ENSEMBLE_VERIFY_TIMING_TOP_N`): its rows are `TIME <s> <file>  <outcome>` on
-# stderr, split on the last double space. Test output is never read for names, so a test
-# that prints a fake `FAILED:` marker cannot rename another file's verdict. The exit code is
-# verify-loop's; only the tail of its output is passed through.
+# The verdicts come from verify-loop's slowest-first summary block, so the script depends on
+# two knobs it pins inline: `PI_ENSEMBLE_VERIFY_TIMING=1`, because an operator's `0` would print
+# no block and leave an empty report, and `PI_ENSEMBLE_VERIFY_TIMING_TOP_N`, raised to cover
+# every file. The block's rows are `TIME <s> <file>  <outcome>` on stderr, split on the last
+# double space. Test output is never read for names, so a test that prints a fake `FAILED:`
+# marker cannot rename another file's verdict. The exit code is verify-loop's; only the tail
+# of its output is passed through.
 set -u
 
 tree="${1:-}"
@@ -38,7 +40,7 @@ fi
 out="$(mktemp)"
 err="$(mktemp)"
 trap 'rm -f "$out" "$err"' EXIT
-PI_ENSEMBLE_VERIFY_TIMING_TOP_N=9999 bash smoke-tests/lib/verify-loop.sh --jobs-from-host "${files[@]}" >"$out" 2>"$err"
+PI_ENSEMBLE_VERIFY_TIMING=1 PI_ENSEMBLE_VERIFY_TIMING_TOP_N=9999 bash smoke-tests/lib/verify-loop.sh --jobs-from-host "${files[@]}" >"$out" 2>"$err"
 rc=$?
 
 {

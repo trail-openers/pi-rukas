@@ -416,7 +416,7 @@ async function gitShow(
     });
     return stdout;
   } catch (err) {
-    // A blob the reader could not hold is an infra failure, not a config problem.
+    // A blob the reader could not hold is a config the project must shrink: `ready` refuses it as setup.
     if (isBufferOverflow(err))
       throw new LeanConfigError(
         `could not read ${ref}: larger than the ${GIT_SHOW_MAX_BUFFER} byte read limit`,

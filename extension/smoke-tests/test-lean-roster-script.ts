@@ -23,21 +23,31 @@ const report = path.join(scratch, "report.xml");
 const pass = "smoke-tests/fixtures/verify-loop/allpass-a.ts";
 const fail = "smoke-tests/fixtures/verify-loop/fixture-1.ts";
 try {
-  const run = spawnSync(
-    "bash",
-    [path.join(repo, "extension/smoke-tests/lib/lean-roster.sh"), repo, report, pass, fail],
-    { encoding: "utf8" },
-  );
-  check(run.status === 1, `exits with verify-loop's code for a failing file (${run.status})`);
-  const cases = parseJUnitCases(readFileSync(report, "utf8"));
-  check(
-    cases.passed.join(",") === `smoke::${pass}`,
-    `the passing file is a passing testcase (${cases.passed})`,
-  );
-  check(
-    cases.failed.join(",") === `smoke::${fail}`,
-    `the failing file is a failing testcase (${cases.failed})`,
-  );
+  // An operator's PI_ENSEMBLE_VERIFY_TIMING=0 turns verify-loop's summary block off; the script
+  // reads its verdicts from that block, so it must pin the knob back on.
+  const { PI_ENSEMBLE_VERIFY_TIMING: _, ...ambient } = process.env;
+  for (const timing of [undefined, "0"]) {
+    const env = timing === undefined ? ambient : { ...ambient, PI_ENSEMBLE_VERIFY_TIMING: timing };
+    const label = timing === undefined ? "" : ` with PI_ENSEMBLE_VERIFY_TIMING=${timing}`;
+    const run = spawnSync(
+      "bash",
+      [path.join(repo, "extension/smoke-tests/lib/lean-roster.sh"), repo, report, pass, fail],
+      { encoding: "utf8", env },
+    );
+    check(
+      run.status === 1,
+      `exits with verify-loop's code for a failing file${label} (${run.status})`,
+    );
+    const cases = parseJUnitCases(readFileSync(report, "utf8"));
+    check(
+      cases.passed.join(",") === `smoke::${pass}`,
+      `the passing file is a passing testcase${label} (${cases.passed})`,
+    );
+    check(
+      cases.failed.join(",") === `smoke::${fail}`,
+      `the failing file is a failing testcase${label} (${cases.failed})`,
+    );
+  }
 
   const config = JSON.parse(readFileSync(path.join(repo, ".pi/work.json"), "utf8"));
   check(
