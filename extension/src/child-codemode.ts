@@ -47,6 +47,30 @@ export function childCodemodeEnabled(): boolean {
   return process.env.PI_ENSEMBLE_CHILD_CODEMODE !== "0";
 }
 
+/** The env name Pi (>= 1.4.0) reads for its per-process codemode worker cap. */
+const CODEMODE_MAX_WORKERS_ENV = "PI_CODEMODE_MAX_WORKERS";
+
+/** Pi's own default is 2; each worker may use up to 256 MB, so 4 bounds a child at 1 GB. */
+const DEFAULT_CHILD_CODEMODE_MAX_WORKERS = 4;
+
+/**
+ * The worker cap stamped into a codemode child's env.
+ *
+ * Pi queues a script that finds every worker busy (up to 60s) rather than
+ * failing it, so a child firing parallel codemode calls waits for a slot
+ * instead of losing the turn to a transient retry; the cap sets how many run at
+ * once. `PI_ENSEMBLE_CHILD_CODEMODE_MAX_WORKERS` overrides the default with a
+ * positive integer; anything else keeps the default, the same rule Pi applies
+ * to its own variable. Empty when codemode is off, so that child's env is
+ * unchanged. Below Pi 1.4.0 the variable is unknown and inert.
+ */
+export function childCodemodeWorkersEnv(): Record<string, string> {
+  if (!childCodemodeEnabled()) return {};
+  const n = Number(process.env.PI_ENSEMBLE_CHILD_CODEMODE_MAX_WORKERS);
+  const workers = Number.isInteger(n) && n > 0 ? n : DEFAULT_CHILD_CODEMODE_MAX_WORKERS;
+  return { [CODEMODE_MAX_WORKERS_ENV]: String(workers) };
+}
+
 /**
  * Append `codemode` to the child's active tool set. Safe to run on every
  * session_start: it is a no-op when the flag is off or codemode is already
