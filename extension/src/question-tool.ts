@@ -20,7 +20,7 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { type Static, Type } from "@sinclair/typebox";
+import { type Static, Type } from "typebox";
 
 interface OptionWithDesc {
   label: string;
@@ -104,7 +104,7 @@ export function registerQuestionTool(pi: ExtensionAPI) {
     executionMode: "sequential",
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      // @sinclair/typebox's Static yields optional props; the schema declares
+      // typebox's Static yields optional props; the schema declares
       // both fields required (Type.Object/Type.String/Type.Array), so guard once
       // here rather than per-use site.
       const options: OptionWithDesc[] = Array.isArray(params.options)

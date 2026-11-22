@@ -16,7 +16,7 @@
 
 import assert from "node:assert/strict";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Value } from "@sinclair/typebox/value";
+import { Value } from "typebox/value";
 import factsReporter, { AGENT_FACTS_COMMAND_KINDS } from "../src/facts-reporter.ts";
 
 // ---------------------------------------------------------- capture registerTool

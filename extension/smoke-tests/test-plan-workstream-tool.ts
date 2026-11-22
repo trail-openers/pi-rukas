@@ -13,7 +13,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Value } from "@sinclair/typebox/value";
+import { Value } from "typebox/value";
 import { reporterPathFromArgs } from "../src/reporter-preflight.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";

@@ -14,7 +14,7 @@
 
 // The two env NAMES, spelled as the literals the activation module declares them
 // to be. Importing that module here would pull its `@earendil-works/pi-coding-agent`
-// and `@sinclair/typebox` value imports into this project's typecheck, which pins
+// and `typebox` value imports into this project's typecheck, which pins
 // `"types": ["node"]` and has never seen those packages resolved; the two existing
 // auth suites reach the fixture, not this module, and stay untouched. The
 // activation module is the source these literals are kept in step with.

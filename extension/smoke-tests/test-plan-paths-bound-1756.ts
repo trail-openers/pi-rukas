@@ -33,7 +33,7 @@
  *      going through the fence neutraliser.
  */
 
-import { Value } from "@sinclair/typebox/value";
+import { Value } from "typebox/value";
 import { boundPaths, pathsBoundNotice } from "../src/plan-paths-bound.ts";
 import {
   WORKSTREAM_LIST_MAX,
@@ -134,7 +134,7 @@ function boundLineOf(traces: string[]): string | undefined {
   const refusal = Value.Errors(WORKSTREAM_PARAMETERS, {
     ...VALID,
     paths: pathList(WORKSTREAM_PATH_INPUT_LIST_MAX + 1),
-  }).First();
+  })[0];
   assert(
     refusal?.message?.includes(String(WORKSTREAM_PATH_INPUT_LIST_MAX)) === true &&
       workstreamPathProblem(crowdedArgs("task-a", pathList(501))) === undefined,

@@ -44,7 +44,7 @@
  * (work-driver-plan-calls.ts) points here rather than restating it.
  */
 
-import { type Static, Type } from "@sinclair/typebox";
+import { type Static, Type } from "typebox";
 import { isPlainObject } from "./plain-object.ts";
 import { plannedPathProblem } from "./plan-path-shape.ts";
 

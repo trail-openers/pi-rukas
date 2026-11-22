@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { startJob } from "./async-jobs.ts";
 import { execp } from "./exec.ts";
 import type { LensLedgerOutcome } from "./lens-ledger.ts";

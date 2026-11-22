@@ -35,7 +35,7 @@
  */
 
 import { rmSync } from "node:fs";
-import { Value } from "@sinclair/typebox/value";
+import { Value } from "typebox/value";
 import { boundOutOfScope, clipFenceEntry } from "../src/plan-fence-bound.ts";
 import { fenceDropCount } from "../src/plan-fence-record.ts";
 import {

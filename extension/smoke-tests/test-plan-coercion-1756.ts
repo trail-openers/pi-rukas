@@ -54,7 +54,7 @@
  * is not a params object.
  */
 
-import { Value } from "@sinclair/typebox/value";
+import { Value } from "typebox/value";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RECORDED_ARGS_DETAILS_KEY } from "../src/plan-workstream-schema.ts";
 import workstreamReporter from "../src/workstream-reporter.ts";

@@ -45,7 +45,7 @@
 
 import { type Socket, createConnection } from "node:net";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { keepsForgeLogin } from "./child-forge-env.ts";
 import {
   FORGE_READ_SECRET_ENV,

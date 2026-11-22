@@ -19,7 +19,7 @@
  * the authority, so a run that starts in between is refused there and reported as a crash.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { setJobIssues } from "./async-jobs-registry.ts";
 import { startJob } from "./async-jobs.ts";
 import { runWorkLean } from "./lean/command.ts";

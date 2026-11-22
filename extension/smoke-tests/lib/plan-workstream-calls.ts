@@ -29,7 +29,7 @@
  * says it refused.
  */
 
-import { Value } from "@sinclair/typebox/value";
+import { Value } from "typebox/value";
 import {
   recordedWorkstreamDetails,
   WORKSTREAM_PARAMETERS,

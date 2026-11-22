@@ -22,7 +22,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 export const RESEARCH_CLAIM_KINDS = ["finding", "contradiction", "gap", "signal"] as const;
 

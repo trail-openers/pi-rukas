@@ -47,7 +47,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { noticeSubject } from "./async-jobs-report.ts";
 import { startJob } from "./async-jobs.ts";
 import { runPlanPipeline } from "./plan-driver.ts";
