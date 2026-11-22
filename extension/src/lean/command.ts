@@ -427,11 +427,13 @@ function summarize(result: RunLeanResult, issue: number): string {
  * `PI_ENSEMBLE_CYCLE_BUDGET_MS` and `PI_ENSEMBLE_CYCLE_DEADLINE`, resolves it to an absolute epoch
  * once, and the engine persists that arm on the record. It is passed as a value, not written to
  * `process.env`: one run's budget cannot arm a later run in the same process.
+ *
+ * `signal` is `start_lean_driver`'s job kill, handed to the engine's step boundaries.
  */
 export async function runWorkLean(
   repoRoot: string,
   issue: number,
-  opts: LeanRunOpts & { timeoutMs?: number } = {},
+  opts: LeanRunOpts & { timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<{ summary: string; result: RunLeanResult }> {
   const seed = await leanSeed(repoRoot);
   const result = await runLean({
@@ -445,6 +447,7 @@ export async function runWorkLean(
     ...(opts.timeoutMs === undefined
       ? {}
       : { budgetMs: flagBudgetMs(opts.timeoutMs) as CycleBudgetMs }),
+    ...(opts.signal === undefined ? {} : { signal: opts.signal }),
   });
   return { summary: summarize(result, issue), result };
 }

@@ -128,13 +128,14 @@ export function registerLeanTool(pi: ExtensionAPI, run: RunLean = runWorkLean): 
         ...(p.specIntake === undefined ? {} : { specIntake: p.specIntake }),
         ...(p.timeoutMinutes === undefined ? {} : { timeoutMs: p.timeoutMinutes * MINUTE_MS }),
       };
-      const report = (ok: boolean, text: string) => ({
+      const report = (ok: boolean, text: string, killed = false) => ({
         role: "lean-driver",
-        ok,
+        ok: ok && !killed,
         text,
         toolUses: [],
         ms: 0,
-        exitCode: ok ? 0 : 1,
+        exitCode: killed ? 143 : ok ? 0 : 1,
+        ...(killed ? { killCause: "abort" as const } : {}),
       });
       let jobId: string;
       try {
@@ -144,10 +145,17 @@ export function registerLeanTool(pi: ExtensionAPI, run: RunLean = runWorkLean): 
           subject: `#${issue}`,
           reportKind: "driver",
           reportWhere: `the lean state file ${leanStateFile(repoRoot, issue)}`,
-          work: async () => {
+          // The job's kill reaches the engine's step boundaries; the run still settles, so its
+          // handed-back record is what the steer reports, and the job reads as killed unless the
+          // run landed before the kill reached it.
+          work: async (signal) => {
             try {
-              const { summary, result } = await run(repoRoot, issue, opts);
-              return report(true, `lean run #${issue}: ${result.state} — ${summary}`);
+              const { summary, result } = await run(repoRoot, issue, { ...opts, signal });
+              return report(
+                true,
+                `lean run #${issue}: ${result.state} — ${summary}`,
+                signal.aborted && result.state !== "landed",
+              );
             } catch (err) {
               const why = oneLine(err instanceof Error ? err.message : String(err), 300);
               return report(false, `lean run #${issue}: crashed — ${why}`);

@@ -212,7 +212,7 @@ const REVIEW_FIXED: OutcomeKind<"review"> = "fixed";
  *     review speak;
  *   - the log holds NO `review` step — `false`, whatever else the record says. The machine
  *     sends `publish` → `review`, so a `ready` PR with no review step is one the engine never
- *     dispatched (the deadline is checked before the NEXT state, and `stopForDeadline` stamps
+ *     dispatched (the deadline is checked before the NEXT state, and `stopAtBoundary` stamps
  *     `handed-back` without it): the same silence one level up, and the arm this cap exists to
  *     refuse.
  *

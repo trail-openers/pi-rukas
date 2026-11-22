@@ -20,12 +20,7 @@ import {
 } from "../work-driver-deadline.ts";
 import { deadlineStopsSteps, leanDeadline } from "./deadline.ts";
 import { engineFacts } from "./engine-facts.ts";
-import {
-  type DeadlineStop,
-  type HandbackHandler,
-  runHandbackReport,
-  stopForDeadline,
-} from "./engine-report.ts";
+import { type HandbackHandler, stopAtBoundary } from "./engine-report.ts";
 import { errorOutcome } from "./error-outcome.ts";
 import { acquireLock } from "./lock.ts";
 import { exitCodeFor, hasTransition, next } from "./machine.ts";
@@ -35,6 +30,7 @@ import {
   type LeanState,
   LeanStateError,
   type Outcome,
+  REPORT_STATES,
   type Step,
   createRun,
   isTerminal,
@@ -86,6 +82,12 @@ export interface RunLeanOpts {
    * shipped default the explicit flag outranks the host's exported budget.
    */
   budgetMs?: CycleBudgetMs;
+  /**
+   * The caller's kill (`start_lean_driver`'s job signal). Once aborted, the next step boundary
+   * stops the run as the deadline does — handed-back, reporting steps exempt — and a step
+   * already running finishes first: the engine never cuts a step mid-way.
+   */
+  signal?: AbortSignal;
 }
 
 export interface RunLeanResult {
@@ -349,10 +351,12 @@ async function driveLoop(
       // the pure reader, which every later boundary of the same run also calls.
       warnTimeoutFlagPrecedence(armed, opts.budgetMs, `work-lean #${opts.issue}`);
     }
-    if (deadline !== undefined && deadlineStopsSteps(deadline, now(), state)) {
-      // One call decides and performs the whole stop; `stopForDeadline`'s jsdoc is the contract.
+    const killed = opts.signal?.aborted === true && !REPORT_STATES.includes(state);
+    const timedOut = deadline !== undefined && deadlineStopsSteps(deadline, now(), state);
+    if (timedOut || killed) {
+      // One call decides and performs the whole stop; `stopAtBoundary`'s jsdoc is the contract.
       // This side of the seam must not start WORK here: `endRun` ends the loop.
-      run = await stopForDeadline({
+      run = await stopAtBoundary({
         end: (r, reason) => endRun(drive, r, "handed-back", reason),
         request: {
           repoRoot: opts.repoRoot,
@@ -363,7 +367,8 @@ async function driveLoop(
         },
         run,
         stoppedAt: state,
-        deadline,
+        cause: timedOut ? `cycle deadline ${deadline} reached` : "job killed",
+        reportCause: timedOut ? "cycle deadline reached" : "job killed",
         now,
       });
       break;

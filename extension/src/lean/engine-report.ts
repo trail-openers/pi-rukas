@@ -2,8 +2,8 @@
  * lean/engine-report — the reporting step a stopped run is routed into.
  *
  * The split from `engine.ts` is by concern: `engine.ts` owns the runner; this module owns the one move
- * the runner makes that is not a step the table routes — the clock stopping a working step, and what
- * the run becomes because of it. `handback-heads.ts` decides WHETHER the routing happens; this
+ * the runner makes that is not a step the table routes — the clock or a kill stopping a working step,
+ * and what the run becomes because of it. `handback-heads.ts` decides WHETHER the routing happens; this
  * module performs it and stamps the run either way.
  *
  * `HandbackHandler` is injected rather than reached around, so this module never reads the handler
@@ -11,7 +11,7 @@
  * exactly the way the runner writes one.
  */
 import { traceWarn } from "../trace.ts";
-import { deadlineReason, handoffAllowanceMs } from "./deadline.ts";
+import { handoffAllowanceMs, stopReason } from "./deadline.ts";
 import { reportBoundSentence } from "./engine-report-bound.ts";
 import { handbackHeads } from "./handback-heads.ts";
 import type { LeanRun, LeanState, Outcome, Step } from "./state.ts";
@@ -54,8 +54,10 @@ export interface ReportRequest {
   repoRoot: string;
   issue: number;
   run: LeanRun;
-  /** The step the clock refused — `verify` or `ci` — named verbatim in the run's reason line. */
+  /** The step the stop refused, named verbatim in the run's reason line. */
   stoppedAt: LeanState;
+  /** What refused it, as the reason line names it: `cycle deadline reached`, `job killed`. */
+  cause: string;
   now: () => number;
   handler: HandbackHandler;
   /**
@@ -134,21 +136,21 @@ export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | u
   // The visit, then its verdict, then the result — one save, one record.
   const visit: Step = { key, state: "handback", startedAt };
   const reported = req.attach({ ...run, steps: [...run.steps, visit] }, key, outcome, now());
-  return req.finish(reported, "handed-back", reportReason(stoppedAt, outcome));
+  return req.finish(reported, "handed-back", reportReason(stoppedAt, req.cause, outcome));
 }
 
 /**
  * The reason line a routed run carries: the report's own reason leads, and the refused step is named
  * so a reader can tell this from a plain deadline stop.
  */
-function reportReason(stoppedAt: LeanState, outcome: Outcome): string {
+function reportReason(stoppedAt: LeanState, cause: string, outcome: Outcome): string {
   const said =
     typeof outcome.reason === "string" && outcome.reason !== "" ? outcome.reason : "reported";
-  return `${said} (cycle deadline reached at ${stoppedAt})`;
+  return `${said} (${cause} at ${stoppedAt})`;
 }
 
 /** What the runner gives the stop: the two writers of the record, and the report's pieces. */
-export interface DeadlineStop {
+export interface BoundaryStop {
   /** Stamp `handed-back` with a reason and persist — the runner's `endRun` on that state. */
   end: (run: LeanRun, reason: string) => LeanRun;
   /** Everything the report needs that the runner holds: the handler table's entry and the step writers. */
@@ -161,14 +163,17 @@ export interface DeadlineStop {
     attach: ReportRequest["attach"];
   };
   run: LeanRun;
-  /** The step the clock refused — `verify` or `ci` — named verbatim in the run's reason line. */
+  /** The step the stop refused, named verbatim in the run's reason line. */
   stoppedAt: LeanState;
-  deadline: number;
+  /** What stopped the run, as the plain stamp names it: `cycle deadline <epoch> reached`, `job killed`. */
+  cause: string;
+  /** The same cause as the routed report names it, which omits the epoch. */
+  reportCause: string;
   now: () => number;
 }
 
 /**
- * Stop a run whose deadline refused a working step, and return the ended run.
+ * Stop a run whose deadline or kill refused a working step, and return the ended run.
  *
  * Most such runs are stamped where they stand — but a run whose newest work step is a `fixed` review
  * holds origin over bytes no gate certified, and the step that says so (and moves origin back) is
@@ -180,8 +185,8 @@ export interface DeadlineStop {
  * ahead, which is the premise `handback-heads.ts` acts on. Nothing here starts WORK: the only handler
  * reached is the reporting one.
  */
-export async function stopForDeadline(stop: DeadlineStop): Promise<LeanRun> {
-  const { run, stoppedAt, deadline, now } = stop;
+export async function stopAtBoundary(stop: BoundaryStop): Promise<LeanRun> {
+  const { run, stoppedAt, cause, now } = stop;
   // The head rule decides whether the report runs, keyed on the LOG and not the stop cause, so the
   // routing fires on the same shape the reporting step reports on and on nothing else. It is
   // affordable because `REPORT_STATES` is exempt from `deadlineStopsSteps` — the one step past the
@@ -196,6 +201,7 @@ export async function stopForDeadline(stop: DeadlineStop): Promise<LeanRun> {
       issue: stop.request.issue,
       run,
       stoppedAt,
+      cause: stop.reportCause,
       now,
       handler: stop.request.handler,
       boundMs: handoffReportBoundMs(),
@@ -209,15 +215,15 @@ export async function stopForDeadline(stop: DeadlineStop): Promise<LeanRun> {
     if (reported === undefined) {
       return stop.end(
         run,
-        deadlineReason(
+        stopReason(
           run.steps,
           stoppedAt,
-          deadline,
+          cause,
           req.boundFiredMs === undefined ? undefined : reportBoundSentence(req.boundFiredMs),
         ),
       );
     }
     return reported;
   }
-  return stop.end(run, deadlineReason(run.steps, stoppedAt, deadline));
+  return stop.end(run, stopReason(run.steps, stoppedAt, cause));
 }

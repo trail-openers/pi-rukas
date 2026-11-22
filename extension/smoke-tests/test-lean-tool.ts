@@ -10,11 +10,12 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { clearJobsForTesting } from "../src/async-jobs.ts";
+import { clearJobsForTesting, killJob } from "../src/async-jobs.ts";
+import { getStatus, markViewOpen } from "../src/dispatch-deck-live.ts";
 import { type RunLean, registerLeanTool } from "../src/lean-tool.ts";
 import { phase1Handlers } from "../src/lean/command.ts";
 import { runLean } from "../src/lean/engine.ts";
-import { acquireLock } from "../src/lean/lock.ts";
+import { acquireLock, lockHolder } from "../src/lean/lock.ts";
 import { resolveSpecIntake } from "../src/lean/spec-intake-switch.ts";
 import { loadRun, saveRun } from "../src/lean/state.ts";
 import { withEnv } from "./lib/env-scope.ts";
@@ -95,10 +96,12 @@ try {
     "launch returns started + async at once",
   );
   check(calls.length === 1 && settle !== undefined, "the engine was called and is still running");
+  const { signal, ...given } = calls[0]?.opts ?? {};
   check(
-    JSON.stringify(calls[0]?.opts) ===
-      JSON.stringify({ headless: true, specIntake: "derive", timeoutMs: 120_000 }),
-    `the run gets the session's trust mode, its specIntake and the deadline, nothing else (${JSON.stringify(calls[0]?.opts)})`,
+    JSON.stringify(given) ===
+      JSON.stringify({ headless: true, specIntake: "derive", timeoutMs: 120_000 }) &&
+      signal instanceof AbortSignal,
+    `the run gets the session's trust mode, its specIntake, the deadline and the job's signal, nothing else (${JSON.stringify(given)})`,
   );
   check(process.env.PI_ENSEMBLE_LEAN_SPEC_INTAKE === envBefore, "specIntake never writes the env");
 
@@ -196,6 +199,63 @@ try {
     settle?.resolve({ summary: "s", result: { state: "handed-back" } } as never);
     await waitForJobReport(String(claimed.details.jobId));
   }
+
+  // ── A kill stops the real engine at the next step boundary: the step already running
+  // finishes, nothing after it starts unless it is a reporting step, the run ends naming the
+  // kill, the job reads as killed, and the issue's lock is released.
+  const killDuringReady = async (issue: number, readyKind: "ok" | "fail") => {
+    const tools: Tool[] = [];
+    const ran: string[] = [];
+    let unblock = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      unblock = resolve;
+    });
+    registerLeanTool(
+      { registerTool: (t: Tool) => void tools.push(t), ...makeJobDeliverer() } as never,
+      (async (root: string, n: number, opts: { signal?: AbortSignal } = {}) => {
+        const record = (step: string, kind: string) => async () => {
+          ran.push(step);
+          return { kind };
+        };
+        const result = await runLean({
+          repoRoot: root,
+          issue: n,
+          handlers: {
+            ready: async () => {
+              await blocked;
+              return { kind: readyKind };
+            },
+            specify: record("specify", "ok"),
+            decline: record("decline", "done"),
+          } as never,
+          ...(opts.signal ? { signal: opts.signal } : {}),
+        });
+        return { summary: result.run.result?.reason ?? "", result };
+      }) as unknown as RunLean,
+    );
+    const started = await (tools[0] as Tool).execute("id", { issue }, undefined, undefined, {
+      cwd: repo,
+      hasUI: false,
+    });
+    const jobId = String(started.details.jobId);
+    markViewOpen(jobId); // an open view keeps the settled status readable
+    killJob(jobId);
+    unblock();
+    return { steer: await waitForJobReport(jobId), ran, status: getStatus(jobId) };
+  };
+  const work = await killDuringReady(14, "ok");
+  check(
+    work.steer.includes("lean run #14: handed-back — job killed at specify"),
+    `a killed run ends handed-back naming the kill (${work.steer.split("\n")[2]})`,
+  );
+  check(work.status === "killed", `…the job reads as killed, not finished (${work.status})`);
+  check(work.ran.length === 0, "…the step after the kill never started");
+  check(lockHolder(repo, 14) === undefined, "…and the issue's lock is released");
+  const reporting = await killDuringReady(15, "fail");
+  check(
+    reporting.ran.join() === "decline" && reporting.steer.includes("lean run #15: not-ready"),
+    `a kill still lets the reporting step run (${reporting.ran.join()})`,
+  );
 
   // ── The override outranks env and config, and reaches the run's `ready` step.
   await withEnv({ PI_ENSEMBLE_LEAN_SPEC_INTAKE: "require" }, async () => {
