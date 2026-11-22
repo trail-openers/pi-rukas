@@ -145,17 +145,18 @@ export function reRunStub(
 }
 
 /**
- * Watches every non-git exec WITHOUT replacing it: the real runner still runs,
+ * Watches every exec WITHOUT replacing it: the real runner still runs,
  * so a case can read what the driver handed it (an env, a timeout) while the
  * runner's verdict stays the real one. `reRunStub`'s stub REPLACES the runner,
- * which is the wrong shape for an assertion about the arguments.
+ * which is the wrong shape for an assertion about the arguments. A spy that
+ * throws is a call that rejected with no exit code, before git ever ran.
  */
 export function execObserver(
   inner: BuildExec,
   spy: ((cmd: string, o?: unknown) => void) | undefined,
 ): BuildExec {
   return async (cmd, o) => {
-    if (cmd !== "git") spy?.(cmd, o);
+    spy?.(cmd, o);
     return inner(cmd, o);
   };
 }

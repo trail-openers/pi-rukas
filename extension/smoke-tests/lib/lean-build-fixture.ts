@@ -372,7 +372,7 @@ export interface RunOpts {
   blockedTimeoutMs?: number;
   /** A stand-in runner that misbehaves the way a shell script cannot — see {@link reRunStub}. */
   hungExec?: (cmd: string, o?: unknown) => Promise<unknown>;
-  /** Watches every non-git exec WITHOUT replacing it, so the verdict stays the real one. */
+  /** Watches every exec WITHOUT replacing it, so the verdict stays the real one. */
   execSpy?: (cmd: string, o?: unknown) => void;
   /** The clock knobs of {@link deadlineOf}: the run's deadline and its `now`. */
   clock?: ClockOpts;

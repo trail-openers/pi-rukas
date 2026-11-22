@@ -28,7 +28,7 @@ import { traceWarn } from "../trace.ts";
 import { ensureWorktreesExcluded } from "../work-driver-git-exclude.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
-import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
+import { NO_HOOKS, headIsDescendant, resetWorktreeToBase } from "./specify-reset.ts";
 import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 import { joinNotes } from "./text-fence.ts";
 export { type DroppedRow, NEWNESS_REASON, validateSubmitRows } from "./submit-tests-cap.ts";
@@ -135,7 +135,14 @@ export async function assertSpecifyWorktreeOwned(
   // commits ahead" are different diagnoses for whoever reads the handback.
   if (actual !== want) {
     aheadOk =
-      opts.allowAheadOfBase === true && actual !== "" && (await headDescends(exec, opts.wt, want));
+      opts.allowAheadOfBase === true &&
+      actual !== "" &&
+      (await headIsDescendant(
+        exec,
+        opts.wt,
+        want,
+        () => new Error(`could not tell whether HEAD in ${opts.wt} descends from ${want}`),
+      ));
     if (!aheadOk)
       throw new Error(
         `${foreign} (its HEAD is ${actual === "" ? "unreadable" : actual}, expected ${want})`,
@@ -213,25 +220,6 @@ export async function ensureSpecifyWorktreeWithProvision(
   );
   const provision = await provisionWorktree(exec, opts.repoRoot, tree);
   return { wt: tree, linked: provision.linked, ...problemOf(provision, notes, tree) };
-}
-
-/**
- * `git merge-base --is-ancestor sha HEAD` in `wt`: git's own exit 1 is `false`, any other outcome throws —
- * never read as "descends". Like `headDescendsFrom` in build-git.ts, whose error type belongs to that step.
- */
-async function headDescends(exec: ExecFn, wt: string, sha: string): Promise<boolean> {
-  const r = await exec("git", {
-    argv: [...NO_HOOKS, "merge-base", "--is-ancestor", sha, "HEAD"],
-    cwd: wt,
-    timeout: 30_000,
-    maxBuffer: 1024 * 1024,
-  }).then(
-    () => ({ ok: true as const }),
-    (err: unknown) => ({ ok: false as const, code: (err as { code?: unknown })?.code }),
-  );
-  if (r.ok) return true;
-  if (r.code === 1) return false;
-  throw new Error(`could not tell whether HEAD in ${wt} descends from ${sha}`);
 }
 
 /**
