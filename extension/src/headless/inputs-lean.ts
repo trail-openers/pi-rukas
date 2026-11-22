@@ -90,4 +90,9 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // `require` would decline tickets the operator meant to run. The reader is
   // `resolveSpecIntake` in lean/spec-intake-switch.ts.
   input("LEAN_SPEC_INTAKE", "enum", null, "cycle", { values: ["require", "derive"] }),
+  // A specify child that submitted some test criteria and not others is asked once, on its
+  // own session, for the rest before readiness is judged. `0` dispatches as before: the
+  // unsubmitted criteria decline the run. The reader is `leanSpecifyReaskEnabled` in
+  // lean/specify-reask.ts.
+  flag("LEAN_SPECIFY_REASK", true),
 ];

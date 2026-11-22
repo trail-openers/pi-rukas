@@ -5,13 +5,15 @@
  *
  * `specify.ts` runs it once, and again on its one retry — with the previous attempt's drop reasons, or
  * with a fixed note when it submitted nothing at all. It returns the outcome, the boundary's drop labels,
- * and whether the attempt was silent, so the caller decides whether a retry is worth it. The pipeline is
- * shared with `challenge` through `specify-run.ts`.
+ * and whether the attempt was silent, so the caller decides whether a retry is worth it. A child that
+ * submitted only some test criteria is re-asked for the rest inside the attempt (`specify-reask.ts`).
+ * The pipeline is shared with `challenge` through `specify-run.ts`.
  */
 
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { statReporterPath } from "../reporter-preflight.ts";
+import { makeRunId } from "../spawn-support.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult } from "../types.ts";
 import { didNoWork } from "./build-dispatch.ts";
@@ -23,6 +25,13 @@ import { leanRunnerPreflightEnabled } from "./runner-preflight-switch.ts";
 import type { Criterion, PiSpec } from "./spec.ts";
 import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { specifyPrompt } from "./specify-prompt.ts";
+import {
+  adversaryDispatchOpts,
+  leanSpecifyReaskEnabled,
+  missingCriteria,
+  reaskMissing,
+  withReaskNote,
+} from "./specify-reask.ts";
 import { SpecifyInfraError, droppedLabel, runTestPipeline } from "./specify-run.ts";
 import { ensureSpecifyWorktreeWithProvision, validateSubmitRows } from "./specify-tree.ts";
 import type { SpecifyDeps } from "./specify.ts";
@@ -130,6 +139,8 @@ async function dispatchAdversary(
     refusal?: string[];
     /** See {@link SpecifyAttemptArgs.resubmit}. */
     resubmit?: boolean;
+    /** The child's session id, minted only when its re-ask is switched on. */
+    runId?: string;
   },
 ): Promise<[DispatchResult | BudgetStop | NoWorkProviderFault, DispatchUsageRow]> {
   await (deps.statReporter ?? statReporterPath)(SUBMIT_TESTS_REPORTER_PATH);
@@ -145,17 +156,7 @@ async function dispatchAdversary(
   });
   const result = await deps.dispatch(
     { role: "developer", prompt, cwd: opts.wt },
-    {
-      writeFence: {
-        root: opts.wt,
-        repo: opts.repoRoot,
-        // `<repoRoot>/tmp/lean-<issue>`: the worktree's parent is `.worktrees`, so one `..` from it is
-        // the repo root — the scratch dir the hygiene convention names.
-        scratch: path.join(path.dirname(opts.wt), "..", "tmp", `lean-${opts.issue}`),
-      },
-      extraArgs: ["--no-skills", "--extension", SUBMIT_TESTS_REPORTER_PATH],
-      ...opts.budget.opts,
-    },
+    adversaryDispatchOpts(opts),
   );
   const row = dispatchUsageRow(result);
   // BEFORE the infra throw: the step's own ceiling ending the child is a verdict about the round.
@@ -193,6 +194,12 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   // Each dispatch gets its own budget, armed the way the first was.
   const budget = armBudget(budgetFor(config, "specify"));
   if (budget.warning !== undefined) traceWarn(`lean specify #${String(issue)}: ${budget.warning}`);
+  // Minted here, before the child exists, so its re-ask can open the same session. A retry attempt
+  // gets none: the step's ceiling is one child, one follow-up and one fresh retry.
+  const runId =
+    leanSpecifyReaskEnabled() && refusal === undefined && resubmit !== true
+      ? makeRunId()
+      : undefined;
   const dispatched = await dispatchAdversary(deps, {
     issue,
     spec,
@@ -204,6 +211,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
     ...(refusal === undefined ? {} : { refusal }),
     ...(resubmit === true ? { resubmit: true } : {}),
     ...(testLocation === undefined ? {} : { testLocation }),
+    ...(runId === undefined ? {} : { runId }),
   });
   const [dispatchedChild, row] = dispatched;
   // Every outcome this attempt returns carries the row: a dispatch that ended
@@ -234,7 +242,53 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   const toolUses = dispatchedRead.result.toolUses ?? [];
   const refused: string[] = [];
   // Read once: what the child declared, and how many calls were unreadable.
-  const { rows: declaredRows, skipped } = extractSubmitTests(toolUses);
+  const first = extractSubmitTests(toolUses);
+  /** The boundary every declared row passes, read against the child's tree and the run's base. */
+  const boundary = {
+    spec,
+    exists: (rel: string) => existsSync(path.join(wt, rel)),
+    fileProblem: (rel: string) => fileProblem(wt, rel),
+    // A test the child did not write is not an acceptance test: an existing tracked project test
+    // freezes as "red" without ever being run, and a child that overwrote one rewrites the
+    // contract. Both are refused against the run's BASE.
+    existsAtBase: (rel: string) => existsInCommit(deps.exec, repoRoot, base, rel),
+    // The size/quota rules judge the file with the same code the capture
+    // reads it with; `wt` is the tree these paths are relative to.
+    wt,
+    // The quota is a RUN-level bound: on a re-run of the step it is what stops a second round
+    // refilling every criterion to two files.
+    frozenByCriterion,
+    ...(testLocation === undefined ? {} : { testLocation }),
+  };
+  // Before readiness is judged, a child that declared some test criteria and not others is asked once
+  // for the rest, while its files are still in the tree (`specify-reask.ts`).
+  const reask = await reaskMissing({
+    skipped: first.skipped,
+    refuses: async () => (await validateSubmitRows(first.rows, boundary)).dropped.length > 0,
+    dispatch: deps.dispatch,
+    first: dispatchedRead.result,
+    runId,
+    missing: missingCriteria(
+      wanted.map((c) => c.id),
+      first.rows,
+    ),
+    declared: first.rows.length,
+    budget: budgetFor(config, "specify"),
+    wt,
+    repoRoot,
+    issue,
+  });
+  if (reask !== undefined) rows.push(reask.row);
+  if (reask !== undefined && "stop" in reask)
+    return {
+      outcome: budgetVerdictWithRows("specify", reask.stop, rows),
+      refused: [],
+      silent: false,
+      dispatched: rows,
+    };
+  const declaredRows = reask === undefined ? first.rows : [...first.rows, ...reask.rows];
+  const skipped = first.skipped + (reask?.skipped ?? 0);
+  const note = reask?.note;
   /** The attributed drops whose reason is a size refusal — see `SIZE_REFUSAL`. */
   const sizeRefused: string[] = [];
   const pipeline = await runTestPipeline(
@@ -252,22 +306,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       wanted: wanted.map((c) => c.id),
       extract: () => ({ rows: declaredRows, skipped }),
       validate: async (rows) => {
-        const verdict = await validateSubmitRows(rows, {
-          spec,
-          exists: (rel) => existsSync(path.join(wt, rel)),
-          fileProblem: (rel) => fileProblem(wt, rel),
-          // A test the child did not write is not an acceptance test: an existing tracked project test
-          // freezes as "red" without ever being run, and a child that overwrote one rewrites the
-          // contract. Both are refused against the run's BASE.
-          existsAtBase: (rel) => existsInCommit(deps.exec, repoRoot, base, rel),
-          // The size/quota rules judge the file with the same code the capture
-          // reads it with; `wt` is the tree these paths are relative to.
-          wt,
-          // The quota is a RUN-level bound: on a re-run of the step it is what stops a second round
-          // refilling every criterion to two files.
-          frozenByCriterion,
-          ...(testLocation === undefined ? {} : { testLocation }),
-        });
+        const verdict = await validateSubmitRows(rows, boundary);
         refused.push(...verdict.dropped.map(droppedLabel));
         sizeRefused.push(
           ...verdict.dropped.filter((d) => SIZE_REFUSAL.test(d.reason)).map(droppedLabel),
@@ -297,25 +336,31 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   );
   if (pipeline.kind === "committed")
     return {
-      outcome: {
-        kind: "ok",
-        frozen: pipeline.frozen,
-        tests: pipeline.tests,
-        reason: pipeline.reason,
-        dispatches: rows,
-      },
+      outcome: withReaskNote(
+        {
+          kind: "ok",
+          frozen: pipeline.frozen,
+          tests: pipeline.tests,
+          reason: pipeline.reason,
+          dispatches: rows,
+        },
+        note,
+      ),
       refused,
       silent: false,
       dispatched: rows,
     };
   if (pipeline.kind === "uncovered")
     return {
-      outcome: {
-        kind: "no-red-test",
-        failedRules: pipeline.uncovered,
-        reason: pipeline.reason,
-        dispatches: rows,
-      },
+      outcome: withReaskNote(
+        {
+          kind: "no-red-test",
+          failedRules: pipeline.uncovered,
+          reason: pipeline.reason,
+          dispatches: rows,
+        },
+        note,
+      ),
       refused,
       silent: false,
       dispatched: rows,
@@ -338,14 +383,17 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       : wanted.map((c) => `criterion ${c.id} has no red test`);
   const rules = [...generic, ...sizeRefused];
   return {
-    outcome: {
-      kind: "no-red-test",
-      failedRules: rules,
-      // `reason` opens with the GENERIC rules only: `rules` is what `failedRules` carries, and a
-      // reason that repeated every size drop the notes already spell would say it twice.
-      reason: [generic.join("; "), pipeline.reason].filter((s) => s !== "").join("; "),
-      dispatches: rows,
-    },
+    outcome: withReaskNote(
+      {
+        kind: "no-red-test",
+        failedRules: rules,
+        // `reason` opens with the GENERIC rules only: `rules` is what `failedRules` carries, and a
+        // reason that repeated every size drop the notes already spell would say it twice.
+        reason: [generic.join("; "), pipeline.reason].filter((s) => s !== "").join("; "),
+        dispatches: rows,
+      },
+      note,
+    ),
     refused,
     // Silence is one specific state — computed above, from the same predicate — and the only state
     // this rule names. A child whose calls were all malformed, or whose rows the boundary dropped, has

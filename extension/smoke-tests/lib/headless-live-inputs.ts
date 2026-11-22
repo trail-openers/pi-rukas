@@ -34,6 +34,7 @@ import { leanPreflightProbeContainEnabled } from "../../src/lean/preflight-probe
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
 import { leanDeriveRegressionGuardsEnabled } from "../../src/lean/derive-guards.ts";
+import { leanSpecifyReaskEnabled } from "../../src/lean/specify-reask.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../../src/lens-evidence.ts";
 import { lensLargeDiffEnabled } from "../../src/lens-large-diff-switch.ts";
 import { lensIncompleteForcesFull } from "../../src/lens-review-incomplete-switch.ts";
@@ -195,6 +196,8 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT", leanRunnerPreflightEnabled],
   ["PI_ENSEMBLE_LEAN_DERIVE_REGRESSION_GUARDS", leanDeriveRegressionGuardsEnabled],
+  // The specify re-ask for unsubmitted criteria; its arms are pinned by test-lean-specify-reask.ts.
+  ["PI_ENSEMBLE_LEAN_SPECIFY_REASK", leanSpecifyReaskEnabled],
   // The truncated-fixer continuation: its default is pinned here, its truth table by
   // `test-lean-review-fix-reask-pure.ts` and its off arm by
   // `test-lean-review-fixer-truncation-off-arm.ts`.

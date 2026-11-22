@@ -286,6 +286,8 @@ export interface RunOpts {
    * `.pi/work.json` names).
    */
   prompts?: string[];
+  /** Where the fake child records the session id each dispatch was handed. */
+  runIds?: (string | undefined)[];
   dispatchOk?: boolean;
   /**
    * Turns the fake child reports to the budget hook it was handed. A number is
@@ -332,6 +334,7 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
   const dispatch: SpecifyDeps["dispatch"] = async (spec: DispatchSpec, dopts) => {
     dispatched++;
     opts.prompts?.push(spec.prompt);
+    opts.runIds?.push(dopts.runId);
     const wt = spec.cwd as string;
     opts.writes(wt, dispatched);
     const turns =
@@ -454,6 +457,8 @@ export const RETRY_NOTE = "(after one retry)";
  * rule and the run's reason is what an operator reads first.
  */
 export const NEVER_SUBMITTED = "the child never submitted a test";
+/** The marker clause a specify attempt that re-asked its child carries on its reason. */
+export const REASKED = "re-asked the child once for";
 /** The test path the silent-child cases write and declare. */
 export const TEST_REL = "tests/AC1-retry.test.sh";
 /** The runner config every silent-child case runs with. */
