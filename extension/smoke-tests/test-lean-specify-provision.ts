@@ -25,6 +25,7 @@ import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from "node:fs
 import path from "node:path";
 import { execp } from "../src/exec.ts";
 import { probeTierAtBase, probeWorktreePath } from "../src/lean/verify-baseline.ts";
+import { ROSTER_REPORT_FILE } from "../src/lean/verify-roster-command.ts";
 import type { VerifyExec } from "../src/lean/verify-types.ts";
 import {
   ROOTS,
@@ -106,7 +107,7 @@ function assert(cond: boolean, msg: string): void {
 // -------- (t) lean's trees under `.worktrees/` are invisible to the repo root's status
 {
   const { repoRoot, baseSha } = makeRepo({ "src/a.ts": "1\n" });
-  await runSpecify({
+  const spec = await runSpecify({
     repoRoot,
     baseSha,
     issue: 19,
@@ -122,6 +123,10 @@ function assert(cond: boolean, msg: string): void {
     existsSync(path.join(repoRoot, ".worktrees")) && !status.includes(".worktrees"),
     `(t) the repo root's status does not list .worktrees/ (${JSON.stringify(status).slice(0, 160)})`,
   );
+  // A roster report a killed run left in the run's tree is not dirt to the porcelain scans either.
+  writeFileSync(path.join(spec.worktree, ROSTER_REPORT_FILE), "<testsuite/>\n");
+  const wtStatus = git(spec.worktree, "status", "--porcelain", "--untracked-files=all");
+  assert(wtStatus === "", `(t) a leftover roster report is excluded (${JSON.stringify(wtStatus)})`);
   // A `git add -A` at the repo root while verify's base probe tree is checked out stages none of it.
   const probe = await probeTierAtBase({
     repoRoot,
