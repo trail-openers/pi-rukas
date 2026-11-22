@@ -5,6 +5,7 @@ import { startBatch, startJob } from "./async-jobs.ts";
 import {
   MAX_MINUTES_DESCRIPTION,
   MAX_TURNS_DESCRIPTION,
+  MAX_TURNS_LIMIT,
   parseMaxMinutes,
   parseMaxTurns,
 } from "./dispatch-budget-params.ts";
@@ -278,6 +279,15 @@ function budgetArms(raw: { maxTurns?: unknown; maxMinutes?: unknown }): {
 
 export function registerDispatchTools(pi: ExtensionAPI) {
   const roleDesc = `One of: ${ROLE_NAMES.join(", ")}`;
+  // The bounds both tools take, built here because dispatch-budget-params sits
+  // in an import cycle with this module. The static range is schema, so Pi's
+  // validator and codemode's tags state it; the live minutes ceiling is parsed.
+  const budgetParams = {
+    maxTurns: Type.Optional(
+      Type.Integer({ minimum: 1, maximum: MAX_TURNS_LIMIT, description: MAX_TURNS_DESCRIPTION }),
+    ),
+    maxMinutes: Type.Optional(Type.Integer({ minimum: 1, description: MAX_MINUTES_DESCRIPTION })),
+  };
 
   pi.registerTool({
     name: "dispatch_specialist",
@@ -294,8 +304,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       ),
       /** #1991 — the PM's per-child bounds; see dispatch-budget-params.ts for
        *  what each lever does and why a bad value is refused. */
-      maxTurns: Type.Optional(Type.Integer({ description: MAX_TURNS_DESCRIPTION })),
-      maxMinutes: Type.Optional(Type.Integer({ description: MAX_MINUTES_DESCRIPTION })),
+      ...budgetParams,
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       // Defence in depth: TypeBox may not strict-strip undeclared fields, so
@@ -365,8 +374,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
           ),
           /** #1991 — per-member, because one batch is where a PM bounds three
            *  workstreams at three different sizes. */
-          maxTurns: Type.Optional(Type.Integer({ description: MAX_TURNS_DESCRIPTION })),
-          maxMinutes: Type.Optional(Type.Integer({ description: MAX_MINUTES_DESCRIPTION })),
+          ...budgetParams,
         }),
         { maxItems: MAX_PARALLEL },
       ),
