@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.5](https://github.com/trail-openers/pi-rukas/compare/v0.15.4...v0.15.5) (2026-11-22)
+
+
+### Bug Fixes
+
+* **lean:** keep .worktrees/ out of the repository root's status ([#2561](https://github.com/trail-openers/pi-rukas/issues/2561)) ([e4412d0](https://github.com/trail-openers/pi-rukas/commit/e4412d099d256bfcc0ea16a66a01e9e6a4afb655))
+
 ## [0.15.4](https://github.com/trail-openers/pi-rukas/compare/v0.15.3...v0.15.4) (2026-11-22)
 
 
