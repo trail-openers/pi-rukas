@@ -32,7 +32,7 @@ function assert(cond: boolean, msg: string): void {
 const RED: BaseProbe = { status: "red" };
 /** Two trees that are definitely different directories. */
 const HEAD_ROOT = "/tmp/pi-rukas-2064-mixed/worktree";
-const PROBE_ROOT = "/tmp/pi-rukas-2064-mixed/repo.baseline-lean-verify-9";
+const PROBE_ROOT = "/tmp/pi-rukas-2064-mixed/repo/.worktrees/lean-9-baseline-base";
 
 /** One comparison, on the lines each run printed. */
 function excuseOf(headLines: string[], baseLines: string[]) {

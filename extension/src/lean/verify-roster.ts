@@ -75,8 +75,7 @@ function none(reason: string): ProjectRosterOutcome {
 /**
  * The project suite at the base commit, in a throwaway checkout.
  *
- * A SIBLING of `repoRoot`, never under it: verify scans the whole repo with porcelain
- * `--untracked-files=all`, so a tree inside the repo is itself untracked dirt. Dependencies are
+ * The tree is at `probeWorktreePath`, under the repo's `.worktrees/`. Dependencies are
  * symlinked only (`linkShareableDeps` — the project's `.pi/worktree-setup` is arbitrary code and
  * this probe never runs it). The report is read BEFORE the `finally` removes the tree: a roster
  * re-read after teardown is a roster read from nothing.

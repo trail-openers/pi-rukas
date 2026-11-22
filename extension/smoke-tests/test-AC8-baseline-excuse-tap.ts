@@ -46,7 +46,7 @@ const RED: BaseProbe = { status: "red" };
 
 /** Two trees that are definitely different directories. */
 const HEAD_ROOT = "/tmp/pi-rukas-2064-tap/worktree";
-const PROBE_ROOT = "/tmp/pi-rukas-2064-tap/repo.baseline-lean-verify-9";
+const PROBE_ROOT = "/tmp/pi-rukas-2064-tap/repo/.worktrees/lean-9-baseline-base";
 
 /** One comparison, on the lines each run printed. */
 function excuseOf(headLines: string[], baseLines: string[]) {

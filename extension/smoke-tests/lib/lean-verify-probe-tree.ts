@@ -17,9 +17,8 @@
 
 import { spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import path from "node:path";
 import { NO_HOOKS } from "../../src/lean/specify-reset.ts";
-import { baselineProbeWorktreePath } from "../../src/lean/verify-baseline.ts";
+import { baselineProbeWorktreePath, probeWorktreePath } from "../../src/lean/verify-baseline.ts";
 import type { VerifyExec } from "../../src/lean/verify-types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 
@@ -29,34 +28,21 @@ import { gitTestEnv } from "./git-test-env.ts";
  * On macOS `tmpdir()` is `/var/…`, a symlink to `/private/var`, and a path built from
  * the raw tmpdir is never equal to the one the probe actually runs in — so a probe call
  * would be mistaken for a HEAD run and answered from the run's own red counter. The
- * tree does not exist yet, so `realpathSync` cannot resolve it; its PARENT (which the
- * fixture created) is canonicalised and the leaf re-joined.
+ * tree does not exist yet, so the repo root (which the fixture created) is canonicalised
+ * and the probe path built from it.
  */
 export function canonicalProbeDir(repoRoot: string, issue: number): string {
-  const probePath = baselineProbeWorktreePath(repoRoot, issue);
-  const probeParent = path.dirname(probePath);
-  return path.join(realpathSync(probeParent), probePath.slice(probeParent.length + 1));
+  return baselineProbeWorktreePath(realpathSync(repoRoot), issue);
 }
 
 /**
  * The ROSTER's throwaway checkout of the base commit, canonicalised the same way.
  *
- * `verify-roster.ts` builds its own sibling tree rather than reusing the baseline probe's, and the
- * stub has to recognise the `worktree add` that creates it. The same `/var` → `/private/var` rule
- * that makes `canonicalProbeDir` necessary makes this one necessary: a path built from the raw
- * tmpdir is never the path the step actually checks out to, and a stub that cannot name the tree
- * cannot bare it of the dependencies a case says it never received.
+ * `verify-roster.ts` builds its own tree rather than reusing the baseline probe's, and the stub has
+ * to recognise the `worktree add` that creates it.
  */
 export function canonicalRosterProbeDir(repoRoot: string, issue: number): string {
-  const trimmed = repoRoot.replace(/[/]+$/, "");
-  const cut = trimmed.lastIndexOf("/");
-  const probePath = `${trimmed.slice(0, cut)}/${trimmed.slice(cut + 1)}.roster-lean-verify-${String(issue)}`;
-  const probeParent = path.dirname(probePath);
-  try {
-    return path.join(realpathSync(probeParent), probePath.slice(probeParent.length + 1));
-  } catch {
-    return probePath;
-  }
+  return probeWorktreePath(realpathSync(repoRoot), issue, "roster");
 }
 
 /**

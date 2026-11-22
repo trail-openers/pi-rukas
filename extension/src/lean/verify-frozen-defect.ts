@@ -32,6 +32,7 @@ import {
   runFreezeCheck,
 } from "./freeze-check.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
+import { probeWorktreePath } from "./verify-baseline.ts";
 import type { VerifyExec } from "./verify-types.ts";
 
 /** The probe's git calls are the driver's, so they get the host-channel env. */
@@ -119,8 +120,5 @@ async function runCheckWithoutFrozen(
 
 /** The throwaway checkout of HEAD the freeze check's attribution run happens in. */
 function frozenContractProbePath(repoRoot: string, issue: number): string {
-  // SIBLING to the repo: a probe tree inside it is a stray path every porcelain read reports.
-  const trimmed = repoRoot.replace(/[/]+$/, "");
-  const cut = trimmed.lastIndexOf("/");
-  return `${trimmed.slice(0, cut)}/${trimmed.slice(cut + 1)}.freeze-check-lean-verify-${issue}`;
+  return probeWorktreePath(repoRoot, issue, "freeze-check");
 }

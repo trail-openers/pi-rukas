@@ -418,14 +418,11 @@ function probeTreeLeftBehind(repoRoot: string, issue: number): string {
   );
 }
 
-// -------- (i) the probe's throwaway checkout is a sibling of the repo, never under it
+// -------- (i) the probe's throwaway checkout is under the repo's `.worktrees/`, outside the run's tree
 {
-  // `verify` sweeps the WHOLE repo with `git status --porcelain --untracked-files=all`
-  // before and after its runs, so a throwaway tree checked out under `repoRoot` is
-  // itself untracked dirt: the probe would hand the run back for its own checkout, and
-  // (worse) a case could pass while the gate corrupted the tree it is judging. The
-  // fixture builds `repoRoot` under a fresh temp dir, so "not under repoRoot" is the
-  // whole of the invariant this case can state.
+  // A sandboxed cycle may mount only the repository writable, so the probe cannot go beside
+  // it. `verify`'s porcelain scans read the run's own worktree, so the probe must never be
+  // inside THAT tree: a sibling linked tree under `.worktrees/` is neither.
   const r = await runVerify({
     issue: 310,
     implement: true,
@@ -435,12 +432,12 @@ function probeTreeLeftBehind(repoRoot: string, issue: number): string {
   const repoRoot = r.repoRoot ?? r.worktree;
   const dir = baselineProbeWorktreePath(repoRoot, 310);
   assert(
-    dir.startsWith(`${repoRoot}/`) === false,
-    `(i) the probe tree is a SIBLING of the repo, never inside it (${dir} under ${repoRoot})`,
+    dir.startsWith(`${repoRoot}/.worktrees/`),
+    `(i) the probe tree is under the repo's .worktrees/ (${dir} under ${repoRoot})`,
   );
   assert(
-    dir.startsWith(path.dirname(repoRoot)) && dir !== repoRoot,
-    `(i) the probe tree sits beside the repo under its parent (${dir})`,
+    dir !== r.worktree && !dir.startsWith(`${r.worktree}/`),
+    `(i) and outside the run's own worktree (${dir} vs ${r.worktree})`,
   );
   const left310 = probeTreeLeftBehind(repoRoot, 310);
   assert(left310 === "", `(i) and it is removed afterwards (${left310})`);
