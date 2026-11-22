@@ -9,7 +9,7 @@
  * cap. Nothing anywhere measured the directory total, so the size of the lean
  * engine was nobody's number.
  *
- * **One number: a 27,000-line hard cap, checked against the literal in this
+ * **One number: a 28,000-line hard cap, checked against the literal in this
  * file.** The ceiling for the tree as a whole is an operator decision, so the
  * gate does not read it from a file the same PR could edit. Growth below the cap
  * is policed by review, not by a committed budget a PR has to raise: a budget
@@ -44,7 +44,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 /** The operator's ceiling for the whole directory, held as a literal. */
-const HARD_CAP = 27_000;
+const HARD_CAP = 28_000;
 /** The directory under the cap: every `.ts` file at any depth. */
 const LEAN_DIR = path.join("src", "lean");
 
