@@ -8,6 +8,7 @@
  * half is here so `readForge` owns both forges' argv and row grading while `ci.ts` keeps the decision.
  */
 import { isFullCommitSha } from "../commit-sha.ts";
+import { ghJsonUnsupportedReason } from "../gh-json-unsupported.ts";
 import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import type { CiDeps } from "./ci-deps.ts";
 import { ghReads } from "./ci-deps.ts";
@@ -159,14 +160,15 @@ async function cli(
    *  reply is DATA, not a failed read. */
   okExitCodes: readonly number[] = [],
 ): Promise<string> {
-  const ran = await deps
-    .exec(cmd, {
+  const read = (c: string) =>
+    deps.exec(c, {
       cwd: repoRoot,
       timeout: 60_000,
       maxBuffer: 512 * 1024,
       // The driver's own forge read: this `gh` is a host-channel call, so it gets the host env.
       env: verifyHostEnv(),
-    })
+    });
+  const ran = await read(cmd)
     .then((r) => ({ err: undefined as unknown, out: r as { stdout?: string } | undefined }))
     .catch((err: unknown) => ({ err, out: undefined as { stdout?: string } | undefined }));
   if (ran.err !== undefined) {
@@ -176,7 +178,12 @@ async function cli(
       okExitCodes.includes(e.code) &&
       typeof e.stdout === "string" &&
       e.stdout.trim() !== "";
-    if (!pending) throw new VerifyInfraError(`${why}: the command did not run`);
+    if (!pending) {
+      const unsupported = await ghJsonUnsupportedReason(ran.err, cmd, (c) =>
+        read(c).then((r) => String((r as { stdout?: unknown }).stdout ?? "")),
+      );
+      throw new VerifyInfraError(`${why}: ${unsupported ?? "the command did not run"}`);
+    }
     return String(e.stdout);
   }
   return ran.out?.stdout ?? "";

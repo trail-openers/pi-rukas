@@ -31,6 +31,7 @@
 
 import { prCommentsCmd } from "./forge-commands.ts";
 import { extractCommentRows } from "./forge-comments.ts";
+import { GH_VERSION_CMD } from "./gh-json-unsupported.ts";
 import { isValidRepoValue } from "./merge-allowlist.ts";
 import {
   CONTROL_CHARS,
@@ -280,8 +281,9 @@ export async function refuseUnlessCiGreen(
   // the executor (merge-target.ts), so the bound is honoured rather than
   // decorative. The repo the merge names is threaded too (see the header).
   const repoFlag = opts.repoValue ? ` -R ${opts.repoValue}` : "";
+  // The version probe names no PR, and `gh --version -R …` is itself an unknown flag.
   const bounded: MergeExecFn = async (cmd, o) =>
-    execFn(cmd + repoFlag, { ...o, timeout: timeoutMs });
+    execFn(cmd === GH_VERSION_CMD ? cmd : cmd + repoFlag, { ...o, timeout: timeoutMs });
   // The wall-clock backstop: a stubbed or custom executor that ignores
   // `timeout` must not turn the guard's fail-closed gate into an open one.
   // Refusing as tooling is the same answer a slow `gh` gets.

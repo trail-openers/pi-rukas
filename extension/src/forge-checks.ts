@@ -22,6 +22,7 @@ import { mapGhChecks } from "./forge-mapping.ts";
 import { glPipelineJobs, glPipelineJobsAt } from "./forge-pipeline.ts";
 import type { ForgeRun } from "./forge-pipeline.ts";
 import type { NormalizedCICheck } from "./forge-types.ts";
+import { ghJsonUnsupportedReason } from "./gh-json-unsupported.ts";
 
 /** The adapter seam these checks need — the `run` the Forge object closes over. */
 export interface ForgeChecksDeps {
@@ -35,10 +36,14 @@ export function forgeChecks(deps: ForgeChecksDeps) {
   return {
     prChecks: async (number: number): Promise<NormalizedCICheck[]> => {
       if (forge === "github") {
-        return run(cmds.prChecksCmd(forge, number), (stdout) => {
+        const cmd = cmds.prChecksCmd(forge, number);
+        return run(cmd, (stdout) => {
           const parsed = JSON.parse(stdout || "[]");
           if (!Array.isArray(parsed)) throw new Error("forge: checks not an array");
           return mapGhChecks(parsed);
+        }).catch(async (err: unknown) => {
+          const unsupported = await ghJsonUnsupportedReason(err, cmd, (c) => run(c, (s) => s));
+          throw unsupported ? new Error(`forge: ${unsupported}`) : err;
         });
       }
       // GitLab: list the MR's pipelines, take the most recent, list its jobs.
