@@ -27,24 +27,15 @@ interface BlockedExtraction {
   skipped: number;
 }
 
-/** A path the extractor can hand on: a non-empty string with no NUL. */
-function usablePath(p: unknown): p is string {
-  return typeof p === "string" && p.trim() !== "" && !p.includes("\0");
-}
-
-/** A reason worth printing: prose, non-empty, with no NUL in it. */
-function usableReason(r: unknown): r is string {
-  return typeof r === "string" && r.trim() !== "" && !r.includes("\0");
-}
-
 /** An entry the extraction may carry: an object whose path and reason both read. */
 function isBlockedRow(entry: unknown): entry is BlockedRow {
   if (!entry || typeof entry !== "object") return false;
   const e = entry as Record<string, unknown>;
-  return usablePath(e.path) && usableReason(e.reason);
+  return usablePath(e.path) && usablePath(e.reason);
 }
 
 import { RECORD_MAX_ENTRIES, RECORD_REASON_MAX_CHARS } from "./state-outcome-maps.ts";
+import { usablePath } from "./submit-tests-extract.ts";
 
 /**
  * How many entries the whole extraction may hold and how long one reason may be. Both are the DURABLE

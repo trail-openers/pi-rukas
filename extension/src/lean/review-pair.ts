@@ -2,13 +2,9 @@
  * lean/review-pair — pass 1's two children, bought together, and what they owe
  * back before the step decides anything.
  *
- * Split from `review.ts` for the 500-line cap (AGENTS.md §12) along the seam this
- * change created: the step is the decision procedure (which verdict ends the wave,
- * what a fixer is told), and this is the ONE place that buys the full review's two
- * children. They were serialised — the gate was awaited, and its non-blocking
- * findings were printed into every lens brief — and the overlap is what makes the
- * step cheaper, so the ordering is the thing a reader must not have to re-derive
- * from a call site: it is stated here, in the module that owns it, once.
+ * The step is the decision procedure (which verdict ends the wave, what a fixer is
+ * told); this is the ONE place that buys the full review's two children, and the
+ * overlap is what makes the step cheaper, so the ordering is stated here, once.
  *
  * Three rules the caller cannot see from the outside and cannot enforce itself:
  *

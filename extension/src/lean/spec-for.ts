@@ -1,10 +1,8 @@
 /**
  * lean/spec-for — the ONE way a step reads its contract.
  *
- * Nine steps re-parsed the issue body themselves, which was fine while the body
- * was the only source and stopped being fine the moment `derive` put a second one
- * on the record: a step still calling `parsePiSpec(body)` would decline a run
- * whose contract the run already held, at the step where a decline is expensive.
+ * A step calling `parsePiSpec(body)` itself would decline a run whose contract
+ * `derive` already put on the record, at the step where a decline is expensive.
  * Every caller asks this module instead, and one rule decides for all of them: the
  * body's block wins whenever it parses; the persisted `derivedSpec` stands in ONLY
  * for the `no pi-spec v1 block` reason, so every other failure returns unchanged
@@ -53,4 +51,25 @@ export function specFor(body: string, run: ContractSource): SpecFor {
  * `require` run can never print `spec: derived` on its PR. */
 export function specSource(run: ContractSource): SpecSource {
   return run.derivedSpec === undefined ? "issue" : "derived";
+}
+
+/**
+ * The issue re-read for a step, and its contract: an unread body or an unusable spec
+ * is infrastructure, thrown as `fail(message)`. The body is the SAME fetch the spec
+ * was parsed from, kept for the child's brief — never a second one (`lean/issue-prose.ts`).
+ */
+export async function rereadSpec(
+  fetchBody: () => Promise<string>,
+  run: ContractSource,
+  fail: (message: string) => Error,
+): Promise<{ spec: PiSpec; body: string }> {
+  let body: string;
+  try {
+    body = await fetchBody();
+  } catch (err) {
+    throw fail(`could not read the issue: ${(err as Error).message}`);
+  }
+  const read = specFor(body, run);
+  if (!read.ok) throw fail(`the issue's spec is unusable: ${read.reason}`);
+  return { spec: read.spec, body };
 }

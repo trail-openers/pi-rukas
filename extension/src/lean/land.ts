@@ -21,10 +21,11 @@
  *      evidence (`gatherMergeEvidence`) reports the head the CI verdict was read
  *      at, from the same read as `mergeStateStatus`; it must equal the newest
  *      decided `verify`'s `verifiedHead`. Anything else → `refused`, naming both.
- *   3. **May this author's PR be landed at all?** (#2181) The PR's author must be
+ *   3. **May this author's PR be landed at all?** The PR's author must be
  *      listed in `.pi/merge-authors` at the run's `baseSha` — the same gate file,
- *      the same base commit, and the same shared function the `/work` driver's
- *      `merged` step and the merge guard call. An allowlist that is absent,
+ *      the same base commit, and the same shared function (`heldForMergeAuthor`,
+ *      via `deps.checkAuthor`) the `/work` driver's `merged` step and the merge
+ *      guard call. An allowlist that is absent,
  *      unreadable or empty, and an author the forge did not report, all →
  *      `refused`. No override reaches it: `autoMerge` grants that the project
  *      permits landing, not that this person's PR may be landed.
@@ -101,7 +102,7 @@ export async function landOutcome(ctx: HandlerCtx, deps: LandDeps): Promise<Outc
       return refuse(
         `the PR head ${prHead.slice(0, 12)} is not the verified head ${head.slice(0, 12)}`,
       );
-    // #2181 — the merge-author gate, after every check that could refuse and
+    // The merge-author gate, after every check that could refuse and
     // before the one call that cannot be undone. The author comes from the
     // evidence read above (`mergeEvidenceViewCmd` carries `author`), so the login
     // judged belongs to the same PR state the head pin was taken from; the

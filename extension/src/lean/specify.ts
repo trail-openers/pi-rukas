@@ -53,22 +53,19 @@ import type { WriteFence } from "../write-fence-contract.ts";
 import { testsFromLog } from "./build.ts";
 import { testLocationOf } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
-import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { fetchIssueBody } from "./io.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
 import { specFor } from "./spec-for.ts";
 import { type PiSpec, readiness } from "./spec.ts";
 import { runSpecifyAttempt } from "./specify-attempt.ts";
 import type { CaptureResult } from "./specify-capture.ts";
 import { assertRunnerCanRunTests } from "./specify-preflight.ts";
-import { RED_PROOF_CONTRACT, namingLine, testCriteria } from "./specify-prompt.ts";
+import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
 import { SpecifyResetError } from "./specify-reset.ts";
 import { SpecifyInfraError } from "./specify-run.ts";
 import {
   assertSpecifyWorktreeOwned,
-  declaredPaths,
   ensureSpecifyWorktreeWithProvision,
   specifyBranch,
   specifyWorktreePath,

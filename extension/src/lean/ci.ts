@@ -40,7 +40,6 @@ import { CI_POLL_MS } from "./ci-poll.ts";
 import { ciTierBudgetMs } from "./ci-tier-budget.ts";
 import { checksRedReason, ciConfig, tierFailure } from "./ci-tier.ts";
 import { DEFAULT_BUDGETS, type WorkConfig } from "./config.ts";
-import { MINUTE_MS } from "./deadline.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { prNumberFromLog } from "./review-log.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
@@ -53,7 +52,6 @@ import {
   clipNames,
 } from "./state-outcome-gates.ts";
 import type { RedRecord } from "./state-outcome-gates.ts";
-import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { Outcome, Step } from "./state.ts";
 import { newestVerifiedHead } from "./state.ts";
 import { budgetFor } from "./step-budget.ts";

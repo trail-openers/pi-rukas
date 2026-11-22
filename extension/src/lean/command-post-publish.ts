@@ -2,10 +2,8 @@
  * Register the lean handlers on the run's handler table, and prime what a step's
  * seam can only answer synchronously.
  *
- * Split from `command.ts` for the 500-line cap. `command.ts` owns the command
- * registration, the `ready` verdict and the phase-1 handler wiring; this file owns
- * the two post-publish steps' wiring, which has one non-obvious line in it and
- * the jsdoc below is the reason it exists.
+ * `command.ts` owns the command registration, the `ready` verdict and the phase-1
+ * handler wiring; this file owns the two post-publish steps' wiring.
  */
 
 import { ciDeps } from "./ci-deps.ts";

@@ -201,7 +201,7 @@ export async function runTestPipeline(
   args: RunTestsArgs,
   input: { toolUses: unknown[] },
 ): Promise<PipelineVerdict> {
-  const { exec, wt, branch, headBefore, issue } = args;
+  const { exec, wt, branch, headBefore } = args;
 
   // 1. Extract and validate at the boundary: a row whose path is not an ordinary file of THIS worktree is
   //    dropped before a byte of it is read.

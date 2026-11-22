@@ -20,7 +20,6 @@ import {
   type LeanRun,
   type LeanState,
   LeanStateError,
-  type Outcome,
   type Position,
   REPORT_STATES,
   type RunCounters,

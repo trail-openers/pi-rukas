@@ -1,9 +1,8 @@
 /**
  * lean/io — the three things a lean run asks the outside world for.
  *
- * Split from `command.ts` for the brief's 250-line cap, and the split earns its keep beyond the size:
- * `command.ts` is registration and handler wiring, this file is the seam where a lean run touches the forge
- * and git.
+ * `command.ts` is registration and handler wiring; this file is the seam where a lean run touches the
+ * forge and git.
  *
  * Every call is argv-form, so `gh` and `git` never see a shell string here. An issue title or a provider
  * error message cannot become a word the shell re-parses.

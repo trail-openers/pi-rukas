@@ -1,9 +1,8 @@
 /**
  * lean/specify-preflight-write — the probe file's three filesystem acts.
  *
- * Split from `specify-preflight.ts` for the line cap, along a real seam: these are the three calls
- * that touch the worktree's bytes, as opposed to the ones that decide where the probe goes and what
- * its answer means. The write is the act with a security rule on it.
+ * The three calls that touch the worktree's bytes, apart from the ones in `specify-preflight.ts`
+ * that decide where the probe goes and what its answer means. The write is the act with a security rule on it.
  *
  * The rule the whole module exists for: the step owns the worktree's bytes, and a name the base
  * already carries as a link, a directory or a fifo is not a place to put a probe.

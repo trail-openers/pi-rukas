@@ -26,6 +26,7 @@
 import { isFullCommitSha } from "../commit-sha.ts";
 import { GATE_SEVERITIES, type GateSeverity } from "./gate-severities.ts";
 import type { ReviewBoundRecord } from "./review-bound.ts";
+import { isCount } from "./state-dispatches.ts";
 import { PREEXISTING_NAMES_CAP } from "./state-outcome-maps.ts";
 
 /** How many review rounds one step's record may name. */
@@ -104,11 +105,6 @@ export interface RedRecord {
   tiers: string[];
   /** The criterion ids the failing checks answer for, as the gate read them. */
   criteria: string[];
-}
-
-/** Is this a count a severity tally can hold? Same question `isCount` asks of a ceiling. */
-function isCount(value: unknown): boolean {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 /** A short name a host can print, from whoever authored it. */

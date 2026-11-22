@@ -12,20 +12,13 @@
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
-import type { DispatchUsage } from "../types.ts";
-import { HANDOFF_CHANNELS, type HandoffChannel } from "../work-driver-handoff-channel.ts";
-import { CRITERION_ID } from "./spec.ts";
+import { HANDOFF_CHANNELS } from "../work-driver-handoff-channel.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
 import { canonicalDerivedSpec } from "./state-derived-spec.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";
 import { derivedSpecProblem } from "./state-derived-spec.ts";
 import { reviewBoundProblem, validatedReviewBound } from "./state-dispatches.ts";
-import {
-  DISPATCHES_MAX_ROWS,
-  dispatchesProblem,
-  isMeasure,
-  validatedDispatches,
-} from "./state-dispatches.ts";
+import { dispatchesProblem, isCount, validatedDispatches } from "./state-dispatches.ts";
 import {
   buildRedRecord,
   buildReviewRecord,
@@ -33,8 +26,6 @@ import {
   reviewRecordProblem,
 } from "./state-outcome-gates.ts";
 import {
-  BLOCKED_PATH_CAP,
-  BLOCKED_REASON_CAP,
   blockedByProblem,
   commandCriteriaProblem,
   commandNotRunnableProblem,
@@ -49,7 +40,7 @@ import {
 // The two print caps for a `blockedBy` entry live with the validator that enforces the
 // record's own bound; re-exported so a caller need not know which file holds them.
 export { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./state-outcome-maps.ts";
-import type { LeanState, Outcome, Step } from "./state.ts";
+import type { LeanState, Outcome } from "./state.ts";
 // Re-exported so every consumer's import site stays where it was.
 export { DISPATCHES_MAX_ROWS, validatedDispatches } from "./state-dispatches.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
@@ -216,15 +207,6 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
 
 /** The ceilings a budget verdict may name; the only reader of the field's type. */
 const LIMITS = ["minutes", "turns", "tokens"] as const;
-
-/**
- * Is this a count a ceiling can be compared against? A float, a negative or `Infinity` is
- * not a number of turns anyone counted, and `1e400` arrives as `Infinity` from JSON — the
- * reader that validates and the builder that rebuilds ask the SAME question.
- */
-function isCount(value: unknown): boolean {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
 
 /** Is this value one of the ceilings {@link LIMITS} names? No cast involved. */
 function isBudgetLimit(value: unknown): value is LeanLimit {

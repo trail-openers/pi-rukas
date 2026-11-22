@@ -29,25 +29,11 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { resolveHeadShaOutcome } from "../review-head-sha.ts";
-import { traceWarn } from "../trace.ts";
-import { netRefProblem } from "../work-driver-net-git.ts";
-import { assertSafeRef } from "../worktree-loss.ts";
-import { provisionWorktree } from "../worktree-provision.ts";
-import { frozenMatches } from "./build-git.ts";
-import type { HandlerCtx } from "./engine.ts";
-import type { ReviewWave } from "./review-args.ts";
-import {
-  type FixArm,
-  closeFixTrees,
-  removeWorktree,
-  restore,
-  restoredSentence,
-} from "./review-tree.ts";
 import type { ReviewDeps } from "./review.ts";
-import { FIX_BOUND_MS, type FixRunId, ReviewInfraError } from "./review.ts";
+import { ReviewInfraError } from "./review.ts";
 import { gitQuiet } from "./specify-reset.ts";
-import type { ContractSource, DerivedSpec } from "./state-derived-spec.ts";
-import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
+import type { ContractSource } from "./state-derived-spec.ts";
+import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
  * The commit this round reviews: origin's branch, as a full sha.

@@ -1,9 +1,7 @@
 /**
  * lean/review-tally — the `review` step's own account of what it judged.
  *
- * Split from `review.ts` for the 500-line gate along the seam the field already
- * drew: `review.ts` is the decision procedure, this is the record it publishes.
- * Both halves — the per-round severity tallies and the heads each fix wave pushed —
+ * `review.ts` is the decision procedure; this is the record it publishes. Both halves — the per-round severity tallies and the heads each fix wave pushed —
  * are step-wide rather than per-pass, because a host asks what the review found IN
  * TOTAL and a second pass that overwrote the first would report a fixed CRITICAL as
  * one the run never saw. `waves` holds only the wave that PUSHED: a first-round

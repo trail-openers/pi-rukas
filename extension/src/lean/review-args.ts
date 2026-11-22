@@ -3,9 +3,7 @@
  * one six-lens round answered back, and what the step needs from the outside
  * world to decide anything.
  *
- * Split from `review.ts` for the 500-line cap: the loop's judgement and the
- * argument shapes of the calls it make change for different reasons, and every
- * sibling that participates in a round compiles against these shapes.
+ * Every sibling that participates in a round compiles against these shapes.
  *
  * Three rules live here rather than on a call site, because a caller can break
  * each silently and the compiler cannot catch it: `LensRound`'s review-layer
@@ -156,17 +154,6 @@ export interface LensArgs {
   /** The step's armed budget, threaded to the lens children. */
   budget: BudgetArms;
 }
-
-/**
- * The fixer's tree identity: the epoch milliseconds its name is minted from.
- *
- * Re-exported from `step-budget.ts`, the module that owns the row it travels in:
- * a brand declared twice is two unrelated types, and the shape has to be one
- * type across the mint site, the row writer and the validator. A branded string
- * rather than an unconstrained one, because the previous shape was fed to
- * `Number()` on its way into the durable record — where anything that was not a
- * decimal integer became `NaN`.
- */
 
 /** The step's dependencies: the outside world, injected. */
 export interface ReviewDeps {

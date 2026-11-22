@@ -1,8 +1,7 @@
 /**
  * lean/state-outcome-record — what a step's handler returned.
  *
- * Split from `state.ts` for the 500-line gate, along the seam the file already
- * draws: `state.ts` owns the on-disk run record and its load rules, this owns the
+ * `state.ts` owns the on-disk run record and its load rules; this owns the
  * verdict SHAPE the handlers write into it. `state.ts` re-exports the type, so
  * every importer keeps spelling `Outcome` from `state.ts`.
  */

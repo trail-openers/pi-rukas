@@ -2,7 +2,7 @@
  * The build step's reason clauses the fold owns: the paths it did NOT keep, the inert configured
  * globs, and the submodule caveat. `build` composes them in TWO places — the `ok` verdict and the
  * ceiling-stopped verdict a budget round builds for itself — so one module holds both and a clause
- * cannot reach one arm and miss the other (#2319 R4). Each function returns parts, not a joined
+ * cannot reach one arm and miss the other. Each function returns parts, not a joined
  * string: the caller keeps `joinNotes` and the clauses that are its own.
  */
 
@@ -65,8 +65,8 @@ export function budgetFoldAccumulator(): {
     clauses: (report) => [
       listClause("reverted: ", reverted),
       listClause(INERT_PREFIX, unmatched),
-      // #2319 Resolution 4: a ceiling-stopped fold owes the submodule disclosure too, and
-      // both its handback and the retry's prompt read this line.
+      // A ceiling-stopped fold owes the submodule disclosure too: its handback and the
+      // retry's prompt both read this line.
       report.submodules ?? "",
     ],
   };

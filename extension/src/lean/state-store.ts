@@ -2,9 +2,8 @@
  * lean/state-store — the run's file: where it lives, and the two operations
  * that touch it.
  *
- * Split from `state.ts` at AGENTS.md §12's line cap along the seam the module
- * already had: `state.ts` says what a run IS (its fields, its states, its
- * validator), this file says where one is kept and how a write survives a crash.
+ * `state.ts` says what a run IS (its fields, its states, its validator); this
+ * file says where one is kept and how a write survives a crash.
  * The paths are exported from here and re-exported by `state.ts`, so callers keep
  * one import site and the layout of `.pi/lean-state/` is stated once.
  */

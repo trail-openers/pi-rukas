@@ -26,8 +26,8 @@ interface SubmitTestsExtraction {
   skipped: number;
 }
 
-/** A path the extractor can hand on: a non-empty string with no NUL. */
-function usablePath(p: unknown): p is string {
+/** A path (or a blocked report's reason) an extractor can hand on: a non-empty string with no NUL. */
+export function usablePath(p: unknown): p is string {
   return typeof p === "string" && p.trim() !== "" && !p.includes("\0");
 }
 

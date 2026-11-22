@@ -24,7 +24,7 @@ import type { ExecFn } from "../worktree.ts";
 import { leanRunnerPreflightEnabled } from "./runner-preflight-switch.ts";
 import {
   type SubmoduleNote,
-  initSubmodules as initWorktreeSubmodules,
+  initSubmodules,
   notesFor,
   submoduleState,
 } from "./specify-submodules.ts";
@@ -279,7 +279,8 @@ export async function resetWorktreeToBase(
       );
     }
   }
-  // What the pass did, kept for the caller: `challenge` and the review fix round fold it into their reason,
+  // The pass sits INSIDE the reset because the reset's own `git clean -fdx` is the most reliable
+  // de-populator a submodule has. What the pass did, kept for the caller: `challenge` and the review fix round fold it into their reason,
   // since an unseeded submodule is a fact about the tree they judge. The clean-tree proof below runs AFTER the
   // pass, so the tree it proves is the one the child gets — including any gitlink this step left empty.
   //
@@ -360,22 +361,4 @@ export async function resetWorktreeToBase(
         .join(", ")}${dirty.length > 8 ? ` (+${dirty.length - 8} more)` : ""}`,
     );
   return carried;
-}
-
-/**
- * Populate the worktree's submodules when its commit has any — the seam into `lean/specify-submodules.ts`,
- * which owns WHERE submodules come from and the disclosure of a submodule this host never had.
- *
- * It sits INSIDE the reset rather than beside it because the reset's own `git clean -fdx` is the most reliable
- * de-populator a submodule has — a tree that looks clean is not a complete one. The disclosure its pass
- * produces is reported by the worktree's owner (`ensureSpecifyWorktreeWithProvision`), kept out of this
- * signature on purpose. `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` returns before git is asked anything.
- */
-async function initSubmodules(
-  exec: ExecFn,
-  wt: string,
-  /** From {@link resetWorktreeToBase}; product code never supplies it. */
-  beforeInit?: (wt: string) => void | Promise<void>,
-): Promise<SubmoduleNote[]> {
-  return initWorktreeSubmodules(exec, wt, beforeInit);
 }

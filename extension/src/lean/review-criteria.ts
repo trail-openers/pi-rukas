@@ -13,7 +13,7 @@
  * `review-spec-split.ts` — not on the loop's params, so classic /work cannot pass
  * criteria in and its reviewer's prompt is unchanged by this feature.
  *
- * The section opens with the spec's `problem` (#2265), because a review seat that
+ * The section opens with the spec's `problem`, because a review seat that
  * reads only the criteria list is a seat that never saw what the run was for: the
  * prose block is bounded at `MAX_ISSUE_CHARS`, and a statement past it lost its
  * tail at every review seat. Two payloads, two bounds — the statement at its own
