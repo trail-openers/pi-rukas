@@ -14,4 +14,9 @@
 #
 # The typecheck names the compiler by PATH, never by alias (#1414/#1118) — see
 # the note in .pi/verify-cmd for why `bun x tsc` silently passed everything.
-cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && cd .. && bun run check && cd extension && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-vipune-capability.ts && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-memory-brief.ts && { files=$(ls "$PWD"/smoke-tests/test-*.ts | grep -v -- '-live[.]ts$'); [ -n "$files" ] || { echo "verify-cmd-full: no offline smoke tests enumerated, refusing to pass an empty suite" >&2; exit 1; }; } && bash smoke-tests/lib/verify-loop.sh --jobs-from-host $files
+#
+# The loop call arms the #2449 per-file ceiling the same way .pi/verify-cmd does:
+# the `:-` keeps an exported value in charge (`0` turns the ratchet off on a loaded
+# host), so this tier is judged by the clock as well as the assertions; the only
+# exemptions live in the shrink-only extension/timing-allowlist.json the ceiling reads.
+cd extension && node node_modules/typescript/bin/tsc --noEmit -p tsconfig.json && cd .. && bun run check && cd extension && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-vipune-capability.ts && PI_ENSEMBLE_VIPUNE_REQUIRED=1 bun smoke-tests/test-memory-brief.ts && { files=$(ls "$PWD"/smoke-tests/test-*.ts | grep -v -- '-live[.]ts$'); [ -n "$files" ] || { echo "verify-cmd-full: no offline smoke tests enumerated, refusing to pass an empty suite" >&2; exit 1; }; } && PI_ENSEMBLE_VERIFY_TIMING_CEILING_S="${PI_ENSEMBLE_VERIFY_TIMING_CEILING_S:-30}" bash smoke-tests/lib/verify-loop.sh --jobs-from-host $files
