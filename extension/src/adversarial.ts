@@ -84,13 +84,16 @@ export async function runAdversarialLoop(
   const tally = createUsageTally();
   const { usage } = tally;
 
+  const toolPath = isToolPathProvenance(params.toolPath);
   // #980 — resolve the branch ONCE before the loop (shared helper: explicit
   // `branch` → branch-named `head` ref → rev-parse). The VISIBLE not-recorded
-  // note is threaded into every tool-path result; `ledgerWrite` keys on the SAME branch.
+  // note is threaded into every tool-path result, and on the tool path it fails
+  // the result; `ledgerWrite` keys on the SAME branch.
   const { branch: branchResolved, withLedgerNote } = await buildLedgerNote({
     branch: params.branch,
     head: params.head,
     workCwd: params.workCwd,
+    failUnrecorded: toolPath,
   });
 
   const fenceRecords: FenceRecord[] = [];
@@ -98,7 +101,6 @@ export async function runAdversarialLoop(
   // #1360 — the ledger wiring, built where the writer it configures lives. The
   // provenance marker travels UN-narrowed: the writer narrows it itself, so a
   // boolean here would read `false` and take the row off its bindings.
-  const toolPath = isToolPathProvenance(params.toolPath);
   const {
     binding: ledgerBinding,
     write: ledgerWrite,

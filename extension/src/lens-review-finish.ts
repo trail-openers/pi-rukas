@@ -27,6 +27,7 @@
  * write (see `writeLensLedgerEntry` — the promise is the #984 test seam).
  */
 
+import { DETACHED_KEY_PREFIX } from "./lens-budget-key.ts";
 import {
   type LensLedgerOutcome,
   type LensPatchIdentity,
@@ -35,6 +36,7 @@ import {
 import type { LensReviewSummary } from "./lens-review-format.ts";
 import { postLensResidualDisclosure } from "./lens-review-residuals.ts";
 import type { Severity } from "./lens-review.ts";
+import { NOT_RECORDED_NOTE } from "./review-branch.ts";
 import type { LedgerEntry } from "./review-ledger.ts";
 import { type ReviewSeverity, SEVERITIES } from "./review-threshold.ts";
 
@@ -163,6 +165,14 @@ async function finish(
       summary.note =
         "Residual-findings disclosure NOT posted — no branch could be resolved for this review (detached head with no `branch` argument and no branch-named `head`), so no open PR/MR could be looked up. The merge guard's round-cap path will refuse until the marker is posted on the PR — run the review with an explicit `branch` (or on the branch's own checkout) and re-run.";
     }
+  }
+  // The row is keyed on the resolved branch, else on the round key — and a
+  // `detached:` key is one no PR head can carry, so such a review is on file
+  // for nothing the merge guard reads.
+  const key = ledger.ledgerKey ?? branch;
+  if (!branch && (key === undefined || key.startsWith(DETACHED_KEY_PREFIX))) {
+    summary.unrecorded = true;
+    summary.note = summary.note ? `${summary.note}\n\n${NOT_RECORDED_NOTE}` : NOT_RECORDED_NOTE;
   }
   return { summary, ledgerWrite };
 }

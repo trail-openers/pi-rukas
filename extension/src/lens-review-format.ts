@@ -88,6 +88,12 @@ export interface LensReviewSummary {
    */
   note?: string;
   /**
+   * Set when no branch-keyed ledger row can come from this review (no branch
+   * resolved, and its round key is `detached:<sha>` or absent), so the merge
+   * guard will never see it. The tool reports such a review as failed.
+   */
+  unrecorded?: boolean;
+  /**
    * #973 — this review ran against a delta (`git diff <since>..<head>`) rather
    * than the full branch diff. `auto` marks the automatic delta base (design
    * decision 6 — `since` defaulted to the latest lens ledger entry's `headSha`)

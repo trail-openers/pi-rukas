@@ -150,7 +150,7 @@ For `ROUND_CAP_REACHED`:
 
 `PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE=1` is the operator's environment setting only (recorded on the ledger entry as `overrideCap: true`); it now only silences the warning. PM must not set that variable or ask a subagent to. The tool still refuses (`ROUND_CAP_REACHED`, nothing recorded) when the budget cannot be verified: no budget key, no patch id, an unreadable ledger, or a corrupt counter.
 
-A review with no resolvable branch (a detached or SHA head, e.g. `/do` step 6) is admitted **unbudgeted** with a visible note ("round budget not applied (no ledger row)"): it writes no ledger row and counts against no round. That is not a refusal and not `ROUND_CAP_REACHED`.
+A review with no resolvable branch (a detached HEAD or a SHA `head`, with no `pr`) records no row the merge guard can read, so the tool reports it as **failed** (`REVIEW NOT RECORDED`), whatever its verdict. Review a worktree that is on its branch: `/do` creates its worktree on one, and a `developer` dispatched into a detached worktree is moved onto `wt/<worktree name>` before it starts. Open that tree's PR from `wt/<worktree name>`: the guard matches rows against the PR's head branch, so a renamed branch needs both reviews re-run.
 
 Handoff artifact has three pieces (concrete shapes in `/work` Step 7g and `/plan` Phase 4g):
 

@@ -411,6 +411,30 @@ await withEnv(
           `(4) and the LEDGER AGREES: passed=true against the mainline's HIGH bar (got ${String(row?.passed)}, detail ${String(row?.detail)})`,
         );
       }
+
+      // ── (5) A clean round on a detached HEAD with no branch records no row the
+      // guard reads, so the tool reports it as failed whatever its verdict. The
+      // commit is one no branch points at, so no branch can stand in for HEAD.
+      {
+        git("checkout", "-q", "--detach", "HEAD");
+        git("commit", "-q", "--allow-empty", "-m", "detached work");
+        const before = sent.length;
+        const tool = tools.get("dispatch_lens_review");
+        if (!tool) throw new Error("the lens review tool did not register");
+        await tool.execute("t-detached", {
+          cwd: repo,
+          diff: "diff --git a/src-a.ts b/src-a.ts\n+export const b = 2;",
+          full: true,
+        });
+        await waitFor(() => sent.length > before);
+        const report = sent.slice(before).join("\n");
+        assert(
+          /: APPROVED/.test(report) &&
+            report.includes("REVIEW NOT RECORDED") &&
+            !report.includes("Continue the workflow"),
+          `(5) a detached, unrecorded APPROVED round is a failed tool result (${report.slice(0, 240).replace(/\n/g, " ")})`,
+        );
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

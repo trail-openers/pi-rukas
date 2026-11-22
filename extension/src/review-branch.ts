@@ -60,13 +60,13 @@ export interface ResolveReviewBranchResult {
 }
 
 /**
- * The VISIBLE "review NOT recorded in the merge ledger" note a tool-path
- * result carries when `resolveReviewBranch` returns no branch (the pre-#980
- * skip was trace-only — the tool result was byte-identical to a recorded
- * review). One string, shared by `runLensReview` and `runAdversarialLoop`.
+ * The note a tool-path result carries when its review recorded no branch-keyed
+ * row: such a result is a failed review, never a clean one, because a verdict
+ * the merge guard cannot read gates nothing. One string, shared by
+ * `runLensReview` and `runAdversarialLoop`.
  */
 export const NOT_RECORDED_NOTE =
-  "Note: this review was NOT recorded in the merge ledger — no branch could be resolved (detached head, no explicit branch, no branch-named head), so the merge guard has no review on file for this checkout; run the review on the branch's own checkout (or with a branch-named `head`) to record it.";
+  "REVIEW NOT RECORDED — no branch could be resolved (detached head, no explicit branch, no branch-named head), so nothing was recorded in the merge ledger for the merge guard to read. Put the checkout on its branch (`git -C <worktree> switch -c <branch>`; a developer dispatched into the worktree does this for you) or pass a branch-named `head`, then re-run the review.";
 
 /**
  * Resolve the branch a review's ledger entry and disclosure marker are keyed

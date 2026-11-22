@@ -194,6 +194,7 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
               !summary.noReview &&
               summary.verdict !== "CRITICAL_ISSUES_FOUND" &&
               summary.verdict !== "REVIEW_INCOMPLETE" &&
+              !summary.unrecorded &&
               !refused,
             text: extra.length > 0 ? `${text}\n\n${extra.join("\n\n")}` : text,
             toolUses: [],

@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "@sinclair/typebox";
 import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import { startBatch, startJob } from "./async-jobs.ts";
+import { prepareDevelopTree } from "./develop-branch.ts";
 import {
   MAX_MINUTES_DESCRIPTION,
   MAX_TURNS_DESCRIPTION,
@@ -316,6 +317,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
       const budget = budgetArms(params as { maxTurns?: unknown; maxMinutes?: unknown });
       assertNotDriverWorktree(spec);
       assertWithinCycleIssues(spec, ctx?.mode);
+      const treeNote = await prepareDevelopTree(spec.role, spec.cwd);
       // #1015 — the report's git-state line runs here; the child still gets spec unchanged.
       const cwd = spec.cwd ?? process.cwd();
       const { jobId } = startJob(pi, {
@@ -348,7 +350,7 @@ export function registerDispatchTools(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `Dispatched async [${spec.role}] job ${jobId}. Final report will arrive as a [ensemble:async] user message. End your turn or proceed with other parallel work.`,
+            text: `Dispatched async [${spec.role}] job ${jobId}. Final report will arrive as a [ensemble:async] user message. End your turn or proceed with other parallel work.${treeNote ? `\n${treeNote}` : ""}`,
           },
         ],
         details: { jobId, role: spec.role, async: true },
@@ -401,6 +403,11 @@ export function registerDispatchTools(pi: ExtensionAPI) {
         assertNotDriverWorktree(spec);
         assertWithinCycleIssues(spec, ctx?.mode);
       }
+      const treeNotes: string[] = [];
+      for (const spec of specs) {
+        const note = await prepareDevelopTree(spec.role, spec.cwd);
+        if (note) treeNotes.push(note);
+      }
       // Share a runId so all children in this batch sort together on disk.
       const runId = makeRunId();
       const { batchId } = startBatch(pi, {
@@ -449,7 +456,10 @@ export function registerDispatchTools(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `Dispatched async batch of ${specs.length} specialist(s); batch ${batchId}. ONE consolidated report will arrive as a [ensemble:async] user message when ALL children finish. End your turn or proceed with other parallel work.`,
+            text: [
+              `Dispatched async batch of ${specs.length} specialist(s); batch ${batchId}. ONE consolidated report will arrive as a [ensemble:async] user message when ALL children finish. End your turn or proceed with other parallel work.`,
+              ...treeNotes,
+            ].join("\n"),
           },
         ],
         details: { batchId, size: specs.length, async: true },
