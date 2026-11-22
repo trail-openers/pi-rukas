@@ -5,9 +5,10 @@
  * #545 same-issue salvage (`work-driver-branch-salvage.ts`):
  * `salvageUncommittedWork` (git diff HEAD + the untracked manifest + the
  * untracked file contents into `<scratch>/salvage/<name>/`) and
- * `salvageDirtyWorktree` (that salvage + a durable tag on the worktree's
- * HEAD when it carries commits). One copy of "what must survive a forced
- * worktree removal" so the sites cannot drift.
+ * `salvageDirtyWorktree` (that salvage + a stop-salvage ref on the
+ * worktree's HEAD when it carries commits). One copy of "what must survive a
+ * forced worktree removal" so the sites cannot drift. The ref lives under
+ * `refs/pi-rukas/` so the merged cycle's ref prune reaches it.
  */
 
 import { cp, mkdir, writeFile } from "node:fs/promises";
@@ -52,7 +53,7 @@ export async function salvageDirtyWorktree(
   execFn: ExecFn,
   repoRoot: string,
   wtPath: string,
-  fromRef: string,
+  issue: number,
   scratch: string,
   finding: DirtyWorktreeFinding | undefined,
 ): Promise<{ refs: string[]; salvageDir?: string }> {
@@ -69,22 +70,31 @@ export async function salvageDirtyWorktree(
     }
   }
   if (finding && finding.unpushedCommitCount > 0) {
-    try {
-      const { stdout } = await execFn("git rev-parse HEAD", { cwd: wtPath, maxBuffer: 64 * 1024 });
-      const head = stdout.trim();
-      if (head) {
-        const tag = `pi-rukas-salvage/${path.basename(wtPath)}-${Date.now()}`;
-        await execFn(`git tag ${JSON.stringify(tag)} ${JSON.stringify(head)}`, {
-          cwd: repoRoot,
-          maxBuffer: 64 * 1024,
-        });
-        refs.push(`${tag} → ${head}`);
-      }
-    } catch (err) {
-      trace(
-        `worktree-salvage: tag for ${wtPath} failed (non-fatal): ${(err as Error).message?.slice(0, 200)}`,
-      );
-    }
+    // No catch: a tree whose commits could not be kept is not removed.
+    const { stdout } = await execFn("git rev-parse HEAD", { cwd: wtPath, maxBuffer: 64 * 1024 });
+    const head = stdout.trim();
+    const ref = await writeStopSalvageRef(execFn, repoRoot, issue, path.basename(wtPath), head);
+    refs.push(`${ref} → ${head}`);
   }
   return { refs, salvageDir };
+}
+
+/**
+ * Keep `sha` on the ref a removed tree's otherwise unreachable work lives on.
+ * The SHA is part of the name, so a later stop of a same-named tree adds a ref
+ * and never moves one. Exit 0 of `update-ref` is the evidence; anything else throws.
+ */
+export async function writeStopSalvageRef(
+  execFn: ExecFn,
+  repoRoot: string,
+  issue: number,
+  treeName: string,
+  sha: string,
+): Promise<string> {
+  if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) {
+    throw new Error(`not a commit SHA: ${JSON.stringify(sha.slice(0, 64))}`);
+  }
+  const ref = `refs/pi-rukas/stop-salvage/issue-${issue}/${treeName}/${sha}`;
+  await execFn("git", { cwd: repoRoot, maxBuffer: 64 * 1024, argv: ["update-ref", ref, sha] });
+  return ref;
 }

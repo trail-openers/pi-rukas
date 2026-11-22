@@ -41,7 +41,7 @@ export function explainContinueCap(cap: ContinuePrCap, evidence: string | undefi
     case "continue-pr-head-moved":
       return `the PR's head branch moved while the cycle ran (${ev}). Someone else pushed to it, deleted it or rewound it. The driver never force-pushes, so it stopped rather than overwrite or build on commits it did not check.`;
     case "continue-pr-unresolved":
-      return `the merge of the mainline into the PR's head is not finished (${ev}). A conflict, a leftover conflict marker, or a history the driver did not expect remains in the worktree, so nothing was pushed. The worktree is kept as it is.`;
+      return `the merge of the mainline into the PR's head is not finished (${ev}). A conflict, a leftover conflict marker, or a history the driver did not expect remains in the worktree, so nothing was pushed. The handoff removes the worktree unless the worktree state lists it as retained: its files, conflict markers included, are on the stop-salvage ref it names, but the merge state is not, so \`--restart --continue-pr\` redoes the merge.`;
   }
 }
 
@@ -59,6 +59,6 @@ export function continueHumanAction(cap: ContinuePrCap, primary: number): string
     case "continue-pr-head-moved":
       return `wait for the other push to #${primary}'s PR to settle, then re-run with \`--continue-pr\``;
     case "continue-pr-unresolved":
-      return `finish the merge in #${primary}'s kept worktree, or re-run \`/work ${primary} --restart --continue-pr\``;
+      return `re-run \`/work ${primary} --restart --continue-pr\` to redo the merge; the half-finished one is on the stop-salvage ref the handoff names`;
   }
 }

@@ -612,7 +612,7 @@ The caps (each has a row in [troubleshooting.md](troubleshooting.md)):
 | `continue-pr-not-found` | No PR matches, or the lookup could not prove exactly one (a `gh` error, unreadable output, a full page, a forge that is not GitHub). | yes |
 | `continue-pr-unsafe-head` | The head branch name is unsafe or is the mainline, the PR's base is not the mainline, the local branch is ahead of or diverged from the PR head, or another worktree holds the branch at another commit. | yes |
 | `continue-pr-head-moved` | The PR head changed after the lookup, or someone else pushed to it, deleted it or rewound it during the run. | no |
-| `continue-pr-unresolved` | At commit-pr the merge is still unfinished: a conflict, a leftover conflict marker, or a history that no longer has the PR head as its first parent. Nothing is pushed and the worktree is kept. | no |
+| `continue-pr-unresolved` | At commit-pr the merge is still unfinished: a conflict, a leftover conflict marker, or a history that no longer has the PR head as its first parent. Nothing is pushed. The handoff removes the worktree unless it is listed as retained; its files are on the stop-salvage ref, but the merge state is not, so `--restart --continue-pr` redoes the merge. | no |
 
 Any other failure in this mode stops on `step-failed:branch` or `step-failed:commit-pr`. A successful run ends like any other cycle that opened a PR, usually `awaiting-human-merge` with exit 10, and the result carries `issues[].continuedPr`. A host detects the flag with `verbs.work.flags` and `features.continuePr` in `--capabilities`.
 

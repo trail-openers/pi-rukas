@@ -33,7 +33,7 @@ import {
 } from "./work-driver-handoff-post.ts";
 import { renderHandoffBody } from "./work-driver-handoff-render.ts";
 import { captureWorktreeSnapshot } from "./work-driver-handoff-snapshot.ts";
-import { terminaliseHandoff } from "./work-driver-handoff-terminal.ts";
+import { isResumablePark, terminaliseHandoff } from "./work-driver-handoff-terminal.ts";
 import { recordHostPark } from "./work-driver-park-memory-host.ts";
 import {
   REPEAT_PARK_REFUSAL_COUNT,
@@ -41,8 +41,8 @@ import {
   recordPark,
 } from "./work-driver-park-memory.ts";
 import { releaseClaim } from "./work-driver-path-claims.ts";
+import { runStopTeardown } from "./work-driver-stop-teardown.ts";
 import { activeIssuesOf, scratchDir } from "./work-driver-workspace.ts";
-import { runWorktreeTeardown } from "./work-driver-worktree-sweep.ts";
 import { foldWriteFenceCount } from "./work-driver-write-fence.ts";
 import { type WorkEvent, type WorkState, appendEvent } from "./workflow-state.ts";
 
@@ -98,9 +98,9 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   // committed work on detached-HEAD worktrees, moving it onto the feature
   // branch here makes the branch genuinely contain the work and the printed
   // `git status` / `push` instructions true; a consolidation failure
-  // degrades to the accurate per-worktree recovery (the worktrees are then
-  // retained by the teardown below). Must never throw — the handoff
-  // completes either way.
+  // degrades to the accurate per-worktree recovery, and the teardown below
+  // keeps whatever no branch holds on a stop-salvage ref before removing the
+  // tree. Must never throw — the handoff completes either way.
   const consolidated =
     process.env.PI_ENSEMBLE_HANDOFF_CONSOLIDATE === "0"
       ? {}
@@ -129,32 +129,17 @@ async function handoff(ctx: CycleContext, stateIn: WorkState, now: number): Prom
   // worktree-aware recovery print the work's true location instead of
   // "0 file(s) modified".
   await captureCommittedWork(snap, ctx.repoRoot, state.pipelineState);
-  // In-cycle teardown: purge build artifacts and retain worktrees as needed.
-  // Guarded by PI_ENSEMBLE_WORKTREE_TEARDOWN=0.
-  // Wrapped in try/catch: teardown must never prevent a handoff from completing.
-  // #674 — the state passed to teardown carries a synthetic handoff-emitted
-  // tail (below) whose `status` is "running": the cycle has not reached its
-  // terminal status until this function returns. `runWorktreeTeardown`
-  // decides removal via `isWorkProvablyOnRemote`, which requires a terminal
-  // status — without the override, even a successful consolidation would
-  // leave every worktree behind (bug 2's accumulation). Without
-  // consolidation the work is NOT on the branch, so the check fails and the
-  // worktrees are retained (and named in the recovery printed from the
-  // snapshot). The override only ever upgrades a check from "not terminal"
-  // to "terminal": it cannot turn a false into a true for work that is not
-  // provably on the branch, because the fetch + HEAD + clean-tree checks
-  // still run against reality.
-  if (process.env.PI_ENSEMBLE_WORKTREE_TEARDOWN !== "0") {
+  // After the snapshot reads and before the render, so the body names only trees
+  // that still exist. A provider park keeps its trees: the re-run re-enters the
+  // halted step in them.
+  if (process.env.PI_ENSEMBLE_WORKTREE_TEARDOWN !== "0" && !isResumablePark(next)) {
     try {
-      const terminalState = {
-        ...next,
-        pipelineState: { ...next.pipelineState, status: "handoff" as const },
-      };
-      const retained = await runWorktreeTeardown({
-        repoRoot: ctx.repoRoot,
-        state: terminalState,
-      });
-      snap.retainedWorktrees = retained;
+      const torn = await runStopTeardown(ctx, next);
+      snap.retainedWorktrees = torn.retained;
+      if (torn.salvaged.length > 0) snap.stopSalvage = torn.salvaged;
+      if (torn.removed.length > 0) snap.removedWorktrees = torn.removed;
+      snap.committedWork = snap.committedWork?.filter((w) => !torn.removed.includes(w.path));
+      if (snap.committedWork?.length === 0) snap.committedWork = undefined;
     } catch (err) {
       trace(`work-driver: worktree teardown failed (non-fatal): ${err}`);
     }

@@ -30,17 +30,15 @@
  *   - **No push.** The branch is local-only at handoff time; the recovery
  *     block the operator gets ends in the push. A failed push must not
  *     destroy the local consolidation.
- *   - **No worktree reset / removal.** After a successful consolidation the
- *     cycle is TERMINAL: the work is on the branch, so the in-cycle teardown
- *     (`runWorktreeTeardown`) removes the worktrees it now covers — that is
- *     the bug-2 cleanup, and it removes only worktrees keyed in
- *     `pipelineState.worktrees` that pass the "work provably on the branch"
- *     check. Nothing here ever deletes a worktree.
+ *   - **No worktree reset / removal.** The stop teardown
+ *     (`runStopTeardown`, work-driver-stop-teardown.ts) removes the trees
+ *     afterwards: a consolidated tree's patches are on the branch, so it goes
+ *     without a ref. Nothing here ever deletes a worktree.
  * Failure mode: ANY failure (dirty repoRoot, cherry-pick conflict, git
  * error) degrades to `{ ok: false, reason }` WITHOUT aborting the handoff —
  * the renderers then fall back to the accurate per-worktree recovery
- * (work-driver-handoff-recovery.ts), and `runWorktreeTeardown` retains the
- * worktrees because the work is not (yet) on a branch. Consolidation must
+ * (work-driver-handoff-recovery.ts), and the stop teardown keeps each tree's
+ * unbranched work on a stop-salvage ref before removing it. Consolidation must
  * never destroy work or block the handoff from completing.
  */
 import { type ForgeDetection, detectForge } from "./forge-detect.ts";

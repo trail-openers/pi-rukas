@@ -206,5 +206,39 @@ export function unreadableSnapshotLines(ps: WorkState["pipelineState"]): string[
   ];
 }
 
+/**
+ * The stop-salvage block, shared by every handoff surface. Names refs, never the
+ * removed tree's path. Empty when the teardown salvaged nothing.
+ */
+export function stopSalvageLines(
+  snap: { stopSalvage?: string[] },
+  bullet: string,
+  item: (ref: string) => string,
+): string[] {
+  if (!snap.stopSalvage?.length) return [];
+  return [
+    `${bullet}work on no branch — its worktree was removed and this ref is the only place it lives (\`git log <ref>\`):`,
+    ...snap.stopSalvage.map(item),
+  ];
+}
+
+/** The handoff teardown removed the tree recorded at `path`. */
+export const removedAtHandoff = (ps: WorkState["pipelineState"], path: string | undefined) =>
+  path !== undefined && ps.handoffSnapshot?.removedWorktrees?.includes(path) === true;
+
+/**
+ * `text` with each recorded path the handoff teardown removed replaced, so text
+ * written at park time (cap evidence, git errors) never names a tree that is gone.
+ */
+export function withoutRemovedTrees(ps: WorkState["pipelineState"], text: string): string {
+  let out = text;
+  for (const p of ps.handoffSnapshot?.removedWorktrees ?? []) {
+    // Whole paths only: a removed `issue-9-a` must not rewrite a retained `issue-9-ab`.
+    const whole = new RegExp(`${p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "g");
+    out = out.replace(whole, "(a worktree the handoff removed)");
+  }
+  return out;
+}
+
 /** A full or abbreviated commit SHA — the only shape a base may take before git. */
 const COMMIT_SHA_SHAPE = /^[0-9a-f]{7,40}$/;

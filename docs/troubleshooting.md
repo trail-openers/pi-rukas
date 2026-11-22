@@ -2106,7 +2106,7 @@ Every cap id the driver can record has exactly one row in this table (`extension
 | `continue-pr-fork` | `--continue-pr` found the issue's PR, but its head is in a fork, which the driver cannot push to. Stopped before the branch step. | Continue that PR by hand. |
 | `continue-pr-head-moved` | During a `--continue-pr` run the PR head changed: someone else pushed to it, deleted it or rewound it. The driver never force-pushes, so it stopped. | Wait for the other push to settle, then re-run with `--continue-pr`. |
 | `continue-pr-not-found` | `--continue-pr` could not prove exactly one open PR for the issue: none matched, `gh` failed, its output was unreadable, the 500-row page was full, or the forge is not GitHub. `evidence` says which. Stopped before the branch step. | Check that the PR is open and `gh pr list` works, then re-run with `--continue-pr`. |
-| `continue-pr-unresolved` | At commit-pr the merge of the mainline into the PR head was not finished: a conflict, a leftover conflict marker, or a history without the PR head as first parent. Nothing was pushed; the worktree is kept. | Finish the merge in the kept worktree, or `--restart --continue-pr`. A bare `--restart` stops on `existing-pr-detected`. |
+| `continue-pr-unresolved` | At commit-pr the merge of the mainline into the PR head was not finished: a conflict, a leftover conflict marker, or a history without the PR head as first parent. Nothing was pushed. The handoff removes the worktree; its files, conflict markers included, are on the stop-salvage ref it names, but the merge state is not. | `--restart --continue-pr` redoes the merge. A bare `--restart` stops on `existing-pr-detected`. |
 | `continue-pr-unsafe-head` | The PR's head is not safe to continue: an unsafe branch name, the mainline itself, a base other than the mainline, a local branch ahead of or diverged from the PR head, or another worktree holding it at another commit. Stopped before the branch step. | Fix the branch by hand, then re-run with `--continue-pr`. |
 | `claims-lock-unavailable` | At plan, the path-claim registry could not be written: either the lockfile `.pi/work-state/path-claims.lock` could not be created, or another cycle held it past the wait window. No claim was registered; the driver refuses rather than write a claim outside the lock ([#1454](https://github.com/trail-openers/pi-rukas/issues/1454)). | If the evidence says the lockfile cannot be created, make `.pi/work-state` exist and be writable by the driver's user. Otherwise check the lockfile's holder pid; if it has exited, remove the stale lock. Then re-run `/work N`. |
 | `cross-group-conflict` | Another cycle holds a claim on paths this plan declares; two cycles cannot edit the same files at once. Also the cap of a queue claim wait that timed out. | Let the other cycle finish, or re-plan with disjoint files. |
@@ -2345,7 +2345,19 @@ A leftover with no uncommitted work and no unpushed commits is still removed aut
 
 **Symptom:** `git worktree list` shows many `.worktrees/issue-N-*` directories from cycles that parked, aborted or handed off. Each one the next cycle for the same issue refuses (the pre-remove guard above), and `git worktree add` / `remove` operations slow down in the presence of the clutter — 30+ leftover worktrees were measured to cause this on one host before they were swept.
 
-**Why they accumulate.** A worktree is only torn down when a cycle merges cleanly (the `merged` step runs `git worktree remove --force` + `git worktree prune` under the integration lock). Every other terminal outcome — `handoff`, `aborted`, a crash mid-dispatch — keeps its worktree on purpose, because the diff is the only copy of a developer's uncommitted work. That is the right default for one; it becomes clutter for a dozen.
+**Why they accumulate.** What happens to a cycle's trees depends on how it stopped:
+
+| Stop | What happens to the trees |
+|---|---|
+| A handoff (a park, a closed issue or PR, a mid-flight cap ending `aborted`) | Work no local branch holds is kept on a stop-salvage ref, then each tree is removed and pruned |
+| A provider park (`interrupted`) | Kept; `/work N` resumes the halted step in them |
+| A merge hold (`awaiting-human-merge`) | Build artifacts purged, trees kept |
+| A signal interrupt, a session quit, a hard kill | Kept; `/work N` resumes in them |
+| A direct abort (a throw at the handoff step itself, an unknown step) | Kept, with no teardown |
+| A merge | Removed (the `merged` step) |
+| A PR merged by someone else | Kept |
+
+A kept tree is not reclaimed by the next start of the same issue: the launch sweep never touches the launching issue's own trees. `/work N --restart` hands them to the branch step's residue pass, which keeps unpushed commits on the same stop-salvage ref and leaves a tree on disk when it cannot write that ref. Another issue's launch sweep only purges them, unless their work is provably on the remote.
 
 **Which ones are safe to remove.** A worktree is safe to bulk-remove when its cycle is **terminal AND the work inside is gone or committed**: the state file at `.pi/work-state/<issue>.json` has `pipelineState.status` of `handoff` or `aborted` (not `running`), and the worktree itself is clean (no uncommitted files, no local commits ahead of its base). A `running` state file with a live owner pid is a cycle that is still in flight — do not touch it. A terminal state file whose worktree holds uncommitted work is a refusal case, not a cleanup case: salvage first (see above).
 
@@ -2379,6 +2391,26 @@ Repeat per issue. The `--force` in step 5 is safe *only after* step 3 confirmed 
 - A worktree for an issue whose state file is missing — the state file may have been `rm`'d by an operator without removing the worktree, so the terminal-status check above cannot be applied. Inspect the worktree directly (`git -C .worktrees/issue-N-<id> status` and `git -C .worktrees/issue-N-<id> log --oneline -5`) before deciding.
 
 There is no built-in bulk-cleanup command. The recipe above is the documented path; a one-liner is tempting but the per-worktree check is what makes it safe, and skipping it is how a clean sweep becomes a data loss.
+
+### The handoff names a stop-salvage ref
+
+**Symptom:** the handoff's worktree state says *"work on no branch — its worktree was removed and this ref is the only place it lives"* and lists `refs/pi-rukas/stop-salvage/issue-<N>/<tree>/<sha>`.
+
+**Cause:** the handoff removed a tree that held work no local branch held: commits on a detached HEAD, or staged, uncommitted and untracked non-ignored files, which are kept as one snapshot commit on top of the tree's HEAD (a staged file keeps its working copy). Untracked ignored files (build output, `.env`) are not kept.
+
+**Fix:**
+
+```bash
+git for-each-ref refs/pi-rukas/stop-salvage/issue-<N>/
+git log --oneline <ref> --not --branches     # what only the ref holds
+git show <ref> --stat                        # a snapshot commit of uncommitted work
+git switch -c <name> <ref>                   # or cherry-pick onto the feature branch
+git update-ref -d <ref>                      # once the work is somewhere else
+```
+
+The refs survive a park and a rerun; a proven merge of the issue deletes them. A "retained worktrees" entry instead means a merge hold kept the tree, or its salvage or removal failed (the trace has the reason): inspect the tree, then `git worktree remove` it yourself.
+
+No ref is written for work a local branch already holds, which after a consolidation is usually the unpushed feature branch alone. A `/work N --restart` after the mainline moves resets that branch to the new base; the old tip then lives only in the branch reflog and the new cycle's `branch-reset` event, so push the branch (or tag its tip) before restarting.
 
 ### `lens-fix-not-integrated` — the fix never reached the branch
 
@@ -2482,7 +2514,7 @@ A stale integrate tree whose only loss is commits, and which is detached or on t
 
 **One ref per issue (#1396).** The namespace holds at most `refs/pi-rukas/integrate-backup/issue-<N>` — one ref per issue, replaced in place on every re-entry — so a cycle that re-enters `commit-pr` twenty times leaves one ref, not twenty (`git for-each-ref refs/pi-rukas/integrate-backup` counted refs growing one per SHA before the fix). It therefore names the **last** kept HEAD only, and an older re-entry's backup is replaced. That is not a new loss channel: the driver force-removes the tree that held the older HEAD immediately after writing the ref, and every removal decision refuses first whenever a tree holds uncommitted or non-regenerable work — so nothing the ref protected had survived anyway. To drop the ref when you are done with it: `git update-ref -d refs/pi-rukas/integrate-backup/issue-<N>`.
 
-**Backup refs are deleted on merge.** Once the driver has proved the merge, it deletes every `refs/pi-rukas/*` ref of the cycle's issues — `lens-fix-backup`, `retry-preserved`, `fix-pass-strays`, `integrate-backup`, and the slug-keyed `lens-fix-backup/issue-<N>-<title>/…` refs older builds wrote. They exist for a rerun of the issue, and a merged issue has none. Not all of that content is on the mainline: a reverted fix-pass stray or a diverged lens-fix backup is gone after the merge, so recover it before the PR merges. A cycle that parks or stops keeps its refs, so the ref a park names still resolves on a rerun; so does a merge only the ops fallback reported. An issue closed without a merge keeps its refs until you delete them with `git update-ref -d`.
+**Backup refs are deleted on merge.** Once the driver has proved the merge, it deletes every `refs/pi-rukas/*` ref of the cycle's issues — `lens-fix-backup`, `retry-preserved`, `fix-pass-strays`, `integrate-backup`, `stop-salvage`, and the slug-keyed `lens-fix-backup/issue-<N>-<title>/…` refs older builds wrote. They exist for a rerun of the issue, and a merged issue has none. Not all of that content is on the mainline: a reverted fix-pass stray or a diverged lens-fix backup is gone after the merge, so recover it before the PR merges. A cycle that parks or stops keeps its refs, so the ref a park names still resolves on a rerun; so does a merge only the ops fallback reported. An issue closed without a merge keeps its refs until you delete them with `git update-ref -d`.
 
 **The replaced sha is named (#1396).** When a re-entry overwrites a ref that pointed at a *different* commit, the commit-pr plumb report and the handoff name it: `It replaces an older backup of \`<sha>\`, which no ref now names`. After that write nothing in the ref namespace points at the older commit.
 

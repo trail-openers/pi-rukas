@@ -19,6 +19,7 @@ import { failureOf } from "./headless/failure.ts";
 import { traceWarn } from "./trace.ts";
 import { type CauseVerdict, causeVerdictOf } from "./work-driver-cause-class.ts";
 import { causeSafeText } from "./work-driver-cause-scrub.ts";
+import { withoutRemovedTrees } from "./work-driver-handoff-snapshot.ts";
 import type { WorkState } from "./workflow-state.ts";
 
 const ERROR_LINE_MAX = 300;
@@ -49,7 +50,9 @@ export function causeForCycle(state: WorkState): CauseVerdict | undefined {
     return {
       ...verdict,
       causeReason: causeSafeText(verdict.causeReason),
-      causeEvidence: verdict.causeEvidence.map(causeSafeText),
+      causeEvidence: verdict.causeEvidence.map((e) =>
+        causeSafeText(withoutRemovedTrees(state.pipelineState, e)),
+      ),
     };
   } catch (err) {
     return internalErrorVerdict(state, err);

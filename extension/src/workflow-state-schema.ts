@@ -359,9 +359,13 @@ export interface PipelineState extends IssueClosedState, PipelineStateReviewTail
     branchTipNotRead?: boolean;
     /** Epoch ms when the snapshot was captured. */
     capturedAt: number;
-    /** Worktrees that were not removed because they contained uncommitted
-     * work or were retained by the sweep. */
+    /** Trees left on disk at handoff: a merge hold, or a tree whose salvage or
+     * removal failed. Absent when the teardown did not run. */
     retainedWorktrees?: string[];
+    /** Stop-salvage refs holding work no branch holds; its tree was removed. */
+    stopSalvage?: string[];
+    /** Recorded paths of the trees the handoff teardown removed. */
+    removedWorktrees?: string[];
     /**
      * #674 — per-worktree COMMITTED work, captured by `runHandoff`.
      *

@@ -11,7 +11,7 @@ import { explainCap } from "./work-driver-explain.ts";
 import { handoffLabelVerdict } from "./work-driver-handoff-label-state.ts";
 import { terminalPathOf } from "./work-driver-handoff-message.ts";
 import { genericRecoveryLines } from "./work-driver-handoff-recovery-tree.ts";
-import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { stopSalvageLines, unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { describeBranchState } from "./work-driver-handoff-view.ts";
 import { mergedLine } from "./work-driver-terminal-delivery.ts";
 import { readQueueSummary } from "./work-queue-summary.ts";
@@ -208,6 +208,7 @@ export function renderTerminalStatus(state: WorkState, repoRoot: string): string
       if (snap.retainedWorktrees?.length) {
         lines.push("  retained worktrees:", ...snap.retainedWorktrees.map((wt) => `    ${wt}`));
       }
+      lines.push(...stopSalvageLines(snap, "  ", (r) => `    ${r}`));
       lines.push(...unreadableSnapshotLines(ps).map((l) => `  ${l}`));
     }
   }

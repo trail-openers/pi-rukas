@@ -9,8 +9,9 @@
  * - `test-work-driver-worktree-sweep-rules.ts` — the decision engine, no git.
  * - this file — the sweep cases that only ever SKIP (a live owner, a live
  *   sibling issue, the launching cycle's own tree), the two that check what the
- *   sweep REPORTS about an action it took, and the in-cycle teardown pass that
- *   never runs through `runWorktreeSweep` at all.
+ *   sweep REPORTS about an action it took, and the path gate's answer for a
+ *   vanished or foreign directory. The stop teardown has its own file,
+ *   `test-stop-teardown.ts`.
  *
  * Nothing here is new coverage: all three moved from the files named above, so
  * the §12 cap is met by relocation and not by deleting an assertion. Each file
@@ -25,14 +26,10 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { processAlive } from "../src/work-driver-resume.ts";
-import {
-  resolveSweepTarget,
-  runWorktreeSweep,
-  runWorktreeTeardown,
-} from "../src/work-driver-worktree-sweep.ts";
+import { resolveSweepTarget, runWorktreeSweep } from "../src/work-driver-worktree-sweep.ts";
 import type { WorkState } from "../src/workflow-state.ts";
 import {
   PAST,
@@ -282,78 +279,14 @@ async function testSweepPurgesAwaitingHumanMerge() {
 }
 
 // ---------------------------------------------------------------------------
-// runWorktreeTeardown — the in-cycle path, which never reaches the sweep
+// resolveSweepTarget — a stale map entry is an answer, never a throw
 // ---------------------------------------------------------------------------
 
-async function testRunWorktreeTeardown() {
-  console.log("\n6. in-cycle teardown retains what it must and removes what it may");
-  const { repoRoot, baseSha } = makeSweepRepo("pi-rukas-sweep-teardown");
-  const wt = makeSweepWorktree(repoRoot, baseSha, "issue-7-default", {
-    dirty: true,
-  });
-  const state: WorkState = {
-    ...abortedState(7),
-    pipelineState: {
-      ...abortedState(7).pipelineState,
-      worktrees: { default: wt.path },
-    },
-  };
-  const rec = recordingExec();
-  const retained = await runWorktreeTeardown({
-    repoRoot,
-    state,
-    execFn: rec.exec,
-  });
-  assertEquals(retained.length, 1, "a dirty tree is retained by teardown");
-  assertEquals(retained[0], wt.path, "naming the retained worktree");
-  assertEquals(rec.countMatching("git worktree remove"), 0, "teardown removed nothing");
-  assertTrue(existsSync(wt.path), "and the directory is still there");
-
-  // disabled → no-op, the pre-existing contract
-  const disabled = await runWorktreeTeardown({
-    repoRoot,
-    state,
-    execFn: rec.exec,
-    enabled: false,
-  });
-  assertEquals(disabled.length, 0, "disabled teardown returns nothing");
-
-  // no worktrees recorded → nothing to do, nothing touched
-  const empty = await runWorktreeTeardown({
-    repoRoot,
-    state: {
-      ...abortedState(7),
-      pipelineState: { ...abortedState(7).pipelineState, worktrees: {} },
-    },
-    execFn: rec.exec,
-  });
-  assertEquals(empty.length, 0, "an empty worktrees map tears down nothing");
-
-  // A path in the map that is not one of our worktrees is skipped, not fatal —
-  // teardown runs on the handoff path, where a bad entry must not lose the cycle.
-  // This case is not hypothetical: `pipelineState.worktrees` is written at
-  // `branch` and read at handoff, and in between a crash, an external
-  // `git worktree remove`, or an operator cleanup can take the directory with
-  // it. `resolveSweepTarget` used to call `realpathSync` UNGUARDED there, so a
-  // path that was simply gone THREW ENOENT out of `runHandoff` instead of
-  // returning the `unresolvable` result its signature promises — losing the
-  // whole teardown pass, and with it the `retainedWorktrees` the operator is
-  // told to go and look at. Before this assertion, the only thing standing
-  // between a stale map entry and a broken handoff was an unrelated try/catch.
-  const gone = makeSweepWorktree(repoRoot, baseSha, "issue-8-default");
-  rmSync(gone.path, { recursive: true, force: true });
-  const stale = await runWorktreeTeardown({
-    repoRoot,
-    state: {
-      ...abortedState(7),
-      pipelineState: {
-        ...abortedState(7).pipelineState,
-        worktrees: { default: "/no/such/tree", other: gone.path },
-      },
-    },
-    execFn: rec.exec,
-  });
-  assertEquals(stale.length, 0, "a vanished worktree contributes no retained entry");
+function testResolveSweepTargetOnStaleEntries() {
+  console.log("\n6. the path gate answers a vanished or foreign directory without throwing");
+  const { repoRoot } = makeSweepRepo("pi-rukas-sweep-gate");
+  // `pipelineState.worktrees` is written at `branch` and read at handoff; a
+  // crash or an operator cleanup in between can take the directory with it.
   const missing = resolveSweepTarget(repoRoot, "/no/such/tree");
   assertFalse(missing.ok, "resolveSweepTarget reports a missing path rather than throwing on it");
   assertEquals(missing.ok ? "" : missing.reason, "unresolvable", "and names the reason");
@@ -372,7 +305,7 @@ async function runTests() {
   await testSweepSkipsLiveOwnerAndLiveIssue();
   await testSweepSkipsLaunchingCycleOwnTree();
   await testSweepPurgesAwaitingHumanMerge();
-  await testRunWorktreeTeardown();
+  testResolveSweepTargetOnStaleEntries();
   finish();
 }
 

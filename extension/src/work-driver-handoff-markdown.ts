@@ -30,7 +30,7 @@ import {
 import { fanoutVerdictLines } from "./work-driver-handoff-fanout.ts";
 import { openPointsMarkdown } from "./work-driver-handoff-open-points.ts";
 import { recoveryCommandsMarkdown } from "./work-driver-handoff-recovery.md.ts";
-import { unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
+import { stopSalvageLines, unreadableSnapshotLines } from "./work-driver-handoff-snapshot.ts";
 import { describeBranchState } from "./work-driver-handoff-view.ts";
 import { type ParkReason, parkAction } from "./work-driver-intent.ts";
 import { dispatchDurations } from "./work-status-dispatch-durations.ts";
@@ -196,11 +196,9 @@ export function renderHandoffMarkdown(state: WorkState, forge?: ForgeType): stri
       lines.push("- retained worktrees:", ...snap.retainedWorktrees.map((wt) => `    - \`${wt}\``));
       lines.push("");
     }
-    // #674 — committed work on detached-HEAD worktrees: the porcelain-based
-    // counts above report 0 for this shape (clean tree, commits ahead of
-    // base). Name the work's true location (path + HEAD SHA + commits ahead)
-    // so the operator can see where the work actually is without having to
-    // discover it via `git worktree list`.
+    lines.push(...stopSalvageLines(snap, "- ", (r) => `    - \`${r}\``));
+    // Committed work on detached-HEAD worktrees, which the porcelain counts
+    // above report as 0: name its path, HEAD and commits ahead of base.
     if (snap.committedWork?.length) {
       lines.push(
         "- committed work on detached-HEAD worktrees (committed — not in the uncommitted count above):",

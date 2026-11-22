@@ -19,8 +19,9 @@
  *    knowingly, re-provisioned, nothing destroyed; or
  *  - PRESERVES then REMOVES it: a salvage patch + untracked manifest land
  *    in the cycle's scratch dir and the worktree's HEAD gets a durable
- *    tag (`pi-rukas-salvage/<name>/<timestamp>`) BEFORE
+ *    ref (`refs/pi-rukas/stop-salvage/issue-<N>/<name>/<sha>`) BEFORE
  *    `git worktree remove --force`, so unpushed commits are recoverable.
+ *    A tree whose ref could not be written is left on disk, unresolved.
  *
  * The shared seams this module calls (each lives in one place so the two
  * sites cannot drift):
@@ -30,7 +31,7 @@
  *    guard (`findDirtySameIssueLeftover`, first dirty hit) both build on
  *    it.
  *  - `salvageDirtyWorktree` (worktree-salvage.ts) — the salvage recipe
- *    (uncommitted-work patch + durable tag on HEAD) shared with the #545
+ *    (uncommitted-work patch + durable ref on HEAD) shared with the #545
  *    salvage (work-driver-branch-salvage.ts).
  *
  * Scoping: only `.worktrees/issue-<N>-*` for the cycle's OWN issue(s). A
@@ -187,16 +188,21 @@ export async function handleSameIssueLeftovers(
           execFn,
           repoRoot,
           leftover.path,
-          fromRef,
+          // The scan matched `.worktrees/issue-<N>…`, so the name carries its issue.
+          Number(/^issue-(\d+)/.exec(leftover.name)?.[1]),
           scratch,
           leftover.finding,
         ).catch((err) => {
           trace(
             `worktree-leftover: preservation of ${leftover.path} failed: ${(err as Error).message?.slice(0, 200)}`,
           );
-          return { refs: [] as string[], salvageDir: undefined as string | undefined };
+          return undefined;
         })
       : { refs: [] as string[] };
+    if (!preserve) {
+      unresolved.push(leftover.path);
+      continue;
+    }
     try {
       await worktreeRemove(execFn, repoRoot, leftover.name, true);
     } catch (err) {
