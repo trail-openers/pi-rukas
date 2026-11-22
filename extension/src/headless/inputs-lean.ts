@@ -42,6 +42,11 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // `leanHandbackNetGitEnabled` in lean/handback-net-git-switch.ts; the push's argv is
   // not in scope — its `--atomic` and its unforced lease-bound refspec ship with the rule.
   flag("LEAN_HANDBACK_NET_GIT", true),
+  // The lean lens ledger row is bound to the reviewed head, so a round the step ran is
+  // recorded although the run checkout it hands the layer sits at the base commit. `0`
+  // computes the identity from that checkout's working tree, as before: nothing recorded.
+  // The reader is `leanLensLedgerAtHeadEnabled` in lean/review-deps.ts.
+  flag("LEAN_LENS_LEDGER_AT_HEAD", true),
   // #2202 — containment for the probe's parent directory: `"0"` skips the realpath
   // check that the folder the write goes into lies inside `realpath(worktree)`, so a
   // base-committed `verify.testDir` that is really a symlink out of the checkout

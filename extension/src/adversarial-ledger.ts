@@ -135,7 +135,7 @@ export function writeAdversarialLedgerEntry(
     if (!computed.patchId) {
       return {
         recorded: false,
-        reason: computed.warning ?? "no patch id for the working tree",
+        reason: computed.noPatchIdReason ?? "no patch id for the working tree",
       };
     }
     // #1039 — resolve the head to a full 40-char SHA via the shared

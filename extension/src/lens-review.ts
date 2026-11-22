@@ -118,6 +118,8 @@ export async function runLensReview(opts: {
   since?: string;
   /** #973 — force a full review (the automatic delta base is not consulted; an explicit `since` still wins when given). */
   full?: boolean;
+  /** Bind the ledger row to this committed head instead of `cwd`'s working tree (see `lensReviewPatchIdentity`). */
+  identityHead?: string;
   /**
    * #966 — the per-lens spawner (the real `runLensChild` by default;
    * tests inject a stub so an all-fail run is drivable offline, the issue's
@@ -256,7 +258,7 @@ export async function runLensReview(opts: {
   // round-cap check fails closed on the absence — conservative by design.
   const headSha = await resolveRoundHeadSha(resolved, opts.cwd ?? process.cwd(), opts.head, execp);
   // #1934 — the one identity, shared by the ledger write and the findings record.
-  const identityOf = lensPatchIdentityOf(opts.cwd);
+  const identityOf = lensPatchIdentityOf(opts.cwd, opts.identityHead);
   // #1000 — the single finish path for every exit of this run: the identical
   // `finishLensReview(...)` call (threshold, cwd, the ONE resolved branch,
   // the resolved headSha, the caller's head ref, and the #973 residual-

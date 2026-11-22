@@ -483,7 +483,7 @@ export async function captureBinding(
       ...(!computed.patchId
         ? {
             bindingUnavailable:
-              computed.warning ?? "the working-tree patch id could not be computed",
+              computed.noPatchIdReason ?? "the working-tree patch id could not be computed",
           }
         : {}),
     };

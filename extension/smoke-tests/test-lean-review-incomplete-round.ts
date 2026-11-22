@@ -234,7 +234,7 @@ async function recordIncompleteRound(
   const identity = await workingTreePatchId(execp, tree, { digest: true });
   if (!identity.patchId || !identity.diffSha256) {
     throw new Error(
-      `fixture: no writer identity for the reviewed head (${identity.warning ?? "unknown"}) — the row would not be one any reader can consult`,
+      `fixture: no writer identity for the reviewed head (${identity.noPatchIdReason ?? identity.warning}) — the row would not be one any reader can consult`,
     );
   }
   // The head is named only when the round says which commit it reviewed. A round

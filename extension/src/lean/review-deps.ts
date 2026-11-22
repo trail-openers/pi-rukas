@@ -47,6 +47,15 @@ import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { BudgetArms, BudgetFired } from "./step-budget.ts";
 import { fenceText, promptText } from "./text-fence.ts";
 
+/**
+ * Whether the lens ledger row is bound to the reviewed head. The step hands the layer
+ * `cwd = repoRoot`, a checkout parked at the base commit, where the working-tree diff
+ * against the mainline is empty and no row could be recorded. Off only on `"0"`.
+ */
+export function leanLensLedgerAtHeadEnabled(): boolean {
+  return process.env.PI_ENSEMBLE_LEAN_LENS_LEDGER_AT_HEAD !== "0";
+}
+
 /** Production dependencies: the real executor, both gates, the spawner, the push. */
 export function reviewDeps(headless: boolean): ReviewDeps {
   // Declared as a `let` read at CALL time so a test can install an observer on the object
@@ -130,6 +139,12 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // The worktree is detached, so the ledger write and the residual disclosure can
         // only be keyed on a branch this step names.
         branch: a.branch,
+        // The ledger row's identity is the reviewed commit's (see the switch above). A
+        // recorded row arms the layer's automatic delta base, so the full wave opts out:
+        // its range is the whole branch, never one the layer picks from an earlier row.
+        ...(leanLensLedgerAtHeadEnabled()
+          ? { identityHead: a.head, ...(a.wave === "full" ? { full: true } : {}) }
+          : {}),
         // The run's own PR, when it has one (see `LensArgs.pr`): the number the residual
         // disclosure posts to, so the layer spends no `gh pr list` per round.
         ...(a.pr === undefined ? {} : { pr: a.pr }),

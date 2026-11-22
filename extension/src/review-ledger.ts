@@ -127,14 +127,25 @@ export { remoteName } from "./review-ledger-path.ts";
  * `untracked` names the untracked files the worktree diff could not cover.
  * The entry is still written for the tracked content, but the warning is
  * returned so the caller traces it — the gap is visible to the operator.
+ *
+ * `noPatchIdReason` is set exactly when `patchId` is absent and names the step
+ * that failed, so every no-write site can say why without falling back to a
+ * generic phrase. `warning` keeps the recorded-with-a-warning meaning.
  */
 export async function workingTreePatchId(
   execFn: LedgerExecFn,
   cwd: string,
   opts: { digest?: boolean } = {},
-): Promise<{ patchId?: string; untracked: string[]; warning?: string; diffSha256?: string }> {
+): Promise<{
+  patchId?: string;
+  untracked: string[];
+  warning?: string;
+  diffSha256?: string;
+  noPatchIdReason?: string;
+}> {
+  const none = (reason: string) => ({ untracked: [], warning: reason, noPatchIdReason: reason });
   const base = await identityBase(execFn, cwd);
-  if (!base.ok) return { untracked: [], warning: `${base.reason} — no ledger entry written` };
+  if (!base.ok) return none(`${base.reason} — no ledger entry written`);
   const baseRef = `${base.remote}/${base.mainline}`;
   let mergeBase = "";
   try {
@@ -144,17 +155,12 @@ export async function workingTreePatchId(
     });
     mergeBase = stdout.trim();
   } catch (err) {
-    return {
-      untracked: [],
-      warning: `merge-base against ${baseRef} failed: ${(err as Error).message?.slice(0, 120)} — no ledger entry written`,
-    };
+    return none(
+      `merge-base against ${baseRef} failed: ${(err as Error).message?.slice(0, 120)} — no ledger entry written`,
+    );
   }
-  if (!mergeBase) {
-    return {
-      untracked: [],
-      warning: `no merge-base between HEAD and ${baseRef} — no ledger entry written`,
-    };
-  }
+  if (!mergeBase)
+    return none(`no merge-base between HEAD and ${baseRef} — no ledger entry written`);
   let patchId: string | undefined;
   try {
     // The diff runs from the merge-base to the WORKING TREE (a single ref =
@@ -167,12 +173,17 @@ export async function workingTreePatchId(
       `working tree vs ${mergeBase.slice(0, 8)}`,
     );
   } catch (err) {
+    return none(
+      `working-tree patch-id failed: ${(err as Error).message?.slice(0, 120)} — no ledger entry written`,
+    );
+  }
+  // An empty diff is not a fault, so it is no `warning`; it still names itself.
+  if (!patchId) {
     return {
       untracked: [],
-      warning: `working-tree patch-id failed: ${(err as Error).message?.slice(0, 120)} — no ledger entry written`,
+      noPatchIdReason: `empty diff: the working tree has no change against its merge-base ${mergeBase.slice(0, 8)} with ${baseRef} — no ledger entry written`,
     };
   }
-  if (!patchId) return { patchId: undefined, untracked: [] };
   // The digest is best-effort for the WRITER: without it the entry is still
   // recorded, and a later carry falls back to a full review (fail closed).
   let diffSha256: string | undefined;
