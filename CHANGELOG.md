@@ -8,6 +8,38 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.0](https://github.com/trail-openers/pi-rukas/compare/v0.14.101...v0.15.0) (2026-11-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **lean:** refuse a repository's setup at ready with failure.kind "setup" ([#2524](https://github.com/trail-openers/pi-rukas/issues/2524))
+* **lean:** refuse at run start a roster that cannot get a JUnit report ([#2514](https://github.com/trail-openers/pi-rukas/issues/2514))
+
+### Features
+
+* **lean:** accept several acceptance-test roots with verify.testDirs ([#2505](https://github.com/trail-openers/pi-rukas/issues/2505)) ([6ecbf95](https://github.com/trail-openers/pi-rukas/commit/6ecbf9530ec07c88bb3d17eb688018c437600228))
+* **lean:** refuse a repository's setup at ready with failure.kind "setup" ([#2524](https://github.com/trail-openers/pi-rukas/issues/2524)) ([e1b2089](https://github.com/trail-openers/pi-rukas/commit/e1b20891243babbd29259d9b9638996292d3905b))
+* **question:** report blocked state from the question overlay ([#2522](https://github.com/trail-openers/pi-rukas/issues/2522)) ([0b18d64](https://github.com/trail-openers/pi-rukas/commit/0b18d640b91737a76bf5da6fc5f9d52f0a1c5116))
+* **spawn:** queue child codemode calls via PI_CODEMODE_MAX_WORKERS ([#2521](https://github.com/trail-openers/pi-rukas/issues/2521)) ([f0d9070](https://github.com/trail-openers/pi-rukas/commit/f0d9070c786ddacb7c874d82c82557ae09dd13f5))
+* **spawn:** send role tool exclusions as * patterns on pi 1.0.4+ ([#2531](https://github.com/trail-openers/pi-rukas/issues/2531)) ([cd63559](https://github.com/trail-openers/pi-rukas/commit/cd635591cdd508a24e77210489e1eef9844a17dc))
+* **work:** record child tool durations from Pi's durationMs ([#2518](https://github.com/trail-openers/pi-rukas/issues/2518)) ([daedcaa](https://github.com/trail-openers/pi-rukas/commit/daedcaad4b985ae1f2798c6ce0989e5e639d0fa7))
+
+
+### Bug Fixes
+
+* **commands:** gate PM doctrine injection on custom message runs ([#2499](https://github.com/trail-openers/pi-rukas/issues/2499)) ([d03f907](https://github.com/trail-openers/pi-rukas/commit/d03f907c9bf173b1aff73df6c394160c23b6a75b))
+* **commands:** gate PM doctrine on before_agent_start message type ([#2497](https://github.com/trail-openers/pi-rukas/issues/2497)) ([8eb9249](https://github.com/trail-openers/pi-rukas/commit/8eb92499a0ff47604cc0506b30d0247af6db1489)), closes [#2488](https://github.com/trail-openers/pi-rukas/issues/2488)
+* **headless:** scrub removed worktree paths from failure evidence ([#2517](https://github.com/trail-openers/pi-rukas/issues/2517)) ([50802b9](https://github.com/trail-openers/pi-rukas/commit/50802b925e991b9182c298a0fa9455d1c787ee89))
+* **lean:** let review accept a legitimate edit to an existing test ([#2519](https://github.com/trail-openers/pi-rukas/issues/2519)) ([c37414e](https://github.com/trail-openers/pi-rukas/commit/c37414e70515e96a600e433346a7eee3ba2a1eb1))
+* **lean:** refuse at run start a roster that cannot get a JUnit report ([#2514](https://github.com/trail-openers/pi-rukas/issues/2514)) ([34177af](https://github.com/trail-openers/pi-rukas/commit/34177aff315390a1e99a6f376ad778d7e79aa24c))
+* **lean:** stop a killed lean job at its next step boundary ([#2504](https://github.com/trail-openers/pi-rukas/issues/2504)) ([79180e6](https://github.com/trail-openers/pi-rukas/commit/79180e6005e3cba2e54b0213389b65dd785ba75f))
+* **merge-guard:** name the gh version when pr checks rejects --json ([#2516](https://github.com/trail-openers/pi-rukas/issues/2516)) ([a4b8c86](https://github.com/trail-openers/pi-rukas/commit/a4b8c86f65bcad0a5757305333a57bb59b3608fc))
+* **review:** name every no-patch-id reason, and record lean's lens round ([#2509](https://github.com/trail-openers/pi-rukas/issues/2509)) ([1f6c85a](https://github.com/trail-openers/pi-rukas/commit/1f6c85a625581cfb134a7887feaba640232f6156))
+* **spawn:** do not end a cancelled child as done "reported" ([#2515](https://github.com/trail-openers/pi-rukas/issues/2515)) ([8b10c6a](https://github.com/trail-openers/pi-rukas/commit/8b10c6a3b260f92410f80506f399a0ef76321d07))
+* **test:** wait for test-cancel's fixture pids to parse, not to exist ([#2523](https://github.com/trail-openers/pi-rukas/issues/2523)) ([c2a2e70](https://github.com/trail-openers/pi-rukas/commit/c2a2e70931629f5f11bd474b85b0f20dd455a5df))
+* **work:** make the merged step remove every tree the cycle owns ([#2496](https://github.com/trail-openers/pi-rukas/issues/2496)) ([9d8a371](https://github.com/trail-openers/pi-rukas/commit/9d8a3717e6bc138b18d802594a77331bf5c93668))
+
 ## [0.14.101](https://github.com/trail-openers/pi-rukas/compare/v0.14.100...v0.14.101) (2026-11-22)
 
 
