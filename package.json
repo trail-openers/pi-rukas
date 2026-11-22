@@ -35,7 +35,7 @@
     "extension/scripts/review-accept.ts",
     "agents.json",
     "dist/prompts/standard/",
-    "docs/pi-compatibility.md",
+    "docs/",
     "pi-prompts/",
     "skill/",
     "CHANGELOG.md",
@@ -47,7 +47,7 @@
     "build": "PI_ENSEMBLE_BASE=$PWD PROMPTS_DIR=$PWD/dist/prompts ./build.sh standard",
     "check": "cd extension && bun run check",
     "test": "cd extension && bun run smoke-tests/test-command-flow.ts && bun run smoke-tests/test-lens-review.ts && bun run smoke-tests/test-models.ts",
-    "prepack": "npm run build"
+    "prepare": "npm run build"
   },
   "dependencies": {
     "@sinclair/typebox": "^0.32.0"
