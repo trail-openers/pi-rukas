@@ -41,6 +41,7 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import { GATE_SEVERITIES } from "../lean/gate-severities.ts";
 import type { ReviewBoundRecord } from "../lean/review-bound.ts";
 import type { ReviewRoundCounts } from "../lean/state-outcome-gates.ts";
+import { rosterNewlyFailing, validatedProjectRoster } from "../lean/state-outcome-maps.ts";
 import { type Outcome, type Step, newestDecided } from "../lean/state.ts";
 import { gateClearedPublishedHead, publishedHeadOf } from "./work-lean-pr.ts";
 
@@ -94,6 +95,16 @@ export interface GatesRed {
   criteria: string[] | null;
   /** The full `criteria` count before the print cut; `null` exactly when `criteria` is. */
   criteriaTotal: number | null;
+  /** How many project tests the step's roster ran at head; `null` when the step recorded no roster. */
+  projectTestsRan: number | null;
+  /**
+   * The roster's head failures the base did not also fail, print-capped: on a roster red, the tests that
+   * turned it red. `null` when the step recorded no roster, or — beside a `projectTestsRan` count — when
+   * the record's base list is at its cap and cannot make the comparison.
+   */
+  newlyFailing: string[] | null;
+  /** The full `newlyFailing` count before the print cut; `null` exactly when it is. */
+  newlyFailingTotal: number | null;
 }
 
 /** The review step's account of what it judged, as published. */
@@ -301,6 +312,12 @@ function verifyGates(steps: Step[], redact: (s: string) => string): GatesRed[] {
           ? red.criteria.filter((c): c is string => typeof c === "string" && /^AC\d+$/.test(c))
           : null,
       );
+      // Only a roster this projection re-checks is published; `[]` beside a count is a roster that
+      // ran and charged nothing, a different fact from the `null` of none.
+      const roster = validatedProjectRoster(step.outcome?.projectRoster);
+      const newly = (roster === undefined ? undefined : rosterNewlyFailing(roster))
+        ?.map((n) => textOf(n, redact))
+        .filter((n): n is string => n !== null);
       out.push({
         state,
         kind,
@@ -308,6 +325,9 @@ function verifyGates(steps: Step[], redact: (s: string) => string): GatesRed[] {
         tiersTotal: tiers.total,
         criteria: criteria.items,
         criteriaTotal: criteria.total,
+        projectTestsRan: roster?.total ?? null,
+        newlyFailing: newly?.slice(0, LIST_MAX) ?? null,
+        newlyFailingTotal: newly?.length ?? null,
       });
     }
   }

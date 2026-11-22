@@ -94,6 +94,7 @@ import { buyFullReview } from "./review-pair.ts";
 import { cleanPass, disclosureNote, postFailureNote } from "./review-pass.ts";
 import { postReviewDisclosures } from "./review-posts.ts";
 import { assertFixAdvanced } from "./review-progress.ts";
+import { seatSections } from "./review-roster.ts";
 import {
   assertJudgedWholeBranch,
   assertRan,
@@ -173,10 +174,13 @@ async function reviewPass(
   const issueBody = await deps.fetchIssueBody(repoRoot, issue).catch((err: unknown) => {
     throw new ReviewInfraError(`could not read the issue: ${(err as Error).message}`);
   });
-  // The executed acceptance table, composed ONCE per step and handed to both passes
-  // of both gates and the PR comment, so every brief and the comment carry the SAME
-  // bytes. `undefined` rather than `""` when there is none, the off arm's byte-identity.
+  // The executed acceptance table, composed ONCE per step so every brief and the PR comment
+  // carry the SAME bytes. `undefined` rather than `""` when there is none, the PR comment's
+  // and the head guard's off-arm byte-identity.
   const acceptanceTable = acceptanceSection(ctx.steps, issueBody, ctx.run);
+  // What the seats read: the table plus the project-test roster summary, which every run carries.
+  // The head guard and the PR comment still key on the table alone.
+  const seats = seatSections(acceptanceTable, ctx.steps);
   // The blocking bar, resolved ONCE for the whole step at the run's base commit for the
   // same reason: it is a fact the step needs before it pays for a pass. Never per pass —
   // see `ReviewDeps.reviewThreshold`.
@@ -260,7 +264,7 @@ async function reviewPass(
       branch,
       issueBody,
       ...derivedArg(ctx.run),
-      acceptanceTable,
+      acceptanceTable: seats,
       pr,
       threshold,
       rows,
@@ -407,7 +411,7 @@ async function reviewPass(
       wave: "fix" as const,
       issueBody,
       ...derivedArg(ctx.run),
-      acceptanceTable,
+      acceptanceTable: seats,
       pr,
       carried,
       // `full` names the layer's own opt-out from its automatic delta base, which no
@@ -453,7 +457,7 @@ async function reviewPass(
       branch,
       issueBody,
       ...derivedArg(ctx.run),
-      acceptanceTable,
+      acceptanceTable: seats,
       wave: "fix",
       // The CRITICAL bar the second pass judges against: the rows the fix range itself is
       // allowed to introduce, read off the list the lenses were given.

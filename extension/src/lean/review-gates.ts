@@ -172,7 +172,7 @@ export async function adversarialGate(
      * rather than left to re-litigate the whole branch.
      */
     blockingFindings?: string;
-    /** The executed acceptance table, threaded to the reviewer's brief. */
+    /** The seat sections (acceptance table, then roster summary), threaded to the reviewer's brief. */
     acceptanceTable?: string;
     rows: DispatchUsageRow[];
     /** The step's armed budget: the reviewer's bound, abort and progress hook. */

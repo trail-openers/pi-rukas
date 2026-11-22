@@ -283,6 +283,19 @@ export interface ProjectRosterRecord {
   baseVersionRed?: string[];
 }
 
+/**
+ * The head failures a roster records that its base run did not also fail: this run's own. Read off the
+ * record so review and the host are shown the comparison the record carries, never verify's say-so.
+ * On a green it is empty by construction; on a roster red it names the tests that turned the run red.
+ * `undefined` when `baseFailed` sits at {@link ROSTER_NAMES_CAP}: a base failure past the cut would
+ * read as new, so the record cannot make the comparison.
+ */
+export function rosterNewlyFailing(roster: ProjectRosterRecord): string[] | undefined {
+  if (roster.baseFailed.length >= ROSTER_NAMES_CAP) return undefined;
+  const base = new Set(roster.baseFailed);
+  return roster.failed.filter((name) => !base.has(name));
+}
+
 /** Why one roster name is not a name, or undefined. */
 function rosterNameProblem(name: unknown): string | undefined {
   if (typeof name !== "string") return "must be a string";
