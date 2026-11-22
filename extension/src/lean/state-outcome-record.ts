@@ -92,9 +92,11 @@ export interface Outcome {
   preexistingFailures?: Record<string, PreexistingTierRecord>;
   /**
    * `verify` only: the run's roster of the PROJECT's own pre-existing tests — the config pair
-   * `verify.testDir` + `verify.testGlob` listed at the run's base commit, run at head AND at the
+   * `verify.testDir` (or every `verify.testDirs` root) + `verify.testGlob` listed at the run's base commit, run at head AND at the
    * base, with the per-test verdicts read from the runner's machine-readable report, and the
-   * base version of every one of them the run edited run again against the head code. A green
+   * base version of every one of them the run edited run again against the head code. A roster
+   * red carries no `editedFiles` or `baseVersionRed`: the edit check runs only on a roster that is
+   * otherwise green, so on a red those fields are unasked, not empty. A green
    * `verify` without this field never reaches `landed`: `landEarned` refuses it. Absent is
    * therefore not "nothing failed" — it is "the gate never asked", which is why the roster is a
    * field and not a default, and why an empty roster is refused on load rather than carried.

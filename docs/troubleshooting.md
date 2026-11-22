@@ -224,14 +224,8 @@ the run's own worktree. The usual four:
   when the project has no fast tier: a configured `verify.fast` runs FIRST, and a base
   that fails it hands back before the probe is ever attempted.
 
-A missing `verify.test` is NOT this hand-back: it stays the verdict it has always been
-(`no test runner configured (.pi/work.json verify.test)`, nothing dispatched), because a
-project that declines to configure a runner is not a project with a broken one. That
-refusal fires only for a spec carrying `test` criteria: a spec whose criteria are all
-`command` gets no runner refusal at `specify` at all, and dies later at the `command` tier
-(`no verify.test runner template is configured for the spec's command criteria`), so a
-project with no test runner configures the template as
-`"verify": { "test": "sh {file}" }` — caveats in [lean.md](lean.md).
+A missing `verify.test` is NOT this hand-back: `ready` refuses it first, as a setup fault
+([`failure.kind: "setup"`](#symptom-work-lean-hands-back-at-once-with-failurekind-setup)).
 Note also that the probe is not the only place this step can hand back on the environment: a base
 whose submodules cannot be populated fails earlier, in the worktree preparation that runs
 before it. Both are `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` away, and that switch is the OUTER

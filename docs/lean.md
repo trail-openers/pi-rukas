@@ -293,8 +293,11 @@ this config also needs a `verify.roster` (below) or
   template is configured for the spec's command criteria`) answer only a record
   that reached them without one. A project with no test runner points the
   template at the file itself — `"verify": { "test": "sh {file}" }` — which
-  satisfies every one of those reads without a runner (with the roster on, it
-  also needs a `verify.roster`, below).
+  satisfies every one of those reads without a runner. With the roster on, that
+  setup also needs either a `verify.testDir` (or `verify.testDirs`) +
+  `verify.testGlob` pair and a `verify.roster` that reports on it, or
+  `PI_ENSEMBLE_LEAN_PROJECT_ROSTER=0`: `ready` checks only the `verify.roster`,
+  and a roster with no pair to enumerate hands back at every `verify`.
   Two caveats travel with that choice. A `command` criterion is run through the
   template in **argv form**, and `command` is itself accepted only as a plain
   repo-relative file path: anything else (a command line, a metacharacter, a path
@@ -653,7 +656,9 @@ and a record naming no head of its own push (a plain `done` pushed nothing, or a
 whose `waves` name nothing usable) must sit ahead of every `publish` attempt, decided or
 not), or whose log holds no `review` step at all (the machine
 sends `publish` → `review`, so a review the deadline stopped short of dispatching judged
-nothing) reports
+nothing), or — with the project roster on — whose newest green `verify` lists an edited
+pre-existing test under `baseVersionRed` that the newest review did not accept on the
+verified head, reports
 **`review-incomplete`** with `reviewComplete: false` instead (same exit 10, its own
 `awaiting-human-merge` cap). `reviewComplete` is `true` only where
 the step's own record says the review finished on the head that shipped, and `false` is
