@@ -348,6 +348,12 @@ export function registerCommands(pi: ExtensionAPI) {
       event: BeforeAgentStartEvent,
       ctx?: ExtensionContext,
     ): Promise<BeforeAgentStartEventResult | undefined> => {
+      // Custom-message runs (Pi >= 1.2.0 `messageType: "custom"`) start from
+      // another extension's `pi.sendMessage(..., { triggerTurn: true })`, not
+      // from an operator prompt — PM doctrine is for prompt turns only, so a
+      // custom run passes through untouched. Pi < 1.2.0 never sets the field,
+      // which reads as a user run: the gate is inert there.
+      if (event.messageType === "custom") return undefined;
       // Two-layer doctrine: full PM doctrine on turn 1 (heavy, one-shot to
       // amortise cost), short PM_STICKY_PREAMBLE on every turn while in PM
       // mode (light, closes the "PM forgets the doctrine on turn 2+" gap that
