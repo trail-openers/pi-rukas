@@ -86,7 +86,7 @@ function assert(cond: boolean, msg: string): void {
     toolUses: [submit("AC1", ["tests/AC1-hardlink.test.sh"])],
   });
   assert(r.threw === undefined, `(h) no throw: ${r.threw?.message ?? "clean"}`);
-  assert(r.outcome?.kind === "no-red-test", `(h) no-red-test, got ${r.outcome?.kind}`);
+  assert(r.outcome?.kind === "red-test-gap", `(h) red-test-gap, got ${r.outcome?.kind}`);
   assert(
     (r.outcome?.reason ?? "").includes("hard link"),
     `(h) the reason says why: a hard link (got ${r.outcome?.reason})`,
@@ -120,7 +120,7 @@ function assert(cond: boolean, msg: string): void {
     toolUses: [submit("AC1", ["tests/AC1-symlink.test.sh"])],
   });
   assert(r.threw === undefined, `(i) no throw: ${r.threw?.message ?? "clean"}`);
-  assert(r.outcome?.kind === "no-red-test", `(i) no-red-test, got ${r.outcome?.kind}`);
+  assert(r.outcome?.kind === "red-test-gap", `(i) red-test-gap, got ${r.outcome?.kind}`);
   assert(
     (r.outcome?.reason ?? "").includes("symlink"),
     `(i) the reason says why: a symlink (got ${r.outcome?.reason})`,
@@ -406,7 +406,7 @@ function assert(cond: boolean, msg: string): void {
     "(r) the rewrite wrote nothing to the outside file — it still holds only what the fixture put there",
   );
   assert(
-    r.outcome?.kind === "no-red-test" || r.threw !== undefined,
+    r.outcome?.kind === "red-test-gap" || r.threw !== undefined,
     `(r) the escape was refused — verdict or throw, never a commit (got ${
       r.threw === undefined ? `outcome ${r.outcome?.kind}` : "throw"
     })`,

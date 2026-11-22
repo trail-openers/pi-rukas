@@ -9,6 +9,7 @@
 import { REPORT_FAILED_KIND, exitCodeFor } from "./machine.ts";
 import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
 import { unacceptedTestEdits, unacceptedTestEditsRefusal } from "./review-test-accept.ts";
+import { RED_TEST_GAP } from "./specify-gap-switch.ts";
 import { type LeanRun, type LeanState, type Outcome, isTerminal, newestDecided } from "./state.ts";
 import { ROSTER_LAND_REFUSAL } from "./verify-roster.ts";
 
@@ -31,18 +32,23 @@ export function reasonFor(
   const rules = outcome?.failedRules;
   if (Array.isArray(rules) && rules.length > 0) return (rules as unknown[]).join("; ");
   // A refusal reaches here as the outcome of its REPORTING step, which carries the rules it
-  // posted (or failed to post). One fact, two readers: the rules alone for a comment that went
-  // out, and the rules plus the delivery failure for one that did not.
-  if (state === "not-ready") {
-    const judged = lastFailedRules(steps);
-    if (Array.isArray(judged) && judged.length > 0) {
-      const joined = (judged as unknown[]).join("; ");
-      const failure =
-        outcome?.kind === REPORT_FAILED_KIND
-          ? String(outcome.reason ?? outcome.message ?? "report did not land")
-          : undefined;
-      return failure === undefined ? joined : `${joined}: ${failure}`;
-    }
+  // posted (or failed to post); a handback carries the gap `specify`'s own child left the same way.
+  // One fact, two readers: the rules alone for a comment that went out, and the rules plus the
+  // delivery failure for one that did not.
+  const judged =
+    state === "not-ready"
+      ? lastFailedRules(steps)
+      : state === "handed-back"
+        ? [...steps].reverse().find((s) => s.outcome?.kind === RED_TEST_GAP)?.outcome?.failedRules
+        : undefined;
+  if (Array.isArray(judged) && judged.length > 0) {
+    const joined = (judged as unknown[]).join("; ");
+    const failure =
+      outcome?.kind === REPORT_FAILED_KIND ||
+      (outcome?.posted === false && outcome.channel !== "host")
+        ? String(outcome.reason ?? outcome.message ?? "report did not land")
+        : undefined;
+    return failure === undefined ? joined : `${joined}: ${failure}`;
   }
   if (outcome && typeof outcome.reason === "string") return outcome.reason;
   if (outcome && typeof outcome.message === "string") return outcome.message;

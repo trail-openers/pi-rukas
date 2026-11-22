@@ -24,7 +24,9 @@ export const OUTCOME_KINDS = {
   // comment on the issue telling someone their ticket is unready. `setup` is the repository's
   // fault (`ready-setup.ts`): it ends the run without a reporting step, so nothing is posted.
   ready: ["ok", "fail", "infra", "setup"],
-  specify: ["ok", "no-red-test", "budget"],
+  // `red-test-gap` is specify's own child failing to prove a criterion red: the run's failure, so a
+  // handback, where `no-red-test` is a refused spec.
+  specify: ["ok", "no-red-test", "red-test-gap", "budget"],
   // `blocked` is the child's own "these frozen tests cannot all pass together", honoured only after the
   // driver re-ran the named tests itself. It is not `exhausted`: the route must never reach `publish`.
   build: ["ok", "exhausted", "budget", "blocked"],
@@ -118,6 +120,9 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
         case "no-red-test":
           // A spec with no falsifiable test is not buildable from.
           return to(run, "decline");
+        case "red-test-gap":
+          // The run could not write a falsifiable test; the spec was not refused.
+          return to(run, "handback");
       }
       break;
 

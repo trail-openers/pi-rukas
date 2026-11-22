@@ -55,6 +55,9 @@ export const ENV_KEYS = [
   // to be the WHOLE post path, which is only falsifiable when no adapter can be
   // resolved underneath it.
   "PI_ENSEMBLE_FORGE",
+  // Read at call time by `leanSpecifyGapHandbackEnabled`; restored so a pin cannot pick the next
+  // file's specify-gap arm.
+  "PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK",
 ] as const;
 
 const saved: Record<string, string | undefined> = {};

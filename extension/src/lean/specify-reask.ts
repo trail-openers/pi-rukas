@@ -4,7 +4,7 @@
  *
  * The shape this exists for: a child writes and proves red tests for every criterion, submits only some
  * of them, and reports the whole set done. Nothing in the attempt's retry gate covers it — the child is
- * not silent and the boundary refused nothing — so the unsubmitted criteria decline the run although the
+ * not silent and the boundary refused nothing — so the unsubmitted criteria end the run although the
  * tests exist. The missing set is wanted ids minus the ids the child DECLARED: a criterion whose row the
  * boundary later drops is the refusal retry's to name, and a file is never guessed at from disk, because
  * only a `submit_tests` call counts as submitted.

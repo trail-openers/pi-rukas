@@ -6,11 +6,11 @@
  *
  *   (1) the re-ask names AC5-AC8 and the tool, resumes the same session id, and the run freezes all
  *       eight with the re-ask in the step log;
- *   (2) the re-asked child still does not submit: today's decline for exactly those ids, two dispatches;
+ *   (2) the re-asked child still does not submit: the specify gap for exactly those ids, two dispatches;
  *   (3) a child that submitted every test criterion is never re-asked;
  *   (4) the re-ask is bounded by the step's budget: a re-ask past the turns ceiling is a budget stop;
  *   (5) `PI_ENSEMBLE_LEAN_SPECIFY_REASK=0` is the record captured from v0.15.1, field by field, with no
- *       session id minted;
+ *       session id minted (with `PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK=0`, since v0.15.1 declined a gap);
  *   (6) an attempt the boundary refuses a row of takes the refusal retry, and the retry is never
  *       re-asked: two dispatches;
  *   (7) an attempt with an unreadable call is not re-asked;
@@ -100,11 +100,11 @@ const marked = (reason: string | undefined): boolean =>
   );
 }
 
-// ── (2) a child that still does not submit gets today's outcome ─────────────
+// ── (2) a child that still does not submit gets the specify gap ─────────────
 {
   const r = await runPartial(32);
   reportShared(r, "(2)", assert);
-  assert(r.outcome?.kind === "no-red-test", `(2) declines (got ${r.outcome?.kind})`);
+  assert(r.outcome?.kind === "red-test-gap", `(2) is the gap (got ${r.outcome?.kind})`);
   assert(
     JSON.stringify(r.outcome?.failedRules) === JSON.stringify(gaps(MISSING)),
     `(2) for exactly the missing ids (got ${JSON.stringify(r.outcome?.failedRules)})`,
@@ -147,7 +147,8 @@ const marked = (reason: string | undefined): boolean =>
 }
 
 // ── (5) the switch off is the record captured from v0.15.1 ──────────────────
-await withEnv({ PI_ENSEMBLE_LEAN_SPECIFY_REASK: "0" }, async () => {
+const off = { PI_ENSEMBLE_LEAN_SPECIFY_REASK: "0", PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK: "0" };
+await withEnv(off, async () => {
   const golden = JSON.parse(
     readFileSync(
       path.resolve(import.meta.dirname, "fixtures/lean-state/specify-reask-off-v0.15.1.json"),

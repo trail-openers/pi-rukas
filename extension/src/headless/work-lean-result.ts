@@ -46,6 +46,7 @@
 
 import { redactClip } from "../decision-log.ts";
 import { NO_BLOCK_RULE } from "../lean/spec.ts";
+import { RED_TEST_GAP } from "../lean/specify-gap-switch.ts";
 import { specifyBranch } from "../lean/specify-tree.ts";
 import { type LeanRun, type Outcome, REPORT_STATES, type Step } from "../lean/state.ts";
 import { budgetSentence, budgetTrio } from "../lean/step-budget.ts";
@@ -135,7 +136,8 @@ function newestFailureStep(steps: Step[]): Step | undefined {
       kind === "exhausted" ||
       kind === "refused" ||
       kind === "setup" ||
-      noSpec(steps[i]?.outcome)
+      noSpec(steps[i]?.outcome) ||
+      kind === RED_TEST_GAP
     )
       return steps[i];
   }
@@ -189,7 +191,9 @@ function lastRole(steps: Step[]): string | undefined {
  *      outcome reports a failure and map it: `setup` → `setup` (`ready` refused
  *      the repository), `fail` → `no-spec` (counted as a failure only when its
  *      sole rule is exactly `NO_BLOCK_RULE`, see `noSpec`; any other `fail` is
- *      skipped), `error` → `crashed` (a handler threw), `red`/`blocked` →
+ *      skipped), `red-test-gap` → `red-test-gap` (`specify`'s own child left a
+ *      criterion with no red test; its message is the gap rules), `error` →
+ *      `crashed` (a handler threw), `red`/`blocked` →
  *      `verify` (the run's own gate judged the code),
  *      `exhausted`/`refused` → `process` (out of rounds, or the forge refused —
  *      neither judges the code, none is transient). Its `message` is the
@@ -245,26 +249,32 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
     const step = newestFailureStep(steps);
     if (step === undefined) return undefined;
     const kind = step.outcome?.kind;
-    const message = outcomeText(step.outcome) ?? `${step.state} step reported ${String(kind)}`;
+    // A gap's message is its rules alone: the reason repeats them around the per-file evidence.
+    const rules = kind === RED_TEST_GAP ? step.outcome?.failedRules?.join("; ") : undefined;
+    const message =
+      rules || outcomeText(step.outcome) || `${step.state} step reported ${String(kind)}`;
     failure = {
       kind:
-        kind === "setup"
-          ? // `ready` refused the repository's setup: the one kind a host falls back on.
-            "setup"
-          : kind === "fail"
-            ? // Only the no-block refusal reaches here (`noSpec`); the run ends not-ready at exit 11.
-              "no-spec"
-            : kind === "error"
-              ? // A handler threw: the engine recorded its message and handed back.
-                "crashed"
-              : kind === "red" || kind === "blocked"
-                ? // The run's own gate judged the code, or the builder proved the
-                  // frozen tests cannot all pass together (the driver ran them). Both
-                  // are a judgement about the code, so a host routes them the same way.
-                  "verify"
-                : // `exhausted` / `refused`: the step ran out of rounds, or the forge
-                  // refused. Neither is a judge of the code and none is transient.
-                  "process",
+        kind === RED_TEST_GAP
+          ? // `specify`'s own child proved no criterion red: the run's failure, not the spec's.
+            RED_TEST_GAP
+          : kind === "setup"
+            ? // `ready` refused the repository's setup: the one kind a host falls back on.
+              "setup"
+            : kind === "fail"
+              ? // Only the no-block refusal reaches here (`noSpec`); the run ends not-ready at exit 11.
+                "no-spec"
+              : kind === "error"
+                ? // A handler threw: the engine recorded its message and handed back.
+                  "crashed"
+                : kind === "red" || kind === "blocked"
+                  ? // The run's own gate judged the code, or the builder proved the
+                    // frozen tests cannot all pass together (the driver ran them). Both
+                    // are a judgement about the code, so a host routes them the same way.
+                    "verify"
+                  : // `exhausted` / `refused`: the step ran out of rounds, or the forge
+                    // refused. Neither is a judge of the code and none is transient.
+                    "process",
       message: redactClip(message, TEXT_MAX),
     };
   }

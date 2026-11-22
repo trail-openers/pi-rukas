@@ -7,7 +7,7 @@
  * The cases here are the decisions a run can be refused for:
  *   (a) a red test plus a stray non-test edit -> ok, edit discarded, hashes and
  *       commit contents correct;
- *   (b) a test green on base -> no-red-test naming its criterion;
+ *   (b) a test green on base -> red-test-gap naming its criterion;
  *   (c) a runner that cannot be STARTED -> THROW (infra, never a verdict);
  *   (d) a submit for an unknown criterion -> dropped, criterion uncovered;
  *   (e) no `verify.test` configured -> no-red-test with the runner rule, and
@@ -137,7 +137,7 @@ function assert(cond: boolean, msg: string): void {
     toolUses: [submit("AC1", ["tests/AC1-green.test.sh"])],
   });
   assert(r.threw === undefined, "(b) no throw for an unred test — it is a verdict, not infra");
-  assert(r.outcome?.kind === "no-red-test", `(b) no-red-test, got ${r.outcome?.kind}`);
+  assert(r.outcome?.kind === "red-test-gap", `(b) red-test-gap, got ${r.outcome?.kind}`);
   assert(
     (r.outcome?.failedRules ?? []).some((x) => x.includes("AC1")),
     `(b) the rule names the uncovered criterion (got ${JSON.stringify(r.outcome?.failedRules)})`,
@@ -201,7 +201,7 @@ function assert(cond: boolean, msg: string): void {
     toolUses: [submit("AC99", ["tests/AC99-other.test.sh"])],
   });
   assert(r.threw === undefined, "(d) no throw");
-  assert(r.outcome?.kind === "no-red-test", `(d) no-red-test, got ${r.outcome?.kind}`);
+  assert(r.outcome?.kind === "red-test-gap", `(d) red-test-gap, got ${r.outcome?.kind}`);
   assert(
     (r.outcome?.failedRules ?? []).some((x) => x.includes("AC1")),
     `(d) AC1 is reported uncovered (got ${JSON.stringify(r.outcome?.failedRules)})`,
@@ -331,7 +331,7 @@ function assert(cond: boolean, msg: string): void {
     r.threw === undefined,
     `(e2) no throw — a coverage gap is a verdict (${r.threw?.message})`,
   );
-  assert(r.outcome?.kind === "no-red-test", `(e2) no-red-test, got ${r.outcome?.kind}`);
+  assert(r.outcome?.kind === "red-test-gap", `(e2) red-test-gap, got ${r.outcome?.kind}`);
   assert(
     (r.outcome?.failedRules ?? []).some((x) => /criterion AC2 has no red test/.test(x)) &&
       (r.outcome?.failedRules ?? []).some((x) => /criterion AC1/.test(x)) === false,

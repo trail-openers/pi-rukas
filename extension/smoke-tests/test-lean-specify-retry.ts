@@ -10,7 +10,7 @@
  *
  *   (a) attempt 1 submits an over-long test (dropped); attempt 2 submits a red
  *       one -> ok, and the reason says `(after one retry)`;
- *   (b) both attempts submit over-size tests -> no-red-test, the adversary ran
+ *   (b) both attempts submit over-size tests -> red-test-gap, the adversary ran
  *       exactly twice, and the second prompt carries the refusal and the line
  *       count of the fixture;
  *   (c) attempt 1 succeeds -> one dispatch, no retry note;
@@ -135,7 +135,7 @@ function scripted(bodies: [string, ...string[]]) {
     ...scripted([oversize(), oversize()]),
   });
   assert(r.threw === undefined, `(b) no throw: ${r.threw?.message ?? "clean"}`);
-  assert(r.outcome?.kind === "no-red-test", `(b) no-red-test, got ${r.outcome?.kind}`);
+  assert(r.outcome?.kind === "red-test-gap", `(b) red-test-gap, got ${r.outcome?.kind}`);
   assert(
     r.dispatched === 2,
     `(b) the adversary was dispatched exactly twice (got ${r.dispatched})`,
@@ -199,7 +199,7 @@ function scripted(bodies: [string, ...string[]]) {
     prompts,
     ...scripted([greenScript()]),
   });
-  assert(r.outcome?.kind === "no-red-test", `(c2) no-red-test (got ${r.outcome?.kind})`);
+  assert(r.outcome?.kind === "red-test-gap", `(c2) red-test-gap (got ${r.outcome?.kind})`);
   assert(r.dispatched === 1, `(c2) no retry without a dropped row (got ${r.dispatched})`);
   assert(prompts[1] === undefined, "(c2) and there was no second prompt at all");
 }

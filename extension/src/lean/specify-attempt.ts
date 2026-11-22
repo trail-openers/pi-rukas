@@ -23,6 +23,7 @@ import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import { type ProviderWaitClass, providerFaultOf } from "./provider-wait.ts";
 import { leanRunnerPreflightEnabled } from "./runner-preflight-switch.ts";
 import type { Criterion, PiSpec } from "./spec.ts";
+import { RED_TEST_GAP, leanSpecifyGapHandbackEnabled } from "./specify-gap-switch.ts";
 import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { specifyPrompt } from "./specify-prompt.ts";
 import {
@@ -179,8 +180,9 @@ async function dispatchAdversary(
  * BASE, and commit — once.
  *
  * The ref is the base: `specify`'s claim is that it froze the tests ON the base, so the child's work is
- * undone back to the commit `ready` resolved. A coverage gap is `no-red-test`, and there is no third
- * verdict: the pipeline's partial-red case is a refusal here, not a partial freeze.
+ * undone back to the commit `ready` resolved. A coverage gap is `red-test-gap` (`no-red-test` with the
+ * gap switch off), and there is no third verdict: the pipeline's partial-red case is a refusal here, not
+ * a partial freeze.
  *
  * Returns the boundary's drop reasons and whether the attempt submitted nothing at all — the two
  * refusals the caller retries on. THROWS on infrastructure.
@@ -351,11 +353,13 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       silent: false,
       dispatched: rows,
     };
+  // The child's own gap — not a refused spec — so the switch picks its kind (see `specify-gap-switch.ts`).
+  const gapKind = leanSpecifyGapHandbackEnabled() ? RED_TEST_GAP : "no-red-test";
   if (pipeline.kind === "uncovered")
     return {
       outcome: withReaskNote(
         {
-          kind: "no-red-test",
+          kind: gapKind,
           failedRules: pipeline.uncovered,
           reason: pipeline.reason,
           dispatches: rows,
@@ -386,7 +390,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   return {
     outcome: withReaskNote(
       {
-        kind: "no-red-test",
+        kind: gapKind,
         failedRules: rules,
         // `reason` opens with the GENERIC rules only: `rules` is what `failedRules` carries, and a
         // reason that repeated every size drop the notes already spell would say it twice.

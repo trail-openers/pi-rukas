@@ -73,7 +73,7 @@ function assert(cond: boolean, msg: string): void {
   const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
   const prompts: string[] = [];
   let r: RunResult | undefined;
-  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0" }, async () => {
+  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0", PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK: "0" }, async () => {
     r = await runSpecify({
       repoRoot,
       baseSha,
@@ -129,7 +129,7 @@ function assert(cond: boolean, msg: string): void {
   const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
   const prompts: string[] = [];
   let r: RunResult | undefined;
-  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0" }, async () => {
+  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0", PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK: "0" }, async () => {
     r = await runSpecify({
       repoRoot,
       baseSha,
