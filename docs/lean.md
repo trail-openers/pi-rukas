@@ -477,6 +477,12 @@ lock (`.pi/lean-state/<issue>.json.lock`) is held, and says whether the holder i
 it started or one it did not; for an issue whose state file already records a
 finished run it replies with that outcome and starts nothing. It has no merge
 parameter: `land` still reads `.pi/work.json` `autoMerge` at the run's base.
+Killing the job with `dispatch_kill` lets the step already running finish, then
+stops the run at the next step boundary the way the cycle deadline does: it ends
+`handed-back` with a reason naming `job killed at <state>`, the reporting steps
+still run, the job reads as killed, and the lock is released. A quit mid-step
+reaches no boundary: the run resumes from its state file, and the next run takes
+the lock over from the dead owner.
 
 **Headless.** `pi-rukas-headless work-lean <issue> [--timeout <minutes>] [--json]`
 — exactly one positional issue number; `--json` is accepted and changes nothing,

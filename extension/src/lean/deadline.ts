@@ -90,19 +90,13 @@ export function clampToCycleDeadline(
 }
 
 /**
- * The reason line the engine stamps when the clock, not a verdict, ended the run. `why` is the reader that
- * stopped it, appended verbatim so the record says which; omit it and the sentence is the plain one.
+ * The reason line the engine stamps when the run stops at a step boundary without a verdict. `cause` names
+ * what stopped it (`cycle deadline <epoch> reached`, `job killed`); `why` is the reader that stopped it,
+ * appended verbatim so the record says which; omit it and the sentence is the plain one.
  */
-export function deadlineReason(
-  steps: Step[],
-  state: string,
-  deadline: number,
-  why?: string,
-): string {
+export function stopReason(steps: Step[], state: string, cause: string, why?: string): string {
   const last = steps[steps.length - 1];
   const lastText =
     last === undefined ? "no step ran" : `${last.key} ended ${last.outcome?.kind ?? "undecided"}`;
-  return `cycle deadline ${deadline} reached at ${state}: ${lastText}, no new step started${
-    why === undefined ? "" : `; ${why}`
-  }`;
+  return `${cause} at ${state}: ${lastText}, no new step started${why === undefined ? "" : `; ${why}`}`;
 }
