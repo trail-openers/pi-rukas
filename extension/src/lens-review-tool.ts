@@ -67,7 +67,8 @@ export function registerLensReviewTool(pi: ExtensionAPI) {
         }),
       ),
       pr: Type.Optional(
-        Type.Number({
+        Type.Integer({
+          minimum: 1,
           description:
             "Open PR/MR number for the branch (optional; auto-detected when omitted). When given, the residual-findings disclosure posts to this PR directly without resolving the branch's open PR.",
         }),

@@ -180,13 +180,13 @@ export function registerPlanTool(pi: ExtensionAPI) {
             "The reviewedDigest a dry run reported. Echo it on the confirming call to file that exact reviewed spec verbatim; without it, or on a mismatch, the full pipeline runs. The digest also covers labels and provenance: a confirm that changes either is a digest mismatch and files nothing.",
         }),
       ),
-      // #1856: placed after reviewedDigest so the pre-#1856 parameter order stays a
-      // prefix of the schema — the exact-schema pin in test-plan-tool.ts is what keeps
-      // it a prefix, which is how a new parameter cannot silently reorder the tool.
+      // After reviewedDigest so the earlier parameter order stays a prefix of the
+      // schema; the exact-schema pin in test-plan-tool.ts keeps it one.
       sourceIssue: Type.Optional(
-        Type.Number({
+        Type.Integer({
+          minimum: 1,
           description:
-            "#1856: the number of the EXISTING issue this plan is for — planning a ticket that already exists (a refine or answer trigger, or a spec written against a known issue). The duplicate-risk check otherwise reads a near-copy of that issue's own title and can name it as the plan's own duplicate, which stops the plan; naming the issue here excludes it (and its own split children) from the duplicate candidates. A positive integer; anything else is refused before any dispatch. Omit when this plan is not for an existing issue — behaviour and the risk prompt are then exactly as before.",
+            "#1856: the number of the EXISTING issue this plan is for — planning a ticket that already exists (a refine or answer trigger, or a spec written against a known issue). The duplicate-risk check otherwise reads a near-copy of that issue's own title and can name it as the plan's own duplicate, which stops the plan; naming the issue here excludes it (and its own split children) from the duplicate candidates. Omit when this plan is not for an existing issue — behaviour and the risk prompt are then exactly as before.",
         }),
       ),
       labels: Type.Optional(

@@ -372,8 +372,8 @@ function registerForgeReadTool(pi: ExtensionAPI): void {
       'Read the repository\u2019s forge (GitHub or GitLab) through the parent session\u2019s credential. You have no forge login of your own \u2014 this is the only way to read an issue, PR/MR, check, CI run or log. Read-only: there is no write verb, so nothing here can file, comment, merge or close. Call with {"verb": "<verb>", ...} where verb is one of: issue_view, issue_comments, issue_list, issue_search, pr_view, pr_list, pr_reviews, pr_checks, pr_diff, ci_run, ci_run_log, label_list, repo_settings. issue_view / issue_comments / pr_view / pr_reviews / pr_checks / pr_diff take "number"; ci_run / ci_run_log take "id"; issue_search takes "query"; issue_list and pr_list take an optional "state" (and pr_list also "sourceBranch"). The answer is the forge\u2019s raw JSON (or the raw diff / log text for pr_diff and ci_run_log), returned exactly as the forge sent it. Any other verb, or any attempt at a write, is refused.',
     parameters: Type.Object({
       verb: Type.String({ description: "One of the read verbs listed in the description." }),
-      number: Type.Optional(Type.Number({ description: "Issue / PR / MR number." })),
-      id: Type.Optional(Type.Number({ description: "CI run / pipeline id." })),
+      number: Type.Optional(Type.Integer({ minimum: 1, description: "Issue / PR / MR number." })),
+      id: Type.Optional(Type.Integer({ minimum: 1, description: "CI run / pipeline id." })),
       query: Type.Optional(Type.String({ description: "Search query (issue_search)." })),
       state: Type.Optional(
         Type.String({ description: "State filter: open | closed | all (issue_list, pr_list)." }),

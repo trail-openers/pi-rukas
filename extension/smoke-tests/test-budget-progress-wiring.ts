@@ -118,6 +118,7 @@ const SRC = join(import.meta.dirname, "..", "src");
 {
   const tools: Array<{
     name: string;
+    parameters: { properties: Record<string, unknown> };
     execute: (id: string, raw: unknown) => Promise<unknown>;
   }> = [];
   // biome-ignore lint/suspicious/noExplicitAny: testing seam — the minimum shape the tools need.
@@ -138,6 +139,21 @@ const SRC = join(import.meta.dirname, "..", "src");
         () => "",
         (err: Error) => err.message,
       );
+  // The static range is schema, so Pi's validator and codemode's tags carry it
+  // on both tools; the live minutes ceiling is the parser's alone.
+  const specProps = (name: string) => {
+    const props = tool(name).parameters.properties;
+    const specs = props.specs as { items?: { properties: Record<string, unknown> } } | undefined;
+    return specs?.items?.properties ?? props;
+  };
+  for (const name of ["dispatch_specialist", "dispatch_parallel"]) {
+    const { maxTurns, maxMinutes } = specProps(name) as Record<string, Record<string, unknown>>;
+    eq(
+      [maxTurns?.type, maxTurns?.minimum, maxTurns?.maximum, maxMinutes?.type, maxMinutes?.minimum],
+      ["integer", 1, MAX_TURNS_LIMIT, "integer", 1],
+      `${name}'s schema bounds both levers`,
+    );
+  }
   const ok = { role: "explore", prompt: "read one file", cwd: "/repo" };
   for (const [key, value] of [
     ["maxTurns", MAX_TURNS_LIMIT + 1],
@@ -169,11 +185,6 @@ const SRC = join(import.meta.dirname, "..", "src");
   assert(
     armSites >= 3,
     `both tools validate every spec before anything spawns (${String(armSites)} budgetArms sites: the shared parser plus one per tool)`,
-  );
-  assert(
-    (dispatch.match(/maxTurns: Type\.Optional\(Type\.Integer\(/g) ?? []).length >= 2 &&
-      (dispatch.match(/maxMinutes: Type\.Optional\(Type\.Integer\(/g) ?? []).length >= 2,
-    "both levers are on the parameter schemas of both tools",
   );
   assert(
     /\{ budgetTurns: turns \}/.test(dispatch) && /\{ childBoundMs: boundMs \}/.test(dispatch),

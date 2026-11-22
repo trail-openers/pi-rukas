@@ -75,11 +75,10 @@ export function parseMaxMinutes(value: unknown): number | undefined {
   return minutes === undefined ? undefined : minutes * 60_000;
 }
 
-/** TypeBox descriptions, kept here so both tools state the same range and the
- *  same consequence, and a reader finds one definition rather than two. */
-export const MAX_TURNS_DESCRIPTION = `Optional turn bound, an integer from 1 to ${String(
-  MAX_TURNS_LIMIT,
-)}. It paces only: the child is steered at 50% and 80% of it ("turn 20 of 40"), the 80% line telling it to commit (developer) or report its findings (every other role). It does NOT end the child — nothing kills at the turn bound. Use maxMinutes for a bound that stops the child.`;
-export const MAX_MINUTES_DESCRIPTION = `Optional wall-clock bound, an integer from 1 to ${String(
+/** TypeBox descriptions, kept here so both tools state the same consequence,
+ *  and a reader finds one definition rather than two. The static bounds live in
+ *  the schemas as minimum/maximum; only the live minutes ceiling stays prose. */
+export const MAX_TURNS_DESCRIPTION = `Optional turn bound. It paces only: the child is steered at 50% and 80% of it ("turn 20 of 40"), the 80% line telling it to commit (developer) or report its findings (every other role). It does NOT end the child — nothing kills at the turn bound. Use maxMinutes for a bound that stops the child.`;
+export const MAX_MINUTES_DESCRIPTION = `Optional wall-clock bound in minutes, at most ${String(
   DEFAULT_MAX_MINUTES_LIMIT,
-)} minutes. It paces and it stops: the child is steered at 50% and 80% of it with the minutes it has left, then steered to wrap up at the bound and ENDED once the wrap-up grace runs out — unless it committed or reported, in which case it is ended as done. A bound past what the spawn's wall-clock backstop grants is refused.`;
+)} by default. It paces and it stops: the child is steered at 50% and 80% of it with the minutes it has left, then steered to wrap up at the bound and ENDED once the wrap-up grace runs out — unless it committed or reported, in which case it is ended as done. A bound past what the spawn's wall-clock backstop grants is refused.`;
