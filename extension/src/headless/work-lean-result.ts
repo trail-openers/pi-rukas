@@ -89,13 +89,15 @@ const TEXT_MAX = 500;
 function stateFileOf(issue: number): string {
   return `.pi/lean-state/${issue}.json`;
 }
-/** The run's own words for why it ended, preferring the outcome's reason. */
+/** The run's own words for why it ended, preferring the outcome's reason; a
+ * `ready` refusal's words are its rules. */
 function outcomeText(outcome: Outcome | undefined): string | undefined {
   if (outcome === undefined) return undefined;
-  // `Outcome`'s two prose fields are optional strings, and the log this
-  // projection reads is a `Step[]` the loader is not the only thing that hands
-  // over — so both are re-checked rather than trusted.
-  for (const text of [outcome.reason, outcome.message]) {
+  // `Outcome`'s prose fields are optional, and the log this projection reads is
+  // a `Step[]` the loader is not the only thing that hands over — so each is
+  // re-checked rather than trusted.
+  const rules = Array.isArray(outcome.failedRules) ? outcome.failedRules.join("; ") : undefined;
+  for (const text of [outcome.reason, outcome.message, rules]) {
     if (typeof text === "string" && text.trim() !== "") return text.trim();
   }
   return undefined;
@@ -118,7 +120,8 @@ function newestFailureStep(steps: Step[]): Step | undefined {
       kind === "red" ||
       kind === "blocked" ||
       kind === "exhausted" ||
-      kind === "refused"
+      kind === "refused" ||
+      kind === "setup"
     )
       return steps[i];
   }
@@ -228,17 +231,20 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
     const message = outcomeText(step.outcome) ?? `${step.state} step reported ${String(kind)}`;
     failure = {
       kind:
-        kind === "error"
-          ? // A handler threw: the engine recorded its message and handed back.
-            "crashed"
-          : kind === "red" || kind === "blocked"
-            ? // The run's own gate judged the code, or the builder proved the
-              // frozen tests cannot all pass together (the driver ran them). Both
-              // are a judgement about the code, so a host routes them the same way.
-              "verify"
-            : // `exhausted` / `refused`: the step ran out of rounds, or the forge
-              // refused. Neither is a judge of the code and none is transient.
-              "process",
+        kind === "setup"
+          ? // `ready` refused the repository's setup: the one kind a host falls back on.
+            "setup"
+          : kind === "error"
+            ? // A handler threw: the engine recorded its message and handed back.
+              "crashed"
+            : kind === "red" || kind === "blocked"
+              ? // The run's own gate judged the code, or the builder proved the
+                // frozen tests cannot all pass together (the driver ran them). Both
+                // are a judgement about the code, so a host routes them the same way.
+                "verify"
+              : // `exhausted` / `refused`: the step ran out of rounds, or the forge
+                // refused. Neither is a judge of the code and none is transient.
+                "process",
       message: redactClip(message, TEXT_MAX),
     };
   }

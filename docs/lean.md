@@ -19,7 +19,7 @@ Every state in that walk has a handler. A review that fixed its head re-enters
 
 | Step | Who | What it does |
 |---|---|---|
-| `ready` | driver | Fetches the issue, parses its `pi-spec v1` block, judges readiness, resolves the mainline sha, loads `.pi/work.json` **at that sha**. Any failure is a `fail` outcome. |
+| `ready` | driver | Proves the run's base is a commit, then judges the **repository's setup** there before the issue is read or any model is called: `.pi/work.json` present and loadable **at that sha**, `verify.test` set, and a roster that can get a report. A setup fault is the `setup` outcome: the run ends `handed-back` (exit 10) with no reporting step, so nothing is posted on the issue, and the headless result carries `failure.kind: "setup"` ([headless.md → The `failure` object](headless.md#the-failure-object)). Then it fetches the issue, parses its `pi-spec v1` block and judges readiness; a failure there, or a base that is not a commit, is a `fail` outcome. |
 | `specify` | adversary (a `developer` child) | Writes the acceptance tests and submits them. Before the adversary is dispatched, the step asks the project's runner one question with an empty probe file (removed again on every path): exit **0 or 5** is healthy; anything else — a runner that dies before collection, a hang, a runner that never started — is an **infrastructure hand-back** naming the command, not a verdict, and costs no dispatch. **The probe's name depends on the language it has to be readable in.** For every family but Python it is the hidden `.lean-runner-probe.test`, written outside the configured `verify.testDir` (at the worktree root when no test folder is configured or its parent is not on the tree) — hidden, so no `verify.testGlob` can mistake it for an acceptance test. For a project whose `verify.testGlob` names `.py` files it is a visible, dot-free `_lean_runner_probe.py` **inside** `verify.testDir`: a leading dot breaks pytest's default prepend import mode, so a hidden file is refused before the runner can report anything, and a Python probe has to be importable to prove the runner can run one. That name is checked against the project's own `testGlob` with the boundary's matcher, so a config that would collect the probe as a test is refused. **Exit 4 on the probe is read apart from the other failures**: it is the runner refusing the file it was handed, so the step records `the runner rejected the probe file (exit 4): <rendered command>` on the step's reason and dispatches the adversary anyway — the bench answered, and the thing that was refused is this step's own filename. **The probe's parent is containment-checked**: `realpath` must place it inside `realpath(worktree)`, or the probe goes to the root instead. The probe's name, its exit-4 reading and the containment check are governed by two switches — `PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN` for the containment check and, for the whole probe, `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT` ([configuration.md](configuration.md)). Submodules the base carries are populated after every reset (`clean -fdx` de-populates them), and by default they come from the SUPERPROJECT — its module store under `.git/modules/<path>`, else its populated checkout — with the source computed by the harness and never read from the base's `.gitmodules`, so an offline host is not a reason to hand back; only the first level is seeded, a deeper one is used only where the superproject already holds it, and a submodule this host never had is not fetched but disclosed by path in the step's reason — bounded to eight paths with the rest collapsed to `(+N more)` so a long list cannot push the disclosure off the end of a clipped reason, worded as what the superproject itself holds, and marking separately the case where the state could not be read at all (an unreadable read is a failure disclosed as one, never the clean answer an empty one would be). A submodule the step was ASKED to populate and could not is the same hand-back. Each submitted file is then run against the base commit; a file that passes there is dropped. Freeze a contract with no red test and the step returns `no-red-test` and the run is refused, with the reason naming which of the two happened: **`the child never submitted a test`** when the adversary ended without calling `submit_tests` at all, or **`criterion <id> has no red test`** when it submitted files that nothing proved red (each dropped file's reason following). That clause is the FIRST clause of every rule it appears in, so the decline comment and the step record both lead with the cause. The probe, the submodule initialisation, and which of those two clauses a silent child is reported under are one switch: `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` restores v0.14.71, where no probe is run, no reset populates a submodule, and a silent child is reported as `criterion <id> has no red test` ([configuration.md](configuration.md)). That switch is the gate: with it at `0` no submodule code runs at all. If the boundary dropped a submitted test, `specify` retries once with the refusal reasons in the adversary's prompt; if the adversary ended without calling `submit_tests` once while the spec has test criteria, it retries once with a fixed note telling it to submit — and that retry still fires on the never-submitted decline. Either way the second attempt is a fresh child, both are billed to the step, and the second attempt's result is final. Before freezing, the adversary is also asked — prompt text only — for requirements the issue implies but does not state, each grounded in a `path:line` at the base commit that the adversary is asked to cite but no gate verifies, and filed as an extra test case under the criterion it refines; an implied requirement never becomes a criterion of its own. |
 | `build` | builder (a `developer` child) | Makes the frozen tests pass. The frozen paths are named individually and marked untouchable. The brief also carries a `## The issue` section — the issue body the step read once for its own spec parse, its `pi-spec` block stripped and the rest fenced — between the problem and the criteria, because the criteria summarise that text and a requirement stated only in prose was otherwise invisible to the one seat that writes the code; `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` takes it back out of that seat **only** — the builder consults its own switch at its own call site, so the two oracle briefs keep rendering (the oracle seats have no switch — see [configuration.md](configuration.md)). At most 3 build rounds (`MAX_BUILD_ATTEMPTS`, `machine.ts`) — one round per **dispatched** build, billed on entering `build` and never on leaving it, so a red verify, a challenge's new tests and a child stopped by its own budget all draw from the same three. |
 | `challenge` | adversary | Tries to break the builder's claim with new tests. Runs at most once. New tests earn one more build round, within the same bound of at most 3 build rounds; none — or a round stopped by its own budget — go to verify. |
@@ -29,9 +29,10 @@ Every state in that walk has a handler. A review that fixed its head re-enters
 | `land` | driver | The one irreversible act. Refuses unless `.pi/work.json` **at the run's base** grants `autoMerge: true`, the forge's merge evidence is clean, and the PR head equals the verified head; then merges squashed through the adapter, pinned to that head, and reads the result back. `merged` or `refused`; it never throws. |
 | `handback` | driver | Ships the last verified head, then posts one issue comment saying what the run still needs and ends the run. |
 
-Two refusals sit beside the main line: `decline` posts the rules an unreadable
-or unready spec failed and ends the run `not-ready`, and any handler that
-throws ends the run `handed-back` with `handler error at <state>: …`.
+Three refusals sit beside the main line: `decline` posts the rules an unreadable
+or unready spec failed and ends the run `not-ready`, a `setup` refusal at `ready`
+ends it `handed-back` naming the repository's fault and posting nothing, and any
+handler that throws ends the run `handed-back` with `handler error at <state>: …`.
 
 The load-bearing rule: only `ci` + `green` enters `land`, and even then the
 engine re-reads its own log — the newest decided `verify` **and** `ci` must both
@@ -230,8 +231,11 @@ and exit codes: [headless.md](headless.md). What follows is the shape of it.
 
 `.pi/work.json` is read with `git show <baseSha>:.pi/work.json` — never from
 the working tree — so a run is not judged by bytes it wrote itself. **Absent
-means defaults.** An invalid file is *not* defaulted: it raises
-`LeanConfigError`, because a typo'd budget must not silently become "no budget".
+is a setup refusal**: the loader still reads it as defaults, but the defaults
+name no `verify.test`, so `ready` refuses the run (`failure.kind: "setup"`).
+An invalid file is *not* defaulted: it raises `LeanConfigError`, because a
+typo'd budget must not silently become "no budget", and `ready` refuses it the
+same way.
 
 ```json
 {
@@ -259,7 +263,8 @@ this config also needs a `verify.roster` (below) or
   worktree root, fast before full — the first red tier ends the loop, and it is
   reported beside a red frozen contract rather than behind it, each under its own
   30-minute bound. A committed `.pi/verify-cmd` is the fallback for the full
-  tier **only when `work.json` is absent**.
+  tier **only when `work.json` is absent** — the loader's answer, which a lean
+  run never reaches, since `ready` refuses an absent `work.json`.
 - **`verify.test`** — the per-file runner template `specify` uses to prove a
   test red on the base: argv form, never a shell, exactly one whole-word
   `{file}`. The same template answers the runner preflight before the adversary
@@ -274,23 +279,22 @@ this config also needs a `verify.roster` (below) or
   file with no extension really is one the runner was shown and would not run
   (`PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN=0` puts the old
   path rules back). `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` restores v0.14.71, where
-  neither is paid. A project that configures no `verify.test` keeps its ordinary
-  `no test runner configured` verdict, not that hand-back.
+  neither is paid. A project that configures no `verify.test` never gets that
+  far: `ready` refuses the run as a setup fault before any step reads the template.
   The template is read by **four** steps, not one, and each answers a different
   question: `specify` proves a submitted file red with it, `challenge` hands it to
   its own adversary, `verify` runs the frozen tests through it and then the spec's
   `command` criteria, and `build` re-runs a child's "these tests cannot all pass
   together" report with it — a missing template there is only traced, and the
-  report is ignored. Only `specify` and `challenge` refuse on its absence —
-  `specify` declines a spec with `test` criteria with `no test runner configured
-  (.pi/work.json verify.test)`, a verdict and not a hand-back, and `challenge`
-  throws the same words as infrastructure. A spec whose criteria are
-  all `command` (or all `manual`) reaches neither refusal — `ready` never asks for a
-  template, and `specify` dispatches its adversary without one. It still cannot get
-  far: the `command` tier throws `no verify.test runner template is configured for
-  the spec's command criteria` and the run hands back, so a project with no test
-  runner points the template at the file itself — `"verify": { "test":
-  "sh {file}" }` — which satisfies every one of those reads without a runner.
+  report is ignored. `ready` refuses a run with no template as a setup fault
+  before any of the four runs, whatever the spec's criteria — the steps' own
+  refusals (`specify`'s `no test runner configured (.pi/work.json verify.test)`,
+  `challenge`'s infrastructure throw, the `command` tier's `no verify.test runner
+  template is configured for the spec's command criteria`) answer only a record
+  that reached them without one. A project with no test runner points the
+  template at the file itself — `"verify": { "test": "sh {file}" }` — which
+  satisfies every one of those reads without a runner (with the roster on, it
+  also needs a `verify.roster`, below).
   Two caveats travel with that choice. A `command` criterion is run through the
   template in **argv form**, and `command` is itself accepted only as a plain
   repo-relative file path: anything else (a command line, a metacharacter, a path
@@ -669,7 +673,7 @@ refuse the image rather than guess.
 | Code | Meaning |
 |---|---|
 | 0 | `landed` |
-| 10 | `handed-back` |
+| 10 | `handed-back` — a setup refusal at `ready` included (`failure.kind: "setup"`) |
 | 11 | `not-ready` — the issue's spec was refused |
 | 30 | the run threw, with `error.code: "crash"` |
 | 40 | bad arguments, or a live run already holds this issue's lock (`error.code: "refused"`) |

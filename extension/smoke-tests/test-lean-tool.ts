@@ -19,6 +19,7 @@ import { acquireLock, lockHolder } from "../src/lean/lock.ts";
 import { resolveSpecIntake } from "../src/lean/spec-intake-switch.ts";
 import { loadRun, saveRun } from "../src/lean/state.ts";
 import { withEnv } from "./lib/env-scope.ts";
+import { tempGitRepo, worktreeCommit } from "./lib/lean-spec-intake-fixtures.ts";
 import { jobSteerInbox, makeJobDeliverer, waitForJobReport } from "./plan-test-stubs.ts";
 
 let failures = 0;
@@ -265,24 +266,29 @@ try {
     );
     check(resolveSpecIntake(undefined) === "require", "no override resolves as before");
   });
+  // `ready` judges the base and the repository's setup before it drafts, so the run needs a real
+  // commit and a config naming a runner.
+  const git = tempGitRepo("tool-override");
+  const baseSha = worktreeCommit(git.dir, { "README.md": "x\n" });
   const drafted = async (specIntake?: "derive") => {
     let dispatched = false;
-    const handlers = phase1Handlers(repo, 10, specIntake ? { specIntake } : {}, {
+    const handlers = phase1Handlers(git.dir, 10, specIntake ? { specIntake } : {}, {
       fetchBody: async () => "a prose ticket with no block",
       issueTitle: async () => "t",
-      loadConfig: async () => ({}) as never,
+      loadConfig: async () => ({ verify: { test: "pytest {file}" } }) as never,
       dispatch: async () => {
         dispatched = true;
         throw new Error("stop here");
       },
     });
     await withEnv({ PI_ENSEMBLE_LEAN_SPEC_INTAKE: undefined }, async () => {
-      await handlers.ready?.({ run: { baseSha: "" } } as never).catch(() => undefined);
+      await handlers.ready?.({ run: { baseSha } } as never).catch(() => undefined);
     });
     return dispatched;
   };
   check((await drafted("derive")) === true, "a derive override makes ready draft a contract");
   check((await drafted()) === false, "without it ready drafts nothing (require)");
+  git.cleanup();
 
   // ── The docs name the tool.
   const lean = readFileSync(path.join(import.meta.dir, "..", "..", "docs", "lean.md"), "utf8");

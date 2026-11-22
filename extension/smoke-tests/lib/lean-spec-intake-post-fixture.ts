@@ -68,7 +68,13 @@ const CHILD_ROW: DispatchResult = {
   usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
 };
 
-const EMPTY_CONFIG: WorkConfig = { version: 1, autoMerge: false, verify: {}, budgets: {} };
+// `verify.test` is the least `ready`'s setup check admits.
+const EMPTY_CONFIG: WorkConfig = {
+  version: 1,
+  autoMerge: false,
+  verify: { test: "pytest {file}" },
+  budgets: {},
+};
 
 /** Every state after `ready`: refused loudly, so a walk-on is a case bug, not a result. */
 const AFTER_READY = [

@@ -182,7 +182,9 @@ function isBufferOverflow(err: unknown): boolean {
  *
  * `cat-file -t` exits 128 for an unknown path, so a missing file and a bad sha both land in the
  * "absent" branch — which is what a config loader wants for a missing file, and the subsequent
- * `git show` still surfaces a genuinely broken repository.
+ * `git show` still surfaces a genuinely broken repository. Only that exit is an answer: a spawn
+ * failure, a timeout or a kill throws, because "absent" decides lean's setup refusal and a git
+ * that never answered has not said the file is missing.
  */
 async function gitType(
   exec: ConfigExec,
@@ -197,8 +199,9 @@ async function gitType(
     });
     const type = stdout.trim();
     return type === "" ? undefined : type;
-  } catch {
-    return undefined;
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 128) return undefined;
+    throw new Error(`could not ask git for ${ref}: ${(err as Error).message}`);
   }
 }
 
@@ -418,12 +421,13 @@ async function gitShow(
       throw new LeanConfigError(
         `could not read ${ref}: larger than the ${GIT_SHOW_MAX_BUFFER} byte read limit`,
       );
-    // Exit 128 with "does not exist" is an absent file; anything else is a real failure the caller must see.
+    // Exit 128 with "does not exist" is an absent file; anything else is a git that failed, not a
+    // config at fault, so it is a plain Error and never lean's setup refusal.
     const e = err as { code?: number | null; stderr?: string; message?: string };
     const detail = `${e.stderr ?? ""}${e.message ?? ""}`;
     if (e.code === 128 || /does not exist|exists on disk|not in this repository/i.test(detail))
       return undefined;
-    throw new LeanConfigError(`could not read ${ref}: ${detail.trim().slice(0, 200)}`);
+    throw new Error(`could not read ${ref}: ${detail.trim().slice(0, 200)}`);
   }
 }
 

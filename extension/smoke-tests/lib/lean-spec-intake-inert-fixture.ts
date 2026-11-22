@@ -91,7 +91,13 @@ const CHILD_ROW: DispatchResult = {
   usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
 };
 
-const EMPTY_CONFIG: WorkConfig = { version: 1, autoMerge: false, verify: {}, budgets: {} };
+// `verify.test` is the least `ready`'s setup check admits.
+const EMPTY_CONFIG: WorkConfig = {
+  version: 1,
+  autoMerge: false,
+  verify: { test: "pytest {file}" },
+  budgets: {},
+};
 
 /** The prose ticket the reachability drive reads: no block anywhere, so the mode IS
  * consulted and the child, the poster and the record all have to answer for it. */

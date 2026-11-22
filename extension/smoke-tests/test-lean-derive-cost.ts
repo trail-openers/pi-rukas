@@ -71,7 +71,7 @@ async function driveDerivedRun(tag: string, child: () => Promise<DispatchResult>
       loadConfig: async (): Promise<WorkConfig> => ({
         version: 1 as const,
         autoMerge: false,
-        verify: {},
+        verify: { test: "pytest {file}" },
         budgets: {},
         lean: { specIntake: "derive" as const },
       }),
@@ -155,7 +155,7 @@ async function driveDerivedRun(tag: string, child: () => Promise<DispatchResult>
       loadConfig: async (): Promise<WorkConfig> => ({
         version: 1 as const,
         autoMerge: false,
-        verify: {},
+        verify: { test: "pytest {file}" },
         budgets: {},
       }),
       dispatch: async () => {

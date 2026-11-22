@@ -11,16 +11,15 @@
  * `require` declining byte-for-byte as before and `derive` sending the prose to one
  * bounded child, unless the body is blank, which is a ticket with nothing in it and
  * is declined without billing a child. A failed derivation is an `infra` verdict,
- * never a decline — that difference is what keeps the run retryable, and it is also
- * what a config the loader REFUSED (`LeanConfigError`) becomes: reading the mode from
- * bytes nobody read is not an intake decision. A mode value the switch refuses is the
- * repo's own defect and declines, naming the knob. The mode itself is
+ * never a decline — that difference is what keeps the run retryable. The config the
+ * mode is read from is `ready`'s, already loaded by its setup check (`ready-setup.ts`),
+ * so a config nobody could read never reaches this decision. A mode value the switch
+ * refuses is the repo's own defect and declines, naming the knob. The mode itself is
  * `spec-intake-switch.ts`'s: env, then the committed `lean.specIntake`, then `require`.
  */
 
-import { execp } from "../exec.ts";
 import { resolveModel } from "../models.ts";
-import { LeanConfigError, type WorkConfig, loadWorkConfig } from "./config.ts";
+import type { WorkConfig } from "./config.ts";
 import type { LeanSeed } from "./seed.ts";
 import {
   type DeriveDeps,
@@ -45,39 +44,21 @@ export type Contract =
   | { spec: PiSpec; derived?: DerivedSpec; dispatches: DispatchUsageRow[] }
   | { rule: string; infra?: boolean; dispatches?: DispatchUsageRow[] };
 
-/** Decide the run's contract from its issue body. `derive` is optional because the
- * derivation needs the run's wiring (forge read, child dispatch): a caller with no deps
- * in hand — a case, or a run whose mode resolves to `require` — gets today's behaviour,
- * and nothing is missed because the mode is checked before the deps are used. */
+/** Decide the run's contract from its issue body and the run's config at its base.
+ * `derive` is optional because the derivation needs the run's wiring (forge read, child
+ * dispatch): a caller with no deps in hand gets `require`'s answer, and nothing is
+ * missed because the mode is checked before the deps are used. */
 export async function contractOf(
   repoRoot: string,
   issue: number,
   body: string,
   base: Pick<LeanSeed, "baseSha"> & { specIntake?: SpecIntake },
+  config: WorkConfig,
   derive?: DeriveDeps,
-  loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig> = defaultLoadConfig,
 ): Promise<Contract> {
   const parsed = parsePiSpec(body);
   if (parsed.ok) return { spec: parsed.spec, dispatches: [] };
   if (parsed.reason !== NO_BLOCK_RULE) return { rule: parsed.reason };
-  // Env first (the operator's word), then the committed `lean.specIntake`, then
-  // `require`. The read is at the run's base and its three outcomes stay three: an
-  // ABSENT file is the normal case and gets the shipped default; a file that EXISTS AND
-  // CANNOT BE READ (`LeanConfigError`) is infrastructure, so it hands back rather than
-  // posting a not-ready comment on a ticket whose text was never the problem; and a
-  // mode the switch refuses is a refusal naming the knob, never a raw throw.
-  let config: WorkConfig | undefined;
-  if (base.baseSha !== "") {
-    try {
-      config = await loadConfig(repoRoot, base.baseSha);
-    } catch (err) {
-      if (!(err instanceof LeanConfigError)) throw err;
-      return {
-        rule: `could not read .pi/work.json at the run's base: ${oneLine(err.message, 200)}`,
-        infra: true,
-      };
-    }
-  }
   let intake: SpecIntake;
   try {
     intake = resolveSpecIntake(config, base.specIntake);
@@ -109,11 +90,6 @@ export async function contractOf(
       dispatches: err.dispatches ?? [],
     };
   }
-}
-
-/** The mode read of a run with no wiring of its own: the committed bytes at its base. */
-function defaultLoadConfig(repoRoot: string, baseSha: string): Promise<WorkConfig> {
-  return loadWorkConfig(execp, repoRoot, baseSha);
 }
 
 /** The model the deriving child will be resolved to, for the record's provenance.

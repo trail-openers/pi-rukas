@@ -4598,8 +4598,9 @@ Before #2439 the derivation only appended, the literal `{file}` survived into th
 runner exited 4 on a file that does not exist: the symptom was this hand-back and the wording blamed
 the missing report. Set `verify.roster` when the project's report invocation differs from its
 per-file one. With the roster on, `ready` refuses a run whose `verify.roster` is unset and whose
-`verify.test` names no `pytest`/`py.test` word (`.pi/work.json is unusable: verify.roster is unset
-and verify.test is not pytest …`), so a runner that cannot take `--junitxml` is caught before build
+`verify.test` names no `pytest`/`py.test` word (`verify.roster is unset and verify.test is not
+pytest …`, a [`setup` refusal](#symptom-work-lean-hands-back-at-once-with-failurekind-setup):
+handed-back at exit 10, nothing posted), so a runner that cannot take `--junitxml` is caught before build
 rather than at every verify; the shell and `cargo nextest` recipes are in [lean.md](lean.md). A project with no `verify.testDir`/`verify.testGlob` pair (the bare `sh {file}` runner) has no suite for a `verify.roster` to report, so its way out is the lever below. `{report}` is the absolute path the runner must write its JUnit XML to and `{dir}` the
 tree it runs in; both must
 appear as whole words, and the command is argv form, never a shell — a `;`, `|`, `$`, backtick or
@@ -4644,3 +4645,21 @@ Source: `extension/src/lean/verify-roster.ts` (enumeration, both runs, the repor
 base-version runs), `extension/src/lean/verify.ts` (the hand-backs), `extension/src/lean/engine-facts.ts`
 (the land gate), `extension/src/lean/project-roster-switch.ts` (the lever); pinned by
 `extension/smoke-tests/test-AC1-project-roster-handback.ts` and friends.
+
+### Symptom: `work-lean` hands back at once with `failure.kind: "setup"`
+
+**Symptom:** a `work-lean` run ends `handed-back` (exit 10) after one `ready` step, posts nothing on
+the issue, and its headless result carries `issues[].failure.kind: "setup"`.
+
+**Cause:** the repository cannot run lean, judged at the run's base before the issue was read or any
+model called. `failure.message` names which: `.pi/work.json at the run's base is unusable: …` (the
+file does not parse or the loader refused a field), `verify.test is unset at the run's base …` (no
+`.pi/work.json` at all, or one without a per-file runner), or `verify.roster is unset and verify.test
+is not pytest …` (the roster can get no JUnit report).
+
+**Fix:** commit the config the message asks for to the mainline, remove the finished run's
+`.pi/lean-state/<issue>.json` (a finished record answers a second run with its stamped result), and
+re-run — a fix in the working tree changes nothing, because the config is read at the base. A host that wants another driver for
+such a repository falls back on this kind alone ([headless.md → The `failure`
+object](headless.md#the-failure-object)). Source: `extension/src/lean/ready-setup.ts`; pinned by
+`extension/smoke-tests/test-lean-ready-setup.ts`.

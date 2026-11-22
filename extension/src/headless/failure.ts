@@ -49,6 +49,10 @@ export const FAILURE_KINDS = [
   "forge-refused",
   /** A driver step handler threw. */
   "driver",
+  /** `work-lean` only: the REPOSITORY cannot run lean (its `.pi/work.json`, `verify.test` or
+   *  roster), refused at `ready` before the issue was read or any model was called. Never an
+   *  issue cause; the key a host falls back to another driver on. */
+  "setup",
   /** No failure: the cap's own rule stopped the cycle (a round cap, a park, awaiting merge). */
   "cap",
 ] as const;

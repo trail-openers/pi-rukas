@@ -59,6 +59,8 @@ export const KIND_CLASS: Record<FailureKind, CauseClass | undefined> = {
   // in CAP_CAUSE pins `issue` directly and is not kind-driven, so this row is the total-map
   // back-stop that keeps a future kind-driven refusal from falling through to `undefined`.
   "forge-refused": "issue",
+  // The repository's lean setup: not the issue, not the change. Only `work-lean` emits it.
+  setup: "environment",
   cap: undefined,
 };
 

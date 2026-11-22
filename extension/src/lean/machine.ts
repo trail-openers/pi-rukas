@@ -21,8 +21,9 @@ export const OUTCOME_KINDS = {
   // `infra` is `ready`'s only route to `handback` that is not the author's fault:
   // in `derive` intake mode the contract comes from a model call, and a call that
   // died, timed out or came back unparsable is a retryable handback — not a
-  // comment on the issue telling someone their ticket is unready.
-  ready: ["ok", "fail", "infra"],
+  // comment on the issue telling someone their ticket is unready. `setup` is the repository's
+  // fault (`ready-setup.ts`): it ends the run without a reporting step, so nothing is posted.
+  ready: ["ok", "fail", "infra", "setup"],
   specify: ["ok", "no-red-test", "budget"],
   // `blocked` is the child's own "these frozen tests cannot all pass together", honoured only after the
   // driver re-ran the named tests itself. It is not `exhausted`: the route must never reach `publish`.
@@ -98,6 +99,10 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           // A derivation could not be completed. The issue is not at fault, so the
           // run says so on the operator's channel instead of on the ticket.
           return to(run, "handback");
+        case "setup":
+          // The repository cannot run lean. Straight to `handed-back` (exit 10): the issue is not
+          // at fault, so no comment goes on it, and a host falls back on `failure.kind: "setup"`.
+          return to(run, "handed-back");
       }
       break;
 
