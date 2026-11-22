@@ -186,7 +186,7 @@ With `--json`, stdout carries exactly one JSON document:
 | `issues[].resumable` | always | `true` when running `work <issue>` again **without** `--restart` continues this cycle (it was interrupted, or stopped while running). Always `false` on a refusal (exit 40: another live process owns the cycle, so a re-run is refused again until it ends) and when `PI_ENSEMBLE_RESUME=0`. A terminal cycle needs `--restart` for a fresh one. |
 | `issues[].continuedPr` | when a `--continue-pr` cycle reached the branch step | The PR it continued (#1468): `number`, `headRefName`, `startHeadSha` (the PR head when the run started) and `mainlineSha` (the mainline commit merged into it). See [`--continue-pr` for hosts](#--continue-pr-for-hosts). |
 | `issues[].stateFile` | always | A path for a person to inspect. Not a host contract: see below. |
-| `issues[].questions` | exit 11 only | The clarification questions, numbered `q1`, `q2`, … |
+| `issues[].questions` | exit 11 only | The clarification questions, numbered `q1`, `q2`, … The projection replaces each whole worktree path the handoff removed with `(a worktree the handoff removed)`. |
 | `issues[].diverged` | on divergence | The in-memory and on-disk states disagreed; the exit code is 30. |
 | `resources` | always | The host budget and the parallelism limits the run chose (#1325, added in this release). See [Resource report](#resource-report). |
 
@@ -206,12 +206,12 @@ An optional top-level `error` (`{ code, message }`) is present when the runner d
 | `step` | when known | The step it belongs to, the same as `failedStep`. |
 | `role` | when a dispatch failed, or a guard cap names one | The failed dispatch's role (or the role a `loop-detected` / `token-budget` cap killed). |
 | `cause` | when a dispatch failed | The driver's root-cause reading of the failed dispatch, the one its retry router acts on: `provider-severed`, `rate-limited:429`, `rate-limited:burst`, `rate-limited:quota-window`, `rate-limited:quota-terminal`, `provider-model-unavailable`, `self-killed:<timeout\|inactivity\|tool-inactivity\|abort\|loop\|token-budget\|plan-timeout>`, `crashed` or `crashed-unknown`. Additive: show an unknown one to a person. |
-| `message` | always | One plain-text sentence, at most 500 characters: the failed dispatch's cause in words, else the first line of the cap's evidence, else the cap. |
+| `message` | always | One plain-text sentence, at most 500 characters: the failed dispatch's cause in words, else the first line of the cap's evidence, else the cap. The projection replaces each whole worktree path the handoff removed with `(a worktree the handoff removed)`. |
 | `providerMessage` | provider failures | The provider's own error message, at most 1000 characters. |
 | `errorTail` | process failures | The end of the failed child's output, at most 2000 characters. |
 | `killCause` | when pi-rukas ended the child | `timeout`, `inactivity`, `tool-inactivity`, `abort`, `loop`, `token-budget` or `plan-timeout`. |
 | `exitCode` | when the failed child exited | Its exit code (`null` when killed by a signal). |
-| `evidence` | when the cap recorded some | The cap's evidence, at most 2000 characters. Plain text for a person; do not parse it. |
+| `evidence` | when the cap recorded some | The cap's evidence, at most 2000 characters. Plain text for a person; do not parse it. The projection replaces each whole worktree path the handoff removed with `(a worktree the handoff removed)`. |
 
 Every text field has secrets redacted before it is cut to its bound.
 
