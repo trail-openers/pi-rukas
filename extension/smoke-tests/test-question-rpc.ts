@@ -73,6 +73,26 @@ assert(
 );
 assert(print.details.deferred === undefined, "print: nothing is deferred");
 
+// In the terminal the dialog asks Pi (1.5+) to report it as blocked on the user.
+let customOptions: unknown;
+await tool.execute("call-4", params, undefined, undefined, {
+  mode: "tui",
+  ui: {
+    custom: async (_f: unknown, o: unknown) => {
+      customOptions = o;
+      return null;
+    },
+  },
+});
+assert(
+  JSON.stringify(customOptions) ===
+    JSON.stringify({
+      overlay: false,
+      blocked: { kind: "question", message: "Adopt my resolutions?" },
+    }),
+  "tui: the inline dialog reports blocked with the question as its message",
+);
+
 // #1401 — options sent as their JSON encoding are decoded before validation.
 assert(tool.prepareArguments !== undefined, "prepareArguments is registered");
 const encoded = tool.prepareArguments({
