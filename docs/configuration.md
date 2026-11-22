@@ -20,7 +20,7 @@ All optional. Defaults are reasonable for typical use. This file holds the full 
 
 ## Installing from the Pi package gallery
 
-`pi install npm:@trail-openers/pi-rukas` installs pi-rukas in host mode, and `pi update --extensions` upgrades it. Pi loads the extension, the built role prompts and the bundled skills from the package; skills are not symlinked into `~/.pi/agent/skills/`. It skips `install.sh`'s minimum-version check on `pi`: compare `pi --version` with [pi-compatibility.md](pi-compatibility.md) yourself.
+`pi install npm:@trail-openers/pi-rukas` installs pi-rukas in host mode, and `pi update --extensions` upgrades it. Pi loads the extension, the built role prompts and the bundled skills from the package; skills are not symlinked into `~/.pi/agent/skills/`. Use one install path, not both: a host that ran `./install.sh` already loads pi-rukas through `~/.pi/agent/extensions/pi-rukas` and the skill symlinks, so remove those first or every command and skill registers twice. A git source (`pi install git:github.com/trail-openers/pi-rukas`) builds the role prompts at install time and needs `jq`. It skips `install.sh`'s minimum-version check on `pi`: compare `pi --version` with [pi-compatibility.md](pi-compatibility.md) yourself.
 
 `./install.sh` also edits two user config files. A gallery install does not, so make these edits yourself:
 
