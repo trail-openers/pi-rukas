@@ -88,7 +88,7 @@ export {
 } from "./work-driver-cap-checkpoint-typecheck.ts";
 
 /** #543 (M5) — structurally write-gated roles: the SAME set role-tools.ts
- * passes `--exclude-tools write,edit,multiedit` to (explore /
+ * strips write/edit/multiedit from via `--exclude-tools` (explore /
  * code-review-specialist / adversarial-developer). A cap kill of one of
  * these children can NEVER have written files, so its checkpoint is
  * report-only (no stage, no commit, `reportOnly: true`). */

@@ -131,6 +131,10 @@ The two columns `agents.json` cannot produce at all — `--exclude-tools` from
 | explore | `write,edit,multiedit` | no |
 | project-manager | — (never gated: PM is the parent, not a spawned child) | **yes** (`"*": "ask"`) |
 
+Once the version probe has seen a pi at or above 1.0.4, `excludeToolsFor()` sends each name as a
+prefix pattern (`write*,edit*,multiedit*`), so a tool renamed or added under the same stem stays
+excluded; before that, or below it, it sends the names above.
+
 The `deny` / `ask` / `obj` membership of each map is `agents.json`'s business and is not enumerated
 here — read it off the command above (drop `| @tsv` and print the keys) rather than restating a copy.
 
