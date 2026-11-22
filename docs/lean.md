@@ -164,7 +164,8 @@ an authored one is worth:
   block meets, including the `size: "L"` refusal. A brief therefore asks for at most
   **8** criteria, the count at which the mapper still calls the change `M`; a child
   that returns 9 anyway gets the size-`L` refusal with the rendered block quoted, and
-  the list is **never silently truncated** to make the gate green.
+  the list is **never silently truncated** to make the gate green. Regression guards
+  (below) count toward the 8: criteria plus guards above 8 is size `L`.
 - **Two shapes stay `require`'s refusal, in both modes**, because in each the
   issue is genuinely at fault and no model call should be billed for it: a body that
   is blank (a ticket with nothing in it is not prose to derive from), and a block that
@@ -177,13 +178,20 @@ an authored one is worth:
   cause (`ready`'s `infra` verdict, exit 10) rather than posting "your ticket is not
   ready" on an issue that did nothing wrong — which is also what keeps the run
   retryable.
+- **A sentence that only asks existing checks to keep passing is a guard, not a
+  criterion.** It is green on the base, so a red test for it cannot exist. Derive sets
+  such sentences beside the criteria (`derivedSpec.guards`), `specify` never asks a
+  red test of them, and the run's full verify tier enforces them at `ci`. A ticket
+  whose every sentence is a guard has nothing to build, so it declines not-ready
+  (exit 11) with that reason rather than handing back. Switch:
+  `PI_ENSEMBLE_LEAN_DERIVE_REGRESSION_GUARDS` in [configuration.md](configuration.md).
 - **The child is bounded and read-only.** One `explore` child (no write tools), on
   its own `budgets.derive` row, seeing the title and body **fenced as untrusted
   data** and told so: a ticket whose own text says "ignore your instructions" is the
   shape that boundary exists to survive.
 
 **Where the derived contract lives.** `ready` persists it on the run record
-(`derivedSpec: {spec, model, at}`), and every step reads its contract through
+(`derivedSpec: {spec, model, at}`, plus `guards` when derive set any aside), and every step reads its contract through
 `specFor` (`lean/spec-for.ts`): the body's own block wins whenever it parses, and the
 record stands in **only** for the `no pi-spec v1 block` reason. So a step never
 re-derives, a resume never pays a second child, and a run cannot read a contract that

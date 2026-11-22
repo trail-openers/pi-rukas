@@ -24,6 +24,11 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // switch: one renderer serves all three and the section ships on.
   // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_BUILD_ISSUE_PROSE", true),
+  // Derive sets ticket lines that only ask existing checks to keep passing beside
+  // the criteria as regression guards, which need no red test; `0` restores the
+  // derive output with no guards. The reader is
+  // `leanDeriveRegressionGuardsEnabled` in lean/derive-guards.ts.
+  flag("LEAN_DERIVE_REGRESSION_GUARDS", true),
   // A review fixer whose last turn ended at the model's output-token limit with no edit made is
   // continued ONCE, in its own session, in its own tree behind the same write fence, before the wave
   // is judged "produced no change". The detector reads the child's own recorded `stopReason` and its

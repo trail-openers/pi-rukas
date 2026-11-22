@@ -235,6 +235,18 @@ With the gate open the run is seeded from the superproject, so an un-populated s
 DISCLOSURE naming the path, not a hand-back. A runner that dies on
 the probe-shaped file is graded by the red proof alone, exactly as v0.14.71 graded it.
 
+### Symptom: a derived lean run declines `criterion ACn has no red test; … exited 0 on base` for a "still passes" line
+
+**Cause:** the derived contract made a ticket line that only asks existing checks to keep passing
+("the existing checks and the build still pass") into a criterion of its own. Such a line is green
+on the base, so no red test for it can exist, and `specify` refuses the run.
+
+**Fix:** leave `PI_ENSEMBLE_LEAN_DERIVE_REGRESSION_GUARDS` unset (the default): derive sets such
+lines aside as regression guards, which the run's full verify tier enforces at `ci` — so the project
+needs a full tier (`verify.full` or `.pi/verify-cmd`). A wording the guard rule does not recognise
+can still become a criterion; rewrite the line as "the existing … still pass", or add a `pi-spec v1`
+block by hand (or with `/plan`).
+
 ### Symptom: a lean run stops at `ready` with `could not read the issue: approved spec …`, or a `work` cycle halts `step-failed:explore` with `approved spec …`
 
 **Cause:** the issue's `manifest.json` names an approved spec, and the entry does not match
