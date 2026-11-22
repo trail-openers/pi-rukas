@@ -6,7 +6,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { runAdversarialLoop } from "./adversarial.ts";
 import { startJob } from "./async-jobs.ts";
 import { prepareDevelopTree } from "./develop-branch.ts";

@@ -22,7 +22,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { reviewCapMs } from "./review-budget.ts";
 
 // #1429 — this file used to carry its own `const REVIEW_CAP_MS = 90 * 60 *

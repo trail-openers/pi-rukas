@@ -38,7 +38,7 @@
  */
 
 import path from "node:path";
-import { Value } from "@sinclair/typebox/value";
+import { Value } from "typebox/value";
 import { neutraliseFenceEntry } from "./plan-fence-render.ts";
 import {
   WORKSTREAM_ID_MAX,

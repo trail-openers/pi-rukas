@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import type { DispatchHost } from "./async-jobs-lifecycle.ts";
 import { startBatch, startJob } from "./async-jobs.ts";
 import { prepareDevelopTree } from "./develop-branch.ts";

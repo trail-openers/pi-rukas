@@ -25,7 +25,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 
 /**
  * #638 deliverable 3 (task-b): the ONE definition of the `reference` kind,

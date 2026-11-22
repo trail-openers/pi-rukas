@@ -321,11 +321,13 @@ export function minorDistance(a: string, b: string): number | null {
   return Math.abs(mab - mbb);
 }
 
-/** Declared dev pins in extension/package.json (the DECLARED pin, never bun.lock). */
+/** Declared dev pins in extension/package.json (the DECLARED pin, never bun.lock).
+ * Read from `devDependencies` only: the same names also appear in
+ * `peerDependencies` with a "*" range, which is the host contract, not a pin. */
 export function parseDevPins(pkgJson: string): { codingAgent: string; tui: string } {
-  const m = pkgJson.match(/"@earendil-works\/pi-coding-agent":\s*"([^"]+)"/);
-  const t = pkgJson.match(/"@earendil-works\/pi-tui":\s*"([^"]+)"/);
-  return { codingAgent: m ? stripRangePrefix(m[1] as string) : "", tui: t ? stripRangePrefix(t[1] as string) : "" };
+  const dev = (JSON.parse(pkgJson) as { devDependencies?: Record<string, string> }).devDependencies ?? {};
+  const pin = (name: string) => stripRangePrefix(dev[name] ?? "");
+  return { codingAgent: pin("@earendil-works/pi-coding-agent"), tui: pin("@earendil-works/pi-tui") };
 }
 
 /** The restating "Last verified against `pi` **X.Y.Z (YYYY-MM-DD)**" line in AGENTS.md § 4. */

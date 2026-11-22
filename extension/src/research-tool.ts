@@ -18,7 +18,7 @@
  * the PM for the whole run, which is what they actually complained about.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { noticeSubject } from "./async-jobs-report.ts";
 import { startJob } from "./async-jobs.ts";
 import { runResearchPipeline } from "./research-driver.ts";

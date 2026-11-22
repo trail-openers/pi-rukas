@@ -7,7 +7,7 @@
  * objects: no child process, no state file.
  */
 
-import { Value } from "@sinclair/typebox/value";
+import { Value } from "typebox/value";
 import {
   WORKSTREAM_PARAMETERS,
   WORKSTREAM_SCOPE_MAX,
