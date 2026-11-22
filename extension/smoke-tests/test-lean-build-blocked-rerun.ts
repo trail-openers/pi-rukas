@@ -14,6 +14,7 @@
  *         is SKIPPED rather than fatal, so a toolchain fault on one file cannot
  *         hide a genuine conflict in another
  *   (3a3) the loop shares ONE wall clock, so N named files cannot cost N ceilings
+ *   (3a8) a budget timer firing late cannot admit another runner either
  *   (3a4) a non-zero exit that never named its file is `unclear`, not a red
  *   (3a6) the named file's bytes must still be the bytes the run froze: an
  *         edited frozen test is the child's own edit, not a contradiction
@@ -44,6 +45,23 @@ function blocked(names: Array<{ path: string; reason: string }>): unknown[] {
 
 /** A conflict naming the fixture's frozen file, in the child's own words. */
 const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in place";
+
+/**
+ * Run `fn` with `Date.now()` at `rate` times the timers' speed. Node's timers fire early or late against the
+ * wall clock with host load; a skewed clock makes that jitter certain, so a loop whose stop check reads only
+ * one of the two clocks starts a later runner on every run: a slow clock (early timer) catches a check that
+ * reads only `Date.now()`, a fast clock (late timer) one that reads only the timer.
+ */
+async function withClock<T>(rate: number, fn: () => Promise<T>): Promise<T> {
+  const real = Date.now;
+  const base = real();
+  Date.now = () => base + Math.floor((real() - base) * rate);
+  try {
+    return await fn();
+  } finally {
+    Date.now = real;
+  }
+}
 
 // ── (3a) a runner that could not judge the named test is not a red ─────────
 {
@@ -113,24 +131,26 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
   const SLOW_A = "tests/slow-a.test.sh";
   const SLOW_B = "tests/slow-b.test.sh";
   const started: string[] = [];
-  const r = await runBuild({
-    issue: 340,
-    extraFrozen: {
-      // Each sleeps past the shared budget: the first is killed by the loop, and
-      // the second must never be started at all.
-      [SLOW_A]: "#!/bin/sh\nsleep 3\nexit 1\n",
-      [SLOW_B]: "#!/bin/sh\nsleep 3\nexit 1\n",
-    },
-    toolUses: () =>
-      blocked([
-        { path: SLOW_A, reason: "a hangs" },
-        { path: SLOW_B, reason: "b hangs" },
-      ]),
-    blockedTimeoutMs: 300,
-    execSpy: (cmd, o) => {
-      if (cmd !== "git") started.push(String((o as { argv?: string[] })?.argv?.[0] ?? cmd));
-    },
-  });
+  const r = await withClock(0.5, () =>
+    runBuild({
+      issue: 340,
+      extraFrozen: {
+        // Each sleeps past the shared budget: the first is killed by the loop, and
+        // the second must never be started at all.
+        [SLOW_A]: "#!/bin/sh\nsleep 3\nexit 1\n",
+        [SLOW_B]: "#!/bin/sh\nsleep 3\nexit 1\n",
+      },
+      toolUses: () =>
+        blocked([
+          { path: SLOW_A, reason: "a hangs" },
+          { path: SLOW_B, reason: "b hangs" },
+        ]),
+      blockedTimeoutMs: 300,
+      execSpy: (cmd, o) => {
+        if (cmd !== "git") started.push(String((o as { argv?: string[] })?.argv?.[0] ?? cmd));
+      },
+    }),
+  );
   assert(
     r.outcome?.kind !== "blocked",
     `(3a3) a report whose files all outlast the shared budget is not honoured (got ${r.outcome?.kind ?? r.threw?.message})`,
@@ -157,27 +177,29 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
   const HANG_B = "tests/hang-b.test.sh";
   const HANG_C = "tests/hang-c.test.sh";
   const started: string[] = [];
-  const r = await runBuild({
-    issue: 342,
-    extraFrozen: {
-      [HANG_A]: "#!/bin/sh\nexit 1\n",
-      [HANG_B]: "#!/bin/sh\nexit 1\n",
-      [HANG_C]: "#!/bin/sh\nexit 1\n",
-    },
-    toolUses: () =>
-      blocked([
-        { path: HANG_A, reason: "a never returns" },
-        { path: HANG_B, reason: "b never returns" },
-        { path: HANG_C, reason: "c never returns" },
-      ]),
-    blockedTimeoutMs: 400,
-    // A runner that ignores its ceiling entirely: resolves after the whole budget
-    // with a red-shaped output, so if the step waited for it, it would believe it.
-    hungExec: () => new Promise((resolve) => setTimeout(() => resolve({ stdout: "" }), 5000)),
-    execSpy: (cmd, o) => {
-      if (cmd !== "git") started.push(String((o as { argv?: string[] })?.argv?.[0] ?? cmd));
-    },
-  });
+  const r = await withClock(0.5, () =>
+    runBuild({
+      issue: 342,
+      extraFrozen: {
+        [HANG_A]: "#!/bin/sh\nexit 1\n",
+        [HANG_B]: "#!/bin/sh\nexit 1\n",
+        [HANG_C]: "#!/bin/sh\nexit 1\n",
+      },
+      toolUses: () =>
+        blocked([
+          { path: HANG_A, reason: "a never returns" },
+          { path: HANG_B, reason: "b never returns" },
+          { path: HANG_C, reason: "c never returns" },
+        ]),
+      blockedTimeoutMs: 400,
+      // A runner that ignores its ceiling entirely: resolves after the whole budget
+      // with a red-shaped output, so if the step waited for it, it would believe it.
+      hungExec: () => new Promise((resolve) => setTimeout(() => resolve({ stdout: "" }), 5000)),
+      execSpy: (cmd, o) => {
+        if (cmd !== "git") started.push(String((o as { argv?: string[] })?.argv?.[0] ?? cmd));
+      },
+    }),
+  );
   assert(
     r.outcome?.kind !== "blocked",
     `(3a5) a report whose runners never return is not honoured (got ${r.outcome?.kind ?? r.threw?.message})`,
@@ -188,6 +210,38 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
   assert(
     started.length === 1 && started[0] === HANG_A,
     `(3a5) and the loop stopped at one budget: the later hanging runners were never started (${JSON.stringify(started)})`,
+  );
+}
+
+// ── (3a8) a timer that fires LATE cannot admit another runner ───────────
+{
+  // The other tail of the jitter (3a3) and (3a5) pin: the first runner answers
+  // green after the wall clock has passed the budget but before the budget's
+  // timer has fired. A stop check that read only the timer would start the next
+  // file then; the witness is again the exec seam.
+  const LATE_A = "tests/late-a.test.sh";
+  const LATE_B = "tests/late-b.test.sh";
+  const started: string[] = [];
+  await withClock(2, () =>
+    runBuild({
+      issue: 345,
+      extraFrozen: { [LATE_A]: "#!/bin/sh\nexit 0\n", [LATE_B]: "#!/bin/sh\nexit 0\n" },
+      toolUses: () =>
+        blocked([
+          { path: LATE_A, reason: "a answers late" },
+          { path: LATE_B, reason: "b must not start" },
+        ]),
+      blockedTimeoutMs: 400,
+      // Answers green at 250 ms on the timers' clock: 500 ms on the wall clock.
+      hungExec: () => new Promise((resolve) => setTimeout(() => resolve({ stdout: "" }), 250)),
+      execSpy: (cmd, o) => {
+        if (cmd !== "git") started.push(String((o as { argv?: string[] })?.argv?.[0] ?? cmd));
+      },
+    }),
+  );
+  assert(
+    started.length === 1 && started[0] === LATE_A,
+    `(3a8) a runner answering past the wall-clock budget stops the loop before its timer fires (${JSON.stringify(started)})`,
   );
 }
 
