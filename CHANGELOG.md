@@ -8,6 +8,22 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.14.100](https://github.com/trail-openers/pi-rukas/compare/v0.14.99...v0.14.100) (2026-11-22)
+
+
+### Features
+
+* **verify:** add an opt-in per-file timing ceiling to the smoke loop ([#2463](https://github.com/trail-openers/pi-rukas/issues/2463)) ([dfb68ef](https://github.com/trail-openers/pi-rukas/commit/dfb68ef338c23df2050915ce2b2f950d7990f226)), closes [#2449](https://github.com/trail-openers/pi-rukas/issues/2449) [#2424](https://github.com/trail-openers/pi-rukas/issues/2424)
+* **work:** add the host's comments blob to the issue text ([#2469](https://github.com/trail-openers/pi-rukas/issues/2469)) ([457d7e3](https://github.com/trail-openers/pi-rukas/commit/457d7e3bd74f3c46cc3daf708db0b7e8bae43028))
+
+
+### Bug Fixes
+
+* **headless:** plan from the --issue body as operator context ([#2466](https://github.com/trail-openers/pi-rukas/issues/2466)) ([aa266b6](https://github.com/trail-openers/pi-rukas/commit/aa266b67aa74a707ff6eca2be41d32da9fdcdc77))
+* **merge-guard:** hold a chain or API body only where it can merge ([#2468](https://github.com/trail-openers/pi-rukas/issues/2468)) ([40aad6f](https://github.com/trail-openers/pi-rukas/commit/40aad6fe5cd6d05ae48cfc0c69cbdb7f72ea7ed4))
+* **work:** a stopped cycle removes its own worktrees, salvaging work ([#2474](https://github.com/trail-openers/pi-rukas/issues/2474)) ([60ade45](https://github.com/trail-openers/pi-rukas/commit/60ade4582c16e800d4f7ca8affeb62669b4aacc5))
+* **work:** issue-keyed backup refs, never overwritten, deleted on merge ([#2467](https://github.com/trail-openers/pi-rukas/issues/2467)) ([750dafc](https://github.com/trail-openers/pi-rukas/commit/750dafcf7e9cf9cde7b356a54991f0ed82f24cb0))
+
 ## [0.14.99](https://github.com/trail-openers/pi-rukas/compare/v0.14.98...v0.14.99) (2026-11-21)
 
 
