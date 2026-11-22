@@ -3,8 +3,8 @@
  * re-initialisation that reset makes necessary, and the verification of the COMMIT
  * that follows it.
  *
- * Both halves exist because the step's claims are git claims, and a git claim nobody checked is a claim. This
- * module never consults HEAD — it names the base sha, discards everything else, then proves the tree got there.
+ * Both halves exist because the step's claims are git claims, and a git claim nobody checked is a claim. The
+ * reset never consults HEAD — it names the base sha, discards everything else, then proves the tree got there.
  *
  * `clean -fdx` (not `-fd`) is deliberate: `-x` also removes ignored files, and a child that wrote a
  * `.gitignore` hiding a stray file would keep it through the reset, outside what `git status` reports. No
@@ -77,6 +77,31 @@ export async function gitQuiet(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * `git merge-base --is-ancestor sha HEAD` in `wt`: success is `true`, git's own exit 1 is `false`, and any
+ * other rejection (no code, a kill's `null`) throws `fail()` — "could not tell" never reads as "descends".
+ * Success is tagged by the fulfilled branch, and the call bypasses `gitQuiet`, which erases the exit code.
+ */
+export async function headIsDescendant(
+  exec: ExecFn,
+  wt: string,
+  sha: string,
+  fail: () => Error,
+): Promise<boolean> {
+  const r = await exec("git", {
+    argv: [...NO_HOOKS, "merge-base", "--is-ancestor", sha, "HEAD"],
+    cwd: wt,
+    timeout: QUICK_GIT_MS,
+    maxBuffer: 1024 * 1024,
+  }).then(
+    () => ({ ok: true as const }),
+    (err: unknown) => ({ ok: false as const, code: (err as { code?: unknown })?.code }),
+  );
+  if (r.ok) return true;
+  if (r.code === 1) return false;
+  throw fail();
 }
 
 /** Counter for temp names, so two files of one capture never share one. */

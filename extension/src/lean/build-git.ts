@@ -11,7 +11,7 @@
 import { BuildInfraError } from "./build-errors.ts";
 import type { BuildExec } from "./build-types.ts";
 import { sha256 } from "./specify-proof.ts";
-import { NO_HOOKS } from "./specify-reset.ts";
+import { NO_HOOKS, headIsDescendant } from "./specify-reset.ts";
 
 /**
  * Run one git argv command with the hook and fsmonitor guard in front of it; `undefined` when git refused
@@ -61,24 +61,14 @@ export async function headSha(exec: BuildExec, wt: string): Promise<string> {
   return sha;
 }
 
-/**
- * `git merge-base --is-ancestor sha HEAD`.
- *
- * git's own "not an ancestor" answer is exit 1 with no output; anything else (a bad object name, no git
- * at all) is a fact the step cannot establish and throws, because "could not tell" must never read as
- * "the child is honest".
- */
-export async function headDescendsFrom(exec: BuildExec, wt: string, sha: string): Promise<boolean> {
-  const r = await exec("git", {
-    argv: [...NO_HOOKS, "merge-base", "--is-ancestor", sha, "HEAD"],
-    cwd: wt,
-    timeout: 30_000,
-    maxBuffer: 1024 * 1024,
-  }).catch((err: unknown) => ({ code: (err as { code?: unknown })?.code }));
-  if ((r as { code?: unknown }).code === 1) return false;
-  if ((r as { code?: unknown }).code !== undefined)
-    throw new BuildInfraError(`could not tell whether HEAD descends from ${sha}`);
-  return true;
+/** Whether HEAD in `wt` descends from `sha`; "could not tell" is a `BuildInfraError`. */
+export function headDescendsFrom(exec: BuildExec, wt: string, sha: string): Promise<boolean> {
+  return headIsDescendant(
+    exec,
+    wt,
+    sha,
+    () => new BuildInfraError(`could not tell whether HEAD descends from ${sha}`),
+  );
 }
 
 /**
