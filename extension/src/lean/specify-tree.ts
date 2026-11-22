@@ -25,6 +25,7 @@
 
 import { existsSync, realpathSync } from "node:fs";
 import { traceWarn } from "../trace.ts";
+import { ensureWorktreesExcluded } from "../work-driver-git-exclude.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
 import { NO_HOOKS, resetWorktreeToBase } from "./specify-reset.ts";
@@ -171,6 +172,8 @@ export async function ensureSpecifyWorktreeWithProvision(
     beforeSubmoduleInit?: (wt: string) => void | Promise<void>;
   },
 ): Promise<{ wt: string; linked: string[]; problem?: string }> {
+  // Every lean tree lives under `.worktrees/`; excluded per clone, a tool staging the repo root never sees them.
+  await ensureWorktreesExcluded(exec, opts.repoRoot);
   const wt = specifyWorktreePath(opts.repoRoot, opts.issue);
   if (worktreeExists(wt)) {
     await assertSpecifyWorktreeOwned(exec, {
