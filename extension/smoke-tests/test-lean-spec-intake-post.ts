@@ -27,6 +27,7 @@
  * stub on PATH for the issue read. See the fixture for the seams.
  */
 
+import { parsePiSpec } from "../src/lean/spec.ts";
 import { driveIntakeReady } from "./lib/lean-spec-intake-post-fixture.ts";
 
 let failed = 0;
@@ -81,6 +82,13 @@ function assert(cond: unknown, label: string): void {
     "(b) …and it names the drafting model, so a bad derivation can be traced",
   );
   assert(forge.derives === 1, `(b) …and paid for one child (got ${String(forge.derives)})`);
+  // `parsePiSpec` refuses a body with two `pi-spec v1` blocks or a nested fence, so one
+  // round-trip pins both: a single fence, and its JSON is the contract the run recorded.
+  const back = parsePiSpec(forge.posted[0] ?? "");
+  assert(
+    back.ok && JSON.stringify(back.spec) === JSON.stringify(forge.record?.derivedSpec?.spec),
+    `(b) …and the post holds exactly one pi-spec v1 fence that reads back to the recorded contract (${back.ok ? "parsed" : back.reason})`,
+  );
 }
 
 // ── (c) a resume from a record that already holds the contract.
