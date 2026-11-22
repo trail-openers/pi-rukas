@@ -413,7 +413,7 @@ assert(
     `(i3) a carried row BELOW the bar does not hand the wave back (${threw?.message ?? `kind ${String(outcome?.kind)}`})`,
   );
   assert(
-    /DISCLOSED: 1 below-bar row$/.test(outcome?.reason ?? ""),
+    /DISCLOSED: 1 below-bar row(; fix range \S+)?$/.test(outcome?.reason ?? ""),
     `(i3) and the disclosed count states the ONE disclosed row, not the two the round reported — a carried row is not a disclosure (${outcome?.reason?.slice(-90)})`,
   );
 }

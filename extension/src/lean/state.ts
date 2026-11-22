@@ -28,7 +28,7 @@ import { type DerivedSpec, assertDerivedSpec } from "./state-derived-spec.ts";
 import type { Outcome } from "./state-outcome-record.ts";
 export type { Outcome } from "./state-outcome-record.ts";
 export type { ReviewBoundRecord } from "./review-bound.ts";
-import { buildOutcome, outcomeProblem } from "./state-outcome.ts";
+import { buildOutcome, outcomeProblem, progressProblem } from "./state-outcome.ts";
 // The store is re-exported so every caller of the record keeps one import site;
 // the layout of `.pi/lean-state/` is stated once, in `state-store.ts`.
 export {
@@ -78,6 +78,14 @@ export interface Step {
   endedAt?: number;
   /** Absent means the step started and never finished: re-run it. */
   outcome?: Outcome;
+  /** What the step saved before it decided (`HandlerCtx.noteProgress`); folded into its outcome. */
+  progress?: Partial<Outcome>;
+}
+
+/** Saved progress, rebuilt by the outcome rebuilder so a field is carried only as validated. */
+function progressOf(pg: Record<string, unknown>): Partial<Outcome> {
+  const { kind: _kind, ...fields } = buildOutcome({ ...pg, kind: "progress" });
+  return fields;
 }
 
 /**
@@ -296,6 +304,11 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
       const problem = outcomeProblem(oc, st.state as LeanState);
       if (problem !== undefined) bad(`step ${key} ${problem}`);
     }
+    const pg = st.progress as Record<string, unknown> | undefined;
+    if (pg !== undefined && (typeof pg !== "object" || pg === null || Array.isArray(pg)))
+      bad(`step ${key} progress must be an object`);
+    const pgProblem = pg === undefined ? undefined : progressProblem(pg, st.state as LeanState);
+    if (pgProblem !== undefined) bad(`step ${key} ${pgProblem}`);
     // The `:N` suffix is a derived field (the entry count) and the engine
     // trusts it when deciding whether a state still owes a handler call, so
     // a corrupt suffix is refused rather than read as attempt 0.
@@ -307,6 +320,7 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
       startedAt,
       ...(typeof st.endedAt === "number" ? { endedAt: st.endedAt } : {}),
       ...(oc === undefined ? {} : { outcome: buildOutcome(oc) }),
+      ...(pg === undefined ? {} : { progress: progressOf(pg) }),
     });
   }
   // Built field by field rather than cast: a caller must be able to trust

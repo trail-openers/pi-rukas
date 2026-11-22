@@ -79,9 +79,11 @@ import { adversarialGate, lensGate } from "./review-gates.ts";
 import { derivedArg, noteFixDisclosure, reviewedHead } from "./review-git.ts";
 import { fixRound } from "./review-integrate.ts";
 import {
+  fixRangeClause,
   fixRunId,
   fixRunIdFromLog,
   fixedFromLog,
+  holdPreFixHead,
   prNumberFromLog,
   reviewAttemptFromLog,
 } from "./review-log.ts";
@@ -218,6 +220,7 @@ async function reviewPass(
   const { noteRound, noteWave } = tally;
   /** What the fix wave could not supply; `withRecord` appends it — see `noteFixDisclosure`. */
   let fixDisclosure: string | undefined;
+  let fixRange: string | undefined;
   /** Attach what the step judged, so every exit — pass, wave, or stopped mid-wave —
    *  carries the rounds it actually judged rather than losing them on a stopped arm. */
   const withRecord = (pass: Outcome): Outcome =>
@@ -322,6 +325,9 @@ async function reviewPass(
     const gateName = fromGate
       ? `adversarial pass and six-lens review (${review.verdict})`
       : `six-lens review (${review.verdict})`;
+    // The re-review's lower bound: the head the wave starts from, never a fresh origin read (which may
+    // hold somebody else's push), bound and saved before the fixer is dispatched — see `holdPreFixHead`.
+    const preFixHead = holdPreFixHead(ctx, review.head);
     const fix = await fixRound(deps, ctx, {
       head: review.head,
       frozen,
@@ -343,11 +349,6 @@ async function reviewPass(
       budget,
     });
     if (fix.stop !== undefined) throw budgetStopped(fix.stop, rows);
-    // The re-review's lower bound is the head the fix wave started from, as the wave
-    // itself reported it — never a fresh read of origin, which by now may hold somebody
-    // else's push. Held before the head moves, because after it the pre-fix head is not
-    // recoverable from anything but this binding.
-    const preFixHead = review.head;
     // A fixer cut off at the output-token limit before it wrote anything had ONE continuation
     // spent on it (see `fixer-truncation.ts`); the wave's own record says whether, and the reason
     // line says so too, so a wave that fixed nothing after a truncation reads differently from one
@@ -363,6 +364,7 @@ async function reviewPass(
     // prints a 12-char prefix, and a host that has to check out what the fixer left
     // cannot clone a prefix.
     noteWave("fix", head);
+    fixRange = fixRangeClause(preFixHead, head);
     // The fold's reverts ride the reason beside the submodule clause: the reason is the
     // run record, the PR and the handoff, where a trace line is none of those. All three
     // clauses are JOINED, never one chosen over the next: a wave that reverted part of the
@@ -376,6 +378,7 @@ async function reviewPass(
           : `reverted: ${fix.reverted.join(", ")}`,
         fix.submodules ?? "",
         fixDisclosure ?? "",
+        fixRange ?? "",
       ]
         .filter((clause) => clause !== "")
         .join("; ") || undefined;
@@ -472,7 +475,7 @@ async function reviewPass(
       ctx.steps,
       issueBody,
       head,
-      { pr, acceptanceTable, bound: boundRecord },
+      { pr, acceptanceTable, bound: boundRecord, fixRange },
       ctx.run,
     );
     lost.owed = postsOwed;

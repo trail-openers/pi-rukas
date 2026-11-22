@@ -173,10 +173,35 @@ function frozenLines(frozen: string[]): string {
   return [...kept, `- …and ${frozen.length - FROZEN_LIST_CAP} more`].join("\n");
 }
 
+/**
+ * The newest review fix wave's range, from the saved pre-fix head to the head the wave pushed, or nothing when
+ * no review recorded one. A resumed attempt whose own pass pushed no wave still carries the saved head with no
+ * wave head of its own, so its range runs to the branch's head.
+ */
+function fixRangeLines(steps: Step[]): string[] {
+  const oc = [...steps]
+    .reverse()
+    .find((s) => s.state === "review" && s.outcome?.preFixHead !== undefined)?.outcome;
+  const pre = oc?.preFixHead;
+  if (pre === undefined) return [];
+  const head = oc?.review?.waves.at(-1)?.head;
+  return [
+    `Pre-fix head: \`${pre}\` — fix range \`${pre}..${head ?? ""}\`${head ? "" : " (to the branch's head)"}`,
+    "",
+  ];
+}
+
 /** The comment body: what is needed, what was frozen, and where the work is. */
 export function handbackBody(
   issue: number,
-  opts: { needed: string; frozen: string[]; branch: string; prUrl?: string; heads?: Heads },
+  opts: {
+    needed: string;
+    frozen: string[];
+    branch: string;
+    prUrl?: string;
+    heads?: Heads;
+    fixRange?: string[];
+  },
 ): string {
   const tests = frozenLines(opts.frozen);
   return [
@@ -185,6 +210,7 @@ export function handbackBody(
     fenceText(opts.needed, REASON_CLIP),
     "",
     ...(headLines(opts.heads) ?? []),
+    ...(opts.fixRange ?? []),
     "Frozen acceptance tests:",
     tests,
     "",
@@ -309,6 +335,7 @@ export async function handbackOutcome(
       branch: ctx.run.branch,
       ...(prUrl === undefined ? {} : { prUrl }),
       ...(render ? { heads: facts } : {}),
+      fixRange: fixRangeLines(ctx.steps),
     });
     await post(ctx.repoRoot, ctx.issue, body);
     // `posted: true` is the only place the claim lives: the kind is `done` either way. `record` is spread

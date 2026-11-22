@@ -141,6 +141,8 @@ const pastItsBudget = () => runNow() + 61 * MIN;
   // Slots: pair (pre-1), fixer (pre-fix), re-review (pre-re-review), and thereafter.
   const times = [0, 0, 0, 24 * MIN, 24 * MIN];
   let tick = 0;
+  // The fix range's own comment is `test-lean-prefix-head.ts`'s; this case counts the bound's.
+  process.env.PI_ENSEMBLE_LEAN_PREFIX_HEAD = "0";
   const { outcome, threw } = await runStep(
     ctxWithPr(repoRoot, baseSha, BRANCH, {
       startedAt: 0,
@@ -149,6 +151,7 @@ const pastItsBudget = () => runNow() + 61 * MIN;
     }),
     waveDeps(fixerThatCommits("bound-fix"), 20, posts),
   );
+  delete process.env.PI_ENSEMBLE_LEAN_PREFIX_HEAD;
   const rec = outcome?.reviewBound;
   assert(
     threw === undefined &&

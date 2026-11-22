@@ -183,7 +183,10 @@ const section = (head: string): string => renderAcceptanceSection(logFor(head), 
         outcome: { kind: "ok", prUrl: "https://github.com/o/r/pull/11", publishedHead: head },
       },
     );
+    // The fix range's own comment is `test-lean-prefix-head.ts`'s; this case counts the two disclosures.
+    process.env.PI_ENSEMBLE_LEAN_PREFIX_HEAD = "0";
     const { outcome, threw } = await runStep(ctx, deps);
+    delete process.env.PI_ENSEMBLE_LEAN_PREFIX_HEAD;
     return { posts, outcome, threw };
   };
 

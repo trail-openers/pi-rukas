@@ -65,6 +65,10 @@ import { leanGates, reviewBoundSentence } from "./work-lean-gates.ts";
 import { leanHandoff } from "./work-lean-handoff.ts";
 import { prStateOf, prUrlOf, publishedHeadOf, reviewCompleteOf } from "./work-lean-pr.ts";
 
+/** The full head the newest `review` fix wave started from (`PI_ENSEMBLE_LEAN_PREFIX_HEAD`); absent when
+ * no review recorded one. Lean-only, so it is typed here rather than on the shared `IssueResult`. */
+type LeanOnly = { preFixHead?: string };
+
 /** What `work` reports for a finished PR waiting on a person (#1675's vocabulary). */
 const AWAITING = "awaiting-human-merge";
 
@@ -358,7 +362,7 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
   // own record, and `verified` is that head put back through the same gate test. One
   // reader of the rule, two heads: the fields cannot disagree because neither of them
   // decides the question on its own.
-  const result: IssueResult = {
+  const result: IssueResult & LeanOnly = {
     issue: run.issue,
     status,
     stateFile: stateFileOf(run.issue),
@@ -388,6 +392,10 @@ export function leanIssueResult(run: LeanRun, code: number): IssueResult {
     result.reviewBound = reviewBoundSentence(rec, (s) => redactClip(s, TEXT_MAX));
     break;
   }
+  // The newest review fix wave's lower bound, so a host can name the commits the fixer made.
+  const preFixHead = [...steps].reverse().find((s) => s.state === "review" && s.outcome?.preFixHead)
+    ?.outcome?.preFixHead;
+  if (preFixHead !== undefined) result.preFixHead = preFixHead;
   // Written on one switch, and ONLY on the arm that has a cap to pair with: the contract's
   // promise is `reviewComplete: false` beside cap `review-incomplete` and `true` beside
   // `awaiting-human-merge`, so the key goes on the document exactly where one of those caps is.

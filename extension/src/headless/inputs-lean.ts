@@ -52,6 +52,10 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // computes the identity from that checkout's working tree, as before: nothing recorded.
   // The reader is `leanLensLedgerAtHeadEnabled` in lean/review-deps.ts.
   flag("LEAN_LENS_LEDGER_AT_HEAD", true),
+  // A review fix wave saves the head it starts from before the fixer runs, and the
+  // range rides the step's reason, a PR comment, the handback and `issues[].preFixHead`. `0`
+  // saves and names nothing. The reader is `leanPrefixHeadEnabled` in lean/review-log.ts.
+  flag("LEAN_PREFIX_HEAD", true),
   // #2202 — containment for the probe's parent directory: `"0"` skips the realpath
   // check that the folder the write goes into lies inside `realpath(worktree)`, so a
   // base-committed `verify.testDir` that is really a symlink out of the checkout

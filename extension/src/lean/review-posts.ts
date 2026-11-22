@@ -15,7 +15,8 @@
  * **Two comments, not one**, in this order: the acceptance table says what the gate
  * said about each criterion; the bound record says what this step did NOT judge. Each
  * is attempted whatever arm closed the step, and the second is attempted even when
- * the first was refused — one lost post must not cost the run both disclosures.
+ * the first was refused — one lost post must not cost the run both disclosures. A
+ * pushed fix wave adds a third, naming its fix range.
  */
 
 import { traceWarn } from "../trace.ts";
@@ -36,6 +37,8 @@ export interface ReviewPosts {
   /** The bound record this attempt wrote, or `undefined` when every lane was judged and
    * there is nothing to disclose. */
   readonly bound: ReviewBoundRecord | undefined;
+  /** `fix range <pre>..<head>` once a fix wave pushed, on `PI_ENSEMBLE_LEAN_PREFIX_HEAD`. */
+  readonly fixRange?: string;
 }
 
 /**
@@ -82,5 +85,16 @@ export async function postReviewDisclosures(
         );
       });
   }
+  // The saved head rides the outcome and the handback, so a refused post is a trace line, not an owed disclosure.
+  if (posts.fixRange !== undefined)
+    await post(
+      repoRoot,
+      pr,
+      `work-lean review: one fix wave was pushed — ${posts.fixRange}.`,
+    ).catch((err: unknown) =>
+      traceWarn(
+        `lean review #${String(issue)}: could not post the fix range: ${(err as Error)?.message ?? String(err)}`,
+      ),
+    );
   return owed.length === 0 ? undefined : owed.join("; ");
 }
