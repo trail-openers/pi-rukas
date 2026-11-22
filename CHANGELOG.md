@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.4](https://github.com/trail-openers/pi-rukas/compare/v0.15.3...v0.15.4) (2026-11-22)
+
+
+### Bug Fixes
+
+* **lean:** check verify's base probes out under the repository ([#2558](https://github.com/trail-openers/pi-rukas/issues/2558)) ([11882e5](https://github.com/trail-openers/pi-rukas/commit/11882e5863cc80c10c7f13aed35fe4258099f1f1))
+* **lean:** re-ask a specify child once for undeclared criteria ([#2555](https://github.com/trail-openers/pi-rukas/issues/2555)) ([e17d3cd](https://github.com/trail-openers/pi-rukas/commit/e17d3cd58370f07fa39ec115071ddbf9c0c5c395))
+
 ## [0.15.3](https://github.com/trail-openers/pi-rukas/compare/v0.15.2...v0.15.3) (2026-11-22)
 
 
