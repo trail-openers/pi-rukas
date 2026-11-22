@@ -356,7 +356,7 @@ export async function run(c: CiCase): Promise<Ran> {
         // compare them verbatim, and a stamp the base never printed is a head-only line.
         if (
           c.baseTierOutput !== undefined &&
-          String(o?.cwd ?? "").includes(".baseline-lean-verify-")
+          String(o?.cwd ?? "").includes("-baseline-base")
         )
           throw Object.assign(new Error(`Command failed: ${cmd}`), {
             code: 1,

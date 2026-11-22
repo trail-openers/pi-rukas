@@ -269,6 +269,15 @@ replaced since explore with `approved spec is not the one explore read`.
 **Fix:** correct the body or the manifest named in the evidence and rerun the cycle (a replaced
 spec needs a fresh cycle, since the work was built against the old one); the block it writes carries the manifest's sha256 and is never recomputed.
 
+### Symptom: a lean run hands back with `the base commit … could not be checked out for the baseline probe: … could not create leading directories … Permission denied`
+
+**Cause:** before 0.15.4, verify's base probes (the baseline tier probe, the roster's base suite and
+the freeze check) checked the base out BESIDE the repository, in its parent directory. A sandboxed
+cycle that mounts only the repository writable cannot create anything there.
+
+**Fix:** upgrade to 0.15.4 or later. The probe trees now live under the repository, at
+`.worktrees/lean-<issue>-<kind>-base`, beside lean's own trees.
+
 ### Symptom: a lean run hands back with `baseline red: tier <name> is red at the base commit`
 
 **Cause:** the project's own verify tier fails on the run's head AND on its base commit, and

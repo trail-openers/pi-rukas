@@ -22,6 +22,7 @@
 import { trace, traceWarn } from "../trace.ts";
 import { verifyChildEnv, verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { linkShareableDeps, looksLikeMissingDeps } from "../worktree-provision.ts";
+import { worktreePath } from "../worktree.ts";
 import { neverStarted, sha256, wasKilled } from "./specify-proof.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
@@ -102,9 +103,8 @@ export type BaseProbeOutcome = BaseProbe & { stream?: string };
 /**
  * What one tier's command does at the run's base commit, in a throwaway checkout.
  *
- * The tree is a SIBLING of the repo, never under it: `verify` scans the whole repo with `git status --porcelain
- * --untracked-files=all` before and after every run, so a throwaway inside `repoRoot` is itself untracked dirt.
- * It is removed in a `finally` and before the add.
+ * The tree is at {@link probeWorktreePath}, under the repo's `.worktrees/`. It is removed in a `finally` and
+ * before the add.
  *
  * The answer carries the base run's COMBINED stream (`stream`) beside its colour: the caller decides from those
  * bytes whether the base NAMED the head run's failures, and the tree is gone by the time it reads them.
@@ -318,17 +318,16 @@ export function classifyBaseRun(ran: unknown, contractEstablished: boolean): Bas
 }
 
 /**
- * The throwaway sibling tree one probe checks the base commit out into.
+ * The throwaway tree one probe checks the base commit out into: `<repoRoot>/.worktrees/lean-<issue>-<kind>-base`.
  *
- * SIBLING to the repo, never under it: verify scans the whole repo with porcelain
- * `--untracked-files=all`, so a tree inside it would be reported as untracked dirt. `kind` names which
- * probe owns the tree (the baseline tier probe and the roster's base-suite probe run at the same commit
- * for the same issue, and one registration cannot serve two checkouts).
+ * Under the repo, beside lean's own trees, because a sandboxed cycle may mount only the repository writable,
+ * so its parent is not a place lean can create anything. The run's porcelain scans read the head worktree,
+ * and a sibling linked tree is not part of it. `kind` names which probe owns the tree (the baseline tier
+ * probe, the roster's base suite and the freeze check run for the same issue, and one registration cannot
+ * serve two checkouts).
  */
 export function probeWorktreePath(repoRoot: string, issue: number, kind: string): string {
-  const trimmed = repoRoot.replace(/[/]+$/, "");
-  const cut = trimmed.lastIndexOf("/");
-  return `${trimmed.slice(0, cut)}/${trimmed.slice(cut + 1)}.${kind}-lean-verify-${issue}`;
+  return worktreePath(repoRoot, `lean-${issue}-${kind}-base`);
 }
 
 /** The probe tree for one issue's baseline comparison. */
