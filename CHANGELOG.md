@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.3](https://github.com/trail-openers/pi-rukas/compare/v0.15.2...v0.15.3) (2026-11-22)
+
+
+### Bug Fixes
+
+* **lean:** split regression guards out of derived criteria ([#2552](https://github.com/trail-openers/pi-rukas/issues/2552)) ([b581600](https://github.com/trail-openers/pi-rukas/commit/b58160075d0725a9d320b4d52497685891eae1ad))
+
 ## [0.15.2](https://github.com/trail-openers/pi-rukas/compare/v0.15.1...v0.15.2) (2026-11-22)
 
 
