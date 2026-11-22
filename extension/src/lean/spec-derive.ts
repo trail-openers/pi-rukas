@@ -19,19 +19,27 @@
  *
  * Every failure — a dead child, a ceiling, an unparsable reply, a contract that
  * is not ready — throws {@link SpecDeriveError} (the engine's handback, naming its
- * own cause). Never a partial spec, never a `decline`: the model call failed, not
- * the issue. Every outside call is a field of {@link DeriveDeps}, so a case drives
+ * own cause). Never a partial spec, and never a `decline` — except a ticket whose
+ * every sentence is a regression guard, where the issue itself has nothing to build.
+ * Every outside call is a field of {@link DeriveDeps}, so a case drives
  * the whole boundary with a stubbed reply and no model is contacted.
  */
 
 import { execp } from "../exec.ts";
-import { piSpecFromBullets } from "../pi-spec-map.ts";
+import { criterionText, piSpecFromBullets, sizeOf } from "../pi-spec-map.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import { type Budget, type WorkConfig, loadWorkConfig } from "./config.ts";
 import { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
+import {
+  GUARDS_ONLY_RULE,
+  GUARD_MAX,
+  type Guard,
+  isRegressionGuard,
+  leanDeriveRegressionGuardsEnabled,
+} from "./derive-guards.ts";
 import type { PiSpec } from "./spec.ts";
 import { SPEC_INFO, fencedBlocks, parsePiSpec } from "./spec.ts";
 import { derivedSpecProblem } from "./state-derived-spec.ts";
@@ -64,9 +72,13 @@ export class SpecDeriveError extends Error {
   /** The cost rows the derivation observed, when it knows them. */
   readonly dispatches?: DispatchUsageRow[];
 
-  constructor(message: string, dispatches?: DispatchUsageRow[]) {
+  /** The ISSUE is at fault, not the model call: a decline, never a handback. */
+  readonly decline?: boolean;
+
+  constructor(message: string, dispatches?: DispatchUsageRow[], decline?: boolean) {
     super(message);
     if (dispatches !== undefined) this.dispatches = dispatches;
+    if (decline === true) this.decline = true;
   }
 }
 
@@ -80,7 +92,10 @@ export type DeriveDispatch = (
  * own text says "ignore your instructions" is the shape this boundary must survive, and
  * the cheapest way to survive it is never to let that text sit at the prompt's own
  * level. */
-export function derivePrompt(input: { title: string; body: string }): string {
+export function derivePrompt(
+  input: { title: string; body: string },
+  guards = leanDeriveRegressionGuardsEnabled(),
+): string {
   return [
     "You are reading one issue for a build engine that cannot start without a machine-readable contract. State that contract from the issue text, and nothing else.",
     "",
@@ -97,6 +112,11 @@ export function derivePrompt(input: { title: string; body: string }): string {
     "ONE fenced block whose info string is exactly `pi-spec v1`, holding JSON with:",
     '- "problem": one neutral sentence saying what is wrong. Do NOT restate or repeat the issue title — the title is already in front of every reader of this field.',
     `- "criteria": at most ${String(DERIVE_MAX_CRITERIA)} criteria, each { "id": "AC1", "text": "…", "verify": "test" } — ids AC1, AC2, … in order, every one "verify": "test". You may not make a criterion a command or a manual check.`,
+    ...(guards
+      ? [
+          `- "guards": at most ${String(GUARD_MAX)} strings, each a sentence of the issue that only asks existing behaviour to keep working ("the existing checks still pass", "no regressions", "nothing else changes"). A guard is not a criterion: no test can fail on it before the change, and the run's full verify tier enforces it. Guards count toward the ${String(DERIVE_MAX_CRITERIA)}: criteria plus guards above ${String(DERIVE_MAX_CRITERIA)} are refused as too large. When a sentence mixes new behaviour with such a demand, the new behaviour is a criterion and only the rest is a guard. Omit the field when there are none.`,
+        ]
+      : []),
     `More than ${String(DERIVE_MAX_CRITERIA)} criteria and the change is refused as too large for one run, so if the issue genuinely needs more, keep the ${String(DERIVE_MAX_CRITERIA)} that decide whether it works and leave the rest: a smaller honest contract builds, a padded one is refused.`,
     '- "size": "S", "M" or "L", judged from the criteria you listed.',
     "",
@@ -114,9 +134,14 @@ export function derivePrompt(input: { title: string; body: string }): string {
  * through the shared mapper over the child's own bullets, so the bound, the
  * neutralisation, the `verify` kind and the size band are the mapper's rules and
  * not the child's: a child that claimed `verify: "command"` or invented a
- * `scope` is corrected here rather than trusted.
+ * `scope` is corrected here rather than trusted. With guards on, a bullet the
+ * child listed under `guards` — or whose whole text is a guard — rides beside the
+ * criteria, and `size` counts criteria plus guards so the split never moves the band.
  */
-export function parseDerivedBlock(text: string): PiSpec | undefined {
+export function parseDerivedBlock(
+  text: string,
+  guardsOn = leanDeriveRegressionGuardsEnabled(),
+): DerivedContract | undefined {
   if (text.length > REPLY_MAX_CHARS) return undefined;
   // The reply is PROSE with the block inside it and `parsePiSpec` reads a BODY whose
   // whole content is the contract, so the block is located first: one fence goes to the
@@ -126,20 +151,51 @@ export function parseDerivedBlock(text: string): PiSpec | undefined {
     specs.length === 1 ? `\`\`\`${SPEC_INFO}\n${specs[0]?.content ?? ""}\n\`\`\`` : text,
   );
   if (!parsed.ok) return undefined;
+  const bullets = parsed.spec.criteria.map((c) => c.text);
+  // `guards` is not a PiSpec field: it is read because `parsePiSpec` hands back the parsed
+  // object itself, unknown keys included.
+  const listed = (parsed.spec as { guards?: unknown }).guards;
+  const listedText = (Array.isArray(listed) ? listed : []).filter(
+    (g): g is string => typeof g === "string",
+  );
+  // One sentence is one guard: a child that lists a line under `guards` AND leaves it in
+  // `criteria`, or repeats it with other trailing punctuation, must not count it twice.
+  const key = (g: string) =>
+    criterionText(g)
+      .replace(/[\s.!;:,]+$/, "")
+      .toLowerCase();
+  const listedKeys = new Set(listedText.map(key));
+  const guards = guardsOn
+    ? [...listedText, ...bullets.filter(isRegressionGuard)]
+        .map(criterionText)
+        .filter((g, i, all) => key(g) !== "" && all.findIndex((o) => key(o) === key(g)) === i)
+    : [];
+  const kept = guardsOn
+    ? bullets.filter((b) => !isRegressionGuard(b) && !listedKeys.has(key(b)))
+    : bullets;
+  const guardField =
+    guards.length === 0 ? {} : { guards: guards.slice(0, GUARD_MAX).map((g) => ({ text: g })) };
   // An EMPTY criteria array is not "nothing parsable": the child wrote a block, and
   // `readiness` has the sentence that says what is wrong with it ("no acceptance
-  // criteria"). The mapper would drop that shape into its no-block arm and tell the
-  // operator the child returned nothing.
-  if (parsed.spec.criteria.length === 0)
+  // criteria") — or, beside guards, `deriveSpec` has the guards-only decline. The
+  // mapper would drop that shape into its no-block arm and tell the operator the
+  // child returned nothing.
+  if (kept.length === 0)
     return {
-      problem: parsed.spec.problem,
-      criteria: [],
-      size: parsed.spec.size,
-    } satisfies PiSpec;
-  return piSpecFromBullets(
-    parsed.spec.problem,
-    parsed.spec.criteria.map((c) => c.text),
-  );
+      spec: { problem: parsed.spec.problem, criteria: [], size: parsed.spec.size },
+      ...guardField,
+    };
+  const spec = piSpecFromBullets(parsed.spec.problem, kept);
+  if (spec === undefined) return undefined;
+  return guards.length === 0
+    ? { spec }
+    : { spec: { ...spec, size: sizeOf(kept.length + guards.length) }, ...guardField };
+}
+
+/** A derivation's contract, and the regression guards it set beside it. */
+export interface DerivedContract {
+  spec: PiSpec;
+  guards?: Guard[];
 }
 
 /** What one derivation needs from the outside world, all of it injectable. */
@@ -162,6 +218,7 @@ export function deriveBudget(config?: WorkConfig): Budget {
 /** What one derivation observed of the child it paid for, on either outcome. */
 export interface DeriveOutcome {
   spec: PiSpec;
+  guards?: Guard[];
   /** The one child's cost row, as the dispatching steps record it. */
   dispatches: DispatchUsageRow[];
 }
@@ -201,9 +258,11 @@ export async function deriveSpec(
   const derived = parseDerivedBlock(result.text ?? "");
   if (derived === undefined)
     throw new SpecDeriveError("the spec-derive child returned no parsable pi-spec v1 block", [row]);
-  const problem = derivedSpecProblem({ spec: derived, model: "", at: 0 });
+  if (derived.spec.criteria.length === 0 && derived.guards !== undefined)
+    throw new SpecDeriveError(GUARDS_ONLY_RULE, [row], true);
+  const problem = derivedSpecProblem({ ...derived, model: "", at: 0 });
   if (problem !== undefined) throw new SpecDeriveError(problem, [row]);
-  return { spec: derived, dispatches: [row] };
+  return { ...derived, dispatches: [row] };
 }
 
 /** The derivation as the command drives it: the title read through the forge, the

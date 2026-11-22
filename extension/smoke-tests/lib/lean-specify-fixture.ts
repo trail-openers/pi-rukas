@@ -35,6 +35,7 @@ import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { type CaptureResult, captureTestBytes } from "../../src/lean/specify-capture.ts";
 import { parsePorcelainZ } from "../../src/lean/specify-tree.ts";
 import { type SpecifyDeps, SpecifyInfraError } from "../../src/lean/specify.ts";
+import type { DerivedSpec } from "../../src/lean/state-derived-spec.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
@@ -276,6 +277,8 @@ export interface RunOpts {
   observeVerdict?: (v: { refused: string[]; silent: boolean }) => void;
   /** The issue body the step re-reads; defaults to the single-test-criterion spec. */
   specBody?: string;
+  /** The run's derived contract, which a body with no block hands every step. */
+  derivedSpec?: DerivedSpec;
   /**
    * Where the fake child records the kickoff prompt the STEP built. The prompt
    * is production text, so this is the only way a case asserts what the
@@ -384,10 +387,9 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
   const worktree = path.join(opts.repoRoot, ".worktrees", `lean-${issue}`);
   try {
     const specify = await import("../../src/lean/specify.ts");
-    const outcome = await specify.specifyOutcome(
-      ctxFor(opts.repoRoot, opts.baseSha, issue, now, deadline),
-      deps,
-    );
+    const ctx = ctxFor(opts.repoRoot, opts.baseSha, issue, now, deadline);
+    if (opts.derivedSpec !== undefined) ctx.run = { ...ctx.run, derivedSpec: opts.derivedSpec };
+    const outcome = await specify.specifyOutcome(ctx, deps);
     return { outcome, sawBaseHealthy, dispatched, fetched, worktree };
   } catch (err) {
     return {
