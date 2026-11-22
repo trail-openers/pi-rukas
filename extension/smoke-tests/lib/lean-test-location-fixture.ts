@@ -43,7 +43,7 @@ export function testLocationExit(): number {
  * The location every rule case reads: this repo's own folder and convention,
  * because the config the driver ships (#1883) is the one whose rules are pinned.
  */
-export const LOC = { testDir: "extension/smoke-tests", testGlob: "test-*.ts" };
+export const LOC = { testDirs: ["extension/smoke-tests"], testGlob: "test-*.ts" };
 
 /** A worktree path for prompt assertions; no case touches this directory. */
 export const WT = "/tmp/lean-test-dir/.worktrees/lean-1883";

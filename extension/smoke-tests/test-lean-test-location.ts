@@ -184,7 +184,7 @@ import { assert, LOC, SPEC, WT, testLocationExit } from "./lib/lean-test-locatio
   );
   const both = testLocationOf({ testDir: "tests", testGlob: "test-*.ts" });
   assert(
-    both?.testDir === "tests" && both.testGlob === "test-*.ts",
+    both?.testDirs.join() === "tests" && both.testGlob === "test-*.ts",
     "the pair yields the location the prompts and boundary read",
   );
 }
@@ -198,11 +198,11 @@ import { assert, LOC, SPEC, WT, testLocationExit } from "./lib/lean-test-locatio
   // child must not nest inside — otherwise a blank in the config would disable
   // the whole rule while looking like a configuration.
   assert(
-    testLocationProblem({ testDir: "", testGlob: "test-*.ts" }, "test-x.ts") === undefined,
+    testLocationProblem({ testDirs: [""], testGlob: "test-*.ts" }, "test-x.ts") === undefined,
     "an empty testDir matches files at the repo root",
   );
   assert(
-    testLocationProblem({ testDir: "", testGlob: "test-*.ts" }, "pkg/test-x.ts") !== undefined,
+    testLocationProblem({ testDirs: [""], testGlob: "test-*.ts" }, "pkg/test-x.ts") !== undefined,
     "an empty testDir still refuses a nested file",
   );
   const outside = testLocationProblem(LOC, "tests/test-x.ts");
@@ -233,12 +233,12 @@ import { assert, LOC, SPEC, WT, testLocationExit } from "./lib/lean-test-locatio
   // The regex is the glob, not a substring: a dot in the pattern must not match
   // an arbitrary character, and `*` must not cross a separator.
   assert(
-    testLocationProblem({ testDir: "tests", testGlob: "test-*.ts" }, "tests/test-x.mts") !==
+    testLocationProblem({ testDirs: ["tests"], testGlob: "test-*.ts" }, "tests/test-x.mts") !==
       undefined,
     "the trailing `.ts` is literal — `.mts` does not satisfy the pattern",
   );
   assert(
-    testLocationProblem({ testDir: "tests", testGlob: "a*b" }, "tests/ab") === undefined,
+    testLocationProblem({ testDirs: ["tests"], testGlob: "a*b" }, "tests/ab") === undefined,
     "a `*` matches the empty string, so `ab` matches `a*b`",
   );
 }

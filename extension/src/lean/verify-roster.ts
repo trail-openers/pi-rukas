@@ -11,9 +11,9 @@
  * Four rules the module is built around:
  *
  *   1. **"Pre-existing" is a fact about the base commit**, not the working tree: the config pair
- *      `verify.testDir` + `verify.testGlob` listed at `run.baseSha` with `git ls-tree`, the same
- *      base-existence reading `existsInCommit` (behind `submit-tests-cap.ts`'s `existsAtBase`)
- *      applies. A frozen acceptance test the RUN added is not pre-existing.
+ *      `verify.testDir` (or every `verify.testDirs` root) + `verify.testGlob` listed at
+ *      `run.baseSha` with `git ls-tree`, the same base-existence reading `existsInCommit` (behind
+ *      `submit-tests-cap.ts`'s `existsAtBase`) applies. A frozen acceptance test the RUN added is not pre-existing.
  *
  *   2. **The unit is the test NAME**, read from the runner's machine-readable report — a
  *      `verify.roster` template when configured, otherwise the derived `--junitxml=<file>`
@@ -38,6 +38,7 @@
 import path from "node:path";
 import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { linkShareableDeps } from "../worktree-provision.ts";
+import { testLocationOf } from "./config-test-location.ts";
 import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
@@ -168,24 +169,19 @@ export async function buildProjectRoster(opts: {
   frozen: Record<string, string>;
 }): Promise<ProjectRosterOutcome> {
   const { exec, repoRoot, wt, baseSha, timeoutMs, config } = opts;
-  if (config.testDir === undefined || config.testGlob === undefined)
+  const loc = testLocationOf(config);
+  if (loc === undefined)
     return none(
-      "the project configured no verify.testDir + verify.testGlob pair, so the pre-existing test files this gate must run cannot be listed",
+      "the project configured no verify.testDir (or verify.testDirs) + verify.testGlob pair, so the pre-existing test files this gate must run cannot be listed",
     );
-  const listed = await listProjectTestFilesAtBase(
-    exec,
-    repoRoot,
-    baseSha,
-    config.testDir,
-    config.testGlob,
-  );
+  const listed = await listProjectTestFilesAtBase(exec, repoRoot, baseSha, loc);
   if ("reason" in listed) return none(listed.reason);
   // The frozen filter runs over the FULL enumeration, before any cap: it is what keeps this run's own
   // acceptance tests out of the pre-existing set, and after the cap a run could bury one past entry 200.
   const preexisting = listed.files.filter((f) => opts.frozen[f] === undefined);
   if (preexisting.length === 0)
     return none(
-      `the base commit carries no test file matching ${config.testDir}/${config.testGlob}, so there is no project suite for this gate to judge`,
+      `the base commit carries no test file matching ${loc.testDirs.map((d) => `${d}/${loc.testGlob}`).join(" or ")}, so there is no project suite for this gate to judge`,
     );
 
   const rendered = renderRosterCommand(config, wt);

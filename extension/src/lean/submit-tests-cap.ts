@@ -105,8 +105,8 @@ export async function validateSubmitRows(
      */
     frozenPaths?: ReadonlySet<string>;
     /**
-     * Where the project keeps its tests (`verify.testDir` + `verify.testGlob`). A submitted test not
-     * DIRECTLY inside that directory, or whose basename does not match the pattern, is REFUSED with a
+     * Where the project keeps its tests (`verify.testDir` or `verify.testDirs`, + `verify.testGlob`). A
+     * submitted test not DIRECTLY inside one of those directories, or whose basename does not match the pattern, is REFUSED with a
      * reason — so the prompt's instruction and the boundary that enforces it read the same config.
      */
     testLocation?: TestLocation;

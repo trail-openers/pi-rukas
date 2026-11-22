@@ -99,7 +99,7 @@ function linked(dir: string, outside: string, linkParent: boolean): string {
     "exit 5",
   );
   const testDir = linked(dir, outside, false);
-  const loc = { testDir, testGlob: "test_*.py" };
+  const loc = { testDirs: [testDir], testGlob: "test_*.py" };
 
   const on = await runPreflight({ wt: dir, template, testLocation: loc });
   // With the check on, the runner's own log names the ROOT path and never the
@@ -171,7 +171,7 @@ function linked(dir: string, outside: string, linkParent: boolean): string {
   const got = await runPreflight({
     wt: dir,
     template,
-    testLocation: { testDir, testGlob: "test_*.py" },
+    testLocation: { testDirs: [testDir], testGlob: "test_*.py" },
   });
   assert(
     got.threw === undefined && got.written[0] === PROBE,
@@ -194,7 +194,7 @@ function linked(dir: string, outside: string, linkParent: boolean): string {
   const viaLink = await runPreflight({
     wt: linkedWt,
     template: linkedTemplate,
-    testLocation: { testDir: "tests", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "test_*.py" },
   });
   assert(
     viaLink.threw === undefined && viaLink.written[0] === `tests/${PY_PROBE}`,
@@ -207,7 +207,7 @@ function linked(dir: string, outside: string, linkParent: boolean): string {
   const missing = await runPreflight({
     wt: path.join(outer, "not-a-tree"),
     template: "sh ok.sh {file}",
-    testLocation: { testDir: "tests", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "test_*.py" },
   });
   assert(
     missing.threw instanceof Error &&

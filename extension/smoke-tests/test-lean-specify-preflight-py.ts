@@ -141,7 +141,7 @@ const PROBE = ".lean-runner-probe.test";
   const py = await runPreflight({
     wt: dir,
     template: pyTemplate,
-    testLocation: { testDir: "tests", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "test_*.py" },
   });
   assert(
     py.written[0] === `tests/${PY_PROBE}`,
@@ -152,7 +152,7 @@ const PROBE = ".lean-runner-probe.test";
   const ts = await runPreflight({
     wt: dir,
     template: tsTemplate,
-    testLocation: { testDir: "tests", testGlob: "test-*.ts" },
+    testLocation: { testDirs: ["tests"], testGlob: "test-*.ts" },
   });
   assert(
     ts.written[0] === PROBE,
@@ -174,7 +174,7 @@ const PROBE = ".lean-runner-probe.test";
       'case "$1" in _lean_runner_probe.py) exit 5;; esac',
       "exit 4",
     ),
-    testLocation: { testDir: "nope-missing", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["nope-missing"], testGlob: "test_*.py" },
   });
   assert(
     missing.written[0] === PY_PROBE,
@@ -197,7 +197,7 @@ const PROBE = ".lean-runner-probe.test";
   const got = await runPreflight({
     wt: dir,
     template,
-    testLocation: { testDir: "tests", testGlob: "*_probe.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "*_probe.py" },
   });
   assert(
     got.threw instanceof SpecifyInfraError,
@@ -227,7 +227,7 @@ const PROBE = ".lean-runner-probe.test";
   const rejected = await runPreflight({
     wt: dir,
     template: runner(dir, "exit4.sh", "exit 4"),
-    testLocation: { testDir: "tests", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "test_*.py" },
   });
   assert(
     rejected.threw === undefined,
@@ -242,7 +242,7 @@ const PROBE = ".lean-runner-probe.test";
     const bad = await runPreflight({
       wt: dir,
       template: runner(dir, `bad${String(status)}.sh`, `exit ${String(status)}`),
-      testLocation: { testDir: "tests", testGlob: "test_*.py" },
+      testLocation: { testDirs: ["tests"], testGlob: "test_*.py" },
     });
     assert(
       bad.threw instanceof SpecifyInfraError,
@@ -278,7 +278,7 @@ const PROBE = ".lean-runner-probe.test";
   const got = await runPreflight({
     wt: dir,
     template: runner(dir, "exit4linked.sh", "exit 4"),
-    testLocation: { testDir: "tests", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "test_*.py" },
   });
   assert(
     got.written[0] === PROBE,
@@ -312,7 +312,7 @@ const PROBE = ".lean-runner-probe.test";
   const got = await runPreflight({
     wt: dir,
     template: runner(dir, "neverruns.sh", "exit 0"),
-    testLocation: { testDir: "tests", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "test_*.py" },
     run: () => {
       throw new Error("the run raised instead of answering");
     },
@@ -359,7 +359,7 @@ const PROBE = ".lean-runner-probe.test";
   const got = await runPreflight({
     wt: dir,
     template: runner(dir, "dangling.sh", "exit 5"),
-    testLocation: { testDir: ".", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["."], testGlob: "test_*.py" },
   });
   assert(
     got.threw instanceof SpecifyInfraError,
@@ -397,7 +397,7 @@ const PROBE = ".lean-runner-probe.test";
   const inFolder = await runPreflight({
     wt: inside,
     template: runner(inside, "collide1.sh", "exit 5"),
-    testLocation: { testDir: "tests", testGlob: "*_probe.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "*_probe.py" },
   });
   assert(
     inFolder.threw instanceof SpecifyInfraError && colliding(inFolder.threw.message),
@@ -416,7 +416,7 @@ const PROBE = ".lean-runner-probe.test";
   const atRoot = await runPreflight({
     wt: bare,
     template: runner(bare, "collide2.sh", "exit 5"),
-    testLocation: { testDir: "tests", testGlob: "*_probe.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "*_probe.py" },
   });
   assert(
     atRoot.threw instanceof SpecifyInfraError && colliding(atRoot.threw.message),

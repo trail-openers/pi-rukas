@@ -4560,10 +4560,11 @@ begins `no project test roster:`. The frozen acceptance tests passed, the config
 passed, and the run still decided nothing. The clause after the colon names which half is
 missing, and it is one of:
 
-- **`the project configured no verify.testDir + verify.testGlob pair`** — the gate has no way
+- **`the project configured no verify.testDir (or verify.testDirs) + verify.testGlob pair`** — the gate has no way
   to list which files are the project's pre-existing tests, so it has nothing to run.
 - **`the base commit carries no test file matching <dir>/<glob>`** — the pair is configured, but
-  nothing at the run's base commit matches it. The listing is **recursive** since #2439 — every
+  nothing at the run's base commit matches it (with `verify.testDirs`, nothing under any of the
+  roots, each named). The listing is **recursive** since #2439 — every
   depth below `testDir` counts, matched on the basename — so the causes left are a `testGlob` that
   does not name the project's test files, or tests kept under a different name. `testDir` may itself
   be multi-segment (`test/units`) when that is where the project keeps them.

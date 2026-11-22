@@ -296,7 +296,18 @@ means defaults.** An invalid file is *not* defaulted: it raises
   script `sh` can run and must exit **0** to count as held.
 - **`verify.testDir` / `verify.testGlob`** — a pair or neither: where the
   adversary's acceptance tests live and what they are called, so the frozen
-  tests land where your own CI runs them.
+  tests land where your own CI runs them. A repo with several test roots (one
+  `tests/` per package of a cargo workspace) sets **`verify.testDirs`** — an
+  array of directories, each held to `testDir`'s rules — in place of `testDir`;
+  setting both is refused. The one `testGlob` names the files in every root: a
+  submitted test must sit directly inside one of them, the prompts name them
+  all, the project roster lists every root at the base commit, and the runner
+  preflight probes once, in (or beside) the first listed root present in the
+  worktree.
+  A test inside an implementation file (Rust's `#[cfg(test)]` module in
+  `src/*.rs`, a doctest) cannot be frozen: a frozen test is a whole file, and
+  freezing the file that holds the code would lock the code the build must
+  change. Such tests reach a run only through `verify.fast` / `verify.full`.
 - **`lean.protectedPaths`** — an array of repo-relative **gitignore-style globs**
   naming the paths *your* project will not let a child's edit survive. The lean
   folds already revert edits to a fixed built-in list (`.pi/`, `.github/`,

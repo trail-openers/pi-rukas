@@ -54,7 +54,7 @@ const list = (paths: string[], testDir = "tests", testGlob = "test-*.sh") => {
   const { exec, asked } = listing(paths);
   return {
     asked,
-    run: listProjectTestFilesAtBase(exec, "/repo", BASE, testDir, testGlob),
+    run: listProjectTestFilesAtBase(exec, "/repo", BASE, { testDirs: [testDir], testGlob }),
   };
 };
 
@@ -179,11 +179,11 @@ const list = (paths: string[], testDir = "tests", testGlob = "test-*.sh") => {
     `(R1) the roster enumerates ${nested}`,
   );
   assert(
-    testLocationProblem({ testDir: "tests", testGlob: "test-*.sh" }, nested) !== undefined,
+    testLocationProblem({ testDirs: ["tests"], testGlob: "test-*.sh" }, nested) !== undefined,
     `(R1) and a submitted acceptance test at the same path is still refused — recursion is the roster's alone`,
   );
   assert(
-    testLocationProblem({ testDir: "tests", testGlob: "test-*.sh" }, "tests/test-a.sh") ===
+    testLocationProblem({ testDirs: ["tests"], testGlob: "test-*.sh" }, "tests/test-a.sh") ===
       undefined,
     "(R1) the flat submission boundary still accepts a file directly inside testDir",
   );
@@ -194,7 +194,7 @@ const list = (paths: string[], testDir = "tests", testGlob = "test-*.sh") => {
   // recursion must not have weakened.
   const refusing = (async () => {
     const exec = (() => Promise.reject(new Error("bad object"))) as unknown as VerifyExec;
-    return listProjectTestFilesAtBase(exec, "/repo", BASE, "tests", "test-*.sh");
+    return listProjectTestFilesAtBase(exec, "/repo", BASE, { testDirs: ["tests"], testGlob: "test-*.sh" });
   })();
   const r = await refusing;
   assert(

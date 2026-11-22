@@ -14,7 +14,7 @@ import path from "node:path";
 import { isFullCommitSha } from "../commit-sha.ts";
 import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { SHAREABLE_DEPS } from "../worktree-dep-contract.ts";
-import { globMatches } from "./config-test-location.ts";
+import { type TestLocation, globMatches, testDirsNamed } from "./config-test-location.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import type { VerifyExec } from "./verify-types.ts";
 
@@ -103,16 +103,16 @@ async function trackedPathsAt(
  * caller's edited-file detection must still see a file that would sort past it.
  */
 export interface BaseTestListing {
-  /** EVERY matching file at ANY depth under `testDir`, repo-relative, in git's tree order. */
+  /** EVERY matching file at ANY depth under any configured test directory, repo-relative, in git's tree order. */
   files: string[];
   /** How many matched — `files.length`, carried so a capped record can still state the truth. */
   fileCount: number;
 }
 
 /**
- * The project's PRE-EXISTING test files at the run's base commit, at ANY depth under `testDir`.
+ * The project's PRE-EXISTING test files at the run's base commit, at ANY depth under each test directory.
  *
- * `git ls-tree -r` of `verify.testDir` AT `baseSha`, kept where the BASENAME matches
+ * `git ls-tree -r` of every configured test directory AT `baseSha` (one listing, a union), kept where the BASENAME matches
  * `verify.testGlob`. Listing at the commit rather than the disk is the rule every base read in a run
  * follows: a run that adds or deletes test files would otherwise choose the suite that judges it.
  *
@@ -132,25 +132,25 @@ export async function listProjectTestFilesAtBase(
   exec: VerifyExec,
   repoRoot: string,
   baseSha: string,
-  testDir: string,
-  testGlob: string,
+  loc: TestLocation,
 ): Promise<BaseTestListing | { reason: string }> {
   if (!isFullCommitSha(baseSha))
     return {
-      reason: `the roster could not list ${testDir}/: "${baseSha}" is not a full commit sha`,
+      reason: `the roster could not list ${testDirsNamed(loc)}: "${baseSha}" is not a full commit sha`,
     };
-  const listed = await trackedPathsAt(exec, repoRoot, baseSha, [testDir]);
+  const listed = await trackedPathsAt(exec, repoRoot, baseSha, loc.testDirs);
   if (listed === undefined)
     return {
       reason: `could not list the project's test files at ${baseSha.slice(0, 12)}`,
     };
-  // The separator is in the prefix, so a sibling named `tests_backup/` is not read as inside `tests`.
-  const prefix = `${testDir}/`;
+  // The separator is in each prefix, so a sibling named `tests_backup/` is not read as inside `tests`.
+  const prefixes = loc.testDirs.map((d) => `${d}/`);
   const files: string[] = [];
   for (const entry of listed) {
-    if (!entry.startsWith(prefix)) continue;
+    const prefix = prefixes.find((p) => entry.startsWith(p));
+    if (prefix === undefined) continue;
     const base = entry.slice(prefix.length).split("/").pop() ?? "";
-    if (!globMatches(testGlob, base)) continue;
+    if (!globMatches(loc.testGlob, base)) continue;
     files.push(entry);
   }
   return { files, fileCount: files.length };

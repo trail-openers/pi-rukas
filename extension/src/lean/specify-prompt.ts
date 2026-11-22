@@ -9,7 +9,7 @@
  * and the child would be tested against the paraphrase.
  */
 
-import type { TestLocation } from "./config-test-location.ts";
+import { type TestLocation, testDirsNamed } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import { leanIssueSection } from "./issue-prose.ts";
 import { criteriaBlock, scopeBlock } from "./spec-blocks.ts";
@@ -24,7 +24,7 @@ export interface SpecifyPromptOpts {
   testRunner?: string;
   /**
    * Where the project keeps its tests, when `.pi/work.json` says
-   * (`verify.testDir` + `verify.testGlob`). Undefined = the child chooses.
+   * (`verify.testDir` or `verify.testDirs`, + `verify.testGlob`). Undefined = the child chooses.
    */
   testLocation?: TestLocation;
   /** Absolute path of the worktree the child works in. */
@@ -152,7 +152,8 @@ For each one you can point at, add an extra test CASE inside the test file of th
  * the boundary later refuses is stated here first, so a child that obeyed the prompt meets no unwarned drop.
  */
 export function testLocationInstruction(loc: TestLocation): string {
-  return `**Write every test file directly inside \`${loc.testDir}/\`, named to match \`${loc.testGlob}\` (for example \`${loc.testDir}/${exampleName(loc)}\`), importing the project's code with paths relative to that folder.** The parent refuses a submitted test anywhere else — a different directory, a subdirectory of it, or a file name that does not match the pattern — and a refused test leaves its criterion uncovered.`;
+  const where = `${testDirsNamed(loc, "`")}${loc.testDirs.length > 1 ? " (whichever holds the tests of the code the test exercises)" : ""}`;
+  return `**Write every test file directly inside ${where}, named to match \`${loc.testGlob}\` (for example \`${loc.testDirs[0]}/${exampleName(loc)}\`), importing the project's code with paths relative to that folder.** The parent refuses a submitted test anywhere else — a different directory, a subdirectory of it, or a file name that does not match the pattern — and a refused test leaves its criterion uncovered.`;
 }
 
 /**
@@ -168,7 +169,7 @@ export function namingLine(testLocation?: TestLocation): string {
   const example =
     testLocation === undefined
       ? "`tests/AC1-<slug>.test.ts`"
-      : `\`${testLocation.testDir}/${exampleName(testLocation)}\``;
+      : `\`${testLocation.testDirs[0]}/${exampleName(testLocation)}\``;
   return `Name each file so its path contains the criterion id it covers (e.g. ${example} for AC1) — the parent matches files to criteria by that id.`;
 }
 

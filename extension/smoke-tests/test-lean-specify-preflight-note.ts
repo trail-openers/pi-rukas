@@ -55,7 +55,7 @@ function assert(cond: boolean, msg: string): void {
   const clipped = await runPreflight({
     wt: dir,
     template: `sh ${args} exit4many.sh {file}`,
-    testLocation: { testDir: "tests", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "test_*.py" },
     throwOnRun: () => ({ code: 4, stderr: "no collector for file" }),
   });
   assert(
@@ -97,13 +97,13 @@ function assert(cond: boolean, msg: string): void {
   const hostile = await runPreflight({
     wt: dir,
     template: `sh $'a\nb'|c\tpadded.sh {file}`,
-    testLocation: { testDir: "tests", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "test_*.py" },
     throwOnRun: () => ({ code: 4, stderr: "no collector for file" }),
   });
   const got = await runPreflight({
     wt: dir,
     template: `sh ${args} padded.sh {file}`,
-    testLocation: { testDir: "tests", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "test_*.py" },
     throwOnRun: () => ({ code: 4, stderr: "no collector for file" }),
   });
   const clause = got.note ?? "";
@@ -138,7 +138,7 @@ function assert(cond: boolean, msg: string): void {
   const short = await runPreflight({
     wt: dir,
     template: runner(dir, "short4.sh", "exit 4"),
-    testLocation: { testDir: "tests", testGlob: "test_*.py" },
+    testLocation: { testDirs: ["tests"], testGlob: "test_*.py" },
     throwOnRun: () => ({ code: 4, stderr: "no collector for file" }),
   });
   assert(
