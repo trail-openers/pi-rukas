@@ -165,12 +165,13 @@ an authored one is worth:
   **8** criteria, the count at which the mapper still calls the change `M`; a child
   that returns 9 anyway gets the size-`L` refusal with the rendered block quoted, and
   the list is **never silently truncated** to make the gate green.
-- **Three shapes stay `require`'s refusal, in both modes**, because in each the
-  issue is genuinely at fault and no model call should be billed for it: a body with
-  no block at all, a body that is blank (a ticket with nothing in it is not prose to
-  derive from), and a block that is present but **malformed** — the author took a
-  position on the contract and wrote it wrong, and a model quietly writing a better
-  one would hide the defect.
+- **Two shapes stay `require`'s refusal, in both modes**, because in each the
+  issue is genuinely at fault and no model call should be billed for it: a body that
+  is blank (a ticket with nothing in it is not prose to derive from), and a block that
+  is present but **malformed** — the author took a position on the contract and wrote
+  it wrong, and a model quietly writing a better one would hide the defect. A
+  non-blank body with no block at all is exactly what `derive` exists for: `require`
+  declines it (`no pi-spec v1 block`), `derive` drafts its contract.
 - **A failed derivation is a handback, not a decline.** A dead child, a fired
   budget, an empty reply or an unparsable reply all `handback` naming their own
   cause (`ready`'s `infra` verdict, exit 10) rather than posting "your ticket is not
