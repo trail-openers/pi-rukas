@@ -23,7 +23,7 @@ import {
   WAVES_MAX,
   roundCounts,
 } from "./state-outcome-gates.ts";
-import type { ReviewRecord } from "./state-outcome-gates.ts";
+import type { ReviewRecord, TestEditAcceptance } from "./state-outcome-gates.ts";
 import type { Outcome } from "./state.ts";
 
 /** The step's fix-wave disclosure, if it has one — folded into the reason by
@@ -33,6 +33,8 @@ export interface ReviewTally {
   noteRound: (round: LensRound) => void;
   /** Record the head the one fix wave pushed, at the record's own cap. */
   noteWave: (wave: "full" | "fix", pushed: string) => void;
+  /** Record what the pass the step RETURNS on accepted; an earlier pass's grant is never kept. */
+  noteAccepted: (accepted: readonly TestEditAcceptance[] | undefined) => void;
   /** Attach what the step judged to one exit's outcome. Every exit takes it — pass,
    * wave, or stopped mid-wave — so a stopped arm still says what it judged rather than
    * losing the rounds it paid for. With nothing judged the `review` key is absent
@@ -44,6 +46,7 @@ export interface ReviewTally {
 export function reviewTally(): ReviewTally {
   const rounds: ReviewRoundCounts[] = [];
   const waves: { wave: "full" | "fix"; head: string }[] = [];
+  let accepted: readonly TestEditAcceptance[] = [];
   return {
     noteRound: (round) => {
       if (rounds.length < ROUNDS_MAX)
@@ -52,6 +55,9 @@ export function reviewTally(): ReviewTally {
     noteWave: (wave, pushed) => {
       if (waves.length < WAVES_MAX) waves.push({ wave, head: pushed });
     },
+    noteAccepted: (granted) => {
+      accepted = granted ?? [];
+    },
     attach: (pass, extra = {}) => {
       const review: ReviewRecord | undefined =
         rounds.length === 0 && waves.length === 0
@@ -59,6 +65,7 @@ export function reviewTally(): ReviewTally {
           : {
               rounds: rounds.map((r) => ({ ...r })),
               waves: waves.map((w) => ({ ...w })),
+              ...(accepted.length === 0 ? {} : { accepted: accepted.map((a) => ({ ...a })) }),
             };
       return {
         ...pass,

@@ -8,6 +8,7 @@
 
 import { REPORT_FAILED_KIND, exitCodeFor } from "./machine.ts";
 import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
+import { unacceptedTestEdits, unacceptedTestEditsRefusal } from "./review-test-accept.ts";
 import { type LeanRun, type LeanState, type Outcome, isTerminal, newestDecided } from "./state.ts";
 import { ROSTER_LAND_REFUSAL } from "./verify-roster.ts";
 
@@ -55,8 +56,9 @@ export function reasonFor(
  * Behind the roster switch the green `verify` is read as a RECORD, not only as a kind: the merge is
  * the irreversible act, so it fails closed on a log whose green carries no roster — including a
  * hand-built or resumed one that never ran the project's suite. What the record must additionally
- * lack is a newly failing base version, and that is the step's job: a failing base version makes the
- * verify `red` (`verify-roster-edited.ts`), so no green the step wrote can carry one.
+ * name is an edited test whose failing base version the newest review did not accept on the verified
+ * head (`review-test-accept.ts`): the step records such a file rather than going red, so the merge is
+ * the gate that holds it.
  */
 function landEarned(run: LeanRun): boolean {
   if (run.counters.draft) return false;
@@ -67,17 +69,18 @@ function landEarned(run: LeanRun): boolean {
     return false;
   // The off arm asks ONLY the kinds it asked before this field existed, byte for byte.
   if (!leanProjectRosterEnabled()) return true;
-  return rosterEarnsLand(newestDecided(run.steps, "verify")?.outcome);
+  return (
+    rosterEarnsLand(newestDecided(run.steps, "verify")?.outcome) &&
+    unacceptedTestEdits(run.steps).length === 0
+  );
 }
 
 /**
  * Does a green verify's record carry a roster the merge may rest on? A missing roster and an empty
- * one are each refused, and so is one that contradicts #2410 R5: `editedFiles` may only name files
- * whose base version the step PROVED passed against the head code, so a green that records BOTH an
- * edited file and any failing test is a roster the step could not have written — it went `red` at
- * `runEditedBaseVersions` before any roster existed. Refusing the mere FACT of an edit would refuse
- * every legitimate test edit (Part B's subject) and leave an honest run no path to `landed`; what
- * the merge refuses is a green that vouches for itself while its own head run failed.
+ * one are each refused, and so is a green that records BOTH an edited file whose base version passed
+ * and any failing test: it vouches for an edited contract while its own head run failed. Refusing the
+ * mere FACT of an edit would refuse every legitimate test edit and leave an honest run no path to
+ * `landed`.
  */
 function rosterEarnsLand(outcome: Outcome | undefined): boolean {
   const roster = outcome?.projectRoster;
@@ -102,6 +105,9 @@ function landRefusal(run: LeanRun): string {
     !rosterEarnsLand(lastVerify.outcome)
   )
     return `land refused: ${ROSTER_LAND_REFUSAL}`;
+  const unaccepted = leanProjectRosterEnabled() ? unacceptedTestEdits(run.steps) : [];
+  if (lastVerify?.outcome?.kind === "green" && unaccepted.length > 0)
+    return `land refused: ${unacceptedTestEditsRefusal(unaccepted)}`;
   return `land refused: verify not green (draft=${run.counters.draft}, last verify=${
     lastVerify?.outcome?.kind ?? "none"
   }, last ci=${lastCi?.outcome?.kind ?? "none"})`;

@@ -116,8 +116,8 @@ async function gitShowBlob(
  * is known to run: a cargo wrapper resolves a target from it and pytest applies the directory's
  * conftest to it, so a relocated copy reads as a red the base version never had.
  *
- * `redFiles` is what makes land refuse: a base-version file green at base and red against the
- * head code is a contract this run broke, and Part A has NO acceptance path for it.
+ * `redFiles` are the files whose base version fails against the head code — a contract this run
+ * changed, which only a review's explicit acceptance lets land; `editedFiles` are the rest.
  */
 export async function runEditedBaseVersions(opts: {
   exec: VerifyExec;
@@ -179,7 +179,7 @@ export async function runEditedBaseVersions(opts: {
       }
     }
   }
-  return { ok: true, editedFiles: [...edited], redFiles };
+  return { ok: true, editedFiles: edited.filter((f) => !redFiles.includes(f)), redFiles };
 }
 
 /**

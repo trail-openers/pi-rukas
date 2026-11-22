@@ -4574,7 +4574,8 @@ missing, and it is one of:
   read: no report at the path `{report}` names, a report that names no `<testcase>`, or a run with
   no exit status at all (a kill, a timeout, a buffer overflow).
 - **`the base versions of …`** — a pre-existing test file the run edited could not be read at the
-  base commit, so its base version cannot be run against the head code.
+  base commit, so its base version cannot be run against the head code; or more than 20 edited
+  files' base versions fail against it, more than a review may accept.
 
 **Cause:** the step now judges the project's OWN test suite and refuses to certify a run whose
 result it never observed. It runs the pre-existing suite at HEAD and at the run's base commit and
@@ -4618,8 +4619,26 @@ RECORD rather than trusting its kind, so a hand-built or resumed step log that c
 green` with no `projectRoster` does not reach `landed`. The refusal names the roster and not
 "verify not green", because the second sends an operator to a gate that reported green. Re-run
 `verify` with the roster configured, or set the lever above if the project has no suite. The land
-gate also refuses a roster that ran nothing (`total` below one) and one that names an edited
-pre-existing file whose base version failed against the head code.
+gate also refuses a roster that ran nothing (`total` below one).
+
+**Related symptom — the merge refuses with "the base versions of these edited pre-existing test
+files fail against the head code and the newest review did not accept them".** The run edited a
+pre-existing test, and that file's BASE version fails against the head code: the run changed
+behaviour the project's own test asserts. `verify` records the file under
+`projectRoster.baseVersionRed` instead of going red, because no build round can make the old
+expectation pass, and the merge waits for a reviewer to say the change is the one the issue asks
+for. The review step tells every seat which files need that; the adversarial reviewer grants it by
+ending its reply with one fenced block whose info string is exactly `lean-test-accept v1`, holding a
+JSON array of `{"path": "<file>", "reason": "<one line>"}`. The step records the grant as
+`review.accepted`, bound to the head that pass read, and land honours it only in the NEWEST decided
+review and only on the head the newest green `verify` certified. So the refusal means one of: the
+reviewer withheld the grant (read its reply — a reviewer that judged the edit a weakened test says
+so), its block was malformed (two blocks, invalid JSON, or an entry with no reason grants nothing),
+or the head moved after the grant (a CI-fix push re-verified a head no review accepted). Re-run the
+review on the current head, or revert the test edit if the reviewer is right. More than 20 such
+files is a `no project test roster` hand-back at `verify`, not this refusal. A headless host sees
+this arm as `review-incomplete` with `reviewComplete: false`, never `awaiting-human-merge`: the
+merge cap is not offered on a head land refuses.
 
 Source: `extension/src/lean/verify-roster.ts` (enumeration, both runs, the report parser, the
 base-version runs), `extension/src/lean/verify.ts` (the hand-backs), `extension/src/lean/engine-facts.ts`

@@ -26,6 +26,7 @@
 import { isFullCommitSha } from "../commit-sha.ts";
 import { GATE_SEVERITIES, type GateSeverity } from "./gate-severities.ts";
 import type { ReviewBoundRecord } from "./review-bound.ts";
+import { PREEXISTING_NAMES_CAP } from "./state-outcome-maps.ts";
 
 /** How many review rounds one step's record may name. */
 export const ROUNDS_MAX = 8;
@@ -62,6 +63,39 @@ export interface ReviewRecord {
   waves: ReviewWaveHead[];
   /** The step's own clock, when it stopped one mid-wave — verbatim from the record. */
   reviewBound?: ReviewBoundRecord;
+  /** Edited test files whose failing base version the reviewer accepted — see `review-test-accept.ts`. */
+  accepted?: TestEditAcceptance[];
+}
+
+/** How long the reviewer's one-line reason may be on the record. */
+export const ACCEPT_REASON_MAX_CHARS = 200;
+
+/** One edited pre-existing test file the reviewer accepted, bound to the head it read. */
+export interface TestEditAcceptance {
+  /** The repo-relative path, as the roster's `baseVersionRed` names it. */
+  path: string;
+  /** The reviewer's one-line reason. */
+  reason: string;
+  /** The full head the accepting pass reviewed; land honours it only on that head. */
+  head: string;
+}
+
+/** Why this is not one acceptance this run may record, or `undefined` — asked by the writer and the loader. */
+export function acceptanceProblem(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return "outcome review.accepted entry must be an object";
+  const a = value as Record<string, unknown>;
+  if (!isName(a.path, 300) || /\p{Cc}/u.test(a.path))
+    return "outcome review.accepted path must be a one-line path of at most 300 chars";
+  if (
+    !isName(a.reason, ACCEPT_REASON_MAX_CHARS) ||
+    /\p{Cc}/u.test(a.reason) ||
+    a.reason.trim() === ""
+  )
+    return `outcome review.accepted reason must be one line of at most ${String(ACCEPT_REASON_MAX_CHARS)} chars`;
+  if (typeof a.head !== "string" || !isFullCommitSha(a.head))
+    return "outcome review.accepted head must be a 40-hex commit sha";
+  return undefined;
 }
 
 /** What a red `verify`/`ci` step records about the gate that failed. */
@@ -125,12 +159,25 @@ export function reviewRecordProblem(value: unknown): string | undefined {
     if (typeof wave.head !== "string" || !isFullCommitSha(wave.head))
       return "outcome review.waves head must be a 40-hex commit sha";
   }
+  const accepted = (value as { accepted?: unknown }).accepted;
+  if (accepted === undefined) return undefined;
+  // One accepted entry per `baseVersionRed` path at most, so the roster's cap is this list's.
+  if (!Array.isArray(accepted) || accepted.length > PREEXISTING_NAMES_CAP)
+    return `outcome review.accepted must be an array of at most ${String(PREEXISTING_NAMES_CAP)} entries`;
+  for (const a of accepted) {
+    const problem = acceptanceProblem(a);
+    if (problem !== undefined) return problem;
+  }
   return undefined;
 }
 
 /** The round tally / wave list, rebuilt from the entries this module actually checked. */
 export function buildReviewRecord(value: unknown): ReviewRecord {
-  const rec = value as { rounds: unknown[]; waves: { wave: "full" | "fix"; head: string }[] };
+  const rec = value as {
+    rounds: unknown[];
+    waves: { wave: "full" | "fix"; head: string }[];
+    accepted?: TestEditAcceptance[];
+  };
   return {
     rounds: rec.rounds.map(
       (r) =>
@@ -139,6 +186,9 @@ export function buildReviewRecord(value: unknown): ReviewRecord {
         ) as ReviewRoundCounts,
     ),
     waves: rec.waves.map((w) => ({ wave: w.wave, head: w.head })),
+    ...(rec.accepted === undefined
+      ? {}
+      : { accepted: rec.accepted.map(({ path, reason, head }) => ({ path, reason, head })) }),
   };
 }
 

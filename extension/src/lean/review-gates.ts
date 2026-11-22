@@ -29,9 +29,11 @@ import type { DispatchResult } from "../types.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { lensContext } from "./review-deps.ts";
 import { rangeDiff, reviewedHead } from "./review-git.ts";
+import { pendingTestEdits, readTestAcceptances } from "./review-test-accept.ts";
 import type { LensRound, ReviewDeps } from "./review.ts";
 import { ReviewInfraError } from "./review.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";
+import type { TestEditAcceptance } from "./state-outcome-gates.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 import { dispatchUsageRow, lensRows } from "./step-budget.ts";
 
@@ -124,10 +126,23 @@ export type AdversarialGate =
    * the clean pass); `open` says findings were reported and `blocking` whether the
    * record that ended the pass carried the status doctrine calls blocking. A pass
    * can be `open` without being `blocking`: that is what a non-blocking verdict is,
-   * and its findings are disclosed, never fixed.
+   * and its findings are disclosed, never fixed. `accepted` is what its reply granted the
+   * edited tests that need it, bound to the head it read.
    */
-  | { findings: string; open: boolean; blocking: boolean; stop?: undefined }
-  | { findings?: undefined; open?: undefined; blocking?: undefined; stop: BudgetFired };
+  | {
+      findings: string;
+      open: boolean;
+      blocking: boolean;
+      accepted: TestEditAcceptance[];
+      stop?: undefined;
+    }
+  | {
+      findings?: undefined;
+      open?: undefined;
+      blocking?: undefined;
+      accepted?: undefined;
+      stop: BudgetFired;
+    };
 
 /**
  * The adversarial gate: one report-only pass, and the finding text it left open.
@@ -200,9 +215,10 @@ export async function adversarialGate(
   // for something that was a decision the operator made.
   const fired = opts.budget.fired(result);
   if (fired !== undefined) return { stop: fired };
+  const accepted = readTestAcceptances(result.text, pendingTestEdits(ctx.steps), opts.head);
   if (result.loopOutcome === "approved") {
     const pass = openFromPass(result);
-    return { ...pass, blocking: blockingRecord(result) };
+    return { ...pass, blocking: blockingRecord(result), accepted };
   }
   if (result.loopOutcome === "rejected") {
     // A real `VERDICT:` line is what makes a rejection a VERDICT: `parseVerdict`
@@ -231,7 +247,7 @@ export async function adversarialGate(
         opts.rows,
       );
     // Its findings are open, and blocking only if its status says so.
-    return { findings: result.text, open: true, blocking: blockingRecord(result) };
+    return { findings: result.text, open: true, blocking: blockingRecord(result), accepted };
   }
   throw new ReviewInfraError(
     `the adversarial gate produced no verdict (${String(result.loopOutcome)}${
