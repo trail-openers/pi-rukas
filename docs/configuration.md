@@ -18,6 +18,26 @@ All optional. Defaults are reasonable for typical use. This file holds the full 
 | Private backlog (optional) | `<repository root>/.backlog/backlog.md` — a separate clone, kept out of `git status` by a per-clone `.git/info/exclude` entry |
 | Merge-author allowlist | `.pi/merge-authors` — **opt-in per repository**: absent means the repository has no author gate at all (every other gate is unchanged); present, it lists one login per line, matched case-insensitively, and is read at the cycle's base commit by the merge-author gate (#2181). A file that is present and unreadable, a symlink, a directory or empty after comments refuses every merge. |
 
+## Installing from the Pi package gallery
+
+`pi install npm:@trail-openers/pi-rukas` installs pi-rukas in host mode, and `pi update --extensions` upgrades it. Pi loads the extension, the built role prompts and the bundled skills from the package; skills are not symlinked into `~/.pi/agent/skills/`. It skips `install.sh`'s minimum-version check on `pi`: compare `pi --version` with [pi-compatibility.md](pi-compatibility.md) yourself.
+
+`./install.sh` also edits two user config files. A gallery install does not, so make these edits yourself:
+
+- **codebase-memory-mcp** (required by the code-search doctrine). Install the binary as the README describes, then add the server to `~/.pi/agent/mcp.json`:
+
+  ```json
+  {
+    "mcpServers": { "codebase_memory": { "command": "codebase-memory-mcp", "args": [], "exposure": "direct" } },
+    "autoEnableCodemode": false
+  }
+  ```
+
+  Full reference: [mcp.md](mcp.md).
+- **Provider retries** (recommended). In `~/.pi/agent/settings.json`, set `"httpIdleTimeoutMs": 300000` at the top level and `"retry": { "provider": { "timeoutMs": 600000, "maxRetries": 3, "maxRetryDelayMs": 60000 } }`. Without `maxRetries`, Pi does not retry a failed provider request. The table under [Environment variables](#environment-variables) explains each value.
+
+Sandbox mode, the `pi-rukas` wrapper and `pi-rukas-headless` need the git checkout and `./install.sh`.
+
 ## Private backlog (optional)
 
 If you keep your real priority order somewhere other than the issue tracker, clone that repository into the project at `.backlog/` and maintain a `backlog.md` inside it:

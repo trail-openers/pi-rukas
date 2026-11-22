@@ -121,7 +121,7 @@ cd pi-rukas
 ./install.sh
 ```
 
-The installer builds the role prompts, symlinks the bundled skills into `~/.pi/agent/skills/`, installs the extension's deps, registers the extension with Pi, **pulls the sandbox Docker image from `ghcr.io/trail-openers/pi-rukas:latest`** (falls back to a local build if the pull fails), and symlinks the `pi-rukas` wrapper into `~/.local/bin/`. Pass `--build` to force a local build; `--pull-only` to hard-fail when the registry is unreachable.
+The installer builds the role prompts, symlinks the bundled skills into `~/.pi/agent/skills/`, installs the extension's deps, registers the extension with Pi, **pulls the sandbox Docker image from `ghcr.io/trail-openers/pi-rukas:latest`** (falls back to a local build if the pull fails), and symlinks the `pi-rukas` wrapper into `~/.local/bin/`. Pass `--build` to force a local build; `--pull-only` to hard-fail when the registry is unreachable. Host mode only? `pi install npm:@trail-openers/pi-rukas` also works; see [docs/configuration.md](docs/configuration.md#installing-from-the-pi-package-gallery) for the two config edits it leaves to you.
 
 Verify (sandbox mode, recommended): `pi-rukas` from any project, then run `/ensemble-debug` in the Pi prompt — it should list 9 slash commands, 9 tools, and the per-role model table, with zero permission prompts inside the container. Host mode (legacy): run `pi` the same way — 3-tier permission system, expect interactive prompts on novel commands.
 
