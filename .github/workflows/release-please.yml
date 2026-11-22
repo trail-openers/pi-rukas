@@ -2,7 +2,8 @@ name: Release Please
 
 on:
   push:
-    branches: [main]
+    # A release/X.Y branch carries patch releases for an older minor line.
+    branches: [main, 'release/**']
 
 permissions:
   contents: write
@@ -35,3 +36,4 @@ jobs:
           token: ${{ secrets.RELEASE_PAT }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          target-branch: ${{ github.ref_name }}
