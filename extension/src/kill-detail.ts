@@ -38,6 +38,8 @@ const WHY: Record<string, string> = {
   "tool-inactivity":
     "went silent while a tool call was in flight — the tool (not the model) is what stopped answering; the bound is PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS, not the model-silence knob",
   abort: "was cancelled",
+  "no-progress":
+    "kept emitting but made no progress for the window — no tool result, new output or changed turn; the bound is PI_ENSEMBLE_PROGRESS_SILENCE_MS (off unless set)",
   // #1560 — the per-child run bound: steered to wrap up, ended a grace later.
   "child-bound":
     "outlived its per-child run bound — it was steered to wrap up and ended a grace period later without having committed or finished its reply (PI_ENSEMBLE_DEVELOP_BOUND_MS / PI_ENSEMBLE_EXPLORE_BOUND_MS / PI_ENSEMBLE_LENS_BOUND_MS)",

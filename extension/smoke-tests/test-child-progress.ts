@@ -7,11 +7,20 @@
  * last text or tool differs, and a HEAD / dirty-tree change the driver
  * reports. Token growth, stdin echoes, steers, call starts and repeated
  * identical turns are not progress. Each case below drives a fake clock and
- * checks whether `lastProgressAt` moved.
+ * checks whether `lastProgressAt` moved. Cases 10–11 cover the opt-in
+ * no-progress arm (`stall`, PI_ENSEMBLE_PROGRESS_SILENCE_MS) the inactivity
+ * poll acts on.
  */
 
-import { ChildProgress, commandFingerprint } from "../src/child-progress.ts";
+import type { ChildProcess } from "node:child_process";
+import { ChildProgress, commandFingerprint, progressSilenceMs } from "../src/child-progress.ts";
 import type { PiJsonEvent } from "../src/pi-event-shapes.ts";
+import { emptyRunningState } from "../src/progress.ts";
+import { InFlightTools, createInactivityPoll } from "../src/spawn-inflight.ts";
+import { recordKillBudgets } from "../src/spawn-review-bounds.ts";
+import { inactivityTimeoutMs, toolInactivityTimeoutMs } from "../src/spawn-support.ts";
+import { armCapSession, declareKillFlags } from "../src/spawn-watchdog.ts";
+import type { DispatchResult } from "../src/types.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -267,6 +276,164 @@ const result = (id: string): PiJsonEvent => ({
   q.observe({ ...r, message: { ...r.message, durationMs: 7_000 } });
   const m = q.longestCompletedMs(commandFingerprint("bash", bash("make")));
   assert(m === 7_000, `a toolResult closing first carries the recorded duration (got ${m})`);
+}
+
+// 10 — the no-progress window: off by default, floored at the silence
+// defaults, and measured from the last CHANGED signal, never from a tick.
+{
+  const KNOB = "PI_ENSEMBLE_PROGRESS_SILENCE_MS";
+  const saved = [
+    KNOB,
+    "PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS",
+    "PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS",
+  ].map((k) => [k, process.env[k]] as const);
+  for (const [k] of saved) delete process.env[k];
+  const MIN = 60_000;
+  const off = fresh();
+  clock += 10 * 60 * MIN;
+  assert(off.stall(clock, false) === undefined, "knob unset: no child is ever stalled");
+  process.env[KNOB] = "0";
+  assert(off.stall(clock, true) === undefined, "knob 0: no child is ever stalled");
+
+  process.env[KNOB] = "1";
+  assert(
+    progressSilenceMs(false) === inactivityTimeoutMs(),
+    `a short window is floored at the model-silence default (got ${progressSilenceMs(false)})`,
+  );
+  assert(
+    progressSilenceMs(true) === toolInactivityTimeoutMs(),
+    `with a call in flight it is floored at the tool-silence default (got ${progressSilenceMs(true)})`,
+  );
+  process.env[KNOB] = String(45 * MIN);
+  assert(progressSilenceMs(false) === 45 * MIN, "a window above the floor is kept");
+  process.env[KNOB] = "1";
+  const W = progressSilenceMs(false);
+
+  // A child that has emitted nothing is stalled at the window, not exempt.
+  const silent = fresh();
+  clock += W - 1;
+  assert(
+    silent.stall(clock, false) === undefined,
+    "an unstarted child is not stalled before the window",
+  );
+  clock += 1;
+  const s = silent.stall(clock, false);
+  assert(s?.cause === "no-progress" && s.ms === W, "an unstarted child is stalled at the window");
+
+  // A frozen child: every non-progress signal, every minute, for the whole window.
+  const frozen = fresh();
+  const turn = () =>
+    assistantEnd([{ type: "text", text: "Checking." }, toolCall("f", "git status")], {
+      usage: { input: clock, output: clock },
+    });
+  frozen.observe(turn());
+  const markedAt = clock;
+  const noise: PiJsonEvent[] = [
+    turn(),
+    { type: "response" } as PiJsonEvent,
+    { type: "queue_update" } as PiJsonEvent,
+    { type: "message_end", message: { role: "user", content: [{ type: "text", text: "go on" }] } },
+    start("f", "git status"),
+  ];
+  while (clock - markedAt < W) {
+    clock += MIN;
+    for (const e of noise) frozen.observe(e);
+  }
+  assert(
+    frozen.lastProgressAt === markedAt,
+    "identical turns, token growth, echoes, steers and call starts never reset the window",
+  );
+  assert(
+    frozen.stall(clock, false)?.cause === "no-progress",
+    "a frozen child is stalled at the window",
+  );
+  // With a call in flight the same child runs on to the tool-silence floor.
+  assert(
+    frozen.stall(clock, true) === undefined,
+    "a call in flight is not ended at the 30-min window",
+  );
+  assert(
+    frozen.stall(markedAt + progressSilenceMs(true), true)?.cause === "no-progress",
+    "a call in flight is ended at the 60-min floor",
+  );
+
+  // An advancing child: a changed turn every 20 min for 3 h is never stalled.
+  const live = fresh();
+  let stalled = false;
+  for (let i = 0; i < 9; i++) {
+    clock += 20 * MIN;
+    live.observe(assistantEnd([{ type: "text", text: `step ${i}` }]));
+    stalled ||= live.stall(clock + W - 1, false) !== undefined;
+  }
+  assert(!stalled, "a child whose progress advances is never stalled");
+
+  for (const [k, v] of saved) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+}
+
+// 11 — the inactivity poll ends a stalled child as `no-progress`, and a silent
+// child keeps its silence cause.
+{
+  const IDLE = "PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS";
+  const saved = process.env[IDLE];
+  process.env[IDLE] = "300"; // a 250 ms poll period
+  const fakeChild = { kill: () => true } as unknown as ChildProcess;
+  let toolInFlight: boolean | undefined;
+  const stalledProgress = {
+    stall: (_now: number, inFlight: boolean) => {
+      toolInFlight = inFlight;
+      return { cause: "no-progress", ms: 7 };
+    },
+  } as unknown as ChildProgress;
+  const poll = async (lastActivityAt: () => number, inFlightTools = new InFlightTools()) => {
+    let seen = "";
+    const stop = createInactivityPoll({
+      child: fakeChild,
+      inFlightTools,
+      lastActivityAt,
+      childProgress: stalledProgress,
+      onKill: (cause, ms) => {
+        seen ||= `${cause}:${ms}`;
+      },
+    });
+    await new Promise((r) => setTimeout(r, 600));
+    stop();
+    return seen;
+  };
+  const emitting = await poll(() => Date.now());
+  assert(
+    emitting === "no-progress:7",
+    `an emitting but stalled child is ended as no-progress (got ${emitting})`,
+  );
+  // The poll hands the tracker the in-flight state, so a silent long tool gets its floor.
+  const busy = new InFlightTools();
+  busy.observe(start("t", "sleep 3600"));
+  await poll(() => Date.now(), busy);
+  assert(toolInFlight === true, "the poll tells the tracker a tool call is in flight");
+  const quiet = await poll(() => 0);
+  assert(quiet === "inactivity:300", `a silent child keeps the inactivity cause (got ${quiet})`);
+  // The flag the spawn sets on that kill names the child's end.
+  const flags = declareKillFlags();
+  const child = { on: () => undefined } as unknown as ChildProcess;
+  const caps = armCapSession(child, flags, {
+    role: "developer",
+    runningState: emptyRunningState("developer"),
+  });
+  flags.setNoProgressKilled(true);
+  assert(
+    caps.killCause() === "no-progress",
+    `the no-progress flag resolves to its cause (got ${caps.killCause()})`,
+  );
+  const result = { killCause: "no-progress" } as DispatchResult;
+  recordKillBudgets(result, { timeoutMs: 1, clamped: false, killedBudgetMs: () => 7 });
+  assert(
+    result.killBudgetMs === 7,
+    `a no-progress kill records the window it fired on (got ${result.killBudgetMs})`,
+  );
+  if (saved === undefined) delete process.env[IDLE];
+  else process.env[IDLE] = saved;
 }
 
 process.exit(exit);

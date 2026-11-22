@@ -197,6 +197,7 @@ function dispatchKind(e: FailedDispatch): FailureKind {
     case "tool-inactivity":
     case "plan-timeout":
     case "child-bound":
+    case "no-progress":
       return "timeout";
     case "loop":
     case "token-budget":

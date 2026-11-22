@@ -319,6 +319,7 @@ export function recordKillBudgets(
       return;
     case "inactivity":
     case "tool-inactivity":
+    case "no-progress":
       result.killBudgetMs = budgets.killedBudgetMs();
       return;
   }

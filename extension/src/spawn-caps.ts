@@ -170,6 +170,8 @@ export interface CapSessionOpts {
   inactivityKilled: () => boolean;
   /** #951 — the in-flight-tool silence kill fired (see resolveKillCause). */
   toolInactivityKilled: () => boolean;
+  /** The opt-in no-progress arm of the inactivity poll fired. */
+  noProgressKilled?: () => boolean;
   aborted: () => boolean;
   capKillGraceMs: number;
   /**
@@ -475,6 +477,7 @@ export function createCapSession(opts: CapSessionOpts): CapSession {
         toolInactivityKilled: opts.toolInactivityKilled(),
         timedOut: opts.timedOut(),
         tokenBudgetKilled: tokenBudgetTracker?.killed ?? false,
+        noProgressKilled: opts.noProgressKilled?.() ?? false,
         aborted: opts.aborted(),
       }),
     cleanup: () => {

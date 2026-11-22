@@ -33,6 +33,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Writable } from "node:stream";
+import { ChildProgress } from "../src/child-progress.ts";
 import type { PiJsonEvent } from "../src/pi-event-shapes.ts";
 import { createCapSession } from "../src/spawn-caps.ts";
 import { armChildBound } from "../src/spawn-child-bound.ts";
@@ -363,6 +364,7 @@ try {
         child,
         inFlightTools,
         lastActivityAt: () => Date.now() - 5_000, // permanently silent
+        childProgress: new ChildProgress(),
         onKill: (c, budgetMs) => {
           cause = c;
           if (c === "tool-inactivity") flags.setToolInactivityKilled(true);

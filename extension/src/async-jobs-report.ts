@@ -160,6 +160,12 @@ export function describeOutcome(result: DispatchResult): {
   if (result.killCause === "token-budget") {
     return { status: "FAILED (self-killed: token budget crossed)", bodyPrefix: null };
   }
+  if (result.killCause === "no-progress") {
+    return {
+      status: "FAILED (self-killed: no progress past PI_ENSEMBLE_PROGRESS_SILENCE_MS)",
+      bodyPrefix: null,
+    };
+  }
   // #754 — the plan step's own bound expired. Distinct from the generic
   // wall-clock timeout headline: the bound is on planning, not on the work.
   if (result.killCause === "plan-timeout") {

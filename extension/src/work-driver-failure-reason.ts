@@ -50,6 +50,8 @@ export function failureCauseReason(tail: {
       return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
     case "self-killed:child-bound":
       return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
+    case "self-killed:no-progress":
+      return "ended by pi-rukas for emitting without progress past PI_ENSEMBLE_PROGRESS_SILENCE_MS — retrying would replay the stall";
     // #1827 — the reviewer re-read cap gets its own headline: a child that was
     // reloading its SKILL.md is not a slow child, and "it ran out of time"
     // would send the operator after the wrong knob.
@@ -102,6 +104,8 @@ export function failureCauseReasonForClass(
       return "killed by pi-rukas (the plan step's own wall-clock bound expired — a bound on planning, not on the issue)";
     case "self-killed:child-bound":
       return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
+    case "self-killed:no-progress":
+      return "ended by pi-rukas for emitting without progress past PI_ENSEMBLE_PROGRESS_SILENCE_MS — retrying would replay the stall";
     // #1827 — same wording as the sibling reason site: the two must not drift.
     case "self-killed:review-skill-reread":
       return "ended by pi-rukas for re-reading its own skill file past PI_ENSEMBLE_REVIEW_SKILL_READS (the read/cat/grep alternation no loop detector sees) — retrying would read it again";

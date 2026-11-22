@@ -96,6 +96,7 @@ export function overrideEnvForKillCause(
           ? CYCLE_DEADLINE_ENV
           : fixerBoundEnv(fixerBoundSource);
     case "no-progress":
+      return "PI_ENSEMBLE_PROGRESS_SILENCE_MS";
     case "stuck-tool":
       return "PI_ENSEMBLE_DISPATCH_CAPS";
     // #1827 — the reviewer's skill re-read cap: its own knob plus the caps

@@ -220,9 +220,9 @@ export interface DispatchResult {
   //
   // #1567 child-supervision policy — "child-bound" = the per-child time
   // limit expired (wrap-up steer, then kill at bound + 10 min);
-  // "no-progress" = the driver ended a child frozen across slow levels;
-  // "stuck-tool" = a second call-kill on the same command. Reserved here
-  // (P1); the pieces that enforce each policy emit them.
+  // "no-progress" = the inactivity poll's opt-in PI_ENSEMBLE_PROGRESS_SILENCE_MS
+  // arm ended a child that kept emitting without progress;
+  // "stuck-tool" = a second call-kill on the same command (reserved).
   killCause?:
     | "timeout"
     | "inactivity"
@@ -451,6 +451,8 @@ export type DispatchFailureCause =
   /** #754 — the plan step's own wall-clock bound expired; a budget kill, not a provider fault — the plan step's corrective re-dispatch is the recovery, not a wholesale retry. */
   | "self-killed:plan-timeout"
   | "self-killed:child-bound"
+  /** The opt-in PI_ENSEMBLE_PROGRESS_SILENCE_MS arm ended a child that emitted without progress; a retry replays the stall. */
+  | "self-killed:no-progress"
   /** #1827 — a reviewer re-read its own skill file past PI_ENSEMBLE_REVIEW_SKILL_READS. A self-inflicted cap: re-spawning reads the same file again, so no retry. */
   | "self-killed:review-skill-reread"
   | "crashed"

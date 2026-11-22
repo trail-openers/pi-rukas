@@ -86,31 +86,34 @@ const supervisionKill = (over: Record<string, unknown>) =>
 
 // ────────────── (a) a supervision kill keeps the classification it always had ─
 {
-  // No provider text at all: the #296 order intact. `no-progress` names no
-  // branch of its own, so the event reaches the generic crash — `shouldRetry:
-  // true`, one attempt — exactly as it did before #1798. This is the baseline
-  // the rest of this file is measured against.
+  // No provider text at all: the #296 order intact. `no-progress` reaches its
+  // own self-kill branch, never retried. This is the baseline the rest of this
+  // file is measured against.
   const noProgress = classifyFailureCause(
     supervisionKill({ providerMessage: undefined }),
   );
   assert(
-    noProgress.cause === "crashed",
-    `a supervision kill with no provider text classifies AS BEFORE — the override never reads it (got ${noProgress.cause})`,
+    noProgress.cause === "self-killed:no-progress",
+    `a supervision kill with no provider text keeps its own cause — the override never reads it (got ${noProgress.cause})`,
   );
   assert(
-    noProgress.shouldRetry === true && noProgress.maxRetries === 1,
-    `…with the retry policy the generic crash always had (retry=${noProgress.shouldRetry}/${noProgress.maxRetries})`,
+    noProgress.shouldRetry === false && noProgress.maxRetries === 0,
+    `…and is not retried (retry=${noProgress.shouldRetry}/${noProgress.maxRetries})`,
   );
 
   // …and an ordinary (non-429) error-stop on such a kill reads as a severance,
   // which proves the provider field is genuinely present on these events. So
   // the cases below are the override DECLINING, not a field that was never set.
-  const noProgressSevered = classifyFailureCause(
-    supervisionKill({ kind: "dispatch-failed-provider", providerMessage: "Request timed out." }),
+  const severed = classifyFailureCause(
+    supervisionKill({
+      kind: "dispatch-failed-provider",
+      killCause: "stuck-tool",
+      providerMessage: "Request timed out.",
+    }),
   );
   assert(
-    noProgressSevered.cause === "provider-severed" && noProgressSevered.shouldRetry === true,
-    `…and an ordinary error-stop on such a kill still reads as a severance, so the field is not simply absent (got ${noProgressSevered.cause})`,
+    severed.cause === "provider-severed" && severed.shouldRetry === true,
+    `…and an ordinary error-stop on such a kill still reads as a severance, so the field is not simply absent (got ${severed.cause})`,
   );
 
   // The other supervision cause. Here the test has to state WHICH rule answers,

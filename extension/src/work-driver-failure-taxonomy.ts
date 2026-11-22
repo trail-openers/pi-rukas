@@ -181,6 +181,7 @@ function seamLabelFor(
     case "self-killed:token-budget":
     case "self-killed:plan-timeout":
     case "self-killed:child-bound":
+    case "self-killed:no-progress":
     // #1827 — a structured kill the rule reads exactly, so no model is asked.
     case "self-killed:review-skill-reread":
     case "success":
@@ -435,6 +436,14 @@ export function classifyFailureCause(tail: FailureTail): FailureClass {
     return { cause: "provider-model-unavailable", shouldRetry: false, maxRetries: 0 };
   }
 
+  // The opt-in progress-silence kill: re-spawning replays the stall. It sits
+  // after the 429 ladder and the model check, so a genuine provider cap the
+  // child carried still halts the queue, but ahead of the severance fallback
+  // that would retry a child pi-rukas ended itself.
+  if (tail.killCause === "no-progress") {
+    return { cause: "self-killed:no-progress", shouldRetry: false, maxRetries: 0 };
+  }
+
   // Provider error-stop (transport severance, provider timeout, etc).
   if (tail.kind === "dispatch-failed-provider") {
     // #79 — the adversarial loop already re-spawned into this exact error and
@@ -470,13 +479,14 @@ export function isFinalProviderFault(cls: { cause: DispatchFailureCause; shouldR
 
 /**
  * #79 — how many re-dispatches a RETRY_ONCE step may spend on this failure:
- * none for a final provider fault, the transient budget for infra, else one.
+ * none for a final provider fault or a no-progress kill (a re-spawn replays
+ * the stall for a whole new window), the transient budget for infra, else one.
  */
 export function stepRetryBudget(
   cls: { cause: DispatchFailureCause; shouldRetry: boolean; maxRetries: number },
   infra: boolean,
 ): number {
-  if (isFinalProviderFault(cls)) return 0;
+  if (isFinalProviderFault(cls) || cls.cause === "self-killed:no-progress") return 0;
   return infra ? cls.maxRetries : 1;
 }
 

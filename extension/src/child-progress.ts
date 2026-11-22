@@ -27,8 +27,9 @@
  * max(20 min, 3 × the longest same-command call)). A completed call's length
  * is the duration Pi recorded when it sends one, else the wall-clock span.
  *
- * Observation only: nothing here kills, steers or notifies. One instance per
- * spawn, fed from the stdout line handler; it dies with the spawn.
+ * The tracker itself kills, steers and notifies nothing. One instance per
+ * spawn, fed from the stdout line handler; it dies with the spawn. The
+ * inactivity poll's opt-in no-progress arm (spawn-inflight.ts) reads `stall`.
  */
 
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
@@ -71,6 +72,20 @@ export function commandFingerprint(toolName: string, args: unknown): string {
   return `${toolName} ${raw}`.trim();
 }
 
+/**
+ * PI_ENSEMBLE_PROGRESS_SILENCE_MS — how long a child may go without progress
+ * before the inactivity poll ends it (cause `no-progress`). Unset or `0` is
+ * off. A set value is floored at the default of the matching stdout-silence
+ * bound — 30 min with no call in flight, 60 min while one is — because Pi
+ * emits nothing mid-turn or inside a silent tool, so a shorter window would
+ * end a healthy child the silence watchdogs deliberately let run.
+ */
+export function progressSilenceMs(toolInFlight: boolean): number {
+  const env = Number(process.env.PI_ENSEMBLE_PROGRESS_SILENCE_MS);
+  if (!Number.isFinite(env) || env <= 0) return 0;
+  return Math.max(env, (toolInFlight ? 60 : 30) * 60_000);
+}
+
 interface OpenCall extends InFlightCall {
   /** The last update payload seen, to tell new bytes from a repeat. */
   lastPayload: string | undefined;
@@ -92,6 +107,16 @@ export class ChildProgress {
   /** When the child last made progress (spawn start until it first does). */
   get lastProgressAt(): number {
     return this.progressAt;
+  }
+
+  /**
+   * The no-progress kill owed at `now`, or undefined. A child that has emitted
+   * nothing is measured from its spawn start (the first mark), so it is
+   * stalled at the window rather than exempt.
+   */
+  stall(now: number, toolInFlight: boolean): { cause: "no-progress"; ms: number } | undefined {
+    const ms = progressSilenceMs(toolInFlight);
+    return ms > 0 && now - this.progressAt >= ms ? { cause: "no-progress", ms } : undefined;
   }
 
   /** The calls still in flight, oldest first. */
