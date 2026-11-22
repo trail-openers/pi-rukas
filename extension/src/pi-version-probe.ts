@@ -30,6 +30,7 @@ import { trace } from "./trace.ts";
 type ProbeResult = { version: string | null; probeTimedOut?: boolean };
 
 let versionPromise: Promise<ProbeResult> | null = null;
+let settledVersion: string | null = null;
 let piResolutionProbeStarted = false;
 let verifiedVersionCache: string | null | undefined;
 
@@ -126,8 +127,21 @@ export function probePiVersion(): Promise<ProbeResult> {
       resolve({ version: null });
     }
   });
+  // A probe a test reset has superseded must not write the cleared state.
+  const current = versionPromise;
+  void current.then((r) => {
+    if (versionPromise === current) settledVersion = r.version;
+  });
 
   return versionPromise;
+}
+
+/**
+ * The probed version once the probe has settled, else null (not yet kicked,
+ * still running, or unparseable). Synchronous, so a spawn path may read it.
+ */
+export function settledPiVersion(): string | null {
+  return settledVersion;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +267,7 @@ export function getVerifiedVersion(): string | null {
 export function _resetPiVersionProbe(): void {
   _resetPiBinaryCache();
   versionPromise = null;
+  settledVersion = null;
   piResolutionProbeStarted = false;
   verifiedVersionCache = undefined;
 }

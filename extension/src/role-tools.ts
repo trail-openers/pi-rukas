@@ -49,6 +49,8 @@
  *    the same trust assumptions as the parent.
  */
 
+import { isVersionOlder, settledPiVersion } from "./pi-version-probe.ts";
+
 export type Role =
   | "project-manager"
   | "developer"
@@ -66,19 +68,34 @@ const ROLE_TOOL_EXCLUDES: Record<Role, string[]> = {
   "code-review-specialist": ["write", "edit", "multiedit"],
 };
 
+/** The first pi whose `--exclude-tools` accepts `*` patterns; older pis match names literally. */
+const EXCLUDE_PATTERNS_MIN_PI = "1.0.4";
+
 /**
  * Return the comma-separated `--exclude-tools` value for a role, or undefined
  * when the role has no exclusions (caller should omit the flag entirely in
  * that case). The empty-string case is handled defensively: an array of `[]`
  * returns undefined so spawn.ts skips appending an empty `--exclude-tools`
  * arg that Pi might reject or interpret as "exclude everything".
+ *
+ * When the running pi is known to accept patterns, each name becomes a
+ * prefix pattern (`write*`), so a tool pi adds or renames under the same stem
+ * (`write_file`) stays excluded. An unknown version (the probe has not
+ * settled, or failed) gets the enumerated names, which every pi accepts.
+ * Deltas (`+name`/`-name`) are a `--tools` form only, so they have no place here.
  */
-export function excludeToolsFor(role: string): string | undefined {
+export function excludeToolsFor(
+  role: string,
+  piVersion: string | null = settledPiVersion(),
+): string | undefined {
   // Unknown role: no exclusions (matches the default — better to err open
   // than to break a future role we haven't added here yet).
   const list = ROLE_TOOL_EXCLUDES[role as Role];
   if (!list || list.length === 0) return undefined;
-  return list.join(",");
+  if (piVersion === null || isVersionOlder(piVersion, EXCLUDE_PATTERNS_MIN_PI)) {
+    return list.join(",");
+  }
+  return list.map((name) => `${name}*`).join(",");
 }
 
 /**

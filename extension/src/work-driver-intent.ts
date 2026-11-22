@@ -22,8 +22,8 @@
  *      exist, whether the described behaviour matches the code, whether the
  *      work is already done. A confidently-wrong bug report got built.
  *
- * The resolver runs inside the `explore` role, which `role-tools.ts` already
- * gates with `--exclude-tools write,edit,multiedit` (#238). That is not
+ * The resolver runs inside the `explore` role, from which `role-tools.ts`
+ * strips write/edit/multiedit with `--exclude-tools` (#238). That is not
  * incidental: "Ask or Assume?" (69.4% on an underspecified SWE-bench variant)
  * finds that an agent holding edit tools rationalises ambiguity away, because
  * building is cheaper than asking. The resolver structurally cannot build.

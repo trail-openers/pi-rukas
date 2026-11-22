@@ -13,6 +13,7 @@
 
 import { CHILD_GUARDS_PATH } from "../src/child-guards.ts";
 import type { ResolvedModelChoice } from "../src/models.ts";
+import { _resetPiVersionProbe, probePiVersion } from "../src/pi-version-probe.ts";
 import { excludeToolListFor, excludeToolsFor } from "../src/role-tools.ts";
 import { buildChildArgs } from "../src/spawn.ts";
 
@@ -245,6 +246,45 @@ const TEST_MODEL: ResolvedModelChoice = {
   assert(list.length === 0, "unknown role: empty exclude list");
   const csv = excludeToolsFor("future-role-that-does-not-exist");
   assert(csv === undefined, "unknown role: excludeToolsFor returns undefined (errs open)");
+}
+
+// 15. Pattern form is gated on the running pi: `*` patterns from 1.0.4, the
+// enumerated names below it and while the version is unknown.
+{
+  for (const v of [null, "1.0.0", "1.0.3"]) {
+    const csv = excludeToolsFor("explore", v);
+    assert(csv === "write,edit,multiedit", `pi ${v}: enumerated fallback (got: ${csv})`);
+  }
+  for (const v of ["1.0.4", "1.4.0"]) {
+    const csv = excludeToolsFor("explore", v);
+    assert(csv === "write*,edit*,multiedit*", `pi ${v}: pattern form (got: ${csv})`);
+  }
+  assert(excludeToolsFor("developer", "1.4.0") === undefined, "pi 1.4.0: developer still unset");
+}
+
+// 16. The child argv picks up the probed version once the probe settles.
+{
+  const fs = await import("node:fs");
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "role-tools-"));
+  const bin = path.join(dir, "pi");
+  fs.writeFileSync(bin, "#!/bin/sh\necho 1.4.0\n", { mode: 0o755 });
+  const savedArgv1 = process.argv[1];
+  process.argv[1] = "/not-a-pi-cli";
+  process.env.PI_ENSEMBLE_PI_BIN = bin;
+  _resetPiVersionProbe();
+  await probePiVersion();
+  const args = buildChildArgs("explore", TEST_PROMPT, TEST_TRANSCRIPT, TEST_MODEL, false);
+  const value = excludeToolsValueFromArgs(args);
+  assert(
+    value === "write*,edit*,multiedit*",
+    `probed pi 1.4.0: pattern form in argv (got: ${value})`,
+  );
+  delete process.env.PI_ENSEMBLE_PI_BIN;
+  process.argv[1] = savedArgv1 as string;
+  _resetPiVersionProbe();
+  fs.rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(`\nexit ${exit}`);

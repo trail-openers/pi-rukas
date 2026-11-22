@@ -470,7 +470,8 @@ export function buildChildArgs(
   // children immediately (older releases such as the 0.75.x era), so the
   // flag must exist in every Pi at or above the install floor — enforced
   // by install-preflight.sh's MIN_PI_VERSION, not by the non-normative dev
-  // pins. Verified by test-role-tools.ts smoke test.
+  // pins. Its `*` patterns are newer than that floor, so role-tools.ts
+  // gates them on the probed version. Verified by test-role-tools.ts.
   const excludedTools = excludeToolsFor(role);
   if (excludedTools) {
     args.push("--exclude-tools", excludedTools);

@@ -10,7 +10,7 @@
  *     earlier shape: `--tools codemode,…` would leave write/edit inactive
  *     on its own, so a pass would not prove `--exclude-tools` did anything.
  *     In a reviewer child, write/edit are ACTIVE by default and are
- *     removed ONLY by `--exclude-tools write,edit,multiedit`.
+ *     removed ONLY by `--exclude-tools <excludeToolsFor(reviewer)>`.
  *   - codemode activated the production way: `-e builtin:codemode` on the
  *     argv plus the companion `extension/src/child-guards.ts` via
  *     `--extension` (its `session_start` handler appends codemode to the
@@ -71,6 +71,8 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { probePiVersion } from "../src/pi-version-probe.ts";
+import { excludeToolsFor } from "../src/role-tools.ts";
 
 function skip(msg: string): never {
   console.log(`⊘ LIVE skipped: ${msg}`);
@@ -108,6 +110,11 @@ type AnyEvent = Record<string, unknown>;
 const liveProvider = process.env.PI_ENSEMBLE_LIVE_PROVIDER ?? "local-gpu";
 const liveModel = process.env.PI_ENSEMBLE_LIVE_MODEL ?? "RedHatAI/Qwen3.8-27B-INT4";
 
+// The value production sends a reviewer on this pi (the `*` pattern form
+// where supported), so the live gate proves the form children get.
+const reviewerExcludes = excludeToolsFor("code-review-specialist", (await probePiVersion()).version);
+if (!reviewerExcludes) throw new Error("code-review-specialist has no tool exclusions");
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixturePath = path.join(here, "fixtures", "codemode-reviewer-rejection-fixture.ts");
 // The production companion that activates codemode on session_start for
@@ -124,7 +131,7 @@ const workDir = path.join(os.tmpdir(), `pi-ensemble-codemode-reject-${process.pi
 
 // Build the reviewer-shaped child argv. Mirrors what buildChildArgs
 // (childArgsBase + childGuardsArgs) produces for a reviewer role: default
-// tool set, --exclude-tools write,edit,multiedit, -e builtin:mcp,
+// tool set, --exclude-tools <excludeToolsFor(reviewer)>, -e builtin:mcp,
 // -e builtin:codemode, the companion extension, and the fixture. Deliberate
 // difference: NO --tools restriction — see the file header. The exclusion
 // arm and the positive-control arm are identical except for --exclude-tools.
@@ -144,7 +151,7 @@ function childArgvFor(opts: { exclude: boolean; sessionPath: string }): string[]
     "--session",
     opts.sessionPath,
   ];
-  if (opts.exclude) args.push("--exclude-tools", "write,edit,multiedit");
+  if (opts.exclude) args.push("--exclude-tools", reviewerExcludes);
   args.push("--extension", childGuardsPath, "--extension", fixturePath);
   return args;
 }
