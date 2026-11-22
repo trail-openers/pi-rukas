@@ -65,6 +65,17 @@ export function acquireLock(repoRoot: string, issue: number): () => void {
 }
 
 /**
+ * Who holds the issue's lock, without taking it: the owner's identity, `"unreadable"`, or `undefined` when
+ * there is no lock or its owner is provably dead (a lock `acquireLock` would clear). A launcher asks this to
+ * refuse up front; `acquireLock` stays the authority, so a run that starts in between is still refused there.
+ */
+export function lockHolder(repoRoot: string, issue: number): string | undefined {
+  const body = readLockBody(leanLockFile(repoRoot, issue));
+  if (body === undefined || body === "unreadable") return body;
+  return judgeOwner(parseIdentity(body), selfIdentity()) === "dead" ? undefined : body;
+}
+
+/**
  * Link a pid-bearing temp file into the lock path. True means we hold it.
  *
  * `link` fails with EEXIST when the target exists; every other errno is a real error, reported as one.

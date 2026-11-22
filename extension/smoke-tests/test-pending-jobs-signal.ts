@@ -407,6 +407,7 @@ wire.length = 0;
     // the PM's turn for it locked the operator out of the session.
     "plan-tool.ts": 1,
     "research-tool.ts": 1,
+    "lean-tool.ts": 1,
   };
   const found: string[] = [];
   for (const f of readdirSync(srcDir).filter((n) => n.endsWith(".ts"))) {

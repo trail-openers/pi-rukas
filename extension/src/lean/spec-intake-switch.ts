@@ -11,8 +11,9 @@
  * `require` — the mode widens intake, it does not widen tolerance for a broken
  * contract.
  *
- * Resolution order: env (`PI_ENSEMBLE_LEAN_SPEC_INTAKE`) when set, then
- * `.pi/work.json` `lean.specIntake` (validated by `lean/config.ts` at load),
+ * Resolution order: the run's own override (the `start_lean_driver` tool's
+ * `specIntake`) when given, then env (`PI_ENSEMBLE_LEAN_SPEC_INTAKE`) when set,
+ * then `.pi/work.json` `lean.specIntake` (validated by `lean/config.ts` at load),
  * then `require`. An env value outside the two is an error naming the allowed
  * values, never a fallback: a typo'd knob that read as "the safe setting" would
  * be a silent behaviour change, in the direction where the run costs a model
@@ -57,12 +58,14 @@ export function validateSpecIntake(
 }
 
 /**
- * The resolved mode: env when set, else the run's committed config, else `require`.
- * `config` is what `loadWorkConfig` returned for this run's base — the loader already
- * refused a value outside the two, so a read here cannot invent a mode a file could
- * not carry. Env first means an operator's word beats a repo that set `derive`.
+ * The resolved mode: the run's override, else env when set, else the run's committed
+ * config, else `require`. `config` is what `loadWorkConfig` returned for this run's base —
+ * the loader already refused a value outside the two, so a read here cannot invent a mode
+ * a file could not carry. Env before config means an operator's word beats a repo that
+ * set `derive`; the override is a value, not an env write, so it arms this run only.
  */
-export function resolveSpecIntake(config?: WorkConfig): SpecIntake {
+export function resolveSpecIntake(config?: WorkConfig, override?: SpecIntake): SpecIntake {
+  if (override !== undefined) return override;
   const env = validateSpecIntake(process.env.PI_ENSEMBLE_LEAN_SPEC_INTAKE);
   if (env !== undefined) return env;
   const fromConfig = config?.lean?.specIntake;
