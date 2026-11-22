@@ -89,7 +89,7 @@ try {
   const refused = await ready("cargo test {file}");
   const rule = refused.facts.failedRules.join(" ");
   assert(
-    refused.kind === "fail" && rule.includes("set verify.roster to write one to {report}"),
+    refused.kind === "setup" && rule.includes("set verify.roster to write one to {report}"),
     `(a) ready refuses the run at its start (${refused.kind}: ${rule})`,
   );
   const started = await ready("pytest -q {file}");

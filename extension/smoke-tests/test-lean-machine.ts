@@ -112,7 +112,7 @@ for (const state of HANDLER_STATES) {
   }
 }
 assert(
-  pairs === 25,
+  pairs === 26,
   `all ${pairs} forward-routed pairs enumerated — the registry grew or shrank, check the spec`,
 );
 
@@ -233,6 +233,11 @@ assert(next(run("ready"), { kind: "fail" }).state === "decline", "ready fail →
 assert(
   next(run("ready"), { kind: "infra" }).state === "handback",
   "ready infra → handback (a failed derivation is not the author's fault)",
+);
+// `setup` is the repository's fault: no reporting step runs, so nothing is posted on the issue.
+assert(
+  next(run("ready"), { kind: "setup" }).state === "handed-back",
+  "ready setup → handed-back (no reporting step, nothing posted)",
 );
 assert(next(run("specify"), { kind: "ok" }).state === "build", "specify ok → build");
 assert(

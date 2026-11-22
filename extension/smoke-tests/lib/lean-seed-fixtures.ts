@@ -39,8 +39,9 @@
  *       the field run could not reach;
  *   (g) a non-empty base that names no object is a `ready` refusal, not a
  *       default config, and the refused value is clipped in the rule;
- *   (h) a base whose commit carries no `.pi/work.json` is still `ok` — the
- *       refusal is about the absent commit, never the absent file;
+ *   (h) a base whose commit carries no `.pi/work.json` is a `setup` refusal,
+ *       never the base rule — the absent FILE is the repository's setup, the
+ *       absent COMMIT is the base's;
  *   (i) the seed's cause reaches the rule through `handlersFor`;
  *   (j) the base is pinned to an IMMUTABLE oid, not merely to something git
  *       will resolve: `main`, `HEAD`, a ``main^{commit}`touch x`@{0}`` suffix
@@ -390,8 +391,8 @@ export function originRepo(
   mkdirSync(path.join(repoRoot, ".pi"), { recursive: true });
   writeFileSync(path.join(repoRoot, "README.md"), "# seed fixture\n", "utf8");
   // `workJson: false` is a real shape, not an unused knob: `ready` loads the
-  // config AT the base and a repo without one is the common case, so a case
-  // has to drive it and see the run go green on the defaults anyway. An object
+  // config AT the base, and a repo without one is a setup refusal a case has to
+  // drive, distinct from a base that names no commit. An object
   // is written as JSON (a case that wants a specific config, and therefore a
   // specific commit, uses it); a string is written verbatim so a malformed
   // config is testable at the same seam.
@@ -400,7 +401,12 @@ export function originRepo(
   } else if (typeof opts.workJson === "string") {
     writeFileSync(path.join(repoRoot, ".pi", "work.json"), opts.workJson, "utf8");
   } else if (opts.workJson !== false) {
-    writeFileSync(path.join(repoRoot, ".pi", "work.json"), JSON.stringify({ version: 1 }), "utf8");
+    // The smallest config `ready`'s setup check admits: a per-file runner the roster can derive from.
+    writeFileSync(
+      path.join(repoRoot, ".pi", "work.json"),
+      JSON.stringify({ version: 1, verify: { test: "pytest {file}" } }),
+      "utf8",
+    );
   } else {
     // Keep `.pi/` in the commit so the directory exists and a later case can
     // tell "no config file" from "no config directory".

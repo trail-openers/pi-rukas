@@ -7,14 +7,14 @@
  * misleading line `no transition for <state> + "…"`, which blames the machine for a bug
  * in the handler.
  *
- * `ready` does three deterministic things:
- *   1. fetch the issue body (the forge adapter, falling back to raw `gh`);
- *   2. `parsePiSpec`, then `readiness` on the result;
- *   3. resolve the mainline sha and load `.pi/work.json` AT that sha.
- * A failure at any of the three is a `fail` outcome, and the `decline` step
- * posts one issue comment naming the rules that failed before the run ends
- * `not-ready`. One comment per run, because the step log guarantees the step
- * that posted it never runs twice.
+ * `ready` does three deterministic things, in this order:
+ *   1. prove the run's base is a commit;
+ *   2. judge the repository's setup at that base (`ready-setup.ts`) — a `setup`
+ *      verdict, which ends the run handed-back and posts nothing;
+ *   3. fetch the issue body, decide its contract, and judge `readiness` on it.
+ * A failure at 1 or 3 is a `fail` outcome, and the `decline` step posts one issue
+ * comment naming the rules that failed before the run ends `not-ready`. One comment
+ * per run, because the step log guarantees the step that posted it never runs twice.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
@@ -33,6 +33,7 @@ import { ciLandHandlers, publishHandler } from "./command-post-publish.ts";
 import { type Budget, type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
 import { fetchIssueBody, mainlineSha, postDerivedSpec } from "./io.ts";
+import { readySetup } from "./ready-setup.ts";
 import { reportHandlers } from "./report-handlers.ts";
 import { reviewDeps } from "./review-deps.ts";
 import { reviewOutcome } from "./review.ts";
@@ -41,14 +42,13 @@ import { type DeriveDeps, type DeriveDispatch, deriveDeps, traceDerive } from ".
 import { specFor } from "./spec-for.ts";
 import type { SpecIntake } from "./spec-intake-switch.ts";
 import { contractOf } from "./spec-intake.ts";
-import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
+import { type PiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import { type DerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
 import type { Step } from "./state.ts";
 import type { BudgetArms, BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
 import { oneLine } from "./text-fence.ts";
 import { verifyDeps } from "./verify-deps.ts";
-import { rosterStartProblem } from "./verify-roster-command.ts";
 import { verifyOutcome } from "./verify.ts";
 import { leanVersion } from "./version.ts";
 
@@ -121,7 +121,7 @@ export function readyDeps(headless: boolean): ReadyDeps {
 }
 
 /**
- * The `ready` verdict: fetch, parse, judge readiness, load config at the base.
+ * The `ready` verdict: prove the base, judge the repository's setup there, then the issue.
  *
  * `baseSha` is the run's own — the seed's answer, read back off the record (`ctx.run.baseSha`),
  * not a fresh probe — and `seedWhy` is what the seed reports when that answer is empty. The
@@ -139,51 +139,17 @@ export function readyDeps(headless: boolean): ReadyDeps {
  * that cannot start still has to say why on the issue — but a run whose git could not be asked
  * is not an unready issue, and posting "your base is not a commit" on an issue whose clone
  * merely had a locked index would tell the operator to fix something that is not broken.
- * The third kind, `infra`, is the intake's: a fault that is not the author's (a failed
- * derivation, a config that exists and cannot be read), which the machine routes to
- * `handback` rather than `decline`.
+ * The third kind, `infra`, is the intake's: a derivation that failed, which is not the
+ * author's fault, so the machine routes it to `handback` rather than `decline`. The fourth,
+ * `setup`, is the repository's (`ready-setup.ts`), and posts nothing at all.
  */
 export async function readyOutcome(
   repoRoot: string,
   issue: number,
   base: Pick<LeanSeed, "baseSha" | "why" | "infra"> & { specIntake?: SpecIntake },
   deps: ReadyDeps = readyDeps(false),
-): Promise<{ kind: "ok" | "fail" | "infra"; facts: ReadyFacts }> {
+): Promise<{ kind: "ok" | "fail" | "infra" | "setup"; facts: ReadyFacts }> {
   const d = deps;
-  let body: string;
-  try {
-    body = await d.fetchBody(repoRoot, issue);
-  } catch (err) {
-    return {
-      kind: "fail",
-      facts: { failedRules: [`could not read the issue: ${(err as Error).message}`] },
-    };
-  }
-  const derive: DeriveDeps = {
-    issueTitle: d.issueTitle,
-    loadConfig: d.loadConfig,
-    dispatch: d.dispatch,
-    ...(d.arm === undefined ? {} : { arm: d.arm }),
-  };
-  const contract = await contractOf(repoRoot, issue, body, base, derive);
-  // The rows of every child the INTAKE paid for — the drafting child on a contract, and
-  // on the `infra` rule the child whose derivation failed: a dead child still spent
-  // tokens, and this step's record is the only place the run can still account for them.
-  const rows = contract.dispatches ?? [];
-  if ("rule" in contract)
-    return {
-      kind: contract.infra === true ? "infra" : "fail",
-      facts: {
-        failedRules: [contract.rule],
-        ...(contract.infra === true ? { infra: true } : {}),
-        ...(contract.dispatches === undefined || contract.dispatches.length === 0
-          ? {}
-          : { dispatches: contract.dispatches }),
-      },
-    };
-  const parsed = { ok: true as const, spec: contract.spec };
-  const failed = readiness(parsed.spec);
-  if (failed.length > 0) return { kind: "fail", facts: { spec: parsed.spec, failedRules: failed } };
   // The base is the run's, resolved once by `leanSeed` and pinned on the run record: re-probing
   // here would let a `ready` that ran after origin/HEAD moved judge the run against a commit the
   // rest of it never saw.
@@ -210,58 +176,69 @@ export async function readyOutcome(
         `could not seed the run's base: ${oneLine(why ?? "no reason recorded", 160)}`,
       );
     }
-    return {
-      kind: "fail",
-      facts: {
-        spec: parsed.spec,
-        // Never an empty tail: with no seed cause and no probe cause the rule still names the
-        // refs the probe asked for (`NO_MAINLINE_WHY`).
-        failedRules: [unresolvedMainlineRule(why)],
-      },
-    };
+    // Never an empty tail: with no seed cause and no probe cause the rule still names the
+    // refs the probe asked for (`NO_MAINLINE_WHY`).
+    return { kind: "fail", facts: { failedRules: [unresolvedMainlineRule(why)] } };
   }
   // Non-empty is not enough: prove the base IS the commit before the config read, whose blanket
   // catch would otherwise turn "no such object" into "no config file" and hand the run defaults
   // it never earned. The proof lives in `lean/base-proof.ts`; it throws on a git fault, which
-  // this handler's caller turns into a handback.
-  const proof = await proveBaseSha(repoRoot, base.baseSha);
-  if (!proof.ok) {
-    // The refused value is deliberately absent from the facts: it is untrusted text from a record
-    // this process did not write, and it is already inside the rule where it is clipped.
-    return { kind: "fail", facts: { spec: parsed.spec, failedRules: [proof.rule] } };
-  }
+  // this handler's caller turns into a handback. The refused value is deliberately absent from
+  // the facts: it is untrusted text from a record this process did not write, and it is already
+  // inside the rule where it is clipped.
+  const baseSha = base.baseSha;
+  const proof = await proveBaseSha(repoRoot, baseSha);
+  if (!proof.ok) return { kind: "fail", facts: { failedRules: [proof.rule] } };
+  // The repository's setup, before the issue is read and before any child is billed.
+  const setup = await readySetup(() => d.loadConfig(repoRoot, baseSha));
+  if ("rule" in setup) return { kind: "setup", facts: { failedRules: [setup.rule] } };
+  let body: string;
   try {
-    // A roster that can never get its report is refused HERE, before build spends a budget on it.
-    const rosterProblem = rosterStartProblem((await d.loadConfig(repoRoot, base.baseSha)).verify);
-    if (rosterProblem !== undefined) throw new Error(rosterProblem);
-    return {
-      kind: "ok",
-      facts: {
-        spec: parsed.spec,
-        // Only the commit the config was read at goes on the record, so a run names
-        // the base it was JUDGED by. The config itself stays off it: every step reads
-        // it through the loader at this same commit, so a persisted copy would be a
-        // second answer to one question — one a hand edit could change.
-        baseSha: base.baseSha,
-        failedRules: [],
-        ...(contract.derived === undefined ? {} : { derived: contract.derived }),
-        ...(rows.length === 0 ? {} : { dispatches: rows }),
-      },
-    };
+    body = await d.fetchBody(repoRoot, issue);
   } catch (err) {
     return {
       kind: "fail",
-      facts: {
-        spec: parsed.spec,
-        baseSha: base.baseSha,
-        failedRules: [
-          `.pi/work.json is unusable: ${oneLine(err instanceof Error ? err.message : String(err), 160)}`,
-        ],
-        // The child was paid for before this refusal, so its cost rides on the verdict.
-        ...(rows.length === 0 ? {} : { dispatches: rows }),
-      },
+      facts: { failedRules: [`could not read the issue: ${(err as Error).message}`] },
     };
   }
+  const derive: DeriveDeps = {
+    issueTitle: d.issueTitle,
+    loadConfig: d.loadConfig,
+    dispatch: d.dispatch,
+    ...(d.arm === undefined ? {} : { arm: d.arm }),
+  };
+  const contract = await contractOf(repoRoot, issue, body, base, setup.config, derive);
+  // The rows of every child the INTAKE paid for — the drafting child on a contract, and
+  // on the `infra` rule the child whose derivation failed: a dead child still spent
+  // tokens, and this step's record is the only place the run can still account for them.
+  const rows = contract.dispatches ?? [];
+  const rowsFacts = rows.length === 0 ? {} : { dispatches: rows };
+  if ("rule" in contract)
+    return {
+      kind: contract.infra === true ? "infra" : "fail",
+      facts: {
+        failedRules: [contract.rule],
+        ...(contract.infra === true ? { infra: true } : {}),
+        ...rowsFacts,
+      },
+    };
+  const failed = readiness(contract.spec);
+  if (failed.length > 0)
+    return { kind: "fail", facts: { spec: contract.spec, failedRules: failed } };
+  return {
+    kind: "ok",
+    facts: {
+      spec: contract.spec,
+      // Only the commit the config was read at goes on the record, so a run names
+      // the base it was JUDGED by. The config itself stays off it: every step reads
+      // it through the loader at this same commit, so a persisted copy would be a
+      // second answer to one question — one a hand edit could change.
+      baseSha,
+      failedRules: [],
+      ...(contract.derived === undefined ? {} : { derived: contract.derived }),
+      ...rowsFacts,
+    },
+  };
 }
 
 /**

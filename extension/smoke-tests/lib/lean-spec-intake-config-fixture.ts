@@ -4,11 +4,13 @@
  * crosses AGENTS.md §12's line cap.
  *
  * Nothing here asserts. The rig calls the REAL `contractOf` over a real git repo
- * and stubs only the deriving child, so the judgement under test — what a config
- * that could not be read becomes — is `contractOf`'s and not a copy of it.
+ * and stubs only the deriving child, so the judgement under test — what mode a
+ * config the run COULD read decides — is `contractOf`'s and not a copy of it. A
+ * config the run could not read never reaches `contractOf`: `ready`'s setup
+ * check refuses it first (`test-lean-ready-setup.ts`).
  *
  * `intake` pins `PI_ENSEMBLE_LEAN_SPEC_INTAKE` for the call: the mode is what
- * makes the config read load-bearing, and a case that left it unset would be
+ * makes the config load-bearing, and a case that left it unset would be
  * judging `require`'s byte-identical decline instead of the arm under test.
  */
 
@@ -32,7 +34,7 @@ export const PROSE = "The engine should refuse a run whose frozen tests miss AC1
 export const EMPTY_CONFIG: WorkConfig = {
   version: 1,
   autoMerge: false,
-  verify: {},
+  verify: { test: "pytest {file}" },
   budgets: {},
 };
 
@@ -77,26 +79,21 @@ export function tempGitRepo(tag: string): { dir: string; cleanup: () => void } {
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
-/** Drive `contractOf` once. `configFile` is committed at the base the run reads. */
+/** Drive `contractOf` once. `configFile` is committed at the base; `config` is what the
+ * run read there, the committed bytes through the real loader when the case names none. */
 export async function driveContractOf(opts: {
   tag: string;
   configFile?: string;
   /** Pin the env knob verbatim — an INVALID value is what makes the switch itself
    * refuse, which is the arm that must come back as a rule naming the knob. */
   intake?: string;
-  /** The run's config read. REQUIRED: the case is usually about what the read did,
-   * and a defaulted-away loader is how a config arm ends up judging the real git. */
-  loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
+  config?: WorkConfig;
   dispatch?: () => Promise<DispatchResult>;
 }): Promise<{
   contract?: { spec?: unknown; derived?: DerivedSpec; rule?: string; infra?: boolean };
   thrown?: unknown;
   base: string;
   derives: number;
-  /** How many times `contractOf` reached for the run's config THROUGH ITS OWN SEAM:
-   * zero when the mode was refused before the read, one when it read and the loader
-   * is the one that failed. */
-  loadAttempts: number;
   cleanup: () => void;
 }> {
   const { dir, cleanup } = tempGitRepo(opts.tag);
@@ -107,39 +104,25 @@ export async function driveContractOf(opts: {
   let contract: Record<string, unknown> | undefined;
   let thrown: unknown;
   try {
-    // The recording wrapper goes on the SEAM, not into the returned counter: a
-    // config read `contractOf` never attempted must read as zero attempts, which is
-    // what makes "the mode is refused before the config is read" assertable.
-    let loadAttempts = 0;
-    const countedLoadConfig = async (repoRoot: string, sha: string): Promise<WorkConfig> => {
-      loadAttempts++;
-      return opts.loadConfig(repoRoot, sha);
-    };
+    const config = opts.config ?? (await realLoadConfig(dir, base));
     await withEnv(
       opts.intake === undefined ? {} : { PI_ENSEMBLE_LEAN_SPEC_INTAKE: opts.intake },
       async () => {
         try {
-          contract = await contractOf(
-            dir,
-            730,
-            PROSE,
-            { baseSha: base },
-            {
-              issueTitle: async () => "prose ticket",
-              loadConfig: countedLoadConfig,
-              dispatch: async () => {
-                derives++;
-                return (opts.dispatch ?? childReply)();
-              },
+          contract = await contractOf(dir, 730, PROSE, { baseSha: base }, config, {
+            issueTitle: async () => "prose ticket",
+            loadConfig: realLoadConfig,
+            dispatch: async () => {
+              derives++;
+              return (opts.dispatch ?? childReply)();
             },
-            countedLoadConfig,
-          );
+          });
         } catch (err) {
           thrown = err;
         }
       },
     );
-    return { contract, thrown, base, derives, loadAttempts, cleanup };
+    return { contract, thrown, base, derives, cleanup };
   } catch (err) {
     cleanup();
     throw err;

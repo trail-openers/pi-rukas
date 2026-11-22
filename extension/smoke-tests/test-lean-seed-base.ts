@@ -30,7 +30,7 @@
 //       record carrying the base
 //   (g) a non-empty base that names no object is a refusal, not a default config,
 //       and the refused value is clipped in the rule
-//   (h) a base whose commit carries no `.pi/work.json` is still `ok`
+//   (h) a base whose commit carries no `.pi/work.json` is a setup refusal
 //   (i) the seed's cause reaches the rule through `handlersFor`
 //   (j) the base is pinned to an IMMUTABLE oid, not merely to something git will
 //       resolve (`main`, `HEAD`, a suffix chain, an 8-hex prefix, an uppercase
@@ -318,22 +318,20 @@ const { assert, failures } = makeAssert();
 }
 
 // ── (h) a repo whose base commits NO .pi/work.json: the other half of the
-// `workJson` knob, and the shape that made the bug above invisible. Absent
-// config is legitimate, so this must stay `ok` — it is the *absent commit* that
-// is refused, never the absent file.
+// `workJson` knob, and the shape that made the bug above invisible. The absent
+// file is a `setup` refusal; it must never read as the base rule, which is
+// about the *absent commit*.
 {
   const repo = originRepo({ workJson: false });
   try {
     const seeded = await withGh(fakeGhDir(BODY), () =>
       readyOutcome(repo.repoRoot, 4205, { baseSha: repo.originHead }),
     );
-    // The config itself is no longer on the facts — every step reads it through the
-    // loader at the run's base — so this half asks the loader directly that an
-    // absent file is defaults, and `ready` that an absent file is not a refusal.
+    // The loader still reads an absent file as defaults; it is `ready` that refuses them.
     const defaults = await loadWorkConfig(execp, repo.repoRoot, repo.originHead);
     assert(
-      seeded.kind === "ok" && defaults.version === 1,
-      `a base with no .pi/work.json still gives ok on defaults (got ${seeded.kind} ${JSON.stringify(seeded.facts.failedRules)})`,
+      seeded.kind === "setup" && defaults.version === 1,
+      `a base with no .pi/work.json is a setup refusal, not the base rule (got ${seeded.kind} ${JSON.stringify(seeded.facts.failedRules)})`,
     );
   } finally {
     repo.dispose();

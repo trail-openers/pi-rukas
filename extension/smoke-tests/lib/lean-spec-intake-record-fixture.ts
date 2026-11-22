@@ -66,7 +66,13 @@ const CHILD_ROW: DispatchResult = {
   usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
 };
 
-const EMPTY_CONFIG: WorkConfig = { version: 1, autoMerge: false, verify: {}, budgets: {} };
+// `verify.test` is the least `ready`'s setup check admits.
+const EMPTY_CONFIG: WorkConfig = {
+  version: 1,
+  autoMerge: false,
+  verify: { test: "pytest {file}" },
+  budgets: {},
+};
 
 /** The state `ready + ok` routes to, and the one handler this rig lets run on. */
 const AFTER_READY: LeanState = "specify";
