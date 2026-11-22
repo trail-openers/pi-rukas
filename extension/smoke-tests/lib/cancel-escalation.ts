@@ -34,7 +34,6 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { KILL_GRACE_MS, groupSpawnOpts, registerChild } from "../../src/spawn-kill.ts";
 import { writeFakePi } from "./cancel-fixture.ts";
@@ -147,9 +146,14 @@ export async function assertSigtermEscalationKillsGroup(opts: {
     child.stdout?.resume();
     child.stderr?.resume();
     registerChild(child, true);
-    // The fixture writes its pids immediately; wait for both files before the
-    // control signal, so the polls below cannot read a half-written pid.
-    for (let i = 0; i < 250 && !(existsSync(cPidFile) && existsSync(cGrandFile)); i++) {
+    // Wait until both pids PARSE before the control signal: the fixture shell creates each
+    // file before it writes the pid into it, so "the file exists" can still read as empty on
+    // a loaded host, and the polls below would then name no process.
+    for (
+      let i = 0;
+      i < 250 && (recordedPid(cPidFile) === undefined || recordedPid(cGrandFile) === undefined);
+      i++
+    ) {
       await sleep(20);
     }
     // `signalTreeTermOnly` reports whether the strike landed on anything; see
