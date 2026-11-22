@@ -5,7 +5,13 @@
  * already had those failures — in a throwaway sibling checkout of the run's
  * `baseSha` — and excuses only on what that probe printed. `verify`'s recorded base
  * set is not replayed: a comparison should rest on evidence a later reader can
- * re-derive. The accepted cost is one extra full-tier run per red full tier. The accepted cost is one extra full-tier run per red full tier.
+ * re-derive. The accepted cost is one extra full-tier run per red full tier.
+ *
+ * The newest verify's project-test roster is consulted here as in `verify`'s own tiers
+ * (`arbitrateTierWithRoster`): a failing name the roster saw passing is refused an
+ * excuse. The comparison is of a raw failure line against a JUnit label, so it fires
+ * only for a runner whose failure line IS its JUnit label; pytest's, cargo's and go's
+ * are not, and for them the line rule decides alone, in `verify`'s tiers too.
  *
  * Neither half may rest on a run that observed nothing: the head side arrives
  * through {@link tierFailure}, which turns a kill, an overflow or an un-startable
@@ -13,10 +19,12 @@
  * equivalent guard.
  */
 
+import { failureLines } from "../work-driver-verify-failures.ts";
 import { frozenFromLog } from "./build.ts";
 import type { CiDeps } from "./ci-deps.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
+import { newestDecided } from "./state.ts";
 import { baselineExcuse } from "./verify-baseline-excuse.ts";
 import {
   baselineProbeWorktreePath,
@@ -24,6 +32,7 @@ import {
   tierExitCode,
   tierObserved,
 } from "./verify-baseline.ts";
+import { arbitrateTierWithRoster } from "./verify-roster.ts";
 
 /** The tier name the full tier's record is keyed by, in `ci`'s own outcome. */
 export const CI_FULL_TIER = "full";
@@ -78,6 +87,14 @@ export async function fullTierExcuse(opts: {
     exec: deps.exec,
     frozen: frozenFromLog(ctx.steps),
   });
+  const arbitration = arbitrateTierWithRoster({
+    roster: newestDecided(ctx.steps, "verify")?.outcome?.projectRoster,
+    headFailed: failureLines(stream),
+    baseFailed: probe.stream === undefined ? [] : failureLines(probe.stream),
+    baseSha: ctx.run.baseSha,
+    cmd: full,
+  });
+  if (arbitration.kind === "red") return undefined;
   const excuse = baselineExcuse({
     tierName: CI_FULL_TIER,
     cmd: full,

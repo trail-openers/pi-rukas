@@ -199,6 +199,8 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // gate asks only the verdict kinds it asked before.
   let roster: ProjectRosterRecord | undefined;
   let rostered: Executed | undefined;
+  // A roster red's record rides only on the step's red: the tiers below arbitrate on a green roster alone.
+  let redRoster: ProjectRosterRecord | undefined;
   if (leanProjectRosterEnabled()) {
     const built = await buildProjectRoster({
       exec: deps.exec,
@@ -214,10 +216,15 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     if (built.status === "red") {
       // Builder-fixable, and it names the tests: the round that can fix it is the point.
       rostered = { kind: "fail", reason: built.reason };
+      redRoster = built.record;
     } else {
       roster = built.record;
     }
   }
+
+  // Every red carries the roster the step observed, so a red the suite caused is never published as "no roster".
+  const onRed = roster ?? redRoster;
+  const redRosterField = onRed === undefined ? {} : { projectRoster: onRed };
 
   // 6. The project's own tiers, fast before full — the first red tier ends the loop, and its clause is
   // reported BESIDE a red frozen contract rather than behind it, with one re-run and one base probe behind a
@@ -387,6 +394,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
       kind: "red",
       reason: clipReason(red),
       ...(attribution === undefined ? {} : { red: attribution }),
+      ...redRosterField,
     };
   }
 
@@ -403,7 +411,8 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     commands,
     who: "a verify tier",
   });
-  if (recheck.kind === "red") return { kind: "red", reason: clipReason(recheck.reason) };
+  if (recheck.kind === "red")
+    return { kind: "red", reason: clipReason(recheck.reason), ...redRosterField };
 
   // Re-read every licence a SECOND time, after the command criteria. The pass above certified the tree clean
   // while the criteria had not run, so on its own it cannot license a green over a preservation run that
@@ -421,7 +430,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     when: "the command criteria",
   });
   if (afterCommands.kind === "red")
-    return { kind: "red", reason: clipReason(afterCommands.reason) };
+    return { kind: "red", reason: clipReason(afterCommands.reason), ...redRosterField };
 
   // A command the gate declined to run is not a verdict, but the reason is still worth carrying on a green.
   const note =

@@ -29,6 +29,7 @@ import {
   acceptanceComment,
   renderAcceptanceSection,
 } from "../src/lean/review-acceptance.ts";
+import { seatSections } from "../src/lean/review-roster.ts";
 import {
   CRITERIA,
   DERIVED_SPEC,
@@ -95,7 +96,7 @@ function section(head: string): string {
   );
   assert(outcome !== undefined && threw === undefined, `(b) the step passed (${String(outcome?.kind)})`);
   assert(
-    adversarialTables.length >= 1 && adversarialTables.every((t) => t === section(head)),
+    adversarialTables.length >= 1 && adversarialTables.every((t) => t === seatSections(section(head), ctx.steps)),
     `(b) the step handed the ADVERSARIAL gate the same table it handed the six lenses, on every pass (${String(adversarialTables.length)} passes) — the mutant: threading it to the lenses only, which leaves the gate that can block a run judging without it`,
   );
   assert(

@@ -63,10 +63,7 @@ const { assert, failures } = makeAssert();
   const r = await driveLean("handed-back", 10, gatesLog({}));
   const doc = leanResultDocument(r.run, 10).doc;
   const issues = (doc.issues ?? []) as Record<string, unknown>[];
-  assert(
-    issues[0]?.hasOwnProperty("gates"),
-    "the projected issue carries a `gates` key",
-  );
+  assert(issues[0]?.hasOwnProperty("gates"), "the projected issue carries a `gates` key");
   const json = JSON.stringify(doc);
   assert(
     !/"gates":\s*(null|undefined)/.test(json),
@@ -158,6 +155,9 @@ const { assert, failures } = makeAssert();
           tiersTotal: 2,
           criteria: ["AC1", "AC2"],
           criteriaTotal: 2,
+          projectTestsRan: null,
+          newlyFailing: null,
+          newlyFailingTotal: null,
         },
         // The run's gate then said what it says about a pipeline the run never ran:
         // `ci` follows `review`, so a run that ended at its gate has a `ci` verdict
@@ -170,6 +170,9 @@ const { assert, failures } = makeAssert();
           tiersTotal: null,
           criteria: null,
           criteriaTotal: null,
+          projectTestsRan: null,
+          newlyFailing: null,
+          newlyFailingTotal: null,
         },
       ]),
     `verify: the red names its tier and the criteria it failed for (${JSON.stringify(gatesOf(r.issue).verify)})`,
@@ -185,6 +188,9 @@ const { assert, failures } = makeAssert();
           tiersTotal: null,
           criteria: null,
           criteriaTotal: null,
+          projectTestsRan: null,
+          newlyFailing: null,
+          newlyFailingTotal: null,
         },
         {
           state: "ci",
@@ -193,6 +199,9 @@ const { assert, failures } = makeAssert();
           tiersTotal: null,
           criteria: null,
           criteriaTotal: null,
+          projectTestsRan: null,
+          newlyFailing: null,
+          newlyFailingTotal: null,
         },
       ]),
     `verify: a red that recorded no tier is null for it, never an empty list that reads as "checked none" (${JSON.stringify(gatesOf(bare.issue).verify)})`,
@@ -212,6 +221,9 @@ const { assert, failures } = makeAssert();
           tiersTotal: null,
           criteria: null,
           criteriaTotal: null,
+          projectTestsRan: null,
+          newlyFailing: null,
+          newlyFailingTotal: null,
         },
       ]),
     `verify: the verdict the run ended on is recorded with its kind (${JSON.stringify(gatesOf(green.issue).verify)})`,
@@ -229,6 +241,39 @@ const { assert, failures } = makeAssert();
       JSON.stringify(list[1]?.tiers) === JSON.stringify(["full"]) &&
       JSON.stringify(list[1]?.criteria) === JSON.stringify(["AC1"]),
     `ci: the pipeline's red is its own entry with its own tier, not folded into verify's (${JSON.stringify(list)})`,
+  );
+}
+
+// ─── (5b) the project-test roster on a verify entry: its head count and the head failures the
+// base did not also fail, read off the record. A roster red carries the record verify observed, so
+// the entry names the tests that turned it red; a green's is `[]` and 0 by construction — never the
+// `null` of a step that recorded no roster.
+for (const [kind, failed, newly] of [
+  ["red", ["t::old", "t::new"], ["t::new"]],
+  ["green", ["t::old"], []],
+] as const) {
+  const roster = {
+    baseSha: "b".repeat(40),
+    files: ["tests/t.py"],
+    passed: ["t::a"],
+    failed: [...failed],
+    baseFailed: ["t::old"],
+    total: 3,
+    baseTotal: 2,
+  };
+  const log = gatesLog({ verify: kind, pr: false, ci: null, review: null }).map((s) =>
+    s.state === "verify" && s.outcome !== undefined
+      ? { ...s, outcome: { ...s.outcome, projectRoster: roster } }
+      : s,
+  );
+  const r = await driveLean("handed-back", 10, log);
+  const v = (gatesOf(r.issue).verify as Record<string, unknown>[])[0];
+  assert(
+    v?.kind === kind &&
+      v?.projectTestsRan === 3 &&
+      JSON.stringify(v?.newlyFailing) === JSON.stringify(newly) &&
+      v?.newlyFailingTotal === newly.length,
+    `verify (${kind}): a roster publishes the tests it ran and its newly failing names (${JSON.stringify(v)})`,
   );
 }
 
@@ -367,9 +412,7 @@ const { assert, failures } = makeAssert();
   const ready = await driveLean("handed-back", 10, gatesLog({ review: "done", draft: false }));
   const mergeable = gatesOf(ready.issue).handback as Record<string, unknown>;
   assert(
-    ready.issue?.prState === "ready" &&
-      mergeable.head === HEAD &&
-      mergeable.verified === true,
+    ready.issue?.prState === "ready" && mergeable.head === HEAD && mergeable.verified === true,
     `handback: a run ready to merge never reads "no head" — the publish-side head answers where the step was silent (${JSON.stringify(mergeable)} / ${String(ready.issue?.prState)})`,
   );
   // The drift case, and the agreement it proves: the shipped head is not the head the

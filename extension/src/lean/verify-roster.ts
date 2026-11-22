@@ -64,7 +64,7 @@ import type { VerifyExec, VerifyRosterConfig } from "./verify-types.ts";
 /** The three answers to "what did the project's suite do?". `none` is never read as a colour. */
 type ProjectRosterOutcome =
   | { status: "roster"; record: ProjectRosterRecord }
-  | { status: "red"; reason: string }
+  | { status: "red"; reason: string; record?: ProjectRosterRecord }
   | { status: "none"; reason: string };
 
 /** Why a roster could not be built — prose for the hand-back, never a verdict. */
@@ -225,22 +225,41 @@ export async function buildProjectRoster(opts: {
       });
   if (!base.ran) return none(`at the base commit: ${base.reason}`);
 
+  // What the suite did on both sides, recorded BEFORE the red arms: a roster red carries it, so the
+  // tests that turned the run red are a record a host reads rather than the absence of a roster.
+  const recordedFiles = preexisting.slice(0, ROSTER_FILES_CAP);
+  const observed: ProjectRosterRecord = {
+    baseSha,
+    files: recordedFiles,
+    passed: dedupe(head.passed).slice(0, ROSTER_NAMES_CAP),
+    failed: headFailed.slice(0, ROSTER_NAMES_CAP),
+    baseFailed: dedupe(base.failed).slice(0, ROSTER_NAMES_CAP),
+    total: head.passed.length + head.failed.length,
+    baseTotal: base.passed.length + base.failed.length,
+    // Carried only when the cap actually cut the list: a record naming every file has none to disclose.
+    ...(preexisting.length > recordedFiles.length ? { fileCount: preexisting.length } : {}),
+    ...(skipBase ? { baseSkipped: true } : {}),
+  };
+  const redWith = (reason: string): ProjectRosterOutcome => ({
+    status: "red",
+    reason,
+    ...(projectRosterProblem(observed) === undefined ? { record: observed } : {}),
+  });
+
   // The base roster is the record of what was already broken. Anything failing at head that the
   // base shows PASSING is this run's regression, and the roster — not the line comparison — is
   // the arbiter (parent #2410 R4).
   const basePassed = new Set(base.passed);
   const newlyFailing = headFailed.filter((name) => basePassed.has(name));
-  if (newlyFailing.length > 0)
-    return { status: "red", reason: newlyFailingReason(newlyFailing, baseSha) };
+  if (newlyFailing.length > 0) return redWith(newlyFailingReason(newlyFailing, baseSha));
   // Failing on BOTH sides is the mainline's own and is not charged. A name neither passed nor
   // failed at base was not observed there, so the base cannot vouch for it and this run owns it.
   const baseSeen = new Set([...base.failed, ...base.passed]);
   const unexplained = headFailed.filter((name) => !baseSeen.has(name));
   if (unexplained.length > 0)
-    return {
-      status: "red",
-      reason: `project tests now fail that the base run never ran: ${clip(unexplained)} — the base roster cannot show these were already broken, so this run owns them`,
-    };
+    return redWith(
+      `project tests now fail that the base run never ran: ${clip(unexplained)} — the base roster cannot show these were already broken, so this run owns them`,
+    );
 
   const edited = await editedTestFiles(exec, wt, baseSha, preexisting);
   if (edited === undefined)
@@ -269,18 +288,8 @@ export async function buildProjectRoster(opts: {
       `the base versions of ${String(red.length)} edited test files fail against the head code, more than the ${String(PREEXISTING_NAMES_CAP)} a review may accept: ${clip(red)}`,
     );
 
-  const recordedFiles = preexisting.slice(0, ROSTER_FILES_CAP);
   const roster: ProjectRosterRecord = {
-    baseSha,
-    files: recordedFiles,
-    passed: dedupe(head.passed).slice(0, ROSTER_NAMES_CAP),
-    failed: headFailed.slice(0, ROSTER_NAMES_CAP),
-    baseFailed: dedupe(base.failed).slice(0, ROSTER_NAMES_CAP),
-    total: head.passed.length + head.failed.length,
-    baseTotal: base.passed.length + base.failed.length,
-    // Carried only when the cap actually cut the list: a record naming every file has none to disclose.
-    ...(preexisting.length > recordedFiles.length ? { fileCount: preexisting.length } : {}),
-    ...(skipBase ? { baseSkipped: true } : {}),
+    ...observed,
     // The edited files whose BASE version passed against the head code, and those whose base version
     // failed — the second list is what land needs the newest review to accept.
     ...(baseVersions.editedFiles.length === 0

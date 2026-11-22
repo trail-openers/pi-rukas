@@ -97,10 +97,9 @@ export interface AdversarialArgs {
    * did not touch is not mistaken for one the fix introduced.
    */
   blockingFindings?: string;
-  /** The executed acceptance table, rendered from the run's own step log by
-   * `review-acceptance.ts` and threaded to the reviewer's brief. Absent means the
-   * switch is off or the issue carries no parsable spec block, and the brief is the
-   * pre-feature render. */
+  /** The seat sections threaded to the reviewer's brief (`review-roster.ts`): the
+   * executed acceptance table when there is one, then the project-test roster
+   * summary, which every run carries. */
   acceptanceTable?: string;
   headless: boolean;
   /** The step's armed budget: the child's bound, its abort, its progress hook. */
@@ -140,8 +139,8 @@ export interface LensArgs {
   /** The run's derived contract, for the same reason `AdversarialArgs` carries it:
    * a lens briefed on criteria it can read is briefed on the contract the run ran. */
   derivedSpec?: DerivedSpec;
-  /** The executed acceptance table, appended to this round's `context` by
-   * `lensContext`. Its own argument rather than folded into `context` at the call
+  /** The seat sections (the acceptance table when there is one, then the roster
+   * summary), appended to this round's `context` by `lensContext`. Its own argument rather than folded into `context` at the call
    * site because both passes carry it and there is exactly one place that composes
    * the string. */
   acceptanceTable?: string;

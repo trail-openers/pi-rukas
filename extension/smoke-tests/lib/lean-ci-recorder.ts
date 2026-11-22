@@ -37,7 +37,10 @@ import type { CiDeps } from "../../src/lean/ci-deps.ts";
 import { ciOutcome } from "../../src/lean/ci.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
 import type { Budget } from "../../src/lean/config.ts";
-import type { PreexistingTierRecord } from "../../src/lean/state-outcome-maps.ts";
+import type {
+  PreexistingTierRecord,
+  ProjectRosterRecord,
+} from "../../src/lean/state-outcome-maps.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import type { GlCase } from "./lean-ci-gl.ts";
@@ -163,6 +166,8 @@ export interface CiCase {
    * run still has to load and still has to buy a full probe.
    */
   reuseRecord?: PreexistingTierRecord | Record<string, unknown>;
+  /** A project-test roster on the newest decided verify, which `ci`'s excuse must consult. */
+  verifyRoster?: ProjectRosterRecord;
   /** What the base probe's full-tier run printed, for the re-probe cases. */
   baseTierOutput?: string;
   /** The run's frozen contract, committed at the base AND the run's head and recorded
@@ -299,6 +304,9 @@ export async function run(c: CiCase): Promise<Ran> {
       v.outcome = { ...v.outcome, preexistingFailures: carried };
     }
   }
+  const verify = f.ctx.steps.find((s) => s.state === "verify");
+  if (c.verifyRoster !== undefined && verify?.outcome !== undefined)
+    verify.outcome = { ...verify.outcome, projectRoster: c.verifyRoster };
   const marker = c.full ?? c.verifyCmd ?? "";
   const forgeAxis = c.forge ?? "github";
   const gitlab = forgeAxis === "gitlab" || forgeAxis === "self-hosted";

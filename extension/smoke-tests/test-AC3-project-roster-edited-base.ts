@@ -24,7 +24,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { HEADLESS_INPUTS } from "../src/headless/inputs.ts";
-import type { ProjectRosterRecord } from "../src/lean/state-outcome-maps.ts";
+import { type ProjectRosterRecord, rosterNewlyFailing } from "../src/lean/state-outcome-maps.ts";
 import type { LeanRun } from "../src/lean/state.ts";
 import { buildDriverKnobMatcher } from "../src/work-driver-verify-cmd.ts";
 import { ROOTS, runVerify } from "./lib/lean-verify-fixture.ts";
@@ -163,9 +163,14 @@ function baseScript(red: boolean): string {
     said.includes(NAME),
     `(edited + newly failing) the refusal names the test that was green at base (${said.slice(0, 160)})`,
   );
+  // The red carries what the suite did — the newly failing name for the host — and vouches for no
+  // edited file; land never reads it, since it licenses only a green.
+  const roster = r.outcome?.projectRoster;
   assert(
-    r.outcome?.projectRoster === undefined,
-    "(edited + newly failing) the red carries no roster, so land has nothing to license itself on",
+    roster !== undefined &&
+      JSON.stringify(rosterNewlyFailing(roster)) === JSON.stringify([NAME]) &&
+      roster.editedFiles === undefined,
+    `(edited + newly failing) the red's roster names the newly failing test and no edited file (${JSON.stringify(roster)})`,
   );
 }
 

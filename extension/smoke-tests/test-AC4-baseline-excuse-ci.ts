@@ -220,6 +220,34 @@ const PROBE = {
   );
 }
 
+// ------------------------------------------------------------ (roster-passed)
+{
+  // The base prints the same lines, so the line rule alone excuses — but verify's roster saw the
+  // first name PASS, and the roster outranks a line match in ci as it does in verify. The roster label
+  // here IS the failure line: the only shape the check matches today (a pytest JUnit label such as
+  // `tests.x_test::test_a` never equals its `FAILED …` line, so for pytest the line rule decides alone).
+  const r = await run({
+    full: FULL,
+    ...tierRed,
+    baseTierOutput: TIER_STREAM,
+    ...PROBE,
+    verifyRoster: {
+      baseSha: "b".repeat(40),
+      files: ["tests/x_test.py"],
+      passed: [NAMES[0] as string],
+      failed: [],
+      baseFailed: [],
+      total: 1,
+      baseTotal: 0,
+      baseSkipped: true,
+    },
+  });
+  assert(
+    r.outcome?.kind === "red" && rec(r) === undefined,
+    `(roster-passed) a failing name the verify roster saw passing is not excused (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`,
+  );
+}
+
 cleanUp();
 console.log(`\nexit ${String(exit)}`);
 process.exit(exit);
