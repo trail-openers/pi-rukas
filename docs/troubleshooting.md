@@ -2354,7 +2354,7 @@ A leftover with no uncommitted work and no unpushed commits is still removed aut
 | A merge hold (`awaiting-human-merge`) | Build artifacts purged, trees kept |
 | A signal interrupt, a session quit, a hard kill | Kept; `/work N` resumes in them |
 | A direct abort (a throw at the handoff step itself, an unknown step) | Kept, with no teardown |
-| A merge | Removed (the `merged` step) |
+| A merge | Removed — every tree the cycle owns: the workstream trees, the orphaned owner tree a fence merge left unrecorded, and the integrate tree (`merged` step) |
 | A PR merged by someone else | Kept |
 
 A kept tree is not reclaimed by the next start of the same issue: the launch sweep never touches the launching issue's own trees. `/work N --restart` hands them to the branch step's residue pass, which keeps unpushed commits on the same stop-salvage ref and leaves a tree on disk when it cannot write that ref. Another issue's launch sweep only purges them, unless their work is provably on the remote.
