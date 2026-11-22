@@ -11,6 +11,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { failureLines } from "../work-driver-verify-failures.ts";
+import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
 import type { VerifyExec, VerifyRosterConfig } from "./verify-types.ts";
 
 const JUNIT_REPORT_FILE = ".lean-roster-report.xml";
@@ -70,6 +71,24 @@ export function deriveSuiteTemplate(test: string): string {
   const at = words.indexOf("{file}");
   const kept = at < 0 ? words : [...words.slice(0, at), ...words.slice(at + 1)];
   return `${kept.join(" ")} --junitxml={report} {dir}`;
+}
+
+/**
+ * Why a run cannot start with this roster config, or undefined when it can.
+ *
+ * The derived command hands `verify.test` pytest's `--junitxml={report}`, and the roster learns
+ * names ONLY from that report, so a runner that is not pytest writes none and every verify hands
+ * back after build has spent its budget. "Is pytest" is one mechanical rule, never a reading of
+ * the command: some argv word whose basename is `pytest` or `py.test` (`python -m pytest` and
+ * `uv run pytest` carry one). A wrapper that forwards to pytest without naming it is refused
+ * too, and spells the same command as its `verify.roster`.
+ */
+export function rosterStartProblem(config: VerifyRosterConfig): string | undefined {
+  if (!leanProjectRosterEnabled() || config.roster !== undefined || config.test === undefined)
+    return undefined;
+  if (config.test.split(/\s+/).some((word) => /^py\.?test$/.test(path.basename(word))))
+    return undefined;
+  return "verify.roster is unset and verify.test is not pytest, so the derived --junitxml={report} writes no JUnit report: set verify.roster to write one to {report}, or PI_ENSEMBLE_LEAN_PROJECT_ROSTER=0 for a project with no suite to roster";
 }
 
 /**
