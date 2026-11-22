@@ -47,6 +47,7 @@
 import { prChecksCmd, prViewCmd } from "./forge-commands.ts";
 import { ForgeFieldError, mapGhChecks, mapGhPr } from "./forge-mapping.ts";
 import type { MergeReadiness, MergeReadinessResult, NormalizedCICheck } from "./forge-types.ts";
+import { ghJsonUnsupportedReason } from "./gh-json-unsupported.ts";
 
 /**
  * The `detailed_merge_status` → readiness mapping. Exported for the suite that
@@ -367,19 +368,20 @@ async function safeGhChecks(
   prNumber: number,
   maxBuffer: number,
 ): Promise<SafeChecks> {
+  const cmd = prChecksCmd("github", prNumber);
+  const opts = { cwd: repoRoot, maxBuffer, timeout: READINESS_TIMEOUT_MS };
   try {
-    const { stdout } = await execFn(prChecksCmd("github", prNumber), {
-      cwd: repoRoot,
-      maxBuffer,
-      timeout: READINESS_TIMEOUT_MS,
-    });
+    const { stdout } = await execFn(cmd, opts);
     const parsed: unknown = JSON.parse(stdout || "[]");
     if (!Array.isArray(parsed)) return { ok: false, reason: "checks rows not an array" };
     return { ok: true, checks: mapGhChecks(parsed) };
   } catch (err) {
+    const unsupported = await ghJsonUnsupportedReason(err, cmd, (c) =>
+      execFn(c, opts).then((r) => r.stdout),
+    );
     return {
       ok: false,
-      reason: readinessErrorReason(err, "could not read PR checks"),
+      reason: unsupported ?? readinessErrorReason(err, "could not read PR checks"),
     };
   }
 }

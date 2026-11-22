@@ -3151,6 +3151,8 @@ gh pr view <pr> --web    # review the PR and the checks
 
 Then remove the cause: add or repair the grant in `AGENTS.md` (see above), re-run with `/work <issue> --merge`, or resolve whatever the `gh` evidence is failing.
 
+A refusal reading **`gh <version> does not accept --json on` `gh pr checks <n> --json name,state,bucket`** means the installed `gh` predates `--json` on `pr checks` (Ubuntu's 2.46.0 is one). Every merge, readiness read and lean `ci` step on that host refuses as tooling, never as a CI verdict: the table `gh pr checks` prints without `--json` carries no completeness signal, so it is not graded. Install a `gh` whose `gh pr checks --help` lists `--json`, then re-run.
+
 At the `ci` step a weaker version of gate 2 applies: **narration cannot promote a status, but executed evidence can demote one.** An ops agent claiming `ci-status: success` gets checked against `gh`; if `gh` disagrees, it becomes a failure. An unreadable `gh` there leaves the claim standing — burning the retry budget on a run that genuinely passed is worse, and the merge gate is the one that has to be right.
 
 Escape hatch: `PI_ENSEMBLE_MERGE_AUTHORITY=0` restores the previous behaviour, where the driver merged whenever an ops child's reply contained the substring `ci-status: success`.

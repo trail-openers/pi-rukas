@@ -19,17 +19,20 @@
  * reports green. That is a gate that cannot fail, which is the exact class of
  * defect this project has been removing.
  *
- * The `--json` fields requested here are pinned to gh 2.98.0 by
- * `smoke-tests/test-gh-argv.ts`; the per-check required/optional flag is not
- * among them (`isRequired` is not a field `gh pr checks` supports — #745),
- * so the per-check rows only supply the failing/pending/skipped names, while
- * the pass/not-pass verdict is `mergeStateStatus`: it already encodes the
- * repo's own branch-protection rules.
+ * The `--json` argv is pinned by `smoke-tests/test-gh-argv.ts`; the per-check
+ * required/optional flag is not among its fields (`isRequired` is not a field
+ * `gh pr checks` supports — #745), so the per-check rows only supply the
+ * failing/pending/skipped names, while the pass/not-pass verdict is
+ * `mergeStateStatus`: it already encodes the repo's own branch-protection rules.
+ * A gh that has no `--json` on `pr checks` is not read around: its rejection
+ * becomes a tooling refusal naming the gh version and the failing command
+ * (`gh-json-unsupported.ts`), never a graded table.
  */
 
 import { mergeEvidenceViewCmd, prChecksCmd } from "./forge-commands.ts";
 import type { ForgeType } from "./forge-detect.ts";
 import { detectForge } from "./forge-detect.ts";
+import { ghJsonUnsupportedReason } from "./gh-json-unsupported.ts";
 import { isFullCommitSha } from "./review-head-sha.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import { gatherGitlabMergeEvidence } from "./work-driver-merge-evidence-gl.ts";
@@ -266,8 +269,11 @@ export async function gatherMergeEvidence(
   // output to see what actually came back (a partial/HTML error page, a gh
   // version that changed its output shape).
   let malformedStdout = "";
+  // Set when the gh that answered has no `--json` on `pr checks`: the refusal names it.
+  let unsupported: string | undefined;
+  const checksCmd = prChecksCmd("github", prNumber);
   try {
-    const { stdout } = await execFn(prChecksCmd("github", prNumber), {
+    const { stdout } = await execFn(checksCmd, {
       cwd: repoRoot,
       maxBuffer: 512 * 1024,
     });
@@ -290,6 +296,9 @@ export async function gatherMergeEvidence(
     // the operator needs to see, not "fix your tooling").
     if (err instanceof SyntaxError && !malformedStdout)
       malformedStdout = "(output was not valid JSON)";
+    unsupported = await ghJsonUnsupportedReason(err, checksCmd, (c) =>
+      execFn(c, { cwd: repoRoot, maxBuffer: 64 * 1024 }).then((r) => r.stdout),
+    );
     rows = [];
   }
 
@@ -397,8 +406,9 @@ export async function gatherMergeEvidence(
     return {
       ok: false,
       failureKind: "tooling",
-      reason:
-        "the gh pr checks invocation failed before returning check data — this is a tooling failure, not a CI verdict (no check data was read). Fix the gh setup, then re-run.",
+      reason: unsupported
+        ? `${unsupported} — this is a tooling failure, not a CI verdict (no check data was read)`
+        : "the gh pr checks invocation failed before returning check data — this is a tooling failure, not a CI verdict (no check data was read). Fix the gh setup, then re-run.",
       mergeStateStatus: state.mergeStateStatus,
       failing: [],
       inconclusive: [],
