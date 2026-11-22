@@ -39,6 +39,7 @@ import { reviewOutcome } from "./review.ts";
 import { type LeanSeed, leanSeed } from "./seed.ts";
 import { type DeriveDeps, type DeriveDispatch, deriveDeps, traceDerive } from "./spec-derive.ts";
 import { specFor } from "./spec-for.ts";
+import type { SpecIntake } from "./spec-intake-switch.ts";
 import { contractOf } from "./spec-intake.ts";
 import { type PiSpec, parsePiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
@@ -75,6 +76,9 @@ interface ReadyFacts {
    */
   derived?: DerivedSpec;
 }
+
+/** What one run is started with besides its issue: its trust mode and its spec-intake override. */
+export type LeanRunOpts = { headless?: boolean; specIntake?: SpecIntake };
 
 /**
  * What `ready` needs from the outside world, all of it injectable.
@@ -141,7 +145,7 @@ export function readyDeps(headless: boolean): ReadyDeps {
 export async function readyOutcome(
   repoRoot: string,
   issue: number,
-  base: Pick<LeanSeed, "baseSha" | "why" | "infra">,
+  base: Pick<LeanSeed, "baseSha" | "why" | "infra"> & { specIntake?: SpecIntake },
   deps: ReadyDeps = readyDeps(false),
 ): Promise<{ kind: "ok" | "fail" | "infra"; facts: ReadyFacts }> {
   const d = deps;
@@ -319,7 +323,7 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
 export function phase1Handlers(
   repoRoot: string,
   issue: number,
-  opts: { headless?: boolean; seedWhy?: string; seedInfra?: boolean } = {},
+  opts: LeanRunOpts & { seedWhy?: string; seedInfra?: boolean } = {},
   deps: Partial<ReadyDeps> = {},
 ): LeanHandlers {
   const headless = opts.headless === true;
@@ -346,6 +350,7 @@ export function phase1Handlers(
         baseSha: ctx.run.baseSha,
         ...(seedWhy ? { why: seedWhy } : {}),
         ...(seedInfra ? { infra: true } : {}),
+        ...(opts.specIntake ? { specIntake: opts.specIntake } : {}),
       },
       d,
     );
@@ -426,7 +431,7 @@ function summarize(result: RunLeanResult, issue: number): string {
 export async function runWorkLean(
   repoRoot: string,
   issue: number,
-  opts: { headless?: boolean; timeoutMs?: number } = {},
+  opts: LeanRunOpts & { timeoutMs?: number } = {},
 ): Promise<{ summary: string; result: RunLeanResult }> {
   const seed = await leanSeed(repoRoot);
   const result = await runLean({
@@ -451,7 +456,7 @@ export async function runWorkLean(
 export function handlersFor(
   repoRoot: string,
   issue: number,
-  opts: { headless?: boolean },
+  opts: LeanRunOpts,
   seed: LeanSeed,
 ): LeanHandlers {
   return phase1Handlers(repoRoot, issue, {

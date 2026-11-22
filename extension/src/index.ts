@@ -14,6 +14,7 @@ import { registerDispatchSteerTool } from "./dispatch-steer.ts";
 import { registerDispatchTools } from "./dispatch.ts";
 import { armExitCause } from "./exit-cause.ts";
 import { scrubGitLocation } from "./git-env.ts";
+import { registerLeanTool } from "./lean-tool.ts";
 import { registerLensReviewTool } from "./lens-review-tool.ts";
 import * as lifecycle from "./lifecycle-events.ts";
 import { loadOverrides } from "./model-config.ts";
@@ -103,6 +104,8 @@ export default async function (pi: ExtensionAPI) {
   // /research prose body now instructs PM to call this tool. Judgement
   // (angle choice, the post-artifact conversation) stays with PM.
   registerResearchTool(pi);
+  // The lean engine's agent-callable start, beside the other compiled drivers' tools.
+  registerLeanTool(pi);
   registerRunsCommand(pi);
   registerModelPicker(pi);
   registerAsyncJobsLifecycle(pi);

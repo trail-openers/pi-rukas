@@ -46,6 +46,7 @@ function makeStub(): ExtensionAPI & {
     { name: "dispatch_lens_review", description: "Run six-pass lens review" },
     { name: "start_work_driver", description: "Start the compiled /work driver" },
     { name: "start_plan_driver", description: "Start the compiled /plan driver" },
+    { name: "start_lean_driver", description: "Start the lean /work-lean engine" },
     { name: "load_workflow_doctrine", description: "Load workflow doctrine text" },
     { name: "agents_md_run", description: "Manage AGENTS.md" },
     // Companion tools registered in child processes — still in the stub
@@ -126,6 +127,7 @@ function makeStub(): ExtensionAPI & {
     "dispatch_lens_review",
     "start_work_driver",
     "start_plan_driver",
+    "start_lean_driver",
     "load_workflow_doctrine",
     "agents_md_run",
     "report_finding",

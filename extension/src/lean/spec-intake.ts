@@ -53,7 +53,7 @@ export async function contractOf(
   repoRoot: string,
   issue: number,
   body: string,
-  base: Pick<LeanSeed, "baseSha">,
+  base: Pick<LeanSeed, "baseSha"> & { specIntake?: SpecIntake },
   derive?: DeriveDeps,
   loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig> = defaultLoadConfig,
 ): Promise<Contract> {
@@ -80,7 +80,7 @@ export async function contractOf(
   }
   let intake: SpecIntake;
   try {
-    intake = resolveSpecIntake(config);
+    intake = resolveSpecIntake(config, base.specIntake);
   } catch (err) {
     if (!(err instanceof SpecIntakeError)) throw err;
     // The repo's defect, not infrastructure: a knob set to a value it cannot mean is

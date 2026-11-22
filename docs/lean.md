@@ -464,6 +464,20 @@ the deadline from the environment, exactly as the headless one does). It seeds t
 run with the mainline sha, drives it to a terminal state and notifies one summary
 line: `work-lean #<issue>: handed-back (exit 10) — <reason>`.
 
+**From an agent.** `start_lean_driver` is the tool an orchestrating agent calls to
+start the same engine `/work-lean` runs: it takes `issue`, optional `specIntake`
+(`require` or `derive`) and optional `timeoutMinutes`, which mean what
+`--spec-intake` and `--timeout` mean to the headless verb, and it launches the run
+in the background. The outcome arrives in the calling session as one
+`[ensemble:async]` steer naming the issue and one of `landed`, `handed-back`,
+`not-ready` or `crashed`. `specIntake` applies to that run only and never writes
+`PI_ENSEMBLE_LEAN_SPEC_INTAKE`. The run's trust mode is the session's, so it is
+gated exactly as `/work-lean` from that session. The tool refuses an issue whose
+lock (`.pi/lean-state/<issue>.json.lock`) is held, and says whether the holder is a run
+it started or one it did not; for an issue whose state file already records a
+finished run it replies with that outcome and starts nothing. It has no merge
+parameter: `land` still reads `.pi/work.json` `autoMerge` at the run's base.
+
 **Headless.** `pi-rukas-headless work-lean <issue> [--timeout <minutes>] [--json]`
 — exactly one positional issue number; `--json` is accepted and changes nothing,
 as with every other subcommand. Stderr carries only NDJSON v1 log lines; stdout
