@@ -1,21 +1,18 @@
 #!/usr/bin/env bun
 /**
- * #2428 — a roster run with NO exit status is not a run that exited 0.
+ * #2428 / #2547 — what one roster run's exit status means, read through the executor's own contract.
  *
- * `runProjectSuite` asks observation first (kill, signal, overflow, could-not-start) and the exit
- * code second, because an absent status read as "exited 0" hands a green to a suite nobody watched.
- * The residue is the case the observation arms do NOT catch: an executor that RESOLVES — no rejection,
- * no kill flag, no signal — and simply carries no numeric `code`. That is what a wrapper that swallowed
- * the status looks like, and the roster's own caller would otherwise record it as a passing run of the
- * project's suite.
- *
- * This is asserted against `runProjectSuite` directly rather than through a whole verify run, because
- * the claim is about what one run's answer means and the fixture would have to imitate an executor
- * shape the real step never produces.
+ * `execp` (the production executor, here with `killGroup`) RESOLVES only when the child exited 0 —
+ * and then carries no `code` — and REJECTS otherwise, with `code`/`signal`/`killed` and the streams on
+ * the error. So a resolution is exit 0, a rejection is observed through its error, and only a rejection
+ * that carries no numeric exit is "no exit status". The real executor is driven here for a passing and
+ * a failing roster: a fake that resolved `{ code: 0 }` (a shape `execp` never returns) is what let a
+ * roster that could never pass in production look green in this suite.
  */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { execp } from "../src/exec.ts";
 import { ROSTER_REPORT_FILE, runProjectSuite } from "../src/lean/verify-roster-command.ts";
 import type { VerifyExec } from "../src/lean/verify-types.ts";
 
@@ -30,65 +27,82 @@ function assert(cond: boolean, msg: string): void {
 }
 
 const tree = mkdtempSync(path.join(tmpdir(), "roster-exit-"));
-/** A report that names tests, so the ONLY thing wrong with the run is its missing status. */
-writeFileSync(
-  path.join(tree, ROSTER_REPORT_FILE),
-  '<?xml version="1.0" encoding="utf-8"?>\n<testsuite tests="1" failures="0">\n  <testcase name="passes"/>\n</testsuite>\n',
-);
+const report = path.join(tree, ROSTER_REPORT_FILE);
+const PASSING =
+  '<?xml version="1.0" encoding="utf-8"?>\n<testsuite tests="1" failures="0">\n  <testcase name="passes"/>\n</testsuite>\n';
+const FAILING =
+  '<?xml version="1.0" encoding="utf-8"?>\n<testsuite tests="1" failures="1">\n  <testcase name="breaks"><failure message="x"/></testcase>\n</testsuite>\n';
 
-/** An executor that resolves with the shape the case declares. */
-const execWith = (shape: Record<string, unknown>): VerifyExec =>
-  (() => Promise.resolve(shape as never)) as unknown as VerifyExec;
+const run = (exec: VerifyExec, bin: string, args: string[]) =>
+  runProjectSuite(exec, { cwd: tree, bin, args, report, timeoutMs: 10_000, reportCwd: tree });
 
-const ask = (shape: Record<string, unknown>) =>
-  runProjectSuite(execWith(shape), {
-    cwd: tree,
-    bin: "pytest",
-    args: ["--junitxml", ROSTER_REPORT_FILE, "."],
-    report: path.join(tree, ROSTER_REPORT_FILE),
-    timeoutMs: 5_000,
-    reportCwd: tree,
-  });
+/** The production executor, exactly as the verify step builds it. */
+const real = ((cmd: string, opts?: object) => execp(cmd, opts ?? {})) as unknown as VerifyExec;
+/** A runner script that writes `xml` to the report and exits with `code`. */
+const script = (xml: string, code: number) => {
+  const file = path.join(tree, `runner-${code}.sh`);
+  writeFileSync(file, `#!/bin/sh\ncat > "$1" <<'XML'\n${xml}XML\nexit ${code}\n`);
+  return file;
+};
 
 {
-  // The defect: an exec that resolved with no `code`. Read as exit 0 it is a roster of one passing
-  // test and, through the roster, a green verify — for a run whose status nobody ever read.
-  const r = await ask({ stdout: "", stderr: "" });
+  // The defect: a roster that passes, through the real executor, must produce its roster.
+  const r = await run(real, "sh", [script(PASSING, 0), report]);
   assert(
-    r.ran === false,
-    `(no code) a roster run that resolved with no exit status did NOT run (got ${JSON.stringify(r).slice(0, 120)})`,
-  );
-  assert(
-    r.ran === false && /exit status/i.test(r.reason),
-    `(no code) the answer says the exit status is what is missing (${r.ran === false ? r.reason.slice(0, 120) : ""})`,
+    r.ran === true && JSON.stringify(r.passed) === JSON.stringify(["passes"]),
+    `(real exec, exit 0) a passing roster produces its roster (${JSON.stringify(r).slice(0, 140)})`,
   );
 }
 
 {
-  // A non-integer code is no more an exit than an absent one: `null`, a string and NaN are the shapes
-  // a wrapper that lost the status leaves behind, and each would otherwise be compared to zero.
+  // And a roster that fails, through the real executor, produces a roster naming the failure.
+  const r = await run(real, "sh", [script(FAILING, 1), report]);
+  assert(
+    r.ran === true && JSON.stringify(r.failed) === JSON.stringify(["breaks"]),
+    `(real exec, exit 1) a failing roster produces its roster with the failure (${JSON.stringify(r).slice(0, 140)})`,
+  );
+}
+
+writeFileSync(report, PASSING);
+const resolving = (shape: Record<string, unknown>): VerifyExec =>
+  (() => Promise.resolve(shape as never)) as unknown as VerifyExec;
+const rejecting = (fields: Record<string, unknown>): VerifyExec =>
+  (() => Promise.reject(Object.assign(new Error("failed"), fields))) as unknown as VerifyExec;
+
+{
+  // A resolution with no code is exit 0 — the executor's contract.
+  const r = await run(resolving({ stdout: "", stderr: "" }), "pytest", ["."]);
+  assert(
+    r.ran === true,
+    `(resolved, no code) is a run that exited 0 (${JSON.stringify(r).slice(0, 120)})`,
+  );
+}
+
+{
+  // A rejection that carries no numeric exit is the residue: "did not run", never "passed".
+  for (const [label, bad] of [
+    ["absent", undefined],
+    ["null", null],
+    ["NaN", Number.NaN],
+  ] as const) {
+    const r = await run(rejecting({ code: bad, stdout: "", stderr: "" }), "pytest", ["."]);
+    assert(
+      r.ran === false && /exit status/i.test(r.reason),
+      `(rejected, code ${label}) is refused as no exit status (${r.ran === false ? r.reason.slice(0, 100) : "ran"})`,
+    );
+  }
+  // A resolution whose code is present but not an integer is refused too, never compared to zero.
   for (const [label, bad] of [
     ["null", null],
     ["string 0", "0"],
     ["NaN", Number.NaN],
-    ["absent", undefined],
   ] as const) {
-    const r = await ask({ code: bad, stdout: "", stderr: "" });
+    const r = await run(resolving({ code: bad, stdout: "", stderr: "" }), "pytest", ["."]);
     assert(
       r.ran === false,
-      `(bad code ${label}) is refused rather than compared to zero (${JSON.stringify(r).slice(0, 100)})`,
+      `(resolved, code ${label}) is refused (${JSON.stringify(r).slice(0, 100)})`,
     );
   }
-}
-
-{
-  // The control, so the two above cannot pass on a suite that simply never reports: a real numeric
-  // exit still produces the roster, and its names come from the report.
-  const green = await ask({ code: 0, stdout: "", stderr: "" });
-  assert(
-    green.ran === true && JSON.stringify(green.passed) === JSON.stringify(["passes"]),
-    `(control) a run that DID report exit 0 still produces its roster (${JSON.stringify(green).slice(0, 120)})`,
-  );
 }
 
 rmSync(tree, { recursive: true, force: true });
