@@ -14,7 +14,9 @@
  *     `command`, or whose block has no `id`, opens nothing).
  *   - CLOSE: the `toolResult` message whose `toolCallId` matches. An
  *     `isError` result closes too — the classifier keys on the OPENING
- *     command, never on the result.
+ *     command, never on the result. A closed span counts the `durationMs`
+ *     Pi recorded on that message when it sends one, else the wall time
+ *     between the two signals.
  *
  * Spans are tracked per toolCallId and live on the tracker (the tracker
  * lives on the Watch and dies with it via `dispose`), so a killed child
@@ -23,6 +25,7 @@
  */
 
 import type { PiContentBlock, PiJsonEvent } from "./pi-event-shapes.ts";
+import { recordedDurationMs } from "./progress.ts";
 
 /**
  * The canonical CI-watch shapes the ops recipes use (AGENTS.md / the ship
@@ -105,7 +108,7 @@ export interface CiWaitSpanTracker {
   /** OPEN signal: one assistant `message_end` content block list. */
   observeBlocks(blocks: PiContentBlock[]): void;
   /** CLOSE signal: one `toolResult` message (an isError result closes too). */
-  observeToolResult(toolCallId: unknown): void;
+  observeToolResult(toolCallId: unknown, durationMs?: unknown): void;
   /** Excluded wall time in ms (live while spans are open). */
   excludedMs: (now: number) => number;
   /** The caller's clock; used for open-span accounting. */
@@ -141,12 +144,12 @@ export function createCiWaitSpanTracker(now: () => number): CiWaitSpanTracker {
         if (!spans.has(id)) spans.set(id, { openAt: now(), closedTotal: 0 });
       }
     },
-    observeToolResult(toolCallId: unknown): void {
+    observeToolResult(toolCallId: unknown, durationMs?: unknown): void {
       if (typeof toolCallId !== "string" || toolCallId === "") return;
       const span = spans.get(toolCallId);
       if (!span) return;
       if (span.openAt === undefined) return; // already closed; idempotent.
-      span.closedTotal += Math.max(0, now() - span.openAt);
+      span.closedTotal += recordedDurationMs(durationMs) ?? Math.max(0, now() - span.openAt);
       span.openAt = undefined;
     },
     excludedMs: (at: number): number => {
@@ -179,12 +182,11 @@ export function installRawEventSeam(
   ciWait: CiWaitSpanTracker,
 ): (event: PiJsonEvent) => void {
   return (event) => {
-    const msg = (
-      event as { message?: { role?: string; content?: PiContentBlock[]; toolCallId?: string } }
-    ).message;
+    const msg = event.message;
     if (msg && msg.role === "assistant" && Array.isArray(msg.content))
       ciWait.observeBlocks(msg.content);
-    else if (msg && msg.role === "toolResult") ciWait.observeToolResult(msg.toolCallId);
+    else if (msg && msg.role === "toolResult")
+      ciWait.observeToolResult(msg.toolCallId, msg.durationMs);
     userFn(event);
   };
 }

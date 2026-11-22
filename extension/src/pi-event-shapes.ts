@@ -240,6 +240,8 @@ export interface PiMessage {
    * cannot read as no echo at all.
    */
   details?: unknown;
+  /** Pi (>= 1.1.0) stamps this on `toolResult` messages; read through `recordedDurationMs`. */
+  durationMs?: unknown;
   content?: PiContentBlock[];
   toolResults?: unknown[];
   usage?: PiUsage;
@@ -297,6 +299,11 @@ export interface PiJsonEvent {
   result?: unknown;
   /** Present on `tool_execution_end` — true when the tool reported an error. */
   isError?: boolean;
+  /**
+   * Pi (>= 1.1.0) stamps this on `tool_execution_end`: the ms the tool's
+   * execution took. Read through `recordedDurationMs` (progress.ts).
+   */
+  durationMs?: unknown;
 }
 
 export interface ExtensionPackageJson {

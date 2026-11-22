@@ -248,4 +248,25 @@ const result = (id: string): PiJsonEvent => ({
   assert(p.inFlightCalls().length === 0, "13 completed turns leave no call in flight");
 }
 
+// 9 — Pi's recorded durationMs on tool_execution_end is a completed call's
+// length; a value that is not a usable ms count falls back to wall-clock.
+{
+  const p = fresh();
+  p.observe(assistantEnd([toolCall("d", "make"), toolCall("w", "make all")]));
+  clock += 60_000;
+  p.observe({ ...end("d"), durationMs: 5_000 });
+  p.observe({ ...end("w"), durationMs: "5000" });
+  const d = p.longestCompletedMs(commandFingerprint("bash", bash("make")));
+  const w = p.longestCompletedMs(commandFingerprint("bash", bash("make all")));
+  assert(d === 5_000, `recorded durationMs is preferred over wall-clock (got ${d})`);
+  assert(w === 60_000, `a non-number durationMs falls back to wall-clock (got ${w})`);
+  const q = fresh();
+  q.observe(assistantEnd([toolCall("m", "make")]));
+  clock += 60_000;
+  const r = result("m");
+  q.observe({ ...r, message: { ...r.message, durationMs: 7_000 } });
+  const m = q.longestCompletedMs(commandFingerprint("bash", bash("make")));
+  assert(m === 7_000, `a toolResult closing first carries the recorded duration (got ${m})`);
+}
+
 process.exit(exit);

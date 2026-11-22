@@ -112,6 +112,19 @@ export function budgetSteerText(used: number, budget: number): string {
   return `you have consumed ${formatTokens(used)} tokens, exceeding your budget of ${formatTokens(budget)}. Stop what you are doing, finish the current step, and write your status (done / remaining / current state) to your final report now. Do not start new work.`;
 }
 
+/**
+ * The tool duration Pi recorded itself (`durationMs` on `tool_execution_end`
+ * and on the `toolResult` message), or undefined when this Pi does not send
+ * one or the value is not a usable count of ms. Preferred over parent
+ * wall-clock because it is the child's own monotonic measurement of the
+ * call, untouched by how late the parent reads the line.
+ */
+export function recordedDurationMs(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.round(value)
+    : undefined;
+}
+
 export function formatElapsed(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;

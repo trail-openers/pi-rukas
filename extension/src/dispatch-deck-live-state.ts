@@ -41,7 +41,8 @@ import { trace } from "./trace.ts";
 export type LiveEvent =
   | { kind: "text"; text: string }
   | { kind: "toolCall"; name: string; args: string }
-  | { kind: "toolResult"; name: string; text: string; isError: boolean }
+  /** `durationMs` is the call's duration as Pi recorded it; absent when Pi sent none. */
+  | { kind: "toolResult"; name: string; text: string; isError: boolean; durationMs?: number }
   | { kind: "thinking"; text: string }
   /**
    * #915 — an operator steer sent from the agent view's input line.
