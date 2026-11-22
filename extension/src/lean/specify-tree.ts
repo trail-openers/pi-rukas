@@ -25,12 +25,13 @@
 
 import { existsSync, realpathSync } from "node:fs";
 import { traceWarn } from "../trace.ts";
-import { ensureWorktreesExcluded } from "../work-driver-git-exclude.ts";
+import { ensureGitExclude } from "../work-driver-git-exclude.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import { type ExecFn, worktreeCreate, worktreePath } from "../worktree.ts";
 import { NO_HOOKS, headIsDescendant, resetWorktreeToBase } from "./specify-reset.ts";
 import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 import { joinNotes } from "./text-fence.ts";
+import { ROSTER_REPORT_FILE } from "./verify-roster-command.ts";
 export { type DroppedRow, NEWNESS_REASON, validateSubmitRows } from "./submit-tests-cap.ts";
 
 /** The worktree directory name for one issue's specify step. */
@@ -179,8 +180,9 @@ export async function ensureSpecifyWorktreeWithProvision(
     beforeSubmoduleInit?: (wt: string) => void | Promise<void>;
   },
 ): Promise<{ wt: string; linked: string[]; problem?: string }> {
-  // Every lean tree lives under `.worktrees/`; excluded per clone, a tool staging the repo root never sees them.
-  await ensureWorktreesExcluded(exec, opts.repoRoot);
+  // Every lean tree lives under `.worktrees/`, and the roster's report is written into a tree; both are
+  // excluded per clone, so neither a porcelain scan nor a tool staging the repo root sees them.
+  await ensureGitExclude(opts.repoRoot, [".worktrees/", ROSTER_REPORT_FILE]);
   const wt = specifyWorktreePath(opts.repoRoot, opts.issue);
   if (worktreeExists(wt)) {
     await assertSpecifyWorktreeOwned(exec, {

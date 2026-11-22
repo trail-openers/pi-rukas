@@ -7,7 +7,7 @@
  * report". The rules it enforces are stated where they are judged — `verify-roster.ts`'s header.
  */
 
-import { lstatSync, readFileSync } from "node:fs";
+import { lstatSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { failureLines } from "../work-driver-verify-failures.ts";
@@ -178,6 +178,21 @@ export async function runProjectSuite(
     /** Where the report is read FROM — a tree the caller controls, never the exec seam's cwd. */
     reportCwd: string;
   },
+): Promise<SuiteRun> {
+  // Removed before the run, so an earlier run's report is never read as this one's, and after it,
+  // so lean's own file is not dirt to the porcelain scans that follow.
+  const report = path.resolve(opts.reportCwd, opts.report);
+  rmSync(report, { force: true });
+  try {
+    return await runAndRead(exec, opts);
+  } finally {
+    rmSync(report, { force: true });
+  }
+}
+
+async function runAndRead(
+  exec: VerifyExec,
+  opts: Parameters<typeof runProjectSuite>[1],
 ): Promise<SuiteRun> {
   const ran = await exec(opts.bin, {
     argv: opts.args,

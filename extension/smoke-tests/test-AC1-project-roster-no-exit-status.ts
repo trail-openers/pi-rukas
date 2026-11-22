@@ -63,9 +63,12 @@ const script = (xml: string, code: number) => {
   );
 }
 
-writeFileSync(report, PASSING);
+// The fakes write the report the way a runner does: one left before the run is removed, never read.
 const resolving = (shape: Record<string, unknown>): VerifyExec =>
-  (() => Promise.resolve(shape as never)) as unknown as VerifyExec;
+  (() => {
+    writeFileSync(report, PASSING);
+    return Promise.resolve(shape as never);
+  }) as unknown as VerifyExec;
 const rejecting = (fields: Record<string, unknown>): VerifyExec =>
   (() => Promise.reject(Object.assign(new Error("failed"), fields))) as unknown as VerifyExec;
 
