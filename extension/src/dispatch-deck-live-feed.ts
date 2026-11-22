@@ -33,6 +33,7 @@ import {
 } from "./dispatch-deck-live-state.ts";
 import type { LiveEvent } from "./dispatch-deck-live-state.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
+import { recordedDurationMs } from "./progress.ts";
 
 /**
  * #1032 — the ONE serialiser for tool-call args in the feed path. The two
@@ -112,11 +113,13 @@ export function pushEvent(key: string, buf: LiveEvent[], event: PiJsonEvent): bo
     // results ghosted the overlay over the main chat and polluted the
     // scrollback on every 1 s re-render).
     const name = msg.toolName;
+    const durationMs = recordedDurationMs(msg.durationMs);
     const ev: LiveEvent = {
       kind: "toolResult",
       name: name ? sanitizeText(name) : "unknown",
       text: sanitizeForStorage(resultText),
       isError: msg.isError === true,
+      ...(durationMs === undefined ? {} : { durationMs }),
     };
     buf.push(ev);
     total += eventSize(ev);

@@ -24,7 +24,8 @@
  * same rule the inactivity watchdog uses. The tracker adds what the call
  * budget needs: each live call's start time, command fingerprint and last
  * update, and the longest completed call per fingerprint (the budget is
- * max(20 min, 3 × the longest same-command call)).
+ * max(20 min, 3 × the longest same-command call)). A completed call's length
+ * is the duration Pi recorded when it sends one, else the wall-clock span.
  *
  * Observation only: nothing here kills, steers or notifies. One instance per
  * spawn, fed from the stdout line handler; it dies with the spawn.
@@ -121,7 +122,7 @@ export class ChildProgress {
       this.observeUpdate(event, t);
       return;
     }
-    const { opens, closes } = spanEdges(event);
+    const { opens, closes, durationMs } = spanEdges(event);
     for (const o of opens) {
       if (o.name === REPORT_FINDING_TOOL) this.mark();
       if (this.calls.has(o.id)) continue;
@@ -142,7 +143,7 @@ export class ChildProgress {
       const call = this.calls.get(id);
       if (!call) continue;
       this.calls.delete(id);
-      const ms = t - call.startedAt;
+      const ms = durationMs ?? t - call.startedAt;
       if (ms > (this.longest.get(call.fingerprint) ?? -1)) this.longest.set(call.fingerprint, ms);
     }
     this.observeTurn(event);

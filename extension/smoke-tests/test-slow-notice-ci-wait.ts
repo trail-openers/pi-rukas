@@ -445,5 +445,26 @@ await withEnv({}, async () => {
   }
 });
 
+// ------------------------------- recorded duration: Pi's durationMs is the span
+// A toolResult carrying Pi's recorded `durationMs` closes the span with that
+// value instead of the wall time between the two signals: a span 25m wall but
+// 10m recorded excludes 10m, so the 20m crossing fires at 30m wall.
+await withEnv({}, async () => {
+  setup();
+  let t = 9_000_000;
+  const { notices, feed, stop } = harness("job-excl-recorded", () => t);
+  try {
+    openSpan(feed.feed, "rd-1", "gh run watch 7");
+    t += 25 * MIN;
+    feed.feed?.({ type: "message_end", message: { role: "toolResult", toolName: "bash", toolCallId: "rd-1", isError: false, durationMs: 10 * MIN } });
+    t += 5 * MIN;
+    feedSlowProgress("job-excl-recorded", stateAt(1, 30 * MIN));
+    assert(notices.length === 1, "recorded durationMs: the notice fires at 30m wall");
+    assert(notices[0]?.includes("30m0s (+10m0s CI wait excluded)") === true, "recorded durationMs: the exclusion is Pi's recorded duration");
+  } finally {
+    stop();
+  }
+});
+
 console.log(`\nexit ${exit}`);
 process.exit(exit);

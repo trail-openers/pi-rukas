@@ -12,6 +12,7 @@ import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { sanitizeText } from "./dispatch-deck-line.ts";
 import type { LiveEvent, LiveViewTheme } from "./dispatch-deck-live.ts";
 import { getBuffer } from "./dispatch-deck-live.ts";
+import { formatElapsed } from "./progress.ts";
 
 // ---------------------------------------------------------------------------
 // Wrapped-line cache
@@ -115,7 +116,8 @@ export function eventLines(
       // Sanitize the tool name (collapse newlines — sanitizeText preserves
       // them, which would desync the renderer).
       const safeName = sanitizeText(ev.name).replace(/\n+/g, " ");
-      const marker = ev.isError ? `✗ ${safeName} (error)` : `✓ ${safeName}`;
+      const took = ev.durationMs === undefined ? "" : ` · ${formatElapsed(ev.durationMs)}`;
+      const marker = ev.isError ? `✗ ${safeName} (error)${took}` : `✓ ${safeName}${took}`;
       const head = ev.isError ? theme.error(marker) : marker;
       if (!ev.text) return [head];
       return [head, ...wrapCached(ev, ev.text, width, expanded, "body")];

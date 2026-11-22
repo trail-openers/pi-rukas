@@ -26,7 +26,7 @@ import { createInterface } from "node:readline";
 import type { BudgetProgressSteer } from "./budget-progress.ts";
 import type { ChildProgress } from "./child-progress.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
-import { type RunningState, ingestEvent } from "./progress.ts";
+import { type RunningState, ingestEvent, recordedDurationMs } from "./progress.ts";
 import type { SkillReadGuard } from "./review-bounds.ts";
 import type { CapSession } from "./spawn-caps.ts";
 import { killProcessTree } from "./spawn-kill.ts";
@@ -44,6 +44,8 @@ export interface SpanOpen {
 export interface SpanEdges {
   opens: SpanOpen[];
   closes: string[];
+  /** The closed call's duration as Pi recorded it; absent when Pi sent none. */
+  durationMs?: number;
 }
 
 const NO_EDGES: SpanEdges = { opens: [], closes: [] };
@@ -66,16 +68,13 @@ export function spanEdges(event: PiJsonEvent): SpanEdges {
     const open = { id: event.toolCallId, name: event.toolName ?? "unknown", args: event.args };
     return { opens: [open], closes: [] };
   }
-  if (event.type === "tool_execution_end") {
-    return event.toolCallId ? { opens: [], closes: [event.toolCallId] } : NO_EDGES;
-  }
+  if (event.type === "tool_execution_end") return closeEdge(event.toolCallId, event.durationMs);
   const msg = event.message;
   if (!msg) return NO_EDGES;
-  if (msg.role === "toolResult") {
-    // A toolResult closes its span whether or not it is an error — a
-    // failed tool that reported is no longer in flight.
-    return msg.toolCallId ? { opens: [], closes: [msg.toolCallId] } : NO_EDGES;
-  }
+  // A toolResult closes its span whether or not it is an error — a failed
+  // tool that reported is no longer in flight. Pi stamps the same recorded
+  // duration on it, so whichever close arrives first carries it.
+  if (msg.role === "toolResult") return closeEdge(msg.toolCallId, msg.durationMs);
   // #1465 — only the assistant message_end opens spans. Pi's turn_end
   // re-carries the turn's assistant message AFTER its tool results, and
   // message_start / message_update carry it while it streams; opening on
@@ -85,6 +84,12 @@ export function spanEdges(event: PiJsonEvent): SpanEdges {
   // blocks would never be closed either.
   if (event.type !== "message_end") return NO_EDGES;
   return assistantTurnEdges(msg);
+}
+
+function closeEdge(id: string | undefined, rawDurationMs: unknown): SpanEdges {
+  if (!id) return NO_EDGES;
+  const durationMs = recordedDurationMs(rawDurationMs);
+  return { opens: [], closes: [id], ...(durationMs === undefined ? {} : { durationMs }) };
 }
 
 /**
