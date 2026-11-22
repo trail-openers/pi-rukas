@@ -135,6 +135,14 @@ export function registerQuestionTool(pi: ExtensionAPI) {
 
       const allOptions: DisplayOption[] = [...options, { label: "Type something.", isOther: true }];
 
+      // Pi 1.5+ reports OSC 7501 `blocked` while this inline dialog is visible, so a
+      // terminal shows pi as waiting on the user; Pi 1.4 ignores the key. The
+      // explicit default `overlay: false` is a property Pi 1.4's option type knows,
+      // which is what lets the extra key type-check against it.
+      const dialogOptions = {
+        overlay: false,
+        blocked: { kind: "question" as const, message: params.question ?? "" },
+      };
       const result = await ctx.ui.custom<{
         answer: string;
         wasCustom: boolean;
@@ -296,7 +304,7 @@ export function registerQuestionTool(pi: ExtensionAPI) {
           },
           handleInput,
         };
-      });
+      }, dialogOptions);
 
       // Build simple options list for details
       const simpleOptions = options.map((o) => o.label);
