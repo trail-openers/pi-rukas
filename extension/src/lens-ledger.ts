@@ -16,6 +16,7 @@
  */
 
 import { resolveReviewBranch } from "./review-branch.ts";
+import { identityBase } from "./review-ledger-path.ts";
 import {
   type LedgerBlockingCounts,
   type LedgerEntry,
@@ -23,6 +24,7 @@ import {
   lensPassed,
   workingTreePatchId,
 } from "./review-ledger.ts";
+import { committedPatchIdentity } from "./review-patch-identity.ts";
 import type { ReviewSeverity } from "./review-threshold.ts";
 import { trace, traceWarn } from "./trace.ts";
 
@@ -42,21 +44,48 @@ import { execp } from "./exec.ts";
  */
 export interface LensPatchIdentity {
   patchId?: string;
-  /** Non-empty when the identity could not be computed; for the writer's trace. */
+  /** `workingTreePatchId`'s warning, for the writer's trace. */
   warning?: string;
+  /** Why there is no `patchId`; set exactly when it is absent. */
+  noPatchIdReason?: string;
   /** The diff digest the lens row stores for the #1176 carry (best-effort). */
   diffSha256?: string;
 }
 
-/** Resolve the review identity once. Never throws: a failed read returns no
+/**
+ * The identity of a COMMITTED head: the construction the merge guard recomputes
+ * (`mergeIdentity`), so the row binds to the commit that will be merged. For a
+ * caller whose `cwd` is not a checkout of the reviewed work — lean's run
+ * checkout sits at the base commit while the branch lives in a worktree.
+ */
+async function headPatchIdentity(cwd: string, head: string): Promise<LensPatchIdentity> {
+  const base = await identityBase(execp, cwd);
+  if (!base.ok) return { noPatchIdReason: `${base.reason} — no ledger entry written` };
+  const r = await committedPatchIdentity(execp, cwd, head, `${base.remote}/${base.mainline}`, {
+    digest: true,
+  });
+  return r.ok
+    ? { patchId: r.patchId, ...(r.diffSha256 !== undefined ? { diffSha256: r.diffSha256 } : {}) }
+    : { noPatchIdReason: `${r.reason} — no ledger entry written` };
+}
+
+/** Resolve the review identity once — of `cwd`'s working tree, or of the
+ * committed `head` when one is named. Never throws: a failed read returns no
  * `patchId`, which both consumers read as "nothing to bind to". */
-export async function lensReviewPatchIdentity(cwd: string): Promise<LensPatchIdentity | undefined> {
+export async function lensReviewPatchIdentity(
+  cwd: string,
+  head?: string,
+): Promise<LensPatchIdentity | undefined> {
   try {
+    if (head !== undefined) return await headPatchIdentity(cwd, head);
     const computed = await workingTreePatchId(execp, cwd, { digest: true });
     return {
       ...(computed.patchId !== undefined ? { patchId: computed.patchId } : {}),
       ...(computed.warning !== undefined ? { warning: computed.warning } : {}),
       ...(computed.diffSha256 !== undefined ? { diffSha256: computed.diffSha256 } : {}),
+      ...(computed.noPatchIdReason !== undefined
+        ? { noPatchIdReason: computed.noPatchIdReason }
+        : {}),
     };
   } catch (err) {
     trace(
@@ -170,10 +199,11 @@ export function writeLensLedgerEntry(
     const computed = identity ?? (await workingTreePatchId(execp, c, { digest: true }));
     if (computed.warning) trace(`lens-review: ${computed.warning}`);
     if (!computed.patchId) {
+      const why = computed.noPatchIdReason ?? "no patch id for the working tree";
       traceWarn(
-        `lens-review: ledger write skipped for ${b} — no patch id (${computed.warning ?? "unknown"}); the round is not recorded`,
+        `lens-review: ledger write skipped for ${b} — no patch id (${why}); the round is not recorded`,
       );
-      return { recorded: false, reason: computed.warning ?? "no patch id for the working tree" };
+      return { recorded: false, reason: why };
     }
     const entry: LedgerEntry = {
       branch: b,
@@ -232,10 +262,10 @@ export type LensIdentityGetter = () => Promise<LensPatchIdentity | undefined>;
  * git patch-id --stable`, and memoised because the two consumers await it twice.
  * Absent means no confirmations consulted: the pre-#1934 shape.
  */
-export function lensPatchIdentityOf(cwd: string | undefined): LensIdentityGetter {
+export function lensPatchIdentityOf(cwd: string | undefined, head?: string): LensIdentityGetter {
   let identity: Promise<LensPatchIdentity | undefined> | undefined;
   return () => {
-    if (identity === undefined) identity = lensReviewPatchIdentity(cwd ?? process.cwd());
+    if (identity === undefined) identity = lensReviewPatchIdentity(cwd ?? process.cwd(), head);
     return identity;
   };
 }

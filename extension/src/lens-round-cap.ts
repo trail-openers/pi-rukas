@@ -395,11 +395,12 @@ export async function admitLensRound(opts: {
   // entry and cannot be re-admitted indefinitely at the same round.
   const patch = await workingTreePatchId(execp, cwd);
   if (!patch.patchId) {
-    trace(`lens-round-cap: no patch id (${patch.warning ?? "unknown"}) — refusing (fail closed)`);
+    const why = patch.noPatchIdReason ?? "no patch id could be computed for the working tree";
+    trace(`lens-round-cap: no patch id (${why}) — refusing (fail closed)`);
     return {
       admitted: false,
       refusal: refusal(
-        `ROUND_CAP_REACHED — the round cannot be recorded: ${patch.warning ?? "no patch id could be computed for the working tree"}. A run that cannot be recorded would not consume a round, so it is refused fail closed. Resolve the mainline/remote state, or have the operator set PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE=1 if an unbudgeted round is accepted.`,
+        `ROUND_CAP_REACHED — the round cannot be recorded: ${why}. A run that cannot be recorded would not consume a round, so it is refused fail closed. Resolve the mainline/remote state, or have the operator set PI_ENSEMBLE_LENS_ROUND_CAP_OVERRIDE=1 if an unbudgeted round is accepted.`,
       ),
     };
   }
