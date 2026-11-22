@@ -76,12 +76,19 @@ export async function contractOf(
     const derived = await deriveSpecForRun(derive, repoRoot, issue, base.baseSha, body);
     return {
       spec: derived.spec,
-      derived: { spec: derived.spec, model: deriveModel(), at: Date.now() },
+      derived: {
+        spec: derived.spec,
+        model: deriveModel(),
+        at: Date.now(),
+        ...(derived.guards === undefined ? {} : { guards: derived.guards }),
+      },
       dispatches: derived.dispatches,
     };
   } catch (err) {
     if (!(err instanceof SpecDeriveError)) throw err;
     traceDerive(issue, "refused", err.message);
+    // A ticket with nothing to build is the issue's fault: a decline, not a handback.
+    if (err.decline === true) return { rule: err.message, dispatches: err.dispatches ?? [] };
     // Clipped: the cause is a model's text put into a rule the operator reads verbatim.
     // The child's rows ride on the handback: a child that died still spent tokens.
     return {

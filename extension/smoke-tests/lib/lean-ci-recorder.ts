@@ -41,6 +41,7 @@ import type {
   PreexistingTierRecord,
   ProjectRosterRecord,
 } from "../../src/lean/state-outcome-maps.ts";
+import type { DerivedSpec } from "../../src/lean/state-derived-spec.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import type { GlCase } from "./lean-ci-gl.ts";
@@ -150,6 +151,8 @@ export interface CiCase {
   /** The run's whole-cycle deadline, carried on the record the way the engine
    *  persists it. Drives the poll's cycle-clock check. */
   deadlineMs?: number;
+  /** The run's derived contract, for a case about its regression guards. */
+  derivedSpec?: DerivedSpec;
   /** The full tier's wall clock, injected. `null` leaves the seam unset so the
    *  step takes `budgets.ci.minutes` through `ciMinutes`, and the case reads
    *  `Ran.tierTimeoutMs` to prove which number it used. A number overrides. */
@@ -291,6 +294,7 @@ export async function run(c: CiCase): Promise<Ran> {
   // The engine writes the resolved cycle deadline onto the record; a case that
   // wants the poll to see one sets it here, on the object the handler is given.
   if (c.deadlineMs !== undefined) f.ctx.run = { ...f.ctx.run, deadlineMs: c.deadlineMs };
+  if (c.derivedSpec !== undefined) f.ctx.run = { ...f.ctx.run, derivedSpec: c.derivedSpec };
   const ran: Ran = { cmds: [], slept: [], head: committed, tierRuns: 0, jobsReads: 0 };
   let viewReads = 0;
   let checksReads = 0;

@@ -13,6 +13,7 @@
  */
 
 import { mappingDisagrees } from "../pi-spec-map.ts";
+import { type Guard, guardsProblem } from "./derive-guards.ts";
 import { type PiSpec, parsePiSpec, readiness, renderPiSpec } from "./spec.ts";
 
 /** The persisted derivation: the spec, the model that drafted it, and the epoch ms
@@ -22,6 +23,8 @@ export interface DerivedSpec {
   spec: PiSpec;
   model: string;
   at: number;
+  /** The regression guards derive set beside the criteria; absent when there are none. */
+  guards?: Guard[];
 }
 
 /** The least a renderer needs to read a contract: the run record, or just the one
@@ -46,6 +49,8 @@ export function derivedSpecProblem(value: unknown): string | undefined {
   if (typeof d.model !== "string") return "derivedSpec.model must be a string";
   if (typeof d.at !== "number" || !Number.isFinite(d.at))
     return "derivedSpec.at must be a finite number";
+  const guards = d.guards === undefined ? undefined : guardsProblem(d.guards);
+  if (guards !== undefined) return guards;
   const spec = d.spec;
   if (typeof spec !== "object" || spec === null || Array.isArray(spec))
     return "derivedSpec.spec must be an object";
@@ -82,7 +87,7 @@ export function derivedSpecProblem(value: unknown): string | undefined {
   // …and the mapper's own shape (its embedding ceiling and its size band), asked of
   // the leaf that enforces them: `readiness` polices neither, so without this a
   // hand-edited 9-criteria block stamped `M` would be served to nine steps.
-  const mapping = mappingDisagrees(back.spec);
+  const mapping = mappingDisagrees(back.spec, Array.isArray(d.guards) ? d.guards.length : 0);
   if (mapping !== undefined) return quoted(`derivedSpec.spec is not a mapping: ${mapping}`);
   return undefined;
 }
@@ -108,12 +113,17 @@ export function assertDerivedSpec(value: unknown): DerivedSpec {
  */
 export function canonicalDerivedSpec(value: unknown): DerivedSpec | undefined {
   if (derivedSpecProblem(value) !== undefined) return undefined;
-  const d = value as { spec: PiSpec; model: string; at: number };
+  const d = value as DerivedSpec;
   // Re-read through the contract's parser so the result is the reader's canonical
   // shape rather than the file's; the problem check has proved this parse succeeds.
   const canonical = parsePiSpec(renderPiSpec(d.spec));
   if (!canonical.ok) return undefined;
-  return { spec: canonical.spec, model: d.model, at: d.at };
+  return {
+    spec: canonical.spec,
+    model: d.model,
+    at: d.at,
+    ...(d.guards === undefined ? {} : { guards: d.guards.map((g) => ({ text: g.text })) }),
+  };
 }
 
 /** `renderPiSpec` on a value that may not be one: undefined rather than a throw. */

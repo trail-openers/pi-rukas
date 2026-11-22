@@ -14,6 +14,7 @@ import type { Forge } from "../forge.ts";
 import { issueSpecOrThrow, withApprovedSpec } from "../issue-spec.ts";
 import { detectMainline } from "../mainline.ts";
 import { resolveCycleForge } from "../work-driver-forge-ctx.ts";
+import type { Guard } from "./derive-guards.ts";
 import { type PiSpec, renderPiSpec } from "./spec.ts";
 import { oneLine } from "./text-fence.ts";
 
@@ -223,6 +224,7 @@ export async function postDerivedSpec(
   issue: number,
   spec: PiSpec,
   model: string,
+  guards: Guard[] = [],
 ): Promise<void> {
   const body = [
     `work-lean: issue #${issue} carried no \`pi-spec v1\` block, so this run derived one and is building to it.`,
@@ -235,6 +237,14 @@ export async function postDerivedSpec(
     "",
     `- derived by ${model === "" ? "the run's default model" : `\`${model}\``}`,
     `- ${String(spec.criteria.length)} criteria, size ${spec.size}`,
+    // A guard has no red test: the full verify tier ci runs before landing is what holds it.
+    ...(guards.length === 0
+      ? []
+      : [
+          "",
+          "Regression guards — no red test; each is enforced by the run's full verify tier (`verify.full` in `.pi/work.json`, or the committed `.pi/verify-cmd`), which ci runs before the run can land:",
+          ...guards.map((g) => `- ${g.text}`),
+        ]),
   ].join("\n");
   return deliverComment(repoRoot, issue, body, "derived-spec");
 }

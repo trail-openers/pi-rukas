@@ -67,7 +67,7 @@ const BULLETS = ["the run declines a no-block issue under require", "a derived s
 
 // ── The parser: one fenced block, read deterministically.
 {
-  const spec = parseDerivedBlock(deriveReply(BULLETS));
+  const spec = parseDerivedBlock(deriveReply(BULLETS))?.spec;
   assert(spec !== undefined, "a reply carrying a block yields a spec");
   assert(spec?.problem === "the problem", `the problem line survives (got ${spec?.problem})`);
   assert(
@@ -91,7 +91,7 @@ const BULLETS = ["the run declines a no-block issue under require", "a derived s
     "a criterion quoting ~~~~ still parses",
     "the field `spec.lean.specIntake` is validated",
   ];
-  const spec = parseDerivedBlock(deriveReply(tricky, "fences inside `criteria`"));
+  const spec = parseDerivedBlock(deriveReply(tricky, "fences inside `criteria`"))?.spec;
   assert(spec !== undefined, "a reply whose bullets carry fence runs still yields a spec");
   if (spec !== undefined) {
     const rendered = renderPiSpec(spec);
@@ -138,7 +138,7 @@ const BULLETS = ["the run declines a no-block issue under require", "a derived s
 // to be the whole contract.
 {
   const many = Array.from({ length: 20 }, (_, i) => `criterion number ${String(i + 1)}`);
-  const spec = parseDerivedBlock(deriveReply(many));
+  const spec = parseDerivedBlock(deriveReply(many))?.spec;
   assert(spec !== undefined, "a 20-bullet reply still maps to a spec");
   assert(
     spec?.criteria.length === 12,
@@ -230,7 +230,7 @@ for (const [text, needle, label] of [
   let threw: unknown;
   let got: PiSpec | undefined;
   try {
-    got = parseDerivedBlock(text);
+    got = parseDerivedBlock(text)?.spec;
   } catch (err) {
     threw = err;
   }

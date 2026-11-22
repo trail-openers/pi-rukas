@@ -164,6 +164,14 @@ function ciRed(opts: {
   };
 }
 
+/** The derived contract's regression guards, which only the full tier enforces, as the
+ * clause that makes them the reason a tier is needed — or nothing when there are none. */
+function guardsNeedTier(ctx: HandlerCtx): string {
+  const guards = ctx.run.derivedSpec?.guards ?? [];
+  if (guards.length === 0) return "";
+  return ` — and this run's derived contract carries ${String(guards.length)} regression guard(s) only that tier enforces: ${guards.map((g) => `"${g.text}"`).join("; ")}`;
+}
+
 /** Every criterion the run's frozen contract maps to any test file at all. */
 function contractCriteria(steps: Step[]): string[] {
   return Object.keys(testsFromLog(steps));
@@ -205,7 +213,7 @@ export async function ciOutcome(ctx: HandlerCtx, deps: CiDeps): Promise<Outcome>
   const full = (cfg.verify.full ?? configured ?? "").trim();
   if (full === "")
     return ciRed({
-      reason: `no full verify tier is configured (.pi/work.json verify.full, or .pi/verify-cmd at ${verified.slice(0, 12)}): a run must not land on the fast tier plus the frozen tests alone`,
+      reason: `no full verify tier is configured (.pi/work.json verify.full, or .pi/verify-cmd at ${verified.slice(0, 12)}): a run must not land on the fast tier plus the frozen tests alone${guardsNeedTier(ctx)}`,
       // The tier this step was owed and never got is the fact a host triages the run on.
       tiers: [CI_FULL_TIER],
       criteria: contractCriteria(ctx.steps),
