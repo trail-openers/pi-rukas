@@ -8,6 +8,14 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.1](https://github.com/trail-openers/pi-rukas/compare/v0.15.0...v0.15.1) (2026-11-22)
+
+
+### Features
+
+* **lean:** show the project-test roster to review seats and in gates.verify ([#2533](https://github.com/trail-openers/pi-rukas/issues/2533)) ([e897bf5](https://github.com/trail-openers/pi-rukas/commit/e897bf5cc0c534d7ea535575a60abe9331acd14e))
+* **model:** mark whether usage cost is provider-billed ([#2532](https://github.com/trail-openers/pi-rukas/issues/2532)) ([cdff9f4](https://github.com/trail-openers/pi-rukas/commit/cdff9f47c3af44222b1d58896e811365462b2488))
+
 ## [0.15.0](https://github.com/trail-openers/pi-rukas/compare/v0.14.101...v0.15.0) (2026-11-22)
 
 
