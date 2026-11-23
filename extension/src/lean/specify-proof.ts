@@ -46,15 +46,9 @@ export interface TestRunLimits {
 const TEST_MAX_BUFFER = 8 * 1024 * 1024;
 
 /**
- * The shape of a run that produced no verdict, as `runTestFile` classified it.
- *
- * The four say different things to the caller and must not be collapsed: a wall-clock kill means the code
- * under test never returned (and for a FROZEN file already proven red at freeze time, that IS a verdict —
- * `frozenTestFailure` in `verify-steps.ts`), while a flood, an un-startable runner and an empty template
- * observed nothing. An overflow is a kill (`killed: true`) but NOT a hang.
- *
- * Carried out REQUIRED: a caller re-deriving it from the returned `Proof` would find no
- * `killed`/`timedOutKill`/`code` on it and would read every kill as a template problem.
+ * The shape of a run that produced no verdict, carried REQUIRED: the four must not be collapsed. A kill means
+ * the code never returned (for a frozen file proven red at freeze, a verdict: `frozenTestFailure` in
+ * `verify-steps.ts`); a flood, an un-startable runner and an empty template observed nothing.
  */
 type ProofInfraShape = "killed" | "overflowed" | "never-started" | "nothing-to-run";
 
@@ -71,6 +65,8 @@ interface ProofVerdict extends ProofBase {
   kind: "red" | "green" | "unclear";
   /** Exit status; undefined for a timeout/kill or a runner that never started. */
   code?: number;
+  /** The run's own output, trimmed, on a non-zero exit: a refusal shows the runner's words. */
+  output?: string;
 }
 
 /** A run that observed nothing. Which refusal it was is not optional. */
@@ -203,9 +199,10 @@ export async function runTestFile(
   // The submitted PATH is what a runner echoes when it could not run the file at all, the
   // BASENAME what it echoes when the file ran and its assertions failed. Either counts as
   // "the output named this file".
+  const [output, exited] = [trim(out), `exited ${String(code)}`];
   if (!out.includes(base) && !out.includes(opts.file))
-    return { kind: "unclear", cmd, code, detail: `exited ${String(code)} without naming ${base}` };
-  return { kind: "red", cmd, code, detail: `exited ${String(code)}` };
+    return { kind: "unclear", cmd, code, output, detail: `${exited} without naming ${base}` };
+  return { kind: "red", cmd, code, output, detail: exited };
 }
 
 /** A short, single-line excerpt of runner output for a reason string. */
