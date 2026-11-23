@@ -365,7 +365,7 @@ base commit, the capped failure lines and the true total.
 
 **Symptom:** a warning lists one or more of `pi-version`, `mcp` and `retries` when a session starts. `/ensemble-debug` shows the same list, sometimes with a `wrapper` line too.
 
-**Cause:** pi-rukas was installed with `pi install npm:@trail-openers/pi-rukas` (or a git source), which loads the extension and skills but runs none of `./install.sh`'s steps: the minimum `pi` version check, the codebase-memory-mcp registration, the provider retry defaults, and linking the `pi-rukas` / `pi-rukas-headless` wrappers. pi-rukas names what is missing and leaves your config to you.
+**Cause:** pi-rukas was installed with `pi install npm:@trail-openers/pi-rukas` (or a git source), which loads the extension and skills but runs none of `./install.sh`'s steps: the minimum `pi` version check, the codebase-memory-mcp registration, the provider retry defaults, and linking the `pi-rukas` sandbox wrapper. pi-rukas names what is missing and leaves your config to you.
 
 **Fix:** follow the named item in [configuration.md → Installing from the Pi package gallery](configuration.md#installing-from-the-pi-package-gallery): run the upgrade command the `pi-version` line prints, add the `codebase_memory` server for `mcp`, set `retry.provider.maxRetries` for `retries`. A `wrapper` line means sandbox mode and headless runs need the git checkout: remove the gallery package first, then run `./install.sh`, so pi-rukas is not loaded twice. Restart Pi; the warning stops once nothing is missing.
 
