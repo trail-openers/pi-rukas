@@ -443,6 +443,17 @@ this config also needs a `verify.roster` (below) or
   names a frozen file that the same check passes without. Absent, nothing runs.
   It is never a verdict on the work: a check that was red at the base, or that
   could not be run at all, blocks nothing.
+- **`verify.format`** — optional `{file}` template, run in argv form like
+  `verify.test` (same rules: one whole-word `{file}`, no shell metacharacters).
+  The project's formatter, e.g. `rustfmt --edition 2021 {file}` or
+  `npx prettier --write {file}`. `specify` and `challenge` run it on each
+  submitted test **before** proving it red and freezing it, so the bytes proven,
+  committed and later re-hashed are already in the project's format — a frozen
+  test can then never fail the project's own format check, which `build` could
+  not fix. A file the formatter refuses (non-zero exit) is dropped with its
+  reason; a formatter that cannot start or times out, or that writes any path it
+  was not handed, hands the run back. Use a per-file formatter: `cargo fmt`
+  rewrites the whole crate. Absent, nothing runs.
 - **`autoMerge`** — boolean, default `false`. **The merge grant**: `land` reads
   it at the run's base sha and refuses the merge without it. An unreadable
   config refuses too, naming the read rather than pretending the project declined.
