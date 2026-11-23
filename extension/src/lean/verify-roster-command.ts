@@ -125,12 +125,19 @@ export function retargetRosterCommand(
 ): { bin: string; args: string[]; report: string } {
   const fromReport = `${fromTree}/${JUNIT_REPORT_FILE}`;
   const toReport = `${toTree}/${JUNIT_REPORT_FILE}`;
+  // One pass, report path first: the base tree is the head tree's name with a suffix, so a second pass
+  // over the swapped text would rewrite the base report path again into a tree nobody reads.
+  const from = new RegExp(`${escapeRegExp(fromReport)}|${escapeRegExp(fromTree)}`, "g");
   const swap = (word: string): string =>
-    word.split(fromReport).join(toReport).split(fromTree).join(toTree);
+    word.replace(from, (hit) => (hit === fromReport ? toReport : toTree));
   // A template with no `{report}` reports to a path this gate cannot predict, so the base run is
   // not run at all — the caller hands back rather than reading one tree's report as the other's.
   if (fromReport === toReport) return { bin: "", args: [], report: toReport };
   return { bin: swap(rendered.bin), args: rendered.args.map(swap), report: toReport };
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
@@ -285,7 +292,7 @@ async function runAndRead(
   if (report === undefined)
     return {
       ran: false,
-      reason: `the roster report ${path.basename(opts.report)} was not readable after the run`,
+      reason: `the roster report ${path.basename(opts.report)} was not readable after the run (exit ${String(exitCode)}${outputExcerpt(e.stderr, e.stdout)})`,
     };
   const cases = parseJUnitCases(report);
   if (cases.passed.length + cases.failed.length === 0)
@@ -299,6 +306,14 @@ async function runAndRead(
       reason: `the roster run exited ${String(exitCode)} while its report names only passing tests`,
     };
   return { ran: true, passed: cases.passed, failed: cases.failed };
+}
+
+/** The run's last words for a hand-back: stderr's tail (stdout's when stderr is empty), bounded. */
+function outputExcerpt(stderr: unknown, stdout: unknown): string {
+  const pick = [stderr, stdout].find((s): s is string => typeof s === "string" && s.trim() !== "");
+  if (pick === undefined) return ", no output";
+  const flat = pick.trim().replace(/\s+/g, " ");
+  return `: ${flat.length > 400 ? `…${flat.slice(-400)}` : flat}`;
 }
 
 /**
