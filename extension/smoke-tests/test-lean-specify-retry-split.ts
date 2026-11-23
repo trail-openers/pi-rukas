@@ -16,7 +16,7 @@
  *       still yields it, and it names both constants;
  *   (c) a NON-size refusal gets no split line, so the remedy cannot become
  *       unconditional boilerplate; the `challenge` prompt never carries one;
- *   (d) a run that overshoots on both attempts declines with `failedRules`
+ *   (d) a run that overshoots on both attempts hands back with `failedRules`
  *       naming each dropped file and its line count, after the generic
  *       per-criterion rule.
  */
@@ -223,7 +223,7 @@ await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: undefined }, async () => {
     writes: (wt) => put(wt, OVER, redOfLength(over), 0o755),
     toolUses: () => [submit("AC1", [OVER])],
   });
-  assert(r.outcome?.kind === "no-red-test", `(d) the run declines (got ${r.outcome?.kind})`);
+  assert(r.outcome?.kind === "red-test-gap", `(d) the run hands back (got ${r.outcome?.kind})`);
   assert(r.dispatched === 2, `(d) both attempts ran (got ${r.dispatched})`);
   const rules = r.outcome?.failedRules ?? [];
   assert(

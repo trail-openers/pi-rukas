@@ -31,11 +31,12 @@
  *      the committed blobs, so the record later steps check against describes the
  *      commit rather than a momentary state of the tree.
  *
- * The two kinds are deliberately apart. `no-red-test` is a VERDICT about the work —
- * the run ends `not-ready` with named rules. A THROW is infrastructure — an
- * unhealthy base, a worktree the step does not own, a dispatch that died, a commit
- * that did not contain what it was told to — and the engine turns it into
- * handed-back exit 10 without blaming the issue.
+ * The kinds are deliberately apart. `no-red-test` is a VERDICT — the run ends
+ * `not-ready` with named rules. `red-test-gap` is this step's own child failing to
+ * prove a criterion red, which hands the run back (`specify-gap-switch.ts`). A THROW
+ * is infrastructure — an unhealthy base, a worktree the step does not own, a
+ * dispatch that died, a commit that did not contain what it was told to — and the
+ * engine turns it into handed-back exit 10 without blaming the issue.
  *
  * The pipeline is shared with `challenge` through `specifyRun.ts`; the ref it resets
  * to is the only difference, so it is a parameter rather than a second copy.
@@ -58,6 +59,7 @@ import { specFor } from "./spec-for.ts";
 import { type PiSpec, readiness } from "./spec.ts";
 import { runSpecifyAttempt } from "./specify-attempt.ts";
 import type { CaptureResult } from "./specify-capture.ts";
+import { RED_TEST_GAP } from "./specify-gap-switch.ts";
 import { assertRunnerCanRunTests } from "./specify-preflight.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
@@ -259,7 +261,7 @@ function afterRetry(outcome: Outcome): Outcome {
   };
 }
 
-/** The `specify` step. Returns `ok` | `no-red-test` | `budget`; THROWS on infrastructure. */
+/** The `specify` step. Returns `ok` | `no-red-test` | `red-test-gap` | `budget`; THROWS on infrastructure. */
 export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
   // 1. The spec, re-read — `ready` may have run in another process, minutes
@@ -390,7 +392,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // has nothing to say about. It costs no extra attempt: same bound.
   while (
     attempts < SPECIFY_MAX_ATTEMPTS &&
-    attempt.outcome.kind === "no-red-test" &&
+    (attempt.outcome.kind === "no-red-test" || attempt.outcome.kind === RED_TEST_GAP) &&
     (attempt.providerFault !== undefined ||
       attempt.refused.length > 0 ||
       (attempt.silent && wanted.length > 0))

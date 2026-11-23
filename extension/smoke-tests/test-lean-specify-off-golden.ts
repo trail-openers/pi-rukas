@@ -45,6 +45,7 @@ import {
   type GoldenRun,
   driveOffArm,
 } from "./lib/lean-specify-off-golden.ts";
+import { withEnv } from "./lib/env-scope.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -83,17 +84,20 @@ const rendered = (g: GoldenRun): string => JSON.stringify(g);
   let ran: GoldenRun | undefined;
   let threw: Error | undefined;
   try {
-    ran = await driveOffArm(2212, {
-      switchOff: true,
-      assertNoProbe: true,
-      decline,
-      // (c) The sabotage a switch-on run cannot survive: `resetWorktreeToBase`
-      // calls this immediately before it asks git to populate the tree's
-      // submodules, so reaching it at all means the submodule step ran. Off, the
-      // step is not issued, the seam is not fired, and the run finishes.
-      beforeSubmoduleInit: () => {
-        throw new Error("the reset asked git to populate submodules with the switch at 0");
-      },
+    // v0.14.71 predates the specify-gap handback, so its decline is this switch's off arm too.
+    await withEnv({ PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK: "0" }, async () => {
+      ran = await driveOffArm(2212, {
+        switchOff: true,
+        assertNoProbe: true,
+        decline,
+        // (c) The sabotage a switch-on run cannot survive: `resetWorktreeToBase`
+        // calls this immediately before it asks git to populate the tree's
+        // submodules, so reaching it at all means the submodule step ran. Off, the
+        // step is not issued, the seam is not fired, and the run finishes.
+        beforeSubmoduleInit: () => {
+          throw new Error("the reset asked git to populate submodules with the switch at 0");
+        },
+      });
     });
   } catch (err) {
     threw = err as Error;

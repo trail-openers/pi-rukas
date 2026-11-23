@@ -86,7 +86,7 @@ function assert(cond: boolean, msg: string): void {
     },
   });
   assert(r.threw === undefined, `(p) no throw: ${r.threw?.message ?? "clean"}`);
-  assert(r.outcome?.kind === "no-red-test", `(p) no-red-test, got ${r.outcome?.kind}`);
+  assert(r.outcome?.kind === "red-test-gap", `(p) red-test-gap, got ${r.outcome?.kind}`);
   assert(
     (r.outcome?.reason ?? "").includes("hard link"),
     `(p) the reason says why: a hard link at capture (got ${r.outcome?.reason})`,
@@ -130,7 +130,7 @@ function assert(cond: boolean, msg: string): void {
     },
   });
   assert(r.threw === undefined, `(q) no throw: ${r.threw?.message ?? "clean"}`);
-  assert(r.outcome?.kind === "no-red-test", `(q) no-red-test, got ${r.outcome?.kind}`);
+  assert(r.outcome?.kind === "red-test-gap", `(q) red-test-gap, got ${r.outcome?.kind}`);
   assert(
     /could not be opened/.test(r.outcome?.reason ?? ""),
     `(q) the reason says the file could not be opened through O_NOFOLLOW (got ${r.outcome?.reason})`,

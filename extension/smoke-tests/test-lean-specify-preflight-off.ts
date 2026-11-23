@@ -116,7 +116,7 @@ async function runWithRunner(
   //
   // `withEnv` deletes the variable again rather than setting "", and pins it for the
   // whole block so no case below (or above) can be run under a leaked "0".
-  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0" }, async () => {
+  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0", PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK: "0" }, async () => {
     // (h1) the exit-4 runner the on arm hands back on. Off, the probe is never
     // WRITTEN — so the only runner invocation this step makes is the red proof's, on
     // the child's own file, and that one exits 0 because `redScript()` is empty at the

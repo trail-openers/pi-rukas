@@ -57,6 +57,9 @@ export const FAILURE_KINDS = [
    *  `ready` before any model was called. The run ends `not-ready` at exit 11; the key a host runs
    *  another driver on for an issue lean will not take. */
   "no-spec",
+  /** `work-lean` only: `specify`'s own child proved no test red for a criterion, so the run handed back
+   *  (exit 10) rather than refusing the spec. `message` is the gap rules. */
+  "red-test-gap",
   /** No failure: the cap's own rule stopped the cycle (a round cap, a park, awaiting merge). */
   "cap",
 ] as const;

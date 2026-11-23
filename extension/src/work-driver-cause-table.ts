@@ -63,6 +63,9 @@ export const KIND_CLASS: Record<FailureKind, CauseClass | undefined> = {
   setup: "environment",
   // The issue carries no contract lean can read: an issue fault. Only `work-lean` emits it.
   "no-spec": "issue",
+  // Lean's own specify child proved no criterion red: the run's capability, not the spec. Only
+  // `work-lean` emits it.
+  "red-test-gap": "pi-rukas",
   cap: undefined,
 };
 

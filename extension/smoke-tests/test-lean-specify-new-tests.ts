@@ -15,7 +15,7 @@
  * Four arms, and the fourth is the one that makes the other three mean
  * something: a run that refuses everything would pass the first three.
  *
- *   (n1) the child submits a tracked test it never opened → `no-red-test`, the
+ *   (n1) the child submits a tracked test it never opened → `red-test-gap`, the
  *        newness reason, nothing committed, the project's own bytes intact;
  *   (n2) the child OVERWRITES a tracked test and submits it → same refusal, and
  *        the base's bytes still stand in the commit (the boundary never needs to
@@ -73,8 +73,8 @@ import { assert, configWithLocation, testLocationExit } from "./lib/lean-test-lo
     `(specify) submitting an existing tracked test is a VERDICT, not infra (${untouched.threw?.message})`,
   );
   assert(
-    untouched.outcome?.kind === "no-red-test",
-    `(specify) an existing tracked test freezes nothing → no-red-test (got ${untouched.outcome?.kind})`,
+    untouched.outcome?.kind === "red-test-gap",
+    `(specify) an existing tracked test freezes nothing → red-test-gap (got ${untouched.outcome?.kind})`,
   );
   assert(
     (untouched.outcome?.reason ?? "").includes(`${TRACED} ${NEWNESS_REASON}`),
@@ -100,7 +100,7 @@ import { assert, configWithLocation, testLocationExit } from "./lib/lean-test-lo
     toolUses: [submit("AC1", [TRACED])],
   });
   assert(
-    overwritten.outcome?.kind === "no-red-test" &&
+    overwritten.outcome?.kind === "red-test-gap" &&
       (overwritten.outcome.reason ?? "").includes(NEWNESS_REASON) === true,
     `(specify) an OVERWRITTEN tracked test gets the same refusal as an untouched one (got ${overwritten.outcome?.kind} / ${overwritten.outcome?.reason})`,
   );

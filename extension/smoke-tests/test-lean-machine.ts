@@ -112,7 +112,7 @@ for (const state of HANDLER_STATES) {
   }
 }
 assert(
-  pairs === 26,
+  pairs === 27,
   `all ${pairs} forward-routed pairs enumerated — the registry grew or shrank, check the spec`,
 );
 
@@ -243,6 +243,10 @@ assert(next(run("specify"), { kind: "ok" }).state === "build", "specify ok → b
 assert(
   next(run("specify"), { kind: "no-red-test" }).state === "decline",
   "specify no-red-test → decline",
+);
+assert(
+  next(run("specify"), { kind: "red-test-gap" }).state === "handback",
+  "specify red-test-gap → handback (the run's own failure, not a refused spec)",
 );
 assert(
   next(run("build"), { kind: "ok" }).state === "challenge",

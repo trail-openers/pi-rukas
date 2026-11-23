@@ -14,7 +14,7 @@
  *        in is pinned too, because the reason an operator reads is whichever rule
  *        fired first.
  *   (3b) `specify`: a well-placed red test freezes; a misplaced one, and a
- *        right-folder/wrong-name one, each end the run as `no-red-test` naming the
+ *        right-folder/wrong-name one, each end the run as `red-test-gap` naming the
  *        uncovered criterion, freeze nothing, and leave the worktree at its base —
  *        and the dispatched prompt carried the folder, so the child is policed by
  *        a rule it was actually told.
@@ -238,11 +238,11 @@ function emptyWt(label: string): string {
     `(specify) a misplaced test is a VERDICT, not infra (${refused.threw?.message})`,
   );
   assert(
-    refused.outcome?.kind === "no-red-test",
-    `(specify) misplaced test → no-red-test (got ${refused.outcome?.kind})`,
+    refused.outcome?.kind === "red-test-gap",
+    `(specify) misplaced test → red-test-gap (got ${refused.outcome?.kind})`,
   );
   assert(
-    refused.outcome?.kind === "no-red-test" &&
+    refused.outcome?.kind === "red-test-gap" &&
       refused.outcome.failedRules?.[0]?.startsWith("criterion AC1 has no red test") === true,
     `(specify) the rule still leads with the uncovered criterion (got ${JSON.stringify(refused.outcome?.failedRules)})`,
   );
@@ -271,7 +271,7 @@ function emptyWt(label: string): string {
     toolUses: [submit("AC1", ["extension/smoke-tests/spec-ac1-retry.ts"])],
   });
   assert(
-    named.outcome?.kind === "no-red-test" &&
+    named.outcome?.kind === "red-test-gap" &&
       (named.outcome.reason ?? "").includes("does not match the configured test name pattern"),
     `(specify) a right-folder/wrong-name test is refused naming the pattern (got ${named.outcome?.kind} / ${named.outcome?.reason})`,
   );

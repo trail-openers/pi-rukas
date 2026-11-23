@@ -147,6 +147,25 @@ of those is left exactly as found, deliberately: the alternative is a `reset --h
 else's work. Where a foreign directory really does sit at that path, move it out from under
 `.worktrees/` and re-run.
 
+### Symptom: a lean run hands back with `criterion <id> has no red test`
+
+**Symptom:** a lean run ends `handed-back` at exit 10 with `failure.kind: "red-test-gap"`, and its
+handback comment lists `criterion <id> has no red test`, the dropped files with their reasons
+(typically `exited 0 on base`), and the line *a test that passes on the base may also mean the
+criterion already holds there*.
+
+**Cause:** `specify`'s own adversary could not prove that criterion red against the base after its
+attempts. That is the run failing to write a falsifiable test, not the spec being refused, so it hands
+back rather than declining the issue at exit 11. A spec that fails readiness is still refused at exit
+11 before any child is dispatched; a project with no `verify.test` never reaches `specify`, since
+`ready` refuses it as a setup fault (exit 10, `failure.kind: "setup"`).
+
+**Fix:** read the dropped-file reasons. A test that exited 0 on the base either asserts too little or
+describes behaviour the base already has; if the criterion already holds, the issue is done or its
+criterion needs restating; otherwise remove the finished run's `.pi/lean-state/<issue>.json` (a
+finished record answers a second run with its stamped result) and re-run.
+`PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK=0` restores the exit-11 decline for a host that keys on it.
+
 ### Symptom: a lean run hands back with `the test runner could not run a test file: <command>`
 
 **Symptom:** a lean run ends as an infrastructure hand-back (exit 10) whose message is
@@ -155,7 +174,8 @@ lines>`, with no adversary dispatched and no test frozen. The sibling shape of t
 `the worktree's submodules could not be initialised in <worktree>: git submodule update --init
 --recursive — …`. Both are exit **10**, and both are one switch: `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0`
 restores v0.14.71, which ran no probe and no submodule initialisation at all — the same run then ends
-`not-ready` at exit 11 with the ordinary decline.
+on the red proof's gap: a handback at exit 10 (`failure.kind: "red-test-gap"`), or, with
+`PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK=0` as well, `not-ready` at exit 11 with the ordinary decline.
 
 **Cause:** the step asked the project's own runner one question before paying an adversary — *can you
 run a test file at all?* — and the runner could not. It is handed an EMPTY test file (removed again on
@@ -179,7 +199,8 @@ the probe as one of its tests), and an exit 4 there is read as *the runner rejec
 recorded on the step's reason and the run goes on to the adversary, since the bench answered and this
 step's filename is what did not. **On an older release the workaround is
 `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0`**, which runs no probe at all: the run is then judged by the red
-proof alone and ends `not-ready` at exit 11 with the ordinary decline rather than handing back at 10.
+proof alone and ends on its gap (`red-test-gap`, exit 10; the exit-11 decline with
+`PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK=0` too) rather than on the preflight's hand-back.
 `PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN=0` restores only the probe parent's containment check; the
 Python probe's name and its exit-4 reading have no lever — they are the behaviour. Before this check existed, none of those printed anything naming the file, so the red
 proof graded the run "unclear", `specify` declined with `criterion ACn has no red test`, and the issue
@@ -235,11 +256,12 @@ With the gate open the run is seeded from the superproject, so an un-populated s
 DISCLOSURE naming the path, not a hand-back. A runner that dies on
 the probe-shaped file is graded by the red proof alone, exactly as v0.14.71 graded it.
 
-### Symptom: a derived lean run declines `criterion ACn has no red test; … exited 0 on base` for a "still passes" line
+### Symptom: a derived lean run stops on `criterion ACn has no red test; … exited 0 on base` for a "still passes" line
 
 **Cause:** the derived contract made a ticket line that only asks existing checks to keep passing
 ("the existing checks and the build still pass") into a criterion of its own. Such a line is green
-on the base, so no red test for it can exist, and `specify` refuses the run.
+on the base, so no red test for it can exist, and `specify` ends the run on that gap (a handback at
+exit 10, or the exit-11 decline with `PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK=0`).
 
 **Fix (shipped):** derive sets such lines aside as regression guards, which the run's full verify
 tier enforces at `ci` — so the project needs a full tier (`verify.full` or `.pi/verify-cmd`). A wording the guard rule does not recognise

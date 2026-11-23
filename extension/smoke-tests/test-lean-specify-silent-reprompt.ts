@@ -13,7 +13,7 @@
  *   (1) attempt 1 writes a red file and submits nothing; attempt 2 submits it
  *       -> ok, dispatched twice, TWO dispatch rows, and the second prompt
  *       carries the nudge while the first does not;
- *   (2) both attempts silent -> no-red-test carrying the retry marker, twice;
+ *   (2) both attempts silent -> red-test-gap carrying the retry marker, twice;
  *   (3) a spec with no `verify: "test"` criterion and a silent child -> one
  *       dispatch, ok, no nudge;
  *   (4) malformed calls or drops are not silence -> no nudge;
@@ -140,7 +140,7 @@ ${JSON.stringify(
   );
 }
 
-// ── (2) silent after the re-prompt too: the step still declines ──────────────
+// ── (2) silent after the re-prompt too: the step still refuses ───────────────
 {
   const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
   const prompts: string[] = [];
@@ -157,8 +157,8 @@ ${JSON.stringify(
   });
   report(r, "(2)");
   assert(
-    r.outcome?.kind === "no-red-test",
-    `(2) still no-red-test after the retry (got ${r.outcome?.kind})`,
+    r.outcome?.kind === "red-test-gap",
+    `(2) still red-test-gap after the retry (got ${r.outcome?.kind})`,
   );
   assert(r.dispatched === 2, `(2) exactly two dispatches, never a third (got ${r.dispatched})`);
   assert(
@@ -203,8 +203,8 @@ ${JSON.stringify(
     `(3) a no-test-criteria spec is not re-prompted (got ${r.dispatched})`,
   );
   assert(
-    r.outcome?.kind === "no-red-test",
-    `(3) it declines exactly as it does today (got ${r.outcome?.kind})`,
+    r.outcome?.kind === "red-test-gap",
+    `(3) it refuses exactly as it does today (got ${r.outcome?.kind})`,
   );
   assert(prompts[1] === undefined, "(3) there was no second prompt at all");
 }
@@ -279,8 +279,8 @@ ${JSON.stringify(
   });
   report(r, "(5)");
   assert(
-    r.outcome?.kind === "no-red-test",
-    `(5) a submitted green file still declines (got ${r.outcome?.kind})`,
+    r.outcome?.kind === "red-test-gap",
+    `(5) a submitted green file still refuses (got ${r.outcome?.kind})`,
   );
   assert(
     r.outcome?.failedRules?.[0]?.startsWith("criterion AC1 has no red test") === true,
@@ -354,8 +354,8 @@ ${JSON.stringify(
     `(6) each attempt made a drop and neither was silent (got ${JSON.stringify(verdicts)})`,
   );
   assert(
-    r.outcome?.kind === "no-red-test",
-    `(6) an attempt that kept nothing still declines (got ${r.outcome?.kind})`,
+    r.outcome?.kind === "red-test-gap",
+    `(6) an attempt that kept nothing still refuses (got ${r.outcome?.kind})`,
   );
   assert(
     (r.outcome?.failedRules ?? []).every((x) => !x.startsWith(NEVER_SUBMITTED)) === true,

@@ -29,6 +29,7 @@ import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.t
 import { leanDetectVerifyEnabled } from "../../src/lean/config-detect.ts";
 import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
+import { leanSpecifyGapHandbackEnabled } from "../../src/lean/specify-gap-switch.ts";
 import { leanBuildIssueProseEnabled } from "../../src/lean/issue-prose.ts";
 import { leanPrefixHeadEnabled } from "../../src/lean/review-log.ts";
 import { leanPreflightProbeContainEnabled } from "../../src/lean/preflight-probe-switch.ts";
@@ -195,6 +196,10 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LEAN_SPECIFY_REASK", leanSpecifyReaskEnabled],
   // Default OFF: the reader is `v === "1"`, so the LIVE loop pins "unset means off".
   ["PI_ENSEMBLE_LEAN_DETECT_VERIFY", leanDetectVerifyEnabled],
+  // The specify gap's handback. The reader is `v !== "0"`, so the gate's LIVE loop (env
+  // deleted) pins "unset means on"; the truth table, docs row and both arms' goldens are
+  // pinned by test-lean-specify-gap-handback.ts.
+  ["PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK", leanSpecifyGapHandbackEnabled],
   // The truncated-fixer continuation: its default is pinned here, its truth table by
   // `test-lean-review-fix-reask-pure.ts` and its off arm by
   // `test-lean-review-fixer-truncation-off-arm.ts`.

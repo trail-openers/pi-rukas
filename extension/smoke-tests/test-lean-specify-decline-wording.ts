@@ -85,8 +85,8 @@ const REFUSED = "Your previous submission was refused";
   });
   report(r, "(5)");
   assert(
-    r.outcome?.kind === "no-red-test",
-    `(5) a submitted green file still declines (got ${r.outcome?.kind})`,
+    r.outcome?.kind === "red-test-gap",
+    `(5) a submitted green file still refuses (got ${r.outcome?.kind})`,
   );
   assert(
     r.outcome?.failedRules?.[0]?.startsWith("criterion AC1 has no red test") === true,
@@ -161,8 +161,8 @@ const REFUSED = "Your previous submission was refused";
     `(6) each attempt made a drop and neither was silent (got ${JSON.stringify(verdicts)})`,
   );
   assert(
-    r.outcome?.kind === "no-red-test",
-    `(6) an attempt that kept nothing still declines (got ${r.outcome?.kind})`,
+    r.outcome?.kind === "red-test-gap",
+    `(6) an attempt that kept nothing still refuses (got ${r.outcome?.kind})`,
   );
   assert(
     (r.outcome?.failedRules ?? []).every((x) => !x.startsWith(NEVER_SUBMITTED)) === true,
@@ -208,7 +208,7 @@ const REFUSED = "Your previous submission was refused";
   // kind. What differs is the rule the operator reads, and it must be the release's —
   // `criterion AC1 has no red test`, with no trace of the never-submitted clause in
   // either field.
-  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0" }, async () => {
+  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0", PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK: "0" }, async () => {
     // (8a) the both-attempts-silent shape: decline on the release's rule.
     const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
     const prompts: string[] = [];

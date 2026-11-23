@@ -4,7 +4,7 @@
  *
  * The step's refusal vocabulary cannot answer this. A runner that dies before collection — an empty git
  * submodule a test imports from, a suite needing an env var this tree lacks — prints nothing naming the
- * file, so the red proof classifies the run `unclear` and the step declines with `criterion ACn has no red
+ * file, so the red proof classifies the run `unclear` and the step ends on `criterion ACn has no red
  * test`: a VERDICT about work the toolchain never judged, blaming the adversary for the environment.
  *
  * So the step asks the runner directly, once, before the first dispatch:

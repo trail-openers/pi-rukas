@@ -21,7 +21,8 @@
  *               the backoff env, so neither direction depends on `Math.random`;
  *   (6) build:  the wait is in the step's recorded reason, not only stderr;
  *   (7) specify: the same 503 child is retried through the existing re-prompt,
- *               with the wait recorded, and every OTHER specify throw is unchanged.
+ *               with the wait recorded, and every OTHER specify throw is unchanged;
+ *               a fault on the final attempt too stays `no-red-test`, never the gap's handback.
  */
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -367,6 +368,35 @@ async function withEnv<T>(key: string, value: string | undefined, run: () => Pro
   assert(
     /waited \d+s for a transient provider fault/.test(r.outcome?.reason ?? ""),
     `(7) and the step's reason says so (got ${JSON.stringify(r.outcome?.reason)})`,
+  );
+}
+
+// ── (7d) specify: a provider that faults on the retry too keeps its `no-red-test` ─────────
+{
+  const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
+  const dead: Partial<DispatchResult> = {
+    ok: false,
+    exitCode: 1,
+    text: "",
+    toolUses: [],
+    observedToolCalls: 0,
+    errorStop: STILL_LOADING,
+    usage: { input: 9, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+  };
+  const { value: r } = await withWaits(() =>
+    runSpecify({
+      repoRoot,
+      baseSha,
+      issue: 34,
+      config: configWith({ test: RUNNER }),
+      writes: () => {},
+      toolUses: [],
+      dispatchResults: [dead, dead],
+    }),
+  );
+  assert(
+    r.outcome?.kind === "no-red-test" && r.dispatched === 2,
+    `(7d) a fault on the final attempt is no-red-test (got ${r.outcome?.kind}, ${String(r.dispatched)})`,
   );
 }
 

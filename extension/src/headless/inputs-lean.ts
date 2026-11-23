@@ -85,9 +85,14 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // `require` would decline tickets the operator meant to run. The reader is
   // `resolveSpecIntake` in lean/spec-intake-switch.ts.
   input("LEAN_SPEC_INTAKE", "enum", null, "cycle", { values: ["require", "derive"] }),
+  // A criterion `specify`'s own child could not prove red hands the run back (exit 10,
+  // `failure.kind: "red-test-gap"`) instead of declining the spec (exit 11). `0` restores the
+  // decline byte for byte. The reader is `leanSpecifyGapHandbackEnabled` in
+  // lean/specify-gap-switch.ts.
+  flag("LEAN_SPECIFY_GAP_HANDBACK", true),
   // A specify child that submitted some test criteria and not others is asked once, on its
   // own session, for the rest before readiness is judged. `0` dispatches as before: the
-  // unsubmitted criteria decline the run. The reader is `leanSpecifyReaskEnabled` in
+  // unsubmitted criteria end the run. The reader is `leanSpecifyReaskEnabled` in
   // lean/specify-reask.ts.
   flag("LEAN_SPECIFY_REASK", true),
 ];

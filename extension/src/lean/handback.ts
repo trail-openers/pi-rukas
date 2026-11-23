@@ -2,8 +2,8 @@
  * lean/handback — the step that tells the operator what the run still needs.
  *
  * A run reaches `handback` when its gate said red twice, when CI disagreed twice, when the land gate refused,
- * or when a handler threw. What is left is a sentence on the issue built from the record: what failed, the
- * frozen contract, and where the work is.
+ * when `specify`'s child could not prove a criterion red, or when a handler threw. What is left is a sentence
+ * on the issue built from the record: what failed, the frozen contract, and where the work is.
  *
  * It NEVER throws: a comment that failed to post is information in the record, not a reason to change the
  * verdict.
@@ -15,6 +15,7 @@ import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { handbackHeads } from "./handback-heads.ts";
 import { NO_HEAD, type Rewind, originBranchHead } from "./handback-rewind.ts";
+import { RED_TEST_GAP } from "./specify-gap-switch.ts";
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP, validPrUrl } from "./state-outcome.ts";
 import { type Outcome, REPORT_STATES, type Step } from "./state.ts";
 import { budgetSentence, budgetTrio } from "./step-budget.ts";
@@ -113,6 +114,25 @@ function blockedCause(steps: Step[]): string | undefined {
   return `the frozen tests cannot all pass together:\n${named}${more}`;
 }
 
+/** The other reading of a test that passed on the base, which the gap's evidence cannot rule out. */
+const GAP_READING =
+  "A test that passes on the base may also mean the criterion already holds there.";
+
+/**
+ * `specify`'s own child left a criterion with no red test. The rules name each criterion; the reason adds
+ * the per-file evidence (`exited 0 on base`), and a rule it already spells is not printed again. The
+ * second reading applies only when a test actually passed on the base.
+ */
+function gapCause(steps: Step[]): string | undefined {
+  const oc = newestWorkStep(steps)?.outcome;
+  if (oc?.kind !== RED_TEST_GAP) return undefined;
+  const rules = oc.failedRules ?? [];
+  const reason = oc.reason ?? "";
+  const lead = [...rules.filter((r) => !reason.includes(r)), reason];
+  const reading = reason.includes("exited 0 on base") ? [GAP_READING] : [];
+  return [...lead, ...reading].filter((s) => s !== "").join("\n");
+}
+
 /**
  * Why the run is ending, in the record's own words. The order is the order of USEFULNESS, not
  * recency: what the run's own gate complained about is what a developer can act on.
@@ -120,6 +140,7 @@ function blockedCause(steps: Step[]): string | undefined {
 export function neededFromLog(steps: Step[]): string {
   const reason =
     blockedCause(steps) ??
+    gapCause(steps) ??
     budgetCause(steps) ??
     newestRedVerifyReason(steps) ??
     newestReason(steps, "ci", "red") ??
