@@ -1,13 +1,17 @@
 #!/usr/bin/env bun
 /**
  * Unit test for discoverInstalledExtensions against a synthetic
- * ~/.pi/agent/extensions/ tree.
+ * ~/.pi/agent/extensions/ tree, and for discoverPackageExtensions against
+ * packages declared in the same agent dir's settings.json.
  *
- * Verifies the four discovery rules:
+ * Verifies the discovery rules:
  *   1. Valid extensions (package.json + pi.extensions manifest) are forwarded
  *   2. pi-ensemble itself is skipped (no recursive subagent spawn)
  *   3. Directories without package.json or without pi.extensions are skipped
  *   4. PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1 returns an empty list
+ *   5. The agent dir is Pi's PI_CODING_AGENT_DIR, not PI_AGENT_DIR
+ *   6. settings.json npm/git packages with no extensions/ entry are forwarded,
+ *      per-package filters honoured, pi-rukas and pi-mcp-adapter skipped
  *
  * No Pi, no network.
  */
@@ -16,7 +20,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { discoverInstalledExtensions } from "../src/spawn-extension-forward.ts";
+import {
+  discoverInstalledExtensions,
+  discoverPackageExtensions,
+} from "../src/spawn-extension-forward.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -79,10 +86,57 @@ await writePkg(path.join(extDir, "pi-mcp-adapter"), {
   pi: { extensions: ["dist/index.js"] },
 });
 
-// Point discovery at our fake tree.
+// (g) packages installed by `pi install` — under Pi's npm/git dirs, declared
+// in settings.json, with no entry under extensions/.
+async function writeExt(file: string): Promise<void> {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, "export default () => {};\n");
+}
+const npmRoot = path.join(piAgentDir, "npm", "node_modules");
+await writePkg(path.join(npmRoot, "pi-gallery-auth"), {
+  name: "pi-gallery-auth",
+  version: "1.2.0",
+  pi: { extensions: ["./src/auth.ts"] },
+});
+await writeExt(path.join(npmRoot, "pi-gallery-auth", "src", "auth.ts"));
+const gitRoot = path.join(piAgentDir, "git", "github.com", "example", "pi-tools");
+await writePkg(gitRoot, { name: "pi-tools", version: "0.1.0" });
+await writeExt(path.join(gitRoot, "extensions", "keep.ts"));
+await writeExt(path.join(gitRoot, "extensions", "legacy.ts"));
+await writePkg(path.join(npmRoot, "@trail-openers", "pi-rukas"), {
+  name: "@trail-openers/pi-rukas",
+  version: "0.15.0",
+  pi: { extensions: ["./index.ts"] },
+});
+await writeExt(path.join(npmRoot, "@trail-openers", "pi-rukas", "index.ts"));
+await writePkg(path.join(npmRoot, "pi-mcp-adapter"), {
+  name: "pi-mcp-adapter",
+  version: "2.32.1",
+  pi: { extensions: ["./index.ts"] },
+});
+await writeExt(path.join(npmRoot, "pi-mcp-adapter", "index.ts"));
+await fs.writeFile(
+  path.join(piAgentDir, "settings.json"),
+  // A leading BOM: Pi accepts it, so discovery must too.
+  `\uFEFF${JSON.stringify({
+    packages: [
+      "npm:pi-gallery-auth@^1.0.0",
+      { source: "git:github.com/example/pi-tools@v1", extensions: ["!extensions/legacy.ts"] },
+      "npm:@trail-openers/pi-rukas",
+      "npm:pi-mcp-adapter",
+      "npm:pi-not-installed",
+    ],
+  })}`,
+);
+
+// Point discovery at our fake tree. PI_AGENT_DIR names an empty dir: Pi reads
+// PI_CODING_AGENT_DIR, so discovery must too.
 const prevAgentDir = process.env.PI_AGENT_DIR;
+const prevCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
 const prevDisable = process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD;
-process.env.PI_AGENT_DIR = piAgentDir;
+const decoyAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ensemble-discover-decoy-"));
+process.env.PI_AGENT_DIR = decoyAgentDir;
+process.env.PI_CODING_AGENT_DIR = piAgentDir;
 delete process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD;
 
 const result = discoverInstalledExtensions("test");
@@ -110,26 +164,46 @@ assert(!hasNotPi, "package.json without pi.extensions is filtered out");
 const hasAdapter = result.some((p) => p.endsWith("/pi-mcp-adapter"));
 assert(!hasAdapter, "pi-mcp-adapter is filtered out (issue #959: its /mcp registration would replace native MCP)");
 
+const packages = (await discoverPackageExtensions("test")).map((p) => path.relative(piAgentDir, p));
+console.log("package extensions:", packages);
+assert(
+  JSON.stringify(packages.sort()) ===
+    JSON.stringify(
+      [
+        path.join("git", "github.com", "example", "pi-tools", "extensions", "keep.ts"),
+        path.join("npm", "node_modules", "pi-gallery-auth", "src", "auth.ts"),
+      ].sort(),
+    ),
+  "settings.json packages forward their extension files: filter honoured, pi-rukas/adapter/uninstalled skipped",
+);
+
 // Opt-out env var
 process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD = "1";
 const optedOut = discoverInstalledExtensions("test");
 assert(optedOut.length === 0, "PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1 returns empty list");
+const optedOutPackages = await discoverPackageExtensions("test");
+assert(optedOutPackages.length === 0, "PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD=1 forwards no packages");
 
 // Missing extensions/ directory falls through cleanly
 delete process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD;
 const emptyAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ensemble-discover-empty-"));
-process.env.PI_AGENT_DIR = emptyAgentDir;
+process.env.PI_CODING_AGENT_DIR = emptyAgentDir;
 const noDir = discoverInstalledExtensions("test");
 assert(noDir.length === 0, "missing extensions/ dir returns empty list (no crash)");
+const noSettings = await discoverPackageExtensions("test");
+assert(noSettings.length === 0, "missing settings.json forwards no packages (no crash)");
 await fs.rm(emptyAgentDir, { recursive: true, force: true });
 
 // Restore env
 if (prevAgentDir === undefined) delete process.env.PI_AGENT_DIR;
 else process.env.PI_AGENT_DIR = prevAgentDir;
+if (prevCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+else process.env.PI_CODING_AGENT_DIR = prevCodingAgentDir;
 if (prevDisable === undefined) delete process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD;
 else process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD = prevDisable;
 
 await fs.rm(piAgentDir, { recursive: true, force: true });
+await fs.rm(decoyAgentDir, { recursive: true, force: true });
 await fs.rm(realSrc, { recursive: true, force: true });
 
 console.log(exit === 0 ? "\nAll discover-extensions checks passed." : "\nFAILED");

@@ -3,9 +3,14 @@
  * Pi's installed extensions (and an optional user-pinned one) into children
  * launched with `--no-extensions`, so provider/auth setup (e.g.
  * `pi-claude-auth`) and MCP bridges keep working without env-var wiring.
+ * Two sources: the `<agent dir>/extensions/` scan, and the packages the user
+ * `settings.json` declares (`pi install npm:…` / `git:…`), which Pi installs
+ * under its own npm/git directories where the scan never looks. The agent dir
+ * is Pi's own (`PI_CODING_AGENT_DIR`, `provider-env.ts` `agentDir`).
  *
- * Filesystem/env-only: no ExtensionAPI coupling. Split out of spawn.ts
- * (#171); consumed by `spawnSpecialist`.
+ * No ExtensionAPI coupling: the scan is filesystem/env-only, and the package
+ * side borrows the running Pi's exported package manager. Split out of
+ * spawn.ts (#171); consumed by `spawnSpecialist`.
  *
  * Note: this module deliberately does NOT read mcp.json or interact with
  * Pi's native MCP subsystem. Children get MCP through the `-e builtin:mcp`
@@ -15,10 +20,11 @@
  */
 
 import { readFileSync, readdirSync, realpathSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import type { PackageSource } from "@earendil-works/pi-coding-agent";
 import type { ExtensionPackageJson } from "./pi-event-shapes.ts";
-import { trace } from "./trace.ts";
+import { agentDir } from "./provider-env.ts";
+import { trace, traceWarn } from "./trace.ts";
 
 export function applyUserExtension(childArgs: string[], role: string): void {
   const userExt = process.env.PI_ENSEMBLE_USER_EXTENSION;
@@ -51,6 +57,26 @@ const PI_ENSEMBLE_PACKAGE_NAME = "@trail-openers/pi-rukas";
 // ~/.pi/agent/extensions/.
 const PI_MCP_ADAPTER_PACKAGE_NAME = "pi-mcp-adapter";
 
+const isSkippedPackage = (name: string | undefined) =>
+  name === PI_ENSEMBLE_PACKAGE_NAME || name === PI_MCP_ADAPTER_PACKAGE_NAME;
+
+function forwardDisabled(role: string): boolean {
+  if (process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD !== "1") return false;
+  trace(
+    `spawn[${role}]: extension auto-forward disabled via PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD`,
+  );
+  return true;
+}
+
+function readPackageJson(dir: string | undefined): ExtensionPackageJson | undefined {
+  if (!dir) return undefined;
+  try {
+    return JSON.parse(readFileSync(path.join(dir, "package.json"), "utf8")) as ExtensionPackageJson;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Resolve the absolute path to pi-rukas's extension directory for the
  * subagent permission-guard forward. Walks up from this module file
@@ -72,8 +98,8 @@ export function piEnsembleExtensionPath(): string | undefined {
 }
 
 /**
- * Scan `~/.pi/agent/extensions/` (or `$PI_AGENT_DIR/extensions`) for installed
- * Pi extensions and return absolute paths suitable for `--extension <path>`.
+ * Scan `<agent dir>/extensions/` for installed Pi extensions and return
+ * absolute paths suitable for `--extension <path>`.
  *
  * Subagents launch with `--no-extensions`, which suppresses every installed
  * extension. That breaks anything that depends on extension-injected provider
@@ -94,15 +120,8 @@ export function piEnsembleExtensionPath(): string | undefined {
  *    is typically a symlink to the source checkout.
  */
 export function discoverInstalledExtensions(role: string): string[] {
-  if (process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD === "1") {
-    trace(
-      `spawn[${role}]: extension auto-forward disabled via PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD`,
-    );
-    return [];
-  }
-
-  const piAgentDir = process.env.PI_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
-  const extensionsDir = path.join(piAgentDir, "extensions");
+  if (forwardDisabled(role)) return [];
+  const extensionsDir = path.join(agentDir(), "extensions");
 
   let entries: string[];
   try {
@@ -114,18 +133,9 @@ export function discoverInstalledExtensions(role: string): string[] {
   const forwarded: string[] = [];
   for (const entry of entries) {
     const entryPath = path.join(extensionsDir, entry);
-    const pkgPath = path.join(entryPath, "package.json");
-
-    let pkg: ExtensionPackageJson;
-    try {
-      pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as ExtensionPackageJson;
-    } catch {
-      continue;
-    }
-
-    if (!pkg.pi?.extensions || pkg.pi.extensions.length === 0) continue;
-    if (pkg.name === PI_ENSEMBLE_PACKAGE_NAME) continue;
-    if (pkg.name === PI_MCP_ADAPTER_PACKAGE_NAME) continue;
+    const pkg = readPackageJson(entryPath);
+    if (!pkg?.pi?.extensions || pkg.pi.extensions.length === 0) continue;
+    if (isSkippedPackage(pkg.name)) continue;
 
     let resolved: string;
     try {
@@ -137,4 +147,52 @@ export function discoverInstalledExtensions(role: string): string[] {
     trace(`spawn[${role}]: auto-forward --extension ${resolved} (${pkg.name ?? entry})`);
   }
   return forwarded;
+}
+
+/**
+ * Extension entry files of the packages declared in the user `settings.json`,
+ * resolved by the running Pi's own package manager so install locations, the
+ * `pi` manifest, conventional directories and per-package resource filters
+ * follow Pi's rules rather than a copy of them. Async because that API is.
+ *
+ *  - A source that is not installed is skipped, never installed: a spawn must
+ *    not run npm or git.
+ *  - Only `origin: "package"` resources count; the scan above owns
+ *    `extensions/`, and project `.pi/settings.json` packages are not read.
+ *  - pi-rukas and pi-mcp-adapter are skipped by package name, as in the scan.
+ *  - A Pi without this API forwards nothing and says so: the child then lacks
+ *    the package's provider setup, which must not be silent.
+ */
+export async function discoverPackageExtensions(role: string): Promise<string[]> {
+  if (forwardDisabled(role)) return [];
+  const dir = agentDir();
+  let settings: { packages?: PackageSource[]; npmCommand?: string[] };
+  try {
+    // Pi strips a leading BOM before parsing settings.json, so this must too.
+    const text = readFileSync(path.join(dir, "settings.json"), "utf8").replace(/^\uFEFF/, "");
+    settings = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (!settings.packages?.length) return [];
+  try {
+    const { DefaultPackageManager, SettingsManager } = await import(
+      "@earendil-works/pi-coding-agent"
+    );
+    const settingsManager = SettingsManager.inMemory({
+      packages: settings.packages,
+      npmCommand: settings.npmCommand,
+    });
+    const pm = new DefaultPackageManager({ cwd: dir, agentDir: dir, settingsManager });
+    const { extensions } = await pm.resolve(async () => "skip");
+    const forwarded = extensions
+      .filter((r) => r.enabled && r.metadata.origin === "package")
+      .filter((r) => !isSkippedPackage(readPackageJson(r.metadata.packageRoot)?.name))
+      .map((r) => r.path);
+    for (const p of forwarded) trace(`spawn[${role}]: auto-forward --extension ${p} (package)`);
+    return forwarded;
+  } catch (err) {
+    traceWarn(`spawn[${role}]: settings.json packages not forwarded: ${(err as Error).message}`);
+    return [];
+  }
 }
