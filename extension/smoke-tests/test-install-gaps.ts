@@ -6,9 +6,10 @@
  * come from install-preflight.sh, the one file that holds it.
  */
 
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { type InstallFacts, judgeInstallGaps } from "../src/install-gaps.ts";
+import { type InstallFacts, judgeInstallGaps, piManagedInstall } from "../src/install-gaps.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
@@ -78,4 +79,25 @@ assert(names({ wrapperOnPath: false }).join() === "wrapper", "no pi-rukas on PAT
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as { files: string[] };
 assert(pkg.files.includes("install-preflight.sh"), "the package ships install-preflight.sh, so the floor reaches a gallery install");
 
+// Only a `pi install` copy is warned at startup; an install.sh checkout is not.
+const tmp = mkdtempSync(path.join(os.tmpdir(), "install-gaps-"));
+const agent = path.join(tmp, "agent");
+mkdirSync(agent);
+symlinkSync(agent, path.join(tmp, "agent-link"));
+assert(
+  piManagedInstall(path.join(agent, "npm", "node_modules", "@trail-openers", "pi-rukas"), agent) &&
+    piManagedInstall(path.join(agent, "git", "github.com", "trail-openers", "pi-rukas"), agent),
+  "a copy under <agentDir>/npm or <agentDir>/git is a pi install",
+);
+assert(
+  piManagedInstall(path.join(agent, "npm", "pi-rukas"), path.join(tmp, "agent-link")),
+  "...also when the agent dir is reached through a symlink",
+);
+assert(
+  !piManagedInstall(path.join(tmp, "src", "pi-rukas"), agent) &&
+    !piManagedInstall(path.join(agent, "npmx", "pi-rukas"), agent),
+  "a checkout elsewhere is an install.sh host, not warned at startup",
+);
+
+rmSync(tmp, { recursive: true, force: true });
 process.exit(exit);

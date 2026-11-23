@@ -22,7 +22,7 @@ All optional. Defaults are reasonable for typical use. This file holds the full 
 
 `pi install npm:@trail-openers/pi-rukas` installs pi-rukas in host mode, and `pi update --extensions` upgrades it. Pi loads the extension, the built role prompts and the bundled skills from the package; skills are not symlinked into `~/.pi/agent/skills/`. Use one install path, not both: a host that ran `./install.sh` already loads pi-rukas through `~/.pi/agent/extensions/pi-rukas` and the skill symlinks, so remove those first or every command and skill registers twice. A git source (`pi install git:github.com/trail-openers/pi-rukas`) builds the role prompts at install time and needs `jq`.
 
-Each install step a gallery install skips is checked when a session starts. Until it is done, the session opens with a `pi-rukas setup is incomplete` warning that names it; pi-rukas never edits your config itself. `/ensemble-debug` lists the same gaps, or `install: complete`.
+Each install step a gallery install skips is checked when a session starts. Until it is done, the session opens with a `pi-rukas setup is incomplete` warning that names it (on stderr when Pi runs without a UI); pi-rukas never edits your config itself. A host set up by `./install.sh` gets no startup warning, since it skips some steps on purpose; `/ensemble-debug` lists the gaps on any host, or `install: complete`.
 
 - **pi-version**: the running `pi` is older than `install.sh`'s minimum version (`MIN_PI_VERSION` in `install-preflight.sh`, which the package ships). The warning carries the upgrade command.
 

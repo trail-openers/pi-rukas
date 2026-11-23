@@ -11,7 +11,10 @@
  *
  * The floor is read from install-preflight.sh, its single source, which the
  * package ships for that reason. A sandbox session is skipped: its image was
- * built by install.sh, and its settings belong to the container.
+ * built by install.sh, and its settings belong to the container. Only a copy
+ * Pi's package manager installed is warned at startup: an install.sh host
+ * skips some steps on purpose (no codebase-memory-mcp binary, a retry block
+ * the operator wrote), and /ensemble-debug lists its gaps on request.
  */
 
 import { existsSync, realpathSync } from "node:fs";
@@ -20,7 +23,7 @@ import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isVersionOlder, probePiVersion } from "./pi-version-probe.ts";
 import { agentDir } from "./provider-env.ts";
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 
 export type InstallGapName = "pi-version" | "mcp" | "retries" | "wrapper";
 
@@ -44,6 +47,22 @@ export interface InstallFacts {
 // install.sh links the extension into Pi's extensions dir and the loader keeps
 // the link path, so walking up from it leaves the checkout without realpath.
 const PACKAGE_ROOT = path.resolve(realpathSync(import.meta.dirname), "..", "..");
+
+/**
+ * Whether `pi install` put this copy here: Pi keeps user-scope npm packages
+ * under <agentDir>/npm and git clones under <agentDir>/git, and install.sh
+ * never loads a checkout from either. A project-scope (`-l`) install is not
+ * recognised and goes unwarned, the safe side for a startup notice.
+ */
+export function piManagedInstall(root = PACKAGE_ROOT, dir = agentDir()): boolean {
+  let real: string;
+  try {
+    real = realpathSync(dir);
+  } catch {
+    return false;
+  }
+  return ["npm", "git"].some((d) => root.startsWith(path.join(real, d) + path.sep));
+}
 
 /** Judge the gathered facts. Pure, so each gap is directly testable. */
 export function judgeInstallGaps(f: InstallFacts): InstallGap[] {
@@ -97,7 +116,7 @@ async function readText(file: string): Promise<string | null> {
 async function readJson(file: string): Promise<unknown> {
   const text = await readText(file);
   try {
-    return text === null ? undefined : JSON.parse(text);
+    return text === null ? undefined : JSON.parse(text.replace(/^\uFEFF/, ""));
   } catch {
     return undefined;
   }
@@ -131,7 +150,7 @@ export function formatInstallGaps(gaps: readonly InstallGap[]): string[] {
   return [
     "pi-rukas setup is incomplete:",
     ...gaps.map((g) => `  ${g.name}: ${g.warning}`),
-    "  fix: docs/configuration.md → Installing from the Pi package gallery",
+    "  fix: https://github.com/trail-openers/pi-rukas/blob/main/docs/configuration.md#installing-from-the-pi-package-gallery",
   ];
 }
 
@@ -140,18 +159,19 @@ let warned = false;
 /**
  * Warn once per process about the gaps that degrade a host-mode session. The
  * wrapper is left to /ensemble-debug: host mode is complete without it, so a
- * per-session notice would only nag an operator who chose host mode.
+ * per-session notice would only nag an operator who chose host mode. Without
+ * a UI, notify is a no-op, so the lines go to stderr as warnings.
  */
 export function warnInstallGapsOnce(ctx: ExtensionContext): void {
-  if (warned) return;
+  if (warned || !piManagedInstall()) return;
   warned = true;
   void installGaps()
     .then((gaps) => {
       const degrading = gaps.filter((g) => g.name !== "wrapper");
       if (degrading.length === 0) return;
-      const text = formatInstallGaps(degrading).join("\n");
-      trace(text);
-      ctx.ui.notify(text, "warning");
+      const lines = formatInstallGaps(degrading);
+      if (ctx.hasUI) ctx.ui.notify(lines.join("\n"), "warning");
+      else for (const line of lines) traceWarn(line);
     })
     .catch((err: unknown) => trace(`install-gaps: ${String(err)}`));
 }
