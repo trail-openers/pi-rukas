@@ -9,9 +9,9 @@
  * print (`lean/spec-blocks.ts`) — keeps the wording a run is judged on and the
  * wording its reviewers read in one place, and `fenceText` disarms the result like
  * every other cross-boundary value at these print sites. The adversarial seat gets
- * it through the loop's `reviewCriteria` param, and the switch lives in
- * `review-spec-split.ts` — not on the loop's params, so classic /work cannot pass
- * criteria in and its reviewer's prompt is unchanged by this feature.
+ * it through the loop's `reviewCriteria` param, which the lean review step renders
+ * for (`reviewCriteriaSection` in `review-spec-split.ts`), so classic /work cannot
+ * pass criteria in and its reviewer's prompt is unchanged by this feature.
  *
  * The section opens with the spec's `problem`, because a review seat that
  * reads only the criteria list is a seat that never saw what the run was for: the
@@ -46,9 +46,9 @@ const PROBLEM_TRUNCATION_MARKER = "…(problem truncated)";
 /** Names where the ids come from, so a reviewer can cite one back. */
 export const LEAN_REVIEW_CRITERIA_HEADING = "## The acceptance criteria (pi-spec v1)";
 
-/** What the seat is told to do with the list. Wording that the `review` row of
- * docs/lean.md restates, so the sentence in the docs and the sentence the child
- * reads move together. */
+/** What the seat is told to do with the list. The `review` row of docs/lean.md
+ * describes this section, so the docs and the sentence the child reads are a
+ * two-sided change. */
 export const LEAN_REVIEW_CRITERIA_LEAD =
   "Every criterion below is a requirement of this issue, printed in full up to its own cap, with its own marker when that cap cut it. A finding whose fix would contradict one is not a finding.";
 
@@ -77,11 +77,9 @@ function fenceCriteria(block: string): string {
  * The statement is gated on the list rendering at least one row, so the two calls
  * that read this section — `seatIssueBody` and `renderReviewIssueBlock`, both of
  * which strip the raw block on the same `!== ""` test — never strip a body whose
- * contract the section did not deliver. It is gated on the statement's own switch
- * too, read at call time here rather than at the two print sites, so the section a
- * seat is handed and the section that decided whether to hand it one are the same
- * render: two readers of one knob, read at two moments, is how an off state ends
- * up printing half of itself.
+ * contract the section did not deliver. Every reader calls this one function
+ * rather than deciding for itself whether to render, so the section a seat is
+ * handed and the section that decided whether to hand it one are the same render.
  */
 export function renderSpecCriteriaSection(
   rawBody: string | undefined,

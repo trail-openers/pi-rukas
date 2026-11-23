@@ -17,9 +17,6 @@
  *      is ever cut by a prose bound;
  *   3. both are disarmed at the print site by `fenceText`, because a criterion's
  *      text is issue-author prose crossing into six children's briefs.
- *
- * The rules ship always-on: the single bounded block this module used to fall
- * back to was the defect, not an operator posture.
  */
 import {
   ADVERSARIAL_FINDING_RULE,
@@ -68,10 +65,10 @@ export function renderReviewIssueBlock(
   const prose = renderReviewProse(rawBody);
   if (prose === "") return "";
   const criteria = renderSpecCriteriaSection(rawBody, run);
-  // With no parsable block the seat reads exactly what it read before the split:
+  // With no parsable block the seat reads the ordinary single bounded issue block:
   // same lead-in, same rule, same fenced body. A body that never carried a spec
-  // cannot tell the split is in force, which is what makes the no-spec arm of the
-  // on-arm test assertable against the pre-split golden.
+  // cannot tell this module is in force, which is what makes the no-spec arm
+  // assertable byte for byte against the fallback renderers.
   if (criteria === "") return fencedIssuePromptBlock(rawBody, rule, fencedIssueBody);
   const statementShown =
     normalizeProse(stripPiSpecBlocks(rawBody ?? "")) === normalizeProse(specProblem(rawBody, run));

@@ -7,7 +7,7 @@
  * that field is lean's review seam (`lean/review-deps.ts`), which hands the loop
  * the prose with its `pi-spec v1` block stripped and the criteria as a section.
  * A loop that derived a section from `issueBody` would put one in front of every
- * caller that never asked for it — and the split is always on, so that is the
+ * caller that never asked for it — and without that seam the caller is the
  * classic /work driver and the `adversarial_loop` tool, whose issue bodies
  * carry a `pi-spec v1` block whenever `/plan` filed them.
  *

@@ -8,8 +8,8 @@
  * still pass." became its own criterion, its test exited 0 on base, and specify
  * refused the run `not-ready` at exit 11. The cases drive the mapper, the persisted
  * record's gate, the intake's guards-only decline, the real `specify` step over a real
- * git repo, and `ci`'s full tier. The split ships always-on — its off arm was the
- * defect this retires — so every case runs on the ambient environment.
+ * git repo, and `ci`'s full tier. The rule has no knob, so every case runs on the
+ * ambient environment.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -153,8 +153,6 @@ async function specifyArm() {
   if (contract === undefined) throw new Error("no contract");
   const derivedSpec: DerivedSpec = { ...contract, model: "", at: 0 };
   const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
-  // The guard's own test is green on base: the colour check and the build already pass.
-  const guardTest: { criterionId: string; testFiles: string[] }[] = [];
   return runSpecify({
     repoRoot,
     baseSha,
@@ -167,7 +165,7 @@ async function specifyArm() {
       writeFileSync(path.join(wt, "tests/AC1-retry.test.sh"), redScript(), { mode: 0o755 });
       writeFileSync(path.join(wt, "tests/AC2-guard.test.sh"), greenScript(), { mode: 0o755 });
     },
-    toolUses: [submit("AC1", ["tests/AC1-retry.test.sh"]), ...guardTest],
+    toolUses: [submit("AC1", ["tests/AC1-retry.test.sh"])],
   });
 }
 {
