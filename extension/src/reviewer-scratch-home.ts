@@ -91,12 +91,12 @@ export const SCRATCH_HOME_VARS = [
  * under the scratch and finds no `models.json`, `auth.json` or `settings.json`,
  * which surfaces as `Unknown provider "…"` roughly eight seconds into the run
  * (#2368). `PI_AGENT_DIR` is the name PI-RUKAS reads — `spawn-support.ts`
- * (transcripts), `review-store-locator.ts` / `review-state-path.ts` (the
- * findings store) and `spawn-extension-forward.ts` (installed extensions) all
- * resolve it with the same `?? <homedir>/.pi/agent` default, and `review-accept
- * -guard.ts` matches a command text that names `$PI_AGENT_DIR` against the root
- * it resolves from it — so dropping it would have moved those roots to the
- * scratch while leaving every reader of it confident nothing had moved.
+ * (transcripts) and `review-store-locator.ts` / `review-state-path.ts` (the
+ * findings store) resolve it with the same `?? <homedir>/.pi/agent` default,
+ * and `review-accept-guard.ts` matches a command text that names
+ * `$PI_AGENT_DIR` against the root it resolves from it — so dropping it would
+ * have moved those roots to the scratch while leaving every reader of it
+ * confident nothing had moved.
  */
 export const REEXPORTED_HOME_ROOTS = [
   "PI_CODING_AGENT_DIR",

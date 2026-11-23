@@ -264,6 +264,7 @@ When updating the pin:
    - Tool-call args field (we depend on `arguments`).
    - CLI flags: `--mode rpc`, `--no-extensions`, `--append-system-prompt`, `--session`, `--skill`, `--extension`, `--model`.
    - `--mode rpc` stdin protocol: `{type:"prompt"|"steer"|"abort"|"follow_up"|"get_state", …}` commands (load-bearing for `dispatch_steer` and the initial-prompt path).
+   - Runtime value imports of the running Pi: `DefaultPackageManager`, `SettingsManager.inMemory` and `resolve()`'s `ResolvedResource` shape, which forward `settings.json` packages to children (`spawn-extension-forward.ts`). `test-discover-extensions.ts` exercises them offline against the pinned copy.
 4. Update the "Last verified against pi X.Y.Z" line in docs/pi-compatibility.md (version + date) and the restating line in AGENTS.md § 4.
 5. Open a PR with the bump + smoke-test evidence.
 

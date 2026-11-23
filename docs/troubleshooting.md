@@ -442,6 +442,20 @@ PI_CODING_AGENT_DIR="$HOME/.pi/agent" pi-rukas-headless --capabilities | head -1
 
 If read-only children work with the variable exported and die without it, the defect is this one. Turning the redirect off (`PI_ENSEMBLE_REVIEWER_SCRATCH_HOME=0`) also restores them, and is the operator's escape hatch for the isolation itself — but it puts the child's bash back on your real `$HOME`, which is what the redirect exists to prevent, so prefer the fix.
 
+## Subagent provider requests fail while the parent's succeed
+
+### Symptom
+
+The parent session talks to its provider normally, but every subagent fails on its first request — rejected, unauthorised, or `Unknown provider` — and the extension that sets that provider up (an auth extension, a custom provider) was installed with `pi install npm:…` or `pi install git:…`.
+
+### Cause
+
+Children start with `--no-extensions`, and pi-rukas adds the parent's extensions back one `--extension` at a time. A `pi install` package is declared under `packages` in the user `settings.json` and installed under Pi's own `npm/` or `git/` directory, not under `extensions/`, so a forwarder that scans only `extensions/` never passes it on.
+
+### Fix
+
+Nothing to do: every spawn also forwards the extension files of the packages in `<agent dir>/settings.json`, resolved by the running Pi's own package manager (under `pi-rukas-headless`, a plain bun process, the copy installed beside the extension), so the `pi` manifest, conventional directories and per-package `extensions` filters apply exactly as in the parent. The agent dir is Pi's (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`). Not forwarded: pi-rukas itself and `pi-mcp-adapter` (as for `extensions/`), a package that is declared but not installed (a spawn never installs one), and project `.pi/settings.json` packages. With `PI_ENSEMBLE_DEBUG=1` each forwarded file is traced as `auto-forward --extension <path> (package)`; a Pi without the package-manager API prints a `WARN … settings.json packages not forwarded` line instead. Detected by `extension/smoke-tests/test-discover-extensions.ts`.
+
 ## Subagent silently "finished" but the worktree wasn't touched
 
 ### Symptom

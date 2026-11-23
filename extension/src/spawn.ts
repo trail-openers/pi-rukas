@@ -38,11 +38,7 @@ import { buildChildEnv } from "./spawn-child-env.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
 import { installExitKillSeam, startExitWait } from "./spawn-exit-await-session.ts";
 
-import {
-  applyUserExtension,
-  discoverInstalledExtensions,
-  piEnsembleExtensionPath,
-} from "./spawn-extension-forward.ts";
+import { discoverPackageExtensions } from "./spawn-extension-forward.ts";
 import {
   InFlightTools,
   attachStdoutLinePump,
@@ -152,13 +148,16 @@ async function spawnSpecialistInner(
   // args: a missing companion must be a named dispatch failure, never a child
   // without the mode-independent guards.
   preflightChildGuards();
+  // Package extensions resolve through Pi's async package manager, so they
+  // reach the sync argv builder as extra args.
+  const packageExtensions = await discoverPackageExtensions(spec.role);
   const childArgs = buildChildArgs(
     spec.role,
     tmpPromptFile,
     transcriptPath,
     modelChoice,
     subagentGuardEnabled,
-    opts.extraArgs,
+    [...packageExtensions.flatMap((p) => ["--extension", p]), ...(opts.extraArgs ?? [])],
   );
   // No positional prompt — sent over stdin RPC channel below.
   const invocation = getPiInvocation(childArgs);
