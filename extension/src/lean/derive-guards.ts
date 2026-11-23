@@ -6,7 +6,8 @@
  * never prove red, and coverage `all-criteria` refuses the whole run over it. A guard is therefore
  * NOT a criterion: `derive` keeps it beside the contract (`DerivedSpec.guards`), it never enters
  * `testCriteria`, and the run's full verify tier — which `ci` requires before a run can land — is
- * what enforces it. No guard is ever executable text: derive authors no command.
+ * what enforces it. No guard is ever executable text: derive authors no command, and the split
+ * ships always-on — there is no off arm to restore.
  *
  * The deriving child is asked to sort guards out itself; {@link isRegressionGuard} is the
  * deterministic arm that moves a bullet whose WHOLE text is such a demand, so the split does not
@@ -14,10 +15,6 @@
  * test: the subject must be named as existing ("the existing …", "all pre-existing …"), so "the
  * other tabs still work" — which may be the bug itself — is left to the child, which sees the
  * ticket; and a mixed sentence ("X returns 3 and the build still passes") stays a criterion.
- *
- * Only the literal `"0"` turns the switch off, and it is read at CALL time (every lean smoke file
- * shares one bun process). Off, derive's brief, output and persisted record are today's, byte for
- * byte, with no `guards` field.
  */
 
 import { criterionText } from "../pi-spec-map.ts";
@@ -33,11 +30,6 @@ export interface Guard {
 /** The not-ready reason for a ticket whose every bullet is a guard. */
 export const GUARDS_ONLY_RULE =
   "the ticket asks only that existing checks keep passing — there is no new behaviour to build";
-
-/** Whether derive splits regression guards out of the criteria. */
-export function leanDeriveRegressionGuardsEnabled(): boolean {
-  return process.env.PI_ENSEMBLE_LEAN_DERIVE_REGRESSION_GUARDS !== "0";
-}
 
 const KEEPS =
   /^(?:(?:the|all|every|any)\s+)?(?:existing|pre-existing)\b[^,;:!?]*?\s(?:still|continues? to|keeps?)\s+(?:pass|passes|passing|work|works|working|succeeds?|succeeding|builds?|building)(?:\s+as before)?\s*\.?$/i;

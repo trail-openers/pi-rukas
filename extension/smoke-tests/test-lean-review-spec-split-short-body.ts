@@ -19,20 +19,32 @@
  *
  * Lives apart from the ON-arm file because both drive a real temp repo and a
  * mocked spawn, and the two cases must not share one module's spawn mock.
+ *
+ * The split ships always-on, so the cases run on the ambient environment.
  */
 
+import { fencedIssueBody } from "../src/adversarial-prompts.ts";
 import {
   LEAN_REVIEW_CRITERIA_HEADING,
   renderSpecCriteriaSection,
 } from "../src/lean/review-criteria.ts";
 import { fixPrompt, lensContext } from "../src/lean/review-deps.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { runReviewStepCapturingAll } from "./lib/lean-review-adversarial-capture.ts";
 import { SHORT_CRITERION_IDS, SHORT_SPEC_BODY } from "./lib/lean-review-spec-fixture.ts";
-import { rawBlockPayload } from "./lib/lean-review-spec-split-golden.ts";
+
 
 const { assert, failures } = makeAssert();
+
+/** The block keys a seat that strips nothing WOULD print, read off the raw render
+ * of THIS body — a hand-picked key is an assertion about the fixture's spelling,
+ * and a body that renames one passes on a seat that stripped nothing at all. */
+function rawBlockPayload(issueBody: string): string[] {
+  const printed = fencedIssueBody(issueBody);
+  return ["problem", "criteria", "id", "text", "verify"]
+    .map((k) => `"${k}"`)
+    .filter((needle) => printed.includes(needle));
+}
 
 /** A criterion id the child can only have read from the criteria section: the
  * renderer's own bullet shape, id and verify kind together. */
@@ -90,7 +102,7 @@ function fixerArgs(issueBody: string): Record<string, unknown> {
   };
 }
 
-await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
+async function main(): Promise<void> {
   const payload = rawBlockPayload(SHORT_SPEC_BODY);
   const goldenCriteria = renderSpecCriteriaSection(SHORT_SPEC_BODY);
   // Non-vacuity, first: a seat that strips nothing MUST print the block's JSON
@@ -134,7 +146,9 @@ await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
     goldenCriteria,
   );
   judge("fixPrompt", fixPrompt(fixerArgs(SHORT_SPEC_BODY) as never), payload, goldenCriteria);
-});
+}
+
+await main();
 
 console.log(
   `\n${failures() === 0 ? "short-body seats green" : "short-body seats RED"} (${String(failures())} failing)`,

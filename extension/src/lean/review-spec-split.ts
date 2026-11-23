@@ -3,7 +3,7 @@
  * sections in front of the review seats.
  *
  * One `MAX_ISSUE_CHARS` budget over the body AND its `pi-spec` block lets a long
- * statement cut the machine block first. This module splits the two for every lean
+ * statement cut the block first. This module splits the two for every lean
  * review seat (the six lenses, the adversarial reviewer, the fixer), the way
  * `lean/issue-prose.ts` splits them for the oracle seats:
  *
@@ -18,11 +18,8 @@
  *   3. both are disarmed at the print site by `fenceText`, because a criterion's
  *      text is issue-author prose crossing into six children's briefs.
  *
- * `PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT=0` restores the single bounded block byte
- * for byte: with the switch off nothing here parses, strips or renders, and the
- * print sites take the call they take today. The reader is called at CALL time so
- * a smoke file can pin either arm with `withEnv` without one file's pin leaking
- * into the next.
+ * The rules ship always-on: the single bounded block this module used to fall
+ * back to was the defect, not an operator posture.
  */
 import {
   ADVERSARIAL_FINDING_RULE,
@@ -34,11 +31,6 @@ import { renderSpecCriteriaSection } from "./review-criteria.ts";
 import { specFor } from "./spec-for.ts";
 import { normalizeProse, stripPiSpecBlocks } from "./spec.ts";
 import type { ContractSource } from "./state-derived-spec.ts";
-
-/** Whether lean's review seats receive the split rendering. */
-export function leanReviewSpecSplitEnabled(): boolean {
-  return process.env.PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT !== "0";
-}
 
 /**
  * The issue's own words for a review seat: the body with its spec block removed,
@@ -55,8 +47,8 @@ const CRITERIA_CLAUSE =
   " Its acceptance criteria are printed in their own section below and are not truncated by the issue's length.";
 
 /**
- * The issue block a lean review seat receives with the split on: the stripped
- * prose and the criteria section, one lead-in over both.
+ * The issue block a lean review seat receives: the stripped prose and the criteria
+ * section, one lead-in over both.
  *
  * `rule` is the seat's own sentence about what to do with the requirements — each
  * print site keeps its copy, because the fixer's rule and a lens's rule are not the
@@ -66,8 +58,7 @@ const CRITERIA_CLAUSE =
  * `/plan` files. The section below prints that statement under the criteria cap, far
  * above the prose bound, so a second copy here is a second contract to disagree with
  * AND a tail the shorter bound already cut. The comparison is `leanIssueSection`'s —
- * both sides whitespace-collapsed BEFORE any bound or fence — gated on the problem
- * switch, so with `=0` the prose prints exactly as it did today.
+ * both sides whitespace-collapsed BEFORE any bound or fence.
  */
 export function renderReviewIssueBlock(
   rawBody: string | undefined,
@@ -79,7 +70,7 @@ export function renderReviewIssueBlock(
   const criteria = renderSpecCriteriaSection(rawBody, run);
   // With no parsable block the seat reads exactly what it read before the split:
   // same lead-in, same rule, same fenced body. A body that never carried a spec
-  // cannot tell the switch is on, which is what makes the no-spec arm of the
+  // cannot tell the split is in force, which is what makes the no-spec arm of the
   // on-arm test assertable against the pre-split golden.
   if (criteria === "") return fencedIssuePromptBlock(rawBody, rule, fencedIssueBody);
   const statementShown =
@@ -100,7 +91,7 @@ function specProblem(rawBody: string | undefined, run: ContractSource): string {
 /**
  * The criteria argument for the adversarial seat, whose prompt is built inside the
  * loop. The loop takes the prose as `issueBody` and this as its own field, so the
- * switch is read once per gate call and an off arm threads nothing.
+ * pair is threaded per gate call or not at all.
  */
 export function reviewCriteriaSection(
   rawBody: string | undefined,
@@ -108,7 +99,7 @@ export function reviewCriteriaSection(
 ): {
   reviewCriteria?: string;
 } {
-  const criteria = leanReviewSpecSplitEnabled() ? renderSpecCriteriaSection(rawBody, run) : "";
+  const criteria = renderSpecCriteriaSection(rawBody, run);
   return criteria === "" ? {} : { reviewCriteria: criteria };
 }
 
@@ -134,27 +125,10 @@ export function seatIssueBody(
   rawBody: string | undefined,
   run: ContractSource = {},
 ): string | undefined {
-  if (!leanReviewSpecSplitEnabled()) return rawBody;
   // The same `run` the criteria section is rendered with: this value and that
   // section are one pair (see the header), and rendering the criteria from the body
   // alone would split the pair for exactly the runs that carry a derived contract.
   return renderSpecCriteriaSection(rawBody, run) === ""
     ? rawBody
     : stripPiSpecBlocks(rawBody ?? "");
-}
-
-/**
- * One call at each print site, so the switch is read in exactly one place: with
- * it off this is today's `fencedIssuePromptBlock(rawBody, rule, fencedIssueBody)`
- * — the parse, the strip and the criteria render never happen — and with it on it
- * is the split block above.
- */
-export function reviewIssueBlock(
-  rawBody: string | undefined,
-  rule: string,
-  run: ContractSource = {},
-): string {
-  return leanReviewSpecSplitEnabled()
-    ? renderReviewIssueBlock(rawBody, rule, run)
-    : fencedIssuePromptBlock(rawBody, rule, fencedIssueBody);
 }

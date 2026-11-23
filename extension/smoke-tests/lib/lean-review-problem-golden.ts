@@ -2,16 +2,18 @@
  * lib/lean-review-problem-golden — the review seats' briefs as they rendered
  * BEFORE the spec's `problem` was put at the head of the criteria section.
  *
- * `lib/lean-review-spec-split-golden.ts` freezes the pre-SPLIT renders and reads
- * the criteria section's heading and lead from `lean/review-criteria.ts`. This
- * change owns that module's wording, so a golden that read it from there would move
- * with the thing it exists to catch: the pre-statement section — heading, lead, and
- * both payloads' caps and markers — is restated here instead, and the clip notices
- * are built by concatenation so this file's prose, which names them, is not matched
- * by the substitutions it describes. What this file does NOT own — the shared
- * lead-in, each seat's rule sentence, the decline rule — is imported from its real
- * module, because a change that moves one of those is a defect to report, not one to
- * forgive.
+ * The pre-SPLIT fallback renders for the no-parsable-block shape no longer live in a
+ * golden lib: `test-lean-review-spec-split-on.ts` builds them today in its
+ * `fallbackLensContext` and `fallbackFixIssueSection`, from the shared renderers at
+ * the print sites each one judges. This change owns `lean/review-criteria.ts`'s
+ * wording, so a golden that read the criteria section's heading and lead back from
+ * that module would move with the thing it exists to catch: the pre-statement
+ * section — heading, lead, and both payloads' caps and markers — is restated here
+ * instead, and the clip notices are built by concatenation so this file's prose,
+ * which names them, is not matched by the substitutions it describes. What this
+ * file does NOT own — the shared lead-in, each seat's rule sentence, the decline
+ * rule — is imported from its real module, because a change that moves one of those
+ * is a defect to report, not one to forgive.
  *
  * The three goldens below are the shapes the two print sites built before the
  * statement existed: the criteria section with nothing above the list, and the two

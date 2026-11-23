@@ -241,9 +241,8 @@ the probe-shaped file is graded by the red proof alone, exactly as v0.14.71 grad
 ("the existing checks and the build still pass") into a criterion of its own. Such a line is green
 on the base, so no red test for it can exist, and `specify` refuses the run.
 
-**Fix:** leave `PI_ENSEMBLE_LEAN_DERIVE_REGRESSION_GUARDS` unset (the default): derive sets such
-lines aside as regression guards, which the run's full verify tier enforces at `ci` — so the project
-needs a full tier (`verify.full` or `.pi/verify-cmd`). A wording the guard rule does not recognise
+**Fix (shipped):** derive sets such lines aside as regression guards, which the run's full verify
+tier enforces at `ci` — so the project needs a full tier (`verify.full` or `.pi/verify-cmd`). A wording the guard rule does not recognise
 can still become a criterion; rewrite the line as "the existing … still pass", or add a `pi-spec v1`
 block by hand (or with `/plan`).
 
@@ -675,7 +674,7 @@ PR: [#1069](https://github.com/trail-openers/pi-rukas/issues/1069)
 
 `isolateLedger()` now always points at a fresh private temp file, saves and restores the env around its own use, and removes only the directory it created. Honouring an operator's scratch ledger is a separate, explicit call — `adoptLedgerOverride()` — which creates nothing and registers no cleanup. `test-ledger-isolation.ts` asserts a second call cannot inherit the first one's path and that the process's env is what it was before.
 
-**What is NOT this bug:** the four legitimate no-write outcomes (`noReview`, carry, no branch, no patch id) write nothing at all and are worded differently on purpose — none of them mention a path. If the summary has no misdirection line and the ledger has no `writtenTo` row, the review really did not record, and the refusal's own reason says which: `no branch to key the ledger entry on`, or the step the patch id failed at — the mainline or remote could not be resolved, the merge-base failed or does not exist, `git patch-id` failed, or `empty diff: …` (the reviewed tree has no change against its merge-base with the mainline). A lean run whose log shows `empty diff` with `PI_ENSEMBLE_LEAN_LENS_LEDGER_AT_HEAD=0` set is the run checkout at its base commit being diffed; unset the knob ([configuration.md](configuration.md)).
+**What is NOT this bug:** the four legitimate no-write outcomes (`noReview`, carry, no branch, no patch id) write nothing at all and are worded differently on purpose — none of them mention a path. If the summary has no misdirection line and the ledger has no `writtenTo` row, the review really did not record, and the refusal's own reason says which: `no branch to key the ledger entry on`, or the step the patch id failed at — the mainline or remote could not be resolved, the merge-base failed or does not exist, `git patch-id` failed, or `empty diff: …` (the reviewed tree has no change against its merge-base with the mainline). A lean run's own round never produces that `empty diff`: the step binds the ledger row to the reviewed head, not to the run checkout at its base commit.
 
 **Recovery:** unset `PI_ENSEMBLE_REVIEW_LEDGER_FILE` in the reviewing process (`env | grep PI_ENSEMBLE_REVIEW_LEDGER_FILE` to find it; check the parent shell and any test helper that exported it), then re-run the review so the round is recorded where the guard reads. The redirected file is the record that the review happened — read it to confirm the verdict before re-running. Do not hand-copy a `writtenTo` row into the real ledger: it stamps a path the guard did not write and would be refused as an unbound row.
 
@@ -805,7 +804,7 @@ The verdict is the last surviving candidate, so a reviewer that muses about one 
 
 **Cause and what to check first:** the lean review seats receive the issue in two sections — the prose block, bounded like any other issue block with `…(issue truncated)`, and the criteria section, `## The acceptance criteria (pi-spec v1)`, printed in full up to its own 20 000-character cap, past which it says `…(criteria truncated)` — the two markers are deliberately different, so which half was cut is readable off the brief. So the first thing to read is the child's brief: no criteria section at all means the block did not parse. A `pi-spec v1` block is read only when it is the file's only such block, opens with the info string on its own line, closes with a line of backticks, and carries JSON that matches the schema; a second block, an unterminated fence, or a schema mismatch makes it *unreadable to every seat*, not just the reviewer, and the oracle run refuses such an issue. Fix the issue body (`/plan` re-authors it) rather than the review.
 
-**If the block is fine and the criteria section is still missing:** `PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT=0` (or an exported `=0` in the parent shell) takes the split out and the reviewer reads one bounded block again, where a long statement can cut the criteria. See [configuration.md](configuration.md).
+**If the block is fine and the criteria section is still missing:** the seat was reached by a caller that renders none — the split belongs to the lean review step, so classic `/work`'s adversarial reviewer and the `adversarial_loop` tool read one bounded block by design, where a long statement can cut the criteria.
 
 ### A lens line says `N malformed report_finding call(s) skipped`
 

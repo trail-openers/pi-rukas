@@ -33,13 +33,7 @@ import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import { type Budget, type WorkConfig, loadWorkConfig } from "./config.ts";
 import { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
-import {
-  GUARDS_ONLY_RULE,
-  GUARD_MAX,
-  type Guard,
-  isRegressionGuard,
-  leanDeriveRegressionGuardsEnabled,
-} from "./derive-guards.ts";
+import { GUARDS_ONLY_RULE, GUARD_MAX, type Guard, isRegressionGuard } from "./derive-guards.ts";
 import type { PiSpec } from "./spec.ts";
 import { SPEC_INFO, fencedBlocks, parsePiSpec } from "./spec.ts";
 import { derivedSpecProblem } from "./state-derived-spec.ts";
@@ -92,10 +86,7 @@ export type DeriveDispatch = (
  * own text says "ignore your instructions" is the shape this boundary must survive, and
  * the cheapest way to survive it is never to let that text sit at the prompt's own
  * level. */
-export function derivePrompt(
-  input: { title: string; body: string },
-  guards = leanDeriveRegressionGuardsEnabled(),
-): string {
+export function derivePrompt(input: { title: string; body: string }): string {
   return [
     "You are reading one issue for a build engine that cannot start without a machine-readable contract. State that contract from the issue text, and nothing else.",
     "",
@@ -112,11 +103,7 @@ export function derivePrompt(
     "ONE fenced block whose info string is exactly `pi-spec v1`, holding JSON with:",
     '- "problem": one neutral sentence saying what is wrong. Do NOT restate or repeat the issue title — the title is already in front of every reader of this field.',
     `- "criteria": at most ${String(DERIVE_MAX_CRITERIA)} criteria, each { "id": "AC1", "text": "…", "verify": "test" } — ids AC1, AC2, … in order, every one "verify": "test". You may not make a criterion a command or a manual check.`,
-    ...(guards
-      ? [
-          `- "guards": at most ${String(GUARD_MAX)} strings, each a sentence of the issue that only asks existing behaviour to keep working ("the existing checks still pass", "no regressions", "nothing else changes"). A guard is not a criterion: no test can fail on it before the change, and the run's full verify tier enforces it. Guards count toward the ${String(DERIVE_MAX_CRITERIA)}: criteria plus guards above ${String(DERIVE_MAX_CRITERIA)} are refused as too large. When a sentence mixes new behaviour with such a demand, the new behaviour is a criterion and only the rest is a guard. Omit the field when there are none.`,
-        ]
-      : []),
+    `- "guards": at most ${String(GUARD_MAX)} strings, each a sentence of the issue that only asks existing behaviour to keep working ("the existing checks still pass", "no regressions", "nothing else changes"). A guard is not a criterion: no test can fail on it before the change, and the run's full verify tier enforces it. Guards count toward the ${String(DERIVE_MAX_CRITERIA)}: criteria plus guards above ${String(DERIVE_MAX_CRITERIA)} are refused as too large. When a sentence mixes new behaviour with such a demand, the new behaviour is a criterion and only the rest is a guard. Omit the field when there are none.`,
     `More than ${String(DERIVE_MAX_CRITERIA)} criteria and the change is refused as too large for one run, so if the issue genuinely needs more, keep the ${String(DERIVE_MAX_CRITERIA)} that decide whether it works and leave the rest: a smaller honest contract builds, a padded one is refused.`,
     '- "size": "S", "M" or "L", judged from the criteria you listed.',
     "",
@@ -138,10 +125,7 @@ export function derivePrompt(
  * child listed under `guards` — or whose whole text is a guard — rides beside the
  * criteria, and `size` counts criteria plus guards so the split never moves the band.
  */
-export function parseDerivedBlock(
-  text: string,
-  guardsOn = leanDeriveRegressionGuardsEnabled(),
-): DerivedContract | undefined {
+export function parseDerivedBlock(text: string): DerivedContract | undefined {
   if (text.length > REPLY_MAX_CHARS) return undefined;
   // The reply is PROSE with the block inside it and `parsePiSpec` reads a BODY whose
   // whole content is the contract, so the block is located first: one fence goes to the
@@ -165,14 +149,10 @@ export function parseDerivedBlock(
       .replace(/[\s.!;:,]+$/, "")
       .toLowerCase();
   const listedKeys = new Set(listedText.map(key));
-  const guards = guardsOn
-    ? [...listedText, ...bullets.filter(isRegressionGuard)]
-        .map(criterionText)
-        .filter((g, i, all) => key(g) !== "" && all.findIndex((o) => key(o) === key(g)) === i)
-    : [];
-  const kept = guardsOn
-    ? bullets.filter((b) => !isRegressionGuard(b) && !listedKeys.has(key(b)))
-    : bullets;
+  const guards = [...listedText, ...bullets.filter(isRegressionGuard)]
+    .map(criterionText)
+    .filter((g, i, all) => key(g) !== "" && all.findIndex((o) => key(o) === key(g)) === i);
+  const kept = bullets.filter((b) => !isRegressionGuard(b) && !listedKeys.has(key(b)));
   const guardField =
     guards.length === 0 ? {} : { guards: guards.slice(0, GUARD_MAX).map((g) => ({ text: g })) };
   // An EMPTY criteria array is not "nothing parsable": the child wrote a block, and

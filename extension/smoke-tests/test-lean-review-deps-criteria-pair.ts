@@ -11,9 +11,7 @@
  *
  *   - strip without a section → the child loses the criteria;
  *   - a section without the strip → the block reaches the child twice, as JSON and
- *     as rendered rows;
- *   - the switch off → neither, and the loop re-derives from the RAW body exactly
- *     as it did before the split existed.
+ *     as rendered rows.
  *
  * Each case asserts on what the CHILD received — `spawnSpecialist`'s prompt and
  * `SpawnOptions`, the convention `test-adversarial-reviewer-budget.ts` and
@@ -32,7 +30,6 @@ import { LEAN_REVIEW_CRITERIA_HEADING } from "../src/lean/review-criteria.ts";
 import { reviewDeps } from "../src/lean/review-deps.ts";
 import type { ReviewDeps } from "../src/lean/review.ts";
 import type { DispatchResult } from "../src/types.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { gitTestEnv } from "./lib/git-test-env.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { isolateLedger } from "./lib/review-ledger-test-helpers.ts";
@@ -166,63 +163,47 @@ async function reviewerBrief(): Promise<string> {
 }
 
 try {
-  await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
+  {
     const brief = await reviewerBrief();
     // Non-vacuity: the body really carries the block's JSON, so the absence of that
     // JSON below is a fact about the seam's strip and not about a body that never
     // had a block to print.
     assert(
       SPEC_BODY.includes('"problem"') && SPEC_BODY.includes("pi-spec v1"),
-      "on: the fixture body carries a parsable spec block with JSON keys to look for",
+      "the fixture body carries a parsable spec block with JSON keys to look for",
     );
     assert(
       brief.length > 500 && brief.includes("diff"),
-      `on: the reviewer's brief is a real prompt (${String(brief.length)} chars)`,
+      `the reviewer's brief is a real prompt (${String(brief.length)} chars)`,
     );
     assert(
       brief.includes(LEAN_REVIEW_CRITERIA_HEADING),
-      "on: the reviewer's prompt carries the criteria section the seam rendered",
+      "the reviewer's prompt carries the criteria section the seam rendered",
     );
     assert(
       brief.includes("- **AC1** [test]") && brief.includes("- **AC2** [command]"),
-      "on: every criterion arrives as a rendered row, with its verify kind",
+      "every criterion arrives as a rendered row, with its verify kind",
     );
     assert(
       brief.includes("bun test meter"),
-      "on: and a command criterion keeps the command the spec states",
+      "and a command criterion keeps the command the spec states",
     );
     const outsideSection = brief
       .split(brief.slice(brief.indexOf(LEAN_REVIEW_CRITERIA_HEADING)))
       .join("");
     assert(
       !outsideSection.includes('"problem"') && !outsideSection.includes("pi-spec v1"),
-      "on: the block's JSON reaches the child nowhere outside the criteria section — the seam stripped the prose it handed the loop",
+      "the block's JSON reaches the child nowhere outside the criteria section — the seam stripped the prose it handed the loop",
     );
     assert(
       brief.includes("quota check to the meter"),
-      "on: the issue's own prose is still there — a strip that took the body too is the other way this fails",
+      "the issue's own prose is still there — a strip that took the body too is the other way this fails",
     );
     assert(
       brief.includes("the draw is unguarded"),
-      "on: the carried blocking finding still reaches the reviewer beside the criteria",
+      "the carried blocking finding still reaches the reviewer beside the criteria",
     );
-  });
-
-  await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: "0" }, async () => {
-    const brief = await reviewerBrief();
-    assert(
-      !brief.includes(LEAN_REVIEW_CRITERIA_HEADING),
-      "off: the seam renders no criteria section",
-    );
-    assert(
-      brief.includes('"problem"') && brief.includes("pi-spec v1"),
-      "off: the reviewer reads the RAW block again — the seam handed the loop the body unstripped, which is what makes the off arm today's prompt",
-    );
-    assert(
-      !brief.includes("- **AC1** [test]"),
-      "off: and no rendered criteria rows appear, so nothing was half-split",
-    );
-  });
+  }
 } finally {
   rmSync(repoRoot, { recursive: true, force: true });
 }
