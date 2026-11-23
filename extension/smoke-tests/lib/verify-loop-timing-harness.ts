@@ -233,6 +233,29 @@ export const TOTAL_RE = /^TOTAL wall (\d+)  sum (\d+)  max (\d+)$/;
 /** The ceiling line's shape, pinned exactly (R9): `CEILING: <secs>s <file> (ceiling <N>s)`. */
 export const CEILING_RE = /^CEILING: (\d+)s (.+) \(ceiling (\d+)s\)$/;
 
+/**
+ * The one filter that recognises a line the timing feature prints — a `TIME` row, the
+ * block's header, a block row, TOTAL, or `CEILING:`. Two test files strip these before
+ * comparing whole channels (case 7f of test-verify-timing-ceiling.ts and case 8 of
+ * test-verify-timing-ceiling-channels.ts) and both MUST strip one set, or "the off path
+ * changed nothing" becomes two claims that can drift apart — a shape the harness'
+ * `timingOutput` cannot serve, since it returns the lines it RECOGNISES and so compares
+ * two filtered sets, passing on streams differing anywhere else.
+ */
+export function isTimingLine(l: string): boolean {
+  return TIME_RE.test(l) || HEADER_RE.test(l) || TOTAL_RE.test(l) || CEILING_RE.test(l);
+}
+
+/** A whole channel with every timing line removed — the comparison both off-path cases
+ * actually make. Two busy-wait processes can only ever agree modulo their measured
+ * seconds (the ±50% swing the ceiling test's header pins), which is what `TOTAL` sums. */
+export function stripTiming(s: string): string {
+  return s
+    .split("\n")
+    .filter((l) => !isTimingLine(l))
+    .join("\n");
+}
+
 /** Every `CEILING:` line on a channel, with its fields parsed. */
 export function ceilingLines(output: string): { secs: number; file: string; ceiling: number }[] {
   const rows: { secs: number; file: string; ceiling: number }[] = [];

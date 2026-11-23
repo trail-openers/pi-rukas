@@ -487,6 +487,7 @@
     "smoke-tests/test-ci-shard-coverage.ts",
     "smoke-tests/test-verify-loop-jobs-from-host.ts",
     "smoke-tests/test-verify-timing-ceiling.ts",
+    "smoke-tests/test-verify-timing-ceiling-channels.ts",
     "smoke-tests/test-verify-timing-allowlist.ts"
   ]
 }
