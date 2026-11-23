@@ -166,14 +166,22 @@ const ARM_HOOK =
   `unset VERIFY_TIMING_TEST_CEILING_S
 `;
 
-/** The scratch file behind `BASH_ENV` for an armed spawn. Written on every armed
- * spawn rather than cached: a fixed path in a shared TMPDIR is a symlink target for
- * another process, and the write is one syscall against a case that runs a whole
- * loop. Nothing removes it — a scratch file in TMPDIR is reaped with TMPDIR, the same
- * convention every temp allow-list in this file follows. */
+/** The scratch file behind `BASH_ENV` for an armed spawn.
+ *
+ * ONE directory per process, allocated on the first armed spawn and reused by every
+ * later one; the hook is still written on each spawn, because `writeFileSync`'s
+ * `mode` only applies when it CREATES the file — an existing one keeps its old bits —
+ * so re-writing keeps re-asserting 0600 against whatever the previous spawn left.
+ * The path is unique because it is `mkdtemp`'d and cached, not fixed: a fixed name in
+ * a shared TMPDIR is a symlink target for another process. Allocating it per spawn
+ * instead leaked a directory for every armed case this suite runs — a dozen-odd a
+ * file, none of them ever reaped — which is more litter than the hook is worth. */
+let armHookCached: string | undefined;
 function armHookPath(): string {
-  const dir = mkdtempDirSync(path.join(tmpdir(), "pi-2449-arm-"));
-  const p = path.join(dir, "seed.sh");
+  if (armHookCached === undefined) {
+    armHookCached = path.join(mkdtempDirSync(path.join(tmpdir(), "pi-2449-arm-")), "seed.sh");
+  }
+  const p = armHookCached;
   try {
     writeFileSync(p, ARM_HOOK, { mode: 0o600 });
   } catch (e) {
@@ -237,14 +245,17 @@ export const CEILING_RE = /^CEILING: (\d+)s (.+) \(ceiling (\d+)s\)$/;
 
 /**
  * The one filter that recognises a line the timing feature prints — a `TIME` row, the
- * block's header, a block row, TOTAL, or `CEILING:`. Two test files strip these before
- * comparing whole channels (case 7f of test-verify-timing-ceiling.ts and case 8 of
+ * block's header, a block row, TOTAL, or `CEILING:`. Kept PRIVATE to this module on
+ * purpose: the seam callers use is `stripTiming` below, and an exported predicate invites
+ * a caller to re-implement the filter around it — two claims that can drift apart, which
+ * is the failure the shared strip exists to close. Two test files strip through it (case
+ * 7f of test-verify-timing-ceiling.ts and case 8 of
  * test-verify-timing-ceiling-channels.ts) and both MUST strip one set, or "the off path
  * changed nothing" becomes two claims that can drift apart — a shape the harness'
  * `timingOutput` cannot serve, since it returns the lines it RECOGNISES and so compares
  * two filtered sets, passing on streams differing anywhere else.
  */
-export function isTimingLine(l: string): boolean {
+function isTimingLine(l: string): boolean {
   return TIME_RE.test(l) || HEADER_RE.test(l) || TOTAL_RE.test(l) || CEILING_RE.test(l);
 }
 

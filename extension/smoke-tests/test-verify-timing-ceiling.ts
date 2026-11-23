@@ -48,7 +48,6 @@ import {
   HANG,
   PASS,
   ceilingLines,
-  isTimingLine,
   mkdtempDirSync,
   removeAllowlist,
   stripTiming,
@@ -385,7 +384,7 @@ function assert(cond: boolean, msg: string): void {
   // Modulo the timing lines the loop prints, the two off-path runs agree on both
   // channels. What a run legitimately varies between two invocations is its own
   // measured seconds (the ±50% swing the header pins), and TOTAL sums those, so it
-  // belongs to the clock-derived set, not the verdict. See `isTimingLine`.
+  // belongs to the clock-derived set, not the verdict. See `stripTiming`.
   assert(
     stripTiming(on.stdout) === stripTiming(knobOff.stdout) &&
       stripTiming(on.stderr) === stripTiming(knobOff.stderr),

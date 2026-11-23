@@ -109,7 +109,8 @@ function assert(cond: boolean, msg: string): void {
     const off = runLoop(set, {
       PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "30",
       PI_ENSEMBLE_VERIFY_TIMING: "0",
-    });    // The one filter, as 7f uses it (it also drops `CEILING:`, the shape this run can
+    });
+    // The one filter, as 7f uses it (it also drops `CEILING:`, the shape this run can
     // print). Case 5 of test-verify-loop-timing.ts is the sibling claim with no ceiling
     // in play. Two hand-written filters over one channel are two claims that can drift
     // apart; `stripTiming` is the single seam that says which lines belong to the clock.
