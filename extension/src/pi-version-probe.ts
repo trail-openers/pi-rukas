@@ -15,7 +15,7 @@
  */
 
 import { spawn as cpSpawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import {
   type PiBinaryResolution,
@@ -249,7 +249,13 @@ export function isVersionOlder(a: string, b: string): boolean {
 export function getVerifiedVersion(): string | null {
   if (verifiedVersionCache !== undefined) return verifiedVersionCache;
   try {
-    const compatPath = path.resolve(import.meta.dirname, "..", "..", "docs", "pi-compatibility.md");
+    const compatPath = path.resolve(
+      realpathSync(import.meta.dirname),
+      "..",
+      "..",
+      "docs",
+      "pi-compatibility.md",
+    );
     const doc = readFileSync(compatPath, "utf8");
     verifiedVersionCache = parseVerifiedLine(doc)?.version ?? null;
   } catch (err) {

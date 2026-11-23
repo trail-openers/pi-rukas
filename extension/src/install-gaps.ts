@@ -14,7 +14,7 @@
  * built by install.sh, and its settings belong to the container.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -41,7 +41,9 @@ export interface InstallFacts {
   wrapperOnPath: boolean;
 }
 
-const PACKAGE_ROOT = path.resolve(import.meta.dirname, "..", "..");
+// install.sh links the extension into Pi's extensions dir and the loader keeps
+// the link path, so walking up from it leaves the checkout without realpath.
+const PACKAGE_ROOT = path.resolve(realpathSync(import.meta.dirname), "..", "..");
 
 /** Judge the gathered facts. Pure, so each gap is directly testable. */
 export function judgeInstallGaps(f: InstallFacts): InstallGap[] {
