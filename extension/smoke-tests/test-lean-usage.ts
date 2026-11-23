@@ -51,7 +51,10 @@ function row(role: string, n: number, ok = true): DispatchUsageRow {
  * every read of it is `UsageTotals | undefined`. The sums below want numbers, so
  * the undefined arm is resolved here rather than at each read site.
  */
-function fieldSum(byRole: Record<string, LeanUsageTotals>, field: keyof LeanUsageTotals): number {
+function fieldSum(
+  byRole: Record<string, LeanUsageTotals>,
+  field: Exclude<keyof LeanUsageTotals, "costFromProvider">,
+): number {
   return Object.values(byRole).reduce((a, r) => a + (r?.[field] ?? 0), 0);
 }
 
@@ -89,7 +92,8 @@ function fieldSum(byRole: Record<string, LeanUsageTotals>, field: keyof LeanUsag
   ];
   const u = leanUsage(steps);
   assert(u.total.dispatches === 4, `(3) every dispatch is counted (got ${u.total.dispatches})`);
-  const summed = (field: keyof LeanUsageTotals): number => fieldSum(u.byRole, field);
+  const summed = (field: Exclude<keyof LeanUsageTotals, "costFromProvider">): number =>
+    fieldSum(u.byRole, field);
   for (const field of ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"] as const) {
     assert(
       summed(field) === u.total[field],
