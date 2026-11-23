@@ -41,6 +41,9 @@ export type ParseResult = { ok: true; spec: PiSpec } | { ok: false; reason: stri
 /** The exact info string a spec block must declare. */
 export const SPEC_INFO = "pi-spec v1";
 
+/** The parse reason for a body with no block: `derive` stands in for it, a host falls back on it. */
+export const NO_BLOCK_RULE = "no pi-spec v1 block";
+
 /** Criterion ids are AC1, AC2, … — positional, stable, and greppable. */
 export const CRITERION_ID = /^AC\d+$/;
 
@@ -288,7 +291,7 @@ export function hasSurvivingSpecShapedFence(body: string): boolean {
 /** Read the `pi-spec v1` block out of an issue body. Never throws. */
 export function parsePiSpec(body: string): ParseResult {
   const specs = fencedBlocks(body).filter((b) => b.info === SPEC_INFO);
-  if (specs.length === 0) return { ok: false, reason: "no pi-spec v1 block" };
+  if (specs.length === 0) return { ok: false, reason: NO_BLOCK_RULE };
   if (specs.length > 1)
     return { ok: false, reason: `${specs.length} pi-spec v1 blocks, expected at most 1` };
   const content = (specs[0]?.content ?? "").trim();

@@ -12,7 +12,7 @@
  * reuses the contract it derived — nothing here re-derives.
  */
 
-import { type PiSpec, parsePiSpec, unterminatedFenceLine } from "./spec.ts";
+import { NO_BLOCK_RULE, type PiSpec, parsePiSpec, unterminatedFenceLine } from "./spec.ts";
 import type { ContractSource } from "./state-derived-spec.ts";
 
 /** Where the contract this run is executing came from. */
@@ -23,9 +23,6 @@ export type SpecFor =
   | { ok: true; spec: PiSpec; source: SpecSource }
   | { ok: false; reason: string };
 
-/** The one parse reason `derive` mode stands in for. Every other reason is the author's. */
-const NO_BLOCK = "no pi-spec v1 block";
-
 /** The reason a body cut off inside a fence is reported, in every mode. */
 const UNTERMINATED = "pi-spec v1 block is not valid JSON: the fence it sits in was never closed";
 
@@ -35,7 +32,8 @@ export function specFor(body: string, run: ContractSource): SpecFor {
   const parsed = parsePiSpec(body);
   if (parsed.ok) return { ok: true, spec: parsed.spec, source: "issue" };
   const held = run.derivedSpec;
-  if (parsed.reason !== NO_BLOCK || held === undefined) return { ok: false, reason: parsed.reason };
+  if (parsed.reason !== NO_BLOCK_RULE || held === undefined)
+    return { ok: false, reason: parsed.reason };
   // "No block" has two causes and only one is the record's to cover for: a body that
   // never carried a contract, and a body TRUNCATED inside one. `fencedBlocks` refuses
   // to call an unclosed fence a block, so the second reads as the first and the

@@ -61,6 +61,8 @@ export const KIND_CLASS: Record<FailureKind, CauseClass | undefined> = {
   "forge-refused": "issue",
   // The repository's lean setup: not the issue, not the change. Only `work-lean` emits it.
   setup: "environment",
+  // The issue carries no contract lean can read: an issue fault. Only `work-lean` emits it.
+  "no-spec": "issue",
   cap: undefined,
 };
 

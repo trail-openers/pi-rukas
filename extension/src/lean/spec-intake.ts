@@ -22,13 +22,10 @@ import type { LeanSeed } from "./seed.ts";
 import { type DeriveDeps, SpecDeriveError, deriveSpecForRun, traceDerive } from "./spec-derive.ts";
 import { type SpecIntake, SpecIntakeError, resolveSpecIntake } from "./spec-intake-switch.ts";
 import type { PiSpec } from "./spec.ts";
-import { parsePiSpec } from "./spec.ts";
+import { NO_BLOCK_RULE, parsePiSpec } from "./spec.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 import { oneLine } from "./text-fence.ts";
-
-/** The text a prose ticket's missing block is reported as, in both modes. */
-export const NO_BLOCK_RULE = "no pi-spec v1 block";
 
 /** What the decision came to: a contract, or the rule that stopped the run. Either may
  * carry the cost rows of a child the intake paid for; neither does when none was billed. */

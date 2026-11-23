@@ -6,7 +6,8 @@
  * driven through `runLean` with the production `ready` handler and the REAL config loader at a
  * real base, in `derive` mode, and must end handed-back (exit 10) with that kind — before the
  * issue was read, before any child ran, with no reporting step and nothing posted. Each issue cause
- * is driven the same way over a usable config and must never carry the kind.
+ * is driven the same way over a usable config and must never carry the kind; of those, only a
+ * missing block under `require` carries `no-spec`, which a host runs another driver on.
  */
 
 import { leanIssueResult } from "../src/headless/work-lean-result.ts";
@@ -137,12 +138,19 @@ for (const [tag, body, state, intake] of [
   ["no-block", async () => "prose with no block", "not-ready", "require"],
   ["derive-failed", async () => "prose with no block", "handed-back", "derive"],
 ] as const) {
-  const { result, doc } = await drive(`issue-${tag}`, USABLE, body, intake);
+  const { result, doc, calls } = await drive(`issue-${tag}`, USABLE, body, intake);
   assert(
     result.state === state &&
       result.run.steps[0]?.outcome?.kind !== "setup" &&
       doc.failure?.kind !== "setup",
     `issue cause ${tag}: ends ${state} without the setup kind (${result.state}, ${JSON.stringify(doc.failure)})`,
+  );
+  // Only a missing block under `require` is `no-spec`, at exit 11 and before any child ran.
+  const noSpec = tag === "no-block";
+  assert(
+    (doc.failure?.kind === "no-spec") === noSpec &&
+      (!noSpec || (result.code === 11 && calls.children === 0)),
+    `issue cause ${tag}: no-spec ${noSpec ? "at exit 11, no child" : "absent"} (${result.code}, ${JSON.stringify(doc.failure)}, ${calls.children} children)`,
   );
 }
 
