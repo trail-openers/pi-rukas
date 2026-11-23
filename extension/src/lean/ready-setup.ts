@@ -32,7 +32,8 @@ export async function readySetup(
     if (!(err instanceof LeanConfigError)) throw err;
     return { rule: `.pi/work.json at the run's base is unusable: ${oneLine(err.message, 200)}` };
   }
-  if (config.verify.test === undefined) return { rule: NO_TEST_RUNNER_RULE };
+  const why = config.detection === undefined ? "" : `; ${config.detection}`;
+  if (config.verify.test === undefined) return { rule: `${NO_TEST_RUNNER_RULE}${why}` };
   const roster = rosterStartProblem(config.verify);
-  return roster === undefined ? { config } : { rule: roster };
+  return roster === undefined ? { config } : { rule: `${roster}${why}` };
 }

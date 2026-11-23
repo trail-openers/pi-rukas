@@ -17,6 +17,7 @@
  * answer" is how a run starts treating one as a verdict.
  */
 import { trace } from "../trace.ts";
+import { leanDetectVerifyEnabled } from "./config-detect.ts";
 import { specFor } from "./spec-for.ts";
 import { NO_BLOCK_RULE } from "./spec-intake.ts";
 import { readiness } from "./spec.ts";
@@ -51,19 +52,25 @@ function absentVerifyCmd(err: unknown): boolean {
   return e?.code === 128 && ABSENT_IN_COMMIT.test(text);
 }
 
-/** The committed `.pi/verify-cmd` at HEAD, or `undefined` when there is none. */
+/**
+ * The committed `.pi/verify-cmd`, or `undefined` when there is none. Read at HEAD, or at the base
+ * commit under `PI_ENSEMBLE_LEAN_DETECT_VERIFY=1`, so a build child that commits the file cannot
+ * change the command it is judged by.
+ */
 export async function verifyCmdAtHead(
   exec: VerifyExec,
   wt: string,
   head: string,
+  baseSha: string,
 ): Promise<string | undefined> {
+  const rev = leanDetectVerifyEnabled() ? baseSha : head;
   // An ABSENT file is "the project configured nothing"; a read that failed for any other reason
   // is infrastructure and throws, because defaulting a git that would not answer to "no tiers"
   // turns a broken machine into a green. The wrapped rejection also covers an injected
   // `readVerifyCmd` that rejects: the seam is a test's stand-in for this very read, so it earns
   // the same classification.
   const ran = await exec("git", {
-    argv: [...NO_HOOKS, "show", `${head}:.pi/verify-cmd`],
+    argv: [...NO_HOOKS, "show", `${rev}:.pi/verify-cmd`],
     cwd: wt,
     timeout: 30_000,
     maxBuffer: 1024 * 1024,

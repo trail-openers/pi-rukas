@@ -33,7 +33,7 @@ export interface VerifyDeps {
   loadConfig: (
     repoRoot: string,
     baseSha: string,
-  ) => Promise<{ verify: VerifyTiers & Partial<VerifyRosterConfig> }>;
+  ) => Promise<{ verify: VerifyTiers & Partial<VerifyRosterConfig>; detection?: string }>;
   /** The committed `.pi/verify-cmd` at HEAD; `undefined` when there is none. */
   readVerifyCmd?: (wt: string, head: string) => Promise<string | undefined>;
   /** Bounds every tier and frozen-test run; a test shortens it to observe a hang. */

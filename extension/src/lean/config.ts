@@ -6,7 +6,7 @@
  * otherwise be judged by the bytes it wrote.
  *
  * Two outcomes for a missing file and a broken one, kept deliberately apart:
- *   - absent  → defaults (a repo with no config is normal)
+ *   - absent  → defaults (a repo with no config is normal; `lean/config-detect.ts` may detect tiers)
  *   - invalid → `LeanConfigError` (a typo'd budget must not silently become "no budget")
  *
  * The shipped table has a row for every state the machine can visit. A key that is not in the table is refused
@@ -14,6 +14,7 @@
  */
 
 import type { execp } from "../exec.ts";
+import { detectVerify, leanDetectVerifyEnabled } from "./config-detect.ts";
 import { validateTestDir, validateTestGlob } from "./config-test-location.ts";
 import { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
 import { protectedPathProblem } from "./protected-globs.ts";
@@ -44,30 +45,21 @@ export interface WorkConfig {
     testDir?: string;
     testDirs?: string[];
     testGlob?: string;
-    /**
-     * A shell command the project runs over the whole tree to judge test-file CONTENT. `specify`/`challenge`
-     * run it before freezing the candidate tests, and `verify` runs it when a project tier is red at HEAD.
-     * Unset: nothing runs. Mechanism: `lean/freeze-check.ts`.
-     */
+    /** A shell command judging test-file CONTENT over the whole tree; unset runs nothing. `lean/freeze-check.ts`. */
     freezeCheck?: string;
-    /**
-     * The project's formatter as a `{file}` template, run in argv form like `test`: `specify` and
-     * `challenge` format each submitted test with it before proving it red and freezing it, so a
-     * frozen test never fails the project's own format check. Unset: nothing runs.
-     */
+    /** The project's formatter as a `{file}` template, run on each test before freezing. `lean/specify-format.ts`. */
     format?: string;
     /**
-     * The runner's machine-readable per-test report command, which the project roster
-     * (`lean/verify-roster.ts`) runs at head and at the run's base commit to record WHICH tests
-     * ran and which failed. Like `test` it is executed as an executable plus argv, never through
-     * a shell, so it carries the same metacharacter ban. `{dir}` names the tree the roster runs
-     * in and `{report}` the file the gate reads back. Unset is not "no roster" — the gate derives
-     * `--junitxml={report} {dir}` onto the `test` command; with neither field set the roster
-     * cannot be built and the run hands back.
+     * The runner's per-test report command, which the project roster (`lean/verify-roster.ts`) runs at
+     * head and at base to record WHICH tests ran and failed. Argv form like `test`, with `{dir}` naming
+     * the tree and `{report}` the file the gate reads back. Unset is not "no roster": the gate derives
+     * `--junitxml={report} {dir}` onto `test`; with neither field set the run hands back.
      */
     roster?: string;
   };
   budgets: Partial<Record<string, Budget>>;
+  /** Set only by `PI_ENSEMBLE_LEAN_DETECT_VERIFY` detection: what it set, or why it set nothing. */
+  detection?: string;
   lean?: {
     /**
      * How the run obtains its `pi-spec v1` contract. `require` (the shipped
@@ -453,6 +445,14 @@ export async function loadWorkConfig(
   if (raw === undefined) {
     // No config: fall back to the committed .pi/verify-cmd for the full tier.
     const verifyCmd = await gitShow(exec, repoRoot, `${baseSha}:.pi/verify-cmd`);
+    if (verifyCmd === undefined && leanDetectVerifyEnabled()) {
+      const at = (path: string) => `${baseSha}:${path}`;
+      const found = await detectVerify(
+        async (path) => (await gitType(exec, repoRoot, at(path))) !== undefined,
+        (path) => gitShow(exec, repoRoot, at(path)),
+      );
+      return { ...defaultConfig(), ...found };
+    }
     const full = verifyCmd === undefined ? undefined : firstLine(verifyCmd);
     return defaultConfig(full);
   }

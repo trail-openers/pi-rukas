@@ -37,7 +37,12 @@ export const HEADLESS_FILES: readonly HostFile[] = [
     whenAbsent: "smoke tier uses PI_ENSEMBLE_VERIFY_SMOKE_TIMEOUT_MS or its default",
   },
   { path: ".pi/smoke-cmd", kind: "command", whenAbsent: "no product smoke gate" },
-  { path: ".pi/verify-cmd", kind: "command", whenAbsent: "verify command derived from the repo" },
+  {
+    path: ".pi/verify-cmd",
+    kind: "command",
+    whenAbsent:
+      "verify command derived from the repo; work-lean: .pi/work.json beats .pi/verify-cmd, which beats PI_ENSEMBLE_LEAN_DETECT_VERIFY=1 detection, resolved at the base commit; when .pi/work.json names no fast or full tier, verify reads .pi/verify-cmd at the base with that switch on and at HEAD with it off",
+  },
   {
     path: ".pi/verify-cmd-fast",
     kind: "command",
@@ -64,7 +69,7 @@ export const HEADLESS_FILES: readonly HostFile[] = [
     path: ".pi/work.json",
     kind: "config",
     whenAbsent:
-      'work-lean refuses the run at ready as a setup fault (failure.kind "setup", exit 10, nothing posted), because lean needs verify.test; classic /work\'s command-criteria tier finds no verify.test runner',
+      'work-lean refuses the run at ready as a setup fault (failure.kind "setup", exit 10, nothing posted), because lean needs verify.test; classic /work\'s command-criteria tier finds no verify.test runner. With PI_ENSEMBLE_LEAN_DETECT_VERIFY=1 and no .pi/verify-cmd either, a runner detected at the base commit (pytest, or a package.json test script) stands in for both, so that refusal is bypassed and the classic tier runs: .pi/work.json beats .pi/verify-cmd, which beats detection',
   },
   {
     path: ".pi/worktree-setup",

@@ -172,7 +172,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   });
   const verifyCmd =
     deps.readVerifyCmd === undefined
-      ? await verifyCmdAtHead(deps.exec, wt, head)
+      ? await verifyCmdAtHead(deps.exec, wt, head, ctx.run.baseSha)
       : await deps.readVerifyCmd(wt, head).catch((err: unknown) => {
           throw toVerifyCmdInfra(err);
         });
@@ -433,8 +433,10 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
     return { kind: "red", reason: clipReason(afterCommands.reason), ...redRosterField };
 
   // A command the gate declined to run is not a verdict, but the reason is still worth carrying on a green.
+  // A detected tier is landing authority, so the reason the PR body prints names it and its manifest.
   const note =
-    tiers.length === 0 ? " (no project verify command — the frozen tests alone decided)" : "";
+    (tiers.length === 0 ? " (no project verify command — the frozen tests alone decided)" : "") +
+    (config.detection === undefined ? "" : ` — ${config.detection}`);
   // An excused flake rides in the reason: `publish` prints the verify reason in the PR body's Verification
   // section, so a tier the gate let go on a re-run is disclosed rather than reported as a clean gate.
   // Rebuilt from the tier's own record rather than spread-cast: `commandCriteria` is what licenses

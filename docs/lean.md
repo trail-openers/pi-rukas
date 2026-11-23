@@ -242,6 +242,15 @@ and exit codes: [headless.md](headless.md). What follows is the shape of it.
 the working tree — so a run is not judged by bytes it wrote itself. **Absent
 is a setup refusal**: the loader still reads it as defaults, but the defaults
 name no `verify.test`, so `ready` refuses the run (`failure.kind: "setup"`).
+`PI_ENSEMBLE_LEAN_DETECT_VERIFY=1` (default off) detects a pytest or a
+`package.json` test-script runner at the base commit for a repository with
+neither `.pi/work.json` nor `.pi/verify-cmd`, and so **bypasses the setup
+refusal a host may fall back to another driver on**; the loader resolves the
+precedence `.pi/work.json`, then `.pi/verify-cmd`, then detection at the base
+commit, and `verify` reads `.pi/verify-cmd` at the base too, so a build that
+commits one cannot change the command it is judged by. The switch also reaches classic
+`/work`'s command-criteria tier ([configuration.md](configuration.md) has the
+detected commands).
 An invalid file is *not* defaulted: it raises `LeanConfigError`, because a
 typo'd budget must not silently become "no budget", and `ready` refuses it the
 same way.
@@ -273,7 +282,8 @@ this config also needs a `verify.roster` (below) or
   reported beside a red frozen contract rather than behind it, each under its own
   30-minute bound. A committed `.pi/verify-cmd` is the fallback for the full
   tier **only when `work.json` is absent** — the loader's answer, which a lean
-  run never reaches, since `ready` refuses an absent `work.json`.
+  run never reaches, since `ready` refuses an absent `work.json`; detection
+  (`PI_ENSEMBLE_LEAN_DETECT_VERIFY=1`) answers only when both are absent.
 - **`verify.test`** — the per-file runner template `specify` uses to prove a
   test red on the base: argv form, never a shell, exactly one whole-word
   `{file}`. The same template answers the runner preflight before the adversary

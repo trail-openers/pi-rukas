@@ -26,6 +26,7 @@ import { forgeReadOffGuardEnabled } from "../../src/forge-read-off-switch.ts";
 import { glabMrCreateArgvEnabled } from "../../src/gl-mr-create-switch.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
 import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.ts";
+import { leanDetectVerifyEnabled } from "../../src/lean/config-detect.ts";
 import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
 import { leanBuildIssueProseEnabled } from "../../src/lean/issue-prose.ts";
@@ -199,6 +200,8 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LEAN_DERIVE_REGRESSION_GUARDS", leanDeriveRegressionGuardsEnabled],
   // The specify re-ask for unsubmitted criteria; its arms are pinned by test-lean-specify-reask.ts.
   ["PI_ENSEMBLE_LEAN_SPECIFY_REASK", leanSpecifyReaskEnabled],
+  // Default OFF: the reader is `v === "1"`, so the LIVE loop pins "unset means off".
+  ["PI_ENSEMBLE_LEAN_DETECT_VERIFY", leanDetectVerifyEnabled],
   // The truncated-fixer continuation: its default is pinned here, its truth table by
   // `test-lean-review-fix-reask-pure.ts` and its off arm by
   // `test-lean-review-fixer-truncation-off-arm.ts`.
