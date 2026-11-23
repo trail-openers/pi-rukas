@@ -39,6 +39,15 @@ try {
 	execFileSync("git", ["init", "-q", repo]);
 	writeFileSync(path.join(repo, "a.txt"), "x\n");
 	execFileSync("git", ["-C", repo, "add", "a.txt"]);
+	// Pinned dates fix the commit SHA. The detector takes only a hex run with
+	// both a digit and a letter, and a clock-dated SHA's 10-char prefix is all
+	// digits about once in a hundred runs.
+	const date = "@1700000000 +0000";
+	const env = {
+		...process.env,
+		GIT_AUTHOR_DATE: date,
+		GIT_COMMITTER_DATE: date,
+	};
 	execFileSync("git", [
 		"-C",
 		repo,
@@ -50,7 +59,7 @@ try {
 		"-q",
 		"-m",
 		"init",
-	]);
+	], { env });
 	const real = execFileSync("git", ["-C", repo, "rev-parse", "HEAD"], {
 		encoding: "utf8",
 	}).trim();
