@@ -326,6 +326,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
             : { beforeSubmoduleInit: deps.beforeSubmoduleInit }),
         }),
       commitMessage: `test: acceptance tests for #${issue}`,
+      ...(config.verify.format === undefined ? {} : { formatTemplate: config.verify.format }),
       ...(config.verify.freezeCheck === undefined
         ? {}
         : { freezeCheck: config.verify.freezeCheck }),

@@ -377,6 +377,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
       commitMessage: `test: challenge tests for #${issue}`,
       // The same gate `specify` applies: an adversary's new file is frozen on the
       // same terms, and a file `build` may not edit is unwinnable whoever wrote it.
+      ...(config.verify.format === undefined ? {} : { formatTemplate: config.verify.format }),
       ...(config.verify.freezeCheck === undefined
         ? {}
         : { freezeCheck: config.verify.freezeCheck }),

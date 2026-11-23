@@ -51,6 +51,12 @@ export interface WorkConfig {
      */
     freezeCheck?: string;
     /**
+     * The project's formatter as a `{file}` template, run in argv form like `test`: `specify` and
+     * `challenge` format each submitted test with it before proving it red and freezing it, so a
+     * frozen test never fails the project's own format check. Unset: nothing runs.
+     */
+    format?: string;
+    /**
      * The runner's machine-readable per-test report command, which the project roster
      * (`lean/verify-roster.ts`) runs at head and at the run's base commit to record WHICH tests
      * ran and which failed. Like `test` it is executed as an executable plus argv, never through
@@ -154,18 +160,18 @@ const TEST_RUNNER_FORBIDDEN = /[;&|`$<>"'\\\n\r]/;
  * carry {@link TEST_RUNNER_PLACEHOLDER} EXACTLY once; every occurrence must be a WHOLE whitespace-separated
  * word; and no shell metacharacter anywhere.
  */
-export function validateTestRunner(template: string): string | undefined {
+export function validateTestRunner(template: string, field = "verify.test"): string | undefined {
   // The metacharacter rule FIRST: a template carrying one is one its author meant for a shell.
   if (TEST_RUNNER_FORBIDDEN.test(template))
-    return ".pi/work.json verify.test is run without a shell: ; & | ` $ < > \" ' \\ and newline are not allowed";
+    return `.pi/work.json ${field} is run without a shell: ; & | \` $ < > " ' \\ and newline are not allowed`;
   const count = template.split(TEST_RUNNER_PLACEHOLDER).length - 1;
   if (count === 0)
-    return `.pi/work.json verify.test must contain the literal ${TEST_RUNNER_PLACEHOLDER}`;
+    return `.pi/work.json ${field} must contain the literal ${TEST_RUNNER_PLACEHOLDER}`;
   if (count > 1)
-    return `.pi/work.json verify.test must contain ${TEST_RUNNER_PLACEHOLDER} exactly once, found ${count}`;
+    return `.pi/work.json ${field} must contain ${TEST_RUNNER_PLACEHOLDER} exactly once, found ${count}`;
   const wholeWord = template.split(/\s+/).includes(TEST_RUNNER_PLACEHOLDER);
   if (!wholeWord)
-    return `.pi/work.json verify.test must use ${TEST_RUNNER_PLACEHOLDER} as a whole word, not glued to other characters`;
+    return `.pi/work.json ${field} must use ${TEST_RUNNER_PLACEHOLDER} as a whole word, not glued to other characters`;
   return undefined;
 }
 
@@ -308,6 +314,7 @@ function validate(obj: unknown): string | undefined {
       "testGlob",
       "freezeCheck",
       "roster",
+      "format",
     ] as const) {
       if (v[key] !== undefined && typeof v[key] !== "string")
         return `.pi/work.json verify.${key} must be a string`;
@@ -340,8 +347,10 @@ function validate(obj: unknown): string | undefined {
     }
     // The runner template is a template: without exactly one whole-word placeholder the step cannot name the
     // file it is running.
-    if (typeof v.test === "string") {
-      const reason = validateTestRunner(v.test);
+    for (const key of ["test", "format"] as const) {
+      const t = v[key];
+      if (typeof t !== "string") continue;
+      const reason = validateTestRunner(t, `verify.${key}`);
       if (reason !== undefined) return reason;
     }
     // The roster report command is executed in argv form too, so it earns the metacharacter ban

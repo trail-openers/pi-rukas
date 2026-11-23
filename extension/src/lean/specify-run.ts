@@ -31,6 +31,7 @@ import type { FreezeCheck } from "./freeze-check.ts";
 import { freezeCheckDrops, freezeCheckNote, runFreezeCheck } from "./freeze-check.ts";
 import { type CaptureResult, captureTestBytes } from "./specify-capture.ts";
 import { commitTestFiles, committedBlob } from "./specify-commit.ts";
+import { formatSubmitted } from "./specify-format.ts";
 import type { Proof, TestRunLimits } from "./specify-proof.ts";
 import { runTestFile, sha256 } from "./specify-proof.ts";
 import { SpecifyCommitError } from "./specify-reset.ts";
@@ -115,6 +116,8 @@ interface RunTestsArgs {
   freezeCheck?: string;
   /** The bound for one freeze-check run; a test shortens it to observe a hang. */
   freezeCheckTimeoutMs?: number;
+  /** The project's `verify.format` template, run on each captured file before its red proof. */
+  formatTemplate?: string;
 }
 
 /** How many per-file notes an outcome reason carries before it says `(+N more)`. */
@@ -295,6 +298,12 @@ export async function runTestPipeline(
       );
     }
     writeCaptured(wt, captured);
+    if (args.formatTemplate !== undefined)
+      for (const r of await formatSubmitted(exec, wt, args.formatTemplate, [...captured.keys()])) {
+        captured.delete(r.path);
+        dropped.push({ criterionId: owners.get(r.path) ?? "unknown", ...r });
+        removeRejected(wt, r.path);
+      }
   } catch (err) {
     // A handback this window already named keeps its own words: re-wrapping the submodule pass's error as
     // "could not rewrite the captured tests" blames the file write that ran after it. Only an error this
