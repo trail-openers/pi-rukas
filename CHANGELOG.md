@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.9](https://github.com/trail-openers/pi-rukas/compare/v0.15.8...v0.15.9) (2026-11-23)
+
+
+### Bug Fixes
+
+* **lean:** retarget the roster command to the base tree in one pass ([#2584](https://github.com/trail-openers/pi-rukas/issues/2584)) ([b75109e](https://github.com/trail-openers/pi-rukas/commit/b75109e25a2236a86be99d9fd0665ed04effe3d0))
+
 ## [0.15.8](https://github.com/trail-openers/pi-rukas/compare/v0.15.7...v0.15.8) (2026-11-23)
 
 
