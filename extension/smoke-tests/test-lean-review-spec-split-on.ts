@@ -203,7 +203,7 @@ async function main(): Promise<void> {
     // inequality here is what makes (1) non-vacuous.
     assert(
       s.lens !== fallbackLensContext(SPEC_BODY),
-      "(1) and the ON render differs from the frozen pre-split render for the same body",
+      "(1) and the render differs from what one bound over the same body prints",
     );
   }
 
@@ -212,7 +212,7 @@ async function main(): Promise<void> {
     const s = seats(MEDIUM_SPEC_BODY);
     assert(
       MEDIUM_SPEC_BODY.trim().length > MAX_ISSUE_CHARS,
-      `(2) the whole body is over the cap (${String(MEDIUM_SPEC_BODY.trim().length)}) — so the off arm cut it`,
+      `(2) the whole body is over the cap (${String(MEDIUM_SPEC_BODY.trim().length)}) — so one bound over it would have cut it`,
     );
     assert(
       !s.prose.includes("…(issue truncated)"),
@@ -245,7 +245,7 @@ async function main(): Promise<void> {
       `(3) "${name}"'s lens brief is byte-identical to the no-block fallback render — no spec, no split`,
     );
     // The fallback owns the fixer's whole issue section on this shape, so the
-    // brief is compared to the pre-split expression end to end rather than to the
+    // brief is compared to the fallback expression end to end rather than to the
     // block alone: a seat that fell back for the lens and split for the fixer is
     // the half-split this catches.
     assert(

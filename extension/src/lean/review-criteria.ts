@@ -9,9 +9,9 @@
  * print (`lean/spec-blocks.ts`) — keeps the wording a run is judged on and the
  * wording its reviewers read in one place, and `fenceText` disarms the result like
  * every other cross-boundary value at these print sites. The adversarial seat gets
- * it through the loop's `reviewCriteria` param, which only the lean review step
- * ever supplies, so classic /work cannot pass criteria in and its reviewer's
- * prompt is unchanged by this feature.
+ * it through the loop's `reviewCriteria` param, which the lean review step renders
+ * for (`reviewCriteriaSection` in `review-spec-split.ts`), so classic /work cannot
+ * pass criteria in and its reviewer's prompt is unchanged by this feature.
  *
  * The section opens with the spec's `problem`, because a review seat that
  * reads only the criteria list is a seat that never saw what the run was for: the

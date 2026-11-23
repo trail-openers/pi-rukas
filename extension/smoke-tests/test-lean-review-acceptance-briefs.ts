@@ -126,10 +126,10 @@ const section = (head: string): string => renderAcceptanceSection(logFor(head), 
     const fixer = fixerThatCommits(`b2-${String(tag++)}`);
     // `dispatch` is the step's last read before R2, so it is the seam that arms the
     // bound: everything up to and including the fixer ran inside the budget. The commit
-    // stays LOCAL, which is what the step's own capture helper does for the same
-    // wave: `integrate` then pushes it from the run's tree, and the entry guard's origin
-    // read on a later attempt is satisfied by the `verify:1`/`publish:1` rows this case
-    // appends, which name that head too.
+    // stays LOCAL, which is what `fixerThatCommits` (`lib/lean-review-fixtures.ts`)
+    // does for the same wave: `integrate` then pushes it from the run's tree, and the
+    // entry guard's origin read on a later attempt is satisfied by the `verify:1`/
+    // `publish:1` rows this case appends, which name that head too.
     const dispatch = async (spec: DispatchSpec): Promise<DispatchResult> => {
       const out = await fixer(spec);
       past = true;

@@ -19,7 +19,6 @@ export const GOLDEN_PAYLOAD_CAP = 20_000;
  * half of its contract it lost. Built by concatenation so this file's own prose,
  * which names them, is not matched by anything that looks for them. */
 export const GOLDEN_PROBLEM_MARKER = ["…(problem", "truncated)"].join(" ");
-export const GOLDEN_CRITERIA_MARKER = ["…(criteria", "truncated)"].join(" ");
 
 /** The character a fence is built from, as a string: counted with `split` rather
  * than a regex, where an escape for it reads as the literal's own terminator. */

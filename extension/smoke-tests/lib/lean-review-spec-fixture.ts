@@ -90,7 +90,7 @@ export function criterionLine(id: string): RegExp {
  * that prints them is a brief that printed the SECTION and not the raw block. */
 export { LEAN_REVIEW_CRITERIA_HEADING } from "../../src/lean/review-criteria.ts";
 
-/** The prose sentence the split keeps whole; the off arm's cut takes it. */
+/** The prose sentence the prose bound keeps whole when the block alone is long. */
 export const SPEC_TAIL_CONSTRAINT = TAIL_CONSTRAINT;
 
 /** Every criterion id these specs carry, head and tail together. */
@@ -139,9 +139,9 @@ function specBlock(problem: string, count: number): string {
 }
 
 /** A body whose statement passes the cap on its own and whose `pi-spec v1` block
- * repeats it as `problem`: the block is cut and its tail criteria are lost, while
- * the split delivers both. The prose tail sits past the cap too, so the off arm
- * is shown to cut the statement as well. */
+ * repeats it as `problem`: one bound over the raw body would cut the block and its
+ * tail criteria, and take the prose tail with it, while the two bounds deliver all
+ * three. */
 export const SPEC_BODY = `${LONG_STATEMENT}\n\n${TAIL_CONSTRAINT}\n\n${specBlock(LONG_STATEMENT, 20)}`;
 
 /** A body carrying a parsable spec that stays UNDER the issue cap, so the classic
@@ -175,11 +175,12 @@ export const SHORT_CRITERION_IDS = HEAD_CRITERION_IDS;
 export const SHORT_SPEC_BODY = `Add a quota check to the meter.\n\n${TAIL_CONSTRAINT}\n\n${specBlock(BRIEF_STATEMENT, HEAD_CRITERION_IDS.length)}`;
 
 /** A body over the cap ONLY because of its block: the prose alone fits, so with
- * the split the prose survives whole, which the off arm cannot produce. */
+ * the split the prose survives whole, which one bound over the raw body cannot
+ * produce. */
 export const MEDIUM_SPEC_BODY = `Add a quota check to the meter.\n\n${TAIL_CONSTRAINT}\n\n${specBlock(MID_STATEMENT, 40)}`;
 
 /** A body with the long statement and NO machine block: the split must render no
- * criteria section and bound the prose exactly as the off arm bounds it. */
+ * criteria section and bound the prose on its own length alone. */
 export const NO_SPEC_BODY = `${LONG_STATEMENT}\n\n${TAIL_CONSTRAINT}\n\n${FILLER}`;
 
 /** A body whose spec fence never closes: `stripPiSpecBlocks` keeps such a block

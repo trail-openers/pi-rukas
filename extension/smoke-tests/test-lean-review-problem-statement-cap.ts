@@ -2,11 +2,9 @@
 /**
  * The review statement's own cap, pinned by MEASURED length.
  *
- * Split from `test-lean-review-problem.ts` (AGENTS.md §12) because the two files
- * ask different questions of the same section. That file asks whether the
- * statement reaches a seat at all — presence, the two markers told apart, the
- * dedupe, the off arm's byte identity. This one asks how much of it the seat gets,
- * and asks it by number.
+ * The sibling `test-lean-review-spec-split-on.ts` asks whether the statement and
+ * the criteria reach a seat at all — presence, the two markers told apart, the
+ * dedupe. This one asks how much of it the seat gets, and asks it by number.
  *
  * The distinction is what makes the cap falsifiable. A truncation marker is
  * printed by ANY cap: `MAX_PROBLEM_CHARS = 6 000` (the prose's own bound),
