@@ -188,6 +188,8 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // The review step's own clock. On any other step it claims a review stopped short of
   // judging its lanes when no review of this run stopped at all.
   reviewBound: "review",
+  // The head a review fix wave started from: on any other step it claims a wave nobody bought.
+  preFixHead: "review",
   // What the review step judged. `review` alone: a verify step carrying round tallies
   // would report findings no reviewer of this run ever raised, and a handback carrying a
   // wave head would claim a fix it did not integrate.
@@ -308,10 +310,10 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     if (typeof oc.publishedHead !== "string" || !isFullCommitSha(oc.publishedHead))
       return "outcome publishedHead must be a 40-hex commit sha";
   }
-  // The handback's three head facts are each the shape their gate's field takes, so a
+  // The handback's head facts and the review's pre-fix head are each a full oid, so a
   // truncated or mistyped value is refused rather than carried: the comment prints them
   // as evidence of what shipped.
-  for (const field of ["shippedHead", "unshippedHead"] as const) {
+  for (const field of ["shippedHead", "unshippedHead", "preFixHead"] as const) {
     if (oc[field] !== undefined && (typeof oc[field] !== "string" || !isFullCommitSha(oc[field])))
       return `outcome ${field} must be a 40-hex commit sha`;
   }
@@ -386,6 +388,19 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
 }
 
 /**
+ * Why `fields` are not what a running `state` step may save before it decides, or `undefined`:
+ * only fields `OWNER_OF_FIELD` gives that state, each held to its outcome shape rule.
+ */
+export function progressProblem(
+  fields: Record<string, unknown>,
+  state: LeanState,
+): string | undefined {
+  const stray = Object.keys(fields).find((f) => OWNER_OF_FIELD[f] !== state);
+  if (stray !== undefined) return `progress ${stray} is not a ${state}-owned field`;
+  return outcomeProblem({ ...fields, kind: "progress" }, state);
+}
+
+/**
  * The validated outcome, rebuilt field by field. Rebuilt rather than cast: `assertRun`'s
  * whole claim is that a caller can trust every field it reads, and an `as Outcome` would
  * carry an unvalidated field through as if it had been checked.
@@ -435,6 +450,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     ...(typeof oc.report === "string" ? { report: oc.report } : {}),
     ...rowsField(validatedDispatches(oc.dispatches)),
     ...(oc.reviewBound === undefined ? {} : { reviewBound: validatedReviewBound(oc.reviewBound) }),
+    ...(typeof oc.preFixHead === "string" ? { preFixHead: oc.preFixHead } : {}),
     ...(oc.review === undefined ? {} : { review: buildReviewRecord(oc.review) }),
     ...(oc.red === undefined ? {} : { red: buildRedRecord(oc.red) }),
     ...(isBudgetLimit(oc.limit) ? { limit: oc.limit } : {}),

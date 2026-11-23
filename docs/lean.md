@@ -528,7 +528,8 @@ origin holds a head the gate has not re-read. The step records
 `outcome.reviewBound` — `{ wave: "full" | "fix", unreviewedLanes, reason }` — and, on the
 forge channel, posts **one PR comment** listing the lanes it never judged (a lane list,
 plus `adversarial re-review` where that pass never ran): `publish` runs *before*
-`review`, so the PR body cannot carry it. On `PI_ENSEMBLE_HANDOFF_CHANNEL=host` nothing is
+`review`, so the PR body cannot carry it. A pushed fix wave posts one more, naming its fix range
+(`PI_ENSEMBLE_LEAN_PREFIX_HEAD`). On `PI_ENSEMBLE_HANDOFF_CHANNEL=host` nothing is
 posted — the host owns every post, as it does for the two reporting steps — and the record
 and the warn line carry the stop. `reviewDone` is set whatever the answer,
 so a head whose only unjudged lanes are re-review lanes proceeds — disclosed —
@@ -870,7 +871,8 @@ refusal rather than a publish step that never answers.
 budget breach **that no step other than a report (`handback`, `decline`) is newer than** — a `challenge` breach the
 table carried past to `verify` is not why the run ended, so a later red owns the
 line — else the newest red `verify` reason, else the newest red `ci`, else the
-newest green verdict, else the last error; then the frozen tests (max 20),
+newest green verdict, else the last error; then the review fix wave's
+`Pre-fix head:` and range when one was recorded, the frozen tests (max 20),
 `Branch:` and `PR:` (or "no PR yet"). A comment that could not be posted is
 recorded; it never changes the verdict.
 

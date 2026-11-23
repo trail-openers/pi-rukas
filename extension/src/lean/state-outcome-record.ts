@@ -157,6 +157,8 @@ export interface Outcome {
   channel?: HandoffChannel;
   /// `review` only: the step's OWN wall clock stopped it, not one child's budget.
   reviewBound?: ReviewBoundRecord;
+  /// `review` only: the full head the step's fix wave started from, saved before the fixer ran.
+  preFixHead?: string;
   /**
    * `review` only: what the step judged — one per-round tally keyed by the four
    * published severities, and the full head each fix wave pushed. The prose reason

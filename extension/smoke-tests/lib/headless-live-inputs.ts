@@ -30,6 +30,7 @@ import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
 import { leanBuildIssueProseEnabled } from "../../src/lean/issue-prose.ts";
 import { leanLensLedgerAtHeadEnabled } from "../../src/lean/review-deps.ts";
+import { leanPrefixHeadEnabled } from "../../src/lean/review-log.ts";
 import { leanPreflightProbeContainEnabled } from "../../src/lean/preflight-probe-switch.ts";
 import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
@@ -215,6 +216,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // The lean lens ledger row bound to the reviewed head. The reader is `v !== "0"`, so
   // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_LENS_LEDGER_AT_HEAD", leanLensLedgerAtHeadEnabled],
+  // #2199 — the review fix wave's saved pre-fix head; truth table and off arm in
+  // test-lean-prefix-head.ts.
+  ["PI_ENSEMBLE_LEAN_PREFIX_HEAD", leanPrefixHeadEnabled],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],
   // #2223 — the delta reader's incomplete-row rule. The reader is `v !== "0"`, so

@@ -25,6 +25,8 @@ import { errorOutcome } from "./error-outcome.ts";
 import { acquireLock } from "./lock.ts";
 import { exitCodeFor, hasTransition, next } from "./machine.ts";
 import { verifiedPosition } from "./resume.ts";
+import { leanPrefixHeadEnabled } from "./review-log.ts";
+import { progressProblem } from "./state-outcome.ts";
 import {
   type LeanRun,
   type LeanState,
@@ -57,6 +59,12 @@ export interface HandlerCtx {
   stepKey: string;
   /** The injected clock. The only way a handler sees time. */
   now: () => number;
+  /**
+   * Save fields the step owns onto its own write-ahead entry before it decides, so a crash
+   * mid-step leaves them for the re-run; the decided outcome carries them too. Throws on a
+   * field `OWNER_OF_FIELD` does not give this state. Absent outside the engine.
+   */
+  noteProgress?: (fields: Partial<Outcome>) => void;
 }
 
 export type LeanHandler = (ctx: HandlerCtx) => Promise<Outcome>;
@@ -148,7 +156,9 @@ function ended(drive: Drive, run: LeanRun, state: LeanState, reason: string): Ru
 function withOutcome(run: LeanRun, key: string, outcome: Outcome, endedAt: number): LeanRun {
   return {
     ...run,
-    steps: run.steps.map((s) => (s.key === key ? { ...s, endedAt, outcome } : s)),
+    steps: run.steps.map((s) =>
+      s.key === key ? { key, state: s.state, startedAt: s.startedAt, endedAt, outcome } : s,
+    ),
   };
 }
 
@@ -225,6 +235,18 @@ async function settle(
 ): Promise<LeanRun> {
   const handler = opts.handlers[state] as LeanHandler;
   let outcome: Outcome;
+  let current = run;
+  const noteProgress = (fields: Partial<Outcome>): void => {
+    const problem = progressProblem(fields, state);
+    if (problem !== undefined) throw new LeanStateError(`${key}: ${problem}`);
+    current = {
+      ...current,
+      steps: current.steps.map((s) =>
+        s.key === key ? { ...s, progress: { ...s.progress, ...fields } } : s,
+      ),
+    };
+    drive.save(current);
+  };
   try {
     outcome = await handler({
       repoRoot: opts.repoRoot,
@@ -234,11 +256,17 @@ async function settle(
       steps: run.steps,
       stepKey: key,
       now,
+      noteProgress,
     });
   } catch (err) {
     outcome = errorOutcome(state, err);
   }
-  const logged = withOutcome(run, key, outcome, now());
+  // What the step saved before it decided rides its outcome on every arm, a throw included. Progress
+  // holds only the pre-fix head, so the switch off drops one an earlier attempt saved before it.
+  const progress = leanPrefixHeadEnabled()
+    ? current.steps.find((s) => s.key === key)?.progress
+    : undefined;
+  const logged = withOutcome(current, key, { ...progress, ...outcome }, now());
   // `ready`'s verdict also has to land on the RUN, not only its step record:
   // `derivedSpec` is the only copy of a contract that exists on no issue. Keyed on the
   // step's STATE — `key` is `<issue>:<state>:<n>`, so it is never the bare `ready`.

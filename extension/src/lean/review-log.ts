@@ -8,6 +8,7 @@
  * Read from the log because of the resume: the engine re-runs exactly the undecided `review` step, so anything
  * needed across an attempt must be recomputable from the durable record.
  */
+import type { HandlerCtx } from "./engine.ts";
 import { OUTCOME_KINDS } from "./machine.ts";
 import { isRunId } from "./state-dispatches.ts";
 import { validPrUrl } from "./state-outcome.ts";
@@ -138,6 +139,39 @@ export function prNumberFromLog(steps: Step[]): number | undefined {
   if (tail === undefined) return undefined;
   const n = Number(tail);
   return Number.isSafeInteger(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Whether a review fix wave saves the head it starts from. Read at call time, like every lean switch; only
+ * `"0"` turns it off, and off the step neither saves nor names the head.
+ */
+export function leanPrefixHeadEnabled(): boolean {
+  return process.env.PI_ENSEMBLE_LEAN_PREFIX_HEAD !== "0";
+}
+
+/**
+ * The head THIS attempt's fix wave started from, as the step saved it before dispatching the fixer, or
+ * undefined. Keyed on the attempt's own step key: after a crash origin holds the fixer's push, so the
+ * pre-fix head is recoverable from this record alone, and another attempt's wave is a different range.
+ */
+export function preFixHeadFromLog(steps: Step[], key: string): string | undefined {
+  return steps.find((s) => s.key === key)?.progress?.preFixHead;
+}
+
+/**
+ * The fix wave's lower bound: on the switch, the attempt's saved head or `head`, saved before it returns so
+ * the fixer is never dispatched over an unrecorded head. Off, `head` and nothing written.
+ */
+export function holdPreFixHead(ctx: HandlerCtx, head: string): string {
+  if (!leanPrefixHeadEnabled()) return head;
+  const preFixHead = preFixHeadFromLog(ctx.steps, ctx.stepKey) ?? head;
+  ctx.noteProgress?.({ preFixHead });
+  return preFixHead;
+}
+
+/** The fix range a pushed wave names, or undefined when the switch is off. */
+export function fixRangeClause(preFixHead: string, head: string): string | undefined {
+  return leanPrefixHeadEnabled() ? `fix range ${preFixHead}..${head}` : undefined;
 }
 
 /**
