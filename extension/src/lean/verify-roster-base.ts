@@ -14,7 +14,9 @@ import path from "node:path";
 import { isFullCommitSha } from "../commit-sha.ts";
 import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { SHAREABLE_DEPS } from "../worktree-dep-contract.ts";
+import type { ExecFn } from "../worktree.ts";
 import { type TestLocation, globMatches, testDirsNamed } from "./config-test-location.ts";
+import { testLocationOf } from "./config-test-location.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import type { VerifyExec } from "./verify-types.ts";
 
@@ -155,4 +157,22 @@ export async function listProjectTestFilesAtBase(
     files.push(entry);
   }
   return { files, fileCount: files.length };
+}
+
+/** The test location plus its dirs' shared non-test files at the base, shallowest first, for the adversary
+ *  prompts: a child told to reuse a harness is told where it is. A refused listing leaves the location bare. */
+export async function withTestHelpers(
+  exec: ExecFn,
+  repoRoot: string,
+  baseSha: string,
+  verify: Parameters<typeof testLocationOf>[0],
+): Promise<TestLocation | undefined> {
+  const loc = testLocationOf(verify);
+  if (loc === undefined || !isFullCommitSha(baseSha)) return loc;
+  const listed = await trackedPathsAt(exec as VerifyExec, repoRoot, baseSha, loc.testDirs);
+  const depth = (p: string) => p.split("/").length;
+  const helpers = (listed ?? [])
+    .filter((entry) => !globMatches(loc.testGlob, entry.split("/").pop() ?? ""))
+    .sort((a, b) => depth(a) - depth(b));
+  return helpers.length === 0 ? loc : { ...loc, helpers };
 }

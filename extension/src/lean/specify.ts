@@ -51,7 +51,6 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { testsFromLog } from "./build.ts";
-import { testLocationOf } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
@@ -76,6 +75,7 @@ import type { LeanRun } from "./state.ts";
 import type { Outcome } from "./state.ts";
 import type { BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
 import { joinNotes } from "./text-fence.ts";
+import { withTestHelpers } from "./verify-roster-base.ts";
 
 /** The dispatch seam: one child, one result. `spawnSpecialist` in production. */
 type SpecifyDispatch = (
@@ -273,15 +273,13 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   const read = specRules(body, ctx.run);
   if (read.rules.length > 0) return { kind: "no-red-test", failedRules: read.rules };
   const spec = read.spec as PiSpec;
-  // The same bytes the spec was parsed from, kept for the adversary's brief.
-  // Fetching twice would let the child be shown an issue the contract was not
-  // parsed from.
+  // The bytes the spec was parsed from: a second fetch could show the child another issue.
   const issueBody = body;
 
   const base = ctx.run.baseSha;
   if (base.trim() === "") throw new SpecifyInfraError("the run carries no base sha");
   const config = await deps.loadConfig(repoRoot, base);
-  const testLocation = testLocationOf(config.verify);
+  const testLocation = await withTestHelpers(deps.exec, repoRoot, base, config.verify);
   const branch = specifyBranch(ctx.run.branch, issue);
   const wt = specifyWorktreePath(repoRoot, issue);
   // A base sha and a branch name both reach git command lines in this step.

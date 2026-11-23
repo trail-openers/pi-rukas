@@ -146,14 +146,22 @@ Before you freeze your tests, search THIS repository for requirements the issue 
 
 For each one you can point at, add an extra test CASE inside the test file of the criterion it refines, opening no new file for it, with a comment naming the base-commit evidence as \`path:line\`. An implied case never replaces or displaces the criterion's own test. Skip any you cannot ground in a file that exists at the base commit — no evidence, no case.`;
 
+/** The helpers sentence for both adversary prompts (the first 12 names), or "" when the base holds none. */
+function testHelpersInstruction(loc: TestLocation): string {
+  const named = (loc.helpers ?? []).slice(0, 12).map((h) => `\`${h}\``);
+  if (named.length === 0) return "";
+  return `**Shared test code already exists at the base commit: ${named.join(", ")}.** Pull the setup a test needs from it (import it, or \`mod\`/\`use\` it) rather than rebuilding a harness inside the test file: a rebuilt harness is what pushes a test past the line cap.`;
+}
+
 /**
  * The one place the test-location sentence is spelled, for BOTH adversary prompts (same reasoning as
  * {@link RED_PROOF_CONTRACT}). A builder rather than a const because the folder comes from config. Everything
  * the boundary later refuses is stated here first, so a child that obeyed the prompt meets no unwarned drop.
  */
 export function testLocationInstruction(loc: TestLocation): string {
+  const helpers = testHelpersInstruction(loc);
   const where = `${testDirsNamed(loc, "`")}${loc.testDirs.length > 1 ? " (whichever holds the tests of the code the test exercises)" : ""}`;
-  return `**Write every test file directly inside ${where}, named to match \`${loc.testGlob}\` (for example \`${loc.testDirs[0]}/${exampleName(loc)}\`), importing the project's code with paths relative to that folder.** The parent refuses a submitted test anywhere else — a different directory, a subdirectory of it, or a file name that does not match the pattern — and a refused test leaves its criterion uncovered.`;
+  return `**Write every test file directly inside ${where}, named to match \`${loc.testGlob}\` (for example \`${loc.testDirs[0]}/${exampleName(loc)}\`), importing the project's code with paths relative to that folder.** The parent refuses a submitted test anywhere else — a different directory, a subdirectory of it, or a file name that does not match the pattern — and a refused test leaves its criterion uncovered.${helpers === "" ? "" : ` ${helpers}`}`;
 }
 
 /**
