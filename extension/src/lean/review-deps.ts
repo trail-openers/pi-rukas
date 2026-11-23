@@ -41,20 +41,15 @@ import { leanChildOpts } from "./child-opts.ts";
 import { loadWorkConfig } from "./config.ts";
 import { fetchIssueBody, forgeFor } from "./io.ts";
 import type { ReviewWave } from "./review-args.ts";
-import { reviewCriteriaSection, reviewIssueBlock, seatIssueBody } from "./review-spec-split.ts";
+import {
+  renderReviewIssueBlock,
+  reviewCriteriaSection,
+  seatIssueBody,
+} from "./review-spec-split.ts";
 import type { ReviewDeps } from "./review.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { BudgetArms, BudgetFired } from "./step-budget.ts";
 import { fenceText, promptText } from "./text-fence.ts";
-
-/**
- * Whether the lens ledger row is bound to the reviewed head. The step hands the layer
- * `cwd = repoRoot`, a checkout parked at the base commit, where the working-tree diff
- * against the mainline is empty and no row could be recorded. Off only on `"0"`.
- */
-export function leanLensLedgerAtHeadEnabled(): boolean {
-  return process.env.PI_ENSEMBLE_LEAN_LENS_LEDGER_AT_HEAD !== "0";
-}
 
 /** Production dependencies: the real executor, both gates, the spawner, the push. */
 export function reviewDeps(headless: boolean): ReviewDeps {
@@ -89,8 +84,8 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           issueBody: seatIssueBody(a.issueBody, a),
           // The split's criteria section, rendered HERE — the only seam that sets
           // it. The /work driver and the `adversarial_loop` tool leave the loop's
-          // `reviewCriteria` absent and their prompts stay byte-identical; with the
-          // switch off this renders `""` and the loop prints no section.
+          // `reviewCriteria` absent and their prompts stay byte-identical; a body
+          // with no parsable block renders `""` and the loop prints no section.
           //
           // The pair is one decision: `seatIssueBody` strips for exactly the bodies
           // this renders a section for, because the loop prints its issue block from
@@ -139,12 +134,13 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // The worktree is detached, so the ledger write and the residual disclosure can
         // only be keyed on a branch this step names.
         branch: a.branch,
-        // The ledger row's identity is the reviewed commit's (see the switch above). A
-        // recorded row arms the layer's automatic delta base, so the full wave opts out:
-        // its range is the whole branch, never one the layer picks from an earlier row.
-        ...(leanLensLedgerAtHeadEnabled()
-          ? { identityHead: a.head, ...(a.wave === "full" ? { full: true } : {}) }
-          : {}),
+        // The ledger row's identity is the reviewed commit's: the step hands the layer
+        // `cwd = repoRoot`, a checkout parked at the base commit, where the working-tree
+        // diff against the mainline is empty and no row could be recorded. A recorded
+        // row arms the layer's automatic delta base, so the full wave opts out: its
+        // range is the whole branch, never one the layer picks from an earlier row.
+        identityHead: a.head,
+        ...(a.wave === "full" ? { full: true } : {}),
         // The run's own PR, when it has one (see `LensArgs.pr`): the number the residual
         // disclosure posts to, so the layer spends no `gh pr list` per round.
         ...(a.pr === undefined ? {} : { pr: a.pr }),
@@ -320,7 +316,7 @@ export function lensContext(
       ? "full review of the branch"
       : "re-review of the fix wave's commits";
   const parts = [`/work-lean issue #${String(issue)}, lens-review ${scope}`];
-  const issueBlock = reviewIssueBlock(extra.issueBody, ADVERSARIAL_FINDING_RULE, extra);
+  const issueBlock = renderReviewIssueBlock(extra.issueBody, ADVERSARIAL_FINDING_RULE, extra);
   if (issueBlock !== "") parts.push(issueBlock.trim());
   const carried = extra.carried?.trim();
   if (carried !== undefined && carried !== "")
@@ -420,7 +416,7 @@ export function fixPrompt(opts: ReviewFixArgs): string {
   //
   // The FULL decline rule is printed once, in its own section below, because it is a
   // procedure and not one sentence; printing it twice is one rule to reconcile twice.
-  const issueBlock = reviewIssueBlock(
+  const issueBlock = renderReviewIssueBlock(
     opts.issueBody,
     "A finding you cannot apply without contradicting it is declined, not implemented — how is stated below.",
     opts,

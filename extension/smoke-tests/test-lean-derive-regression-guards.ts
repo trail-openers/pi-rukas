@@ -8,18 +8,13 @@
  * still pass." became its own criterion, its test exited 0 on base, and specify
  * refused the run `not-ready` at exit 11. The cases drive the mapper, the persisted
  * record's gate, the intake's guards-only decline, the real `specify` step over a real
- * git repo, and `ci`'s full tier — each with the `PI_ENSEMBLE_LEAN_DERIVE_REGRESSION_GUARDS=0`
- * arm pinned against the output this release had before the switch existed.
+ * git repo, and `ci`'s full tier. The split ships always-on — its off arm was the
+ * defect this retires — so every case runs on the ambient environment.
  */
-import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { defaultConfig } from "../src/lean/config.ts";
-import {
-  GUARDS_ONLY_RULE,
-  isRegressionGuard,
-  leanDeriveRegressionGuardsEnabled,
-} from "../src/lean/derive-guards.ts";
+import { GUARDS_ONLY_RULE, isRegressionGuard } from "../src/lean/derive-guards.ts";
 import { derivePrompt, parseDerivedBlock } from "../src/lean/spec-derive.ts";
 import { contractOf } from "../src/lean/spec-intake.ts";
 import { derivedSpecProblem } from "../src/lean/state-derived-spec.ts";
@@ -47,64 +42,12 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-const KNOB = "PI_ENSEMBLE_LEAN_DERIVE_REGRESSION_GUARDS";
 const GUARD = "The existing colour check and the build still pass.";
 const NEW = "retries a transient failure twice before failing";
 const REPLY = deriveReply([NEW, GUARD]);
 
-function withKnob<T>(value: string | undefined, fn: () => T): T {
-  const saved = process.env[KNOB];
-  if (value === undefined) delete process.env[KNOB];
-  else process.env[KNOB] = value;
-  try {
-    return fn();
-  } finally {
-    if (saved === undefined) delete process.env[KNOB];
-    else process.env[KNOB] = saved;
-  }
-}
-
-// ── AC4: the switch — docs row, truth table, call-time read.
-{
-  const doc = readFileSync(
-    path.resolve(import.meta.dirname, "../../docs/configuration.md"),
-    "utf8",
-  );
-  const row = doc.split("\n").find((l) => l.startsWith(`| \`${KNOB}\``)) ?? "";
-  assert(row !== "", "docs/configuration.md carries a row for the switch");
-  assert(row.includes("byte-identical"), "the row says what `0` restores");
-  for (const [value, want] of [
-    [undefined, true],
-    ["1", true],
-    ["", true],
-    ["false", true],
-    ["0", false],
-  ] as const)
-    assert(
-      withKnob(value, leanDeriveRegressionGuardsEnabled) === want,
-      `${KNOB}=${JSON.stringify(value)} reads ${String(want)}`,
-    );
-}
-
-// ── AC4: "0" is today's derive, pinned against the pre-switch release's output.
-withKnob("0", () => {
-  const brief = createHash("sha256")
-    .update(derivePrompt({ title: "t", body: "b" }))
-    .digest("hex");
-  assert(
-    brief === "f49f9266fde392548e4e5004dafa66e53fd8aec82209fcc3b3e23ff5c7bcc81f",
-    "off: the brief is byte-identical to the pre-switch brief",
-  );
-  const got = JSON.stringify(parseDerivedBlock(REPLY));
-  const want = `{"spec":{"problem":"the problem","criteria":[{"id":"AC1","text":"${NEW}","verify":"test"},{"id":"AC2","text":"${GUARD}","verify":"test"}],"size":"S"}}`;
-  assert(
-    got === want,
-    `off: the guard line is today's red-test criterion AC2, no guards field (${got})`,
-  );
-});
-
 // ── AC1: the mapper turns the guard line into a guard, not a red-test criterion.
-withKnob(undefined, () => {
+{
   assert(
     derivePrompt({ title: "t", body: "b" }).includes('"guards"'),
     "on: the brief asks for guards",
@@ -175,30 +118,28 @@ withKnob(undefined, () => {
     derivedSpecProblem({ ...c, guards: [], model: "", at: 0 }) !== undefined,
     "an empty guards field is not one derive writes",
   );
-});
+}
 
 // ── R5: a ticket that is only guards declines with its own reason, never as a missing red test.
 {
-  const out = await withKnob(undefined, () =>
-    contractOf(
-      "/nonexistent",
-      7,
-      "prose",
-      { baseSha: "b", specIntake: "derive" },
-      defaultConfig(),
-      {
-        issueTitle: async () => "t",
-        loadConfig: async () => defaultConfig(),
-        dispatch: async () => ({
-          role: "explore",
-          ok: true,
-          text: deriveReply([GUARD]),
-          toolUses: [],
-          exitCode: 0,
-          ms: 1,
-        }),
-      },
-    ),
+  const out = await contractOf(
+    "/nonexistent",
+    7,
+    "prose",
+    { baseSha: "b", specIntake: "derive" },
+    defaultConfig(),
+    {
+      issueTitle: async () => "t",
+      loadConfig: async () => defaultConfig(),
+      dispatch: async () => ({
+        role: "explore",
+        ok: true,
+        text: deriveReply([GUARD]),
+        toolUses: [],
+        exitCode: 0,
+        ms: 1,
+      }),
+    },
   );
   assert(
     "rule" in out && out.rule === GUARDS_ONLY_RULE && out.infra !== true,
@@ -207,13 +148,13 @@ withKnob(undefined, () => {
 }
 
 // ── AC2: specify, driven with the derived contract, never refuses over the guard.
-async function specifyArm(knob: string | undefined) {
-  const contract = withKnob(knob, () => parseDerivedBlock(REPLY));
+async function specifyArm() {
+  const contract = parseDerivedBlock(REPLY);
   if (contract === undefined) throw new Error("no contract");
   const derivedSpec: DerivedSpec = { ...contract, model: "", at: 0 };
   const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
   // The guard's own test is green on base: the colour check and the build already pass.
-  const guardTest = knob === "0" ? [submit("AC2", ["tests/AC2-guard.test.sh"])] : [];
+  const guardTest: { criterionId: string; testFiles: string[] }[] = [];
   return runSpecify({
     repoRoot,
     baseSha,
@@ -230,26 +171,18 @@ async function specifyArm(knob: string | undefined) {
   });
 }
 {
-  const on = await specifyArm(undefined);
+  const ok = await specifyArm();
   assert(
-    on.outcome?.kind === "ok",
-    `on: specify freezes the red test (${JSON.stringify(on.outcome ?? on.threw?.message)})`,
-  );
-  const off = await specifyArm("0");
-  assert(
-    off.outcome?.kind === "no-red-test" &&
-      (off.outcome.failedRules ?? []).some((r) => r.startsWith("criterion AC2 has no red test")),
-    `off: today's refusal — the guard criterion has no red test (${JSON.stringify(off.outcome?.failedRules)})`,
+    ok.outcome?.kind === "ok",
+    `specify freezes the red test and never asks one of the guard (${JSON.stringify(ok.outcome ?? ok.threw?.message)})`,
   );
 }
 
 // ── AC3: the guard still runs. The broken-build case pins the pre-existing invariant the split
 // relies on (a failing full tier is red whatever the contract); the no-tier case is this change's.
 {
-  const derivedSpec = withKnob(undefined, () => {
-    const c = parseDerivedBlock(REPLY);
-    return c === undefined ? undefined : { ...c, model: "", at: 0 };
-  });
+  const contract = parseDerivedBlock(REPLY);
+  const derivedSpec = contract === undefined ? undefined : { ...contract, model: "", at: 0 };
   const broken = await runCi({ full: "tier", tierExit: 3, derivedSpec });
   assert(
     broken.outcome?.kind === "red",

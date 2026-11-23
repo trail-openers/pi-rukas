@@ -5,10 +5,9 @@
  * The step hands the review layer `cwd = repoRoot`, a run checkout parked at the base
  * commit while the branch lives in `.worktrees/lean-7`. A ledger identity computed from
  * that checkout's working tree is an empty diff, so the round the step ran was never
- * recorded. With `PI_ENSEMBLE_LEAN_LENS_LEDGER_AT_HEAD` on (the default) the row's
- * identity is the reviewed commit's — the one the merge guard recomputes — and the row
- * is read back through the round cap's own reader. `"0"` keeps today's computation: no
- * row, and the skip names the empty diff rather than `unknown`.
+ * recorded. The row's identity has always been the reviewed commit's — the one the
+ * merge guard recomputes — and the row is read back through the round cap's own
+ * reader. The knob that used to switch that off is retired: its off arm was this bug.
  *
  * Real temp repos; only the six lens children are stubbed, through the lean seam's own
  * `lensChildFn`. The engine is the real `runLensReview`, wrapped only to await its
@@ -45,7 +44,7 @@ const cleanChild = async (a: { lens: { name: string } }): Promise<LensRunResult>
  * `again` re-runs the full wave at a descendant head from a detached run checkout, the
  * shape whose budget key resolves to the lean branch and so finds the first row.
  */
-async function round(knob: string | undefined, again = false) {
+async function round(again = false) {
   const { repoRoot, baseSha } = makeRepo();
   let head = await setup({ repoRoot, baseSha, branch: BRANCH, feature: "export const f = 1;\n" });
   const dir = mkdtempSync(path.join(os.tmpdir(), "lean-ledger-at-head-"));
@@ -54,8 +53,6 @@ async function round(knob: string | undefined, again = false) {
   const saved = { ...process.env };
   process.env.PI_ENSEMBLE_REVIEW_LEDGER_FILE = ledger;
   process.env.PI_ENSEMBLE_SKILLS_DIR = path.resolve(import.meta.dirname, "..", "..", "skill");
-  if (knob === undefined) delete process.env.PI_ENSEMBLE_LEAN_LENS_LEDGER_AT_HEAD;
-  else process.env.PI_ENSEMBLE_LEAN_LENS_LEDGER_AT_HEAD = knob;
   const warned: string[] = [];
   const write = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((c: string | Uint8Array) => {
@@ -105,40 +102,29 @@ async function round(knob: string | undefined, again = false) {
   }
 }
 
-// ── on (default): the round is recorded, bound to the commit the merge guard checks
+// ── the round is recorded, bound to the commit the merge guard checks
 {
-  const r = await round(undefined);
+  const r = await round();
   const row = r.recorded.ok ? r.recorded.latest : undefined;
-  assert(row !== undefined, `(on) the lean round left a lens row (${r.warn.trim() || "no warn"})`);
+  assert(row !== undefined, `the lean round left a lens row (${r.warn.trim() || "no warn"})`);
   assert(
     row?.patchId !== undefined && row.patchId === r.guard.patchId,
-    `(on) and its patch id is the reviewed head's, as the merge guard recomputes it (${String(row?.patchId)} vs ${String(r.guard.patchId)})`,
+    `and its patch id is the reviewed head's, as the merge guard recomputes it (${String(row?.patchId)} vs ${String(r.guard.patchId)})`,
   );
   assert(
     row?.headSha === r.head,
-    `(on) the row names the head it reviewed (${String(row?.headSha)})`,
+    `the row names the head it reviewed (${String(row?.headSha)})`,
   );
-  assert(!r.warn.includes("ledger write skipped"), `(on) no skip was warned (${r.warn.trim()})`);
+  assert(!r.warn.includes("ledger write skipped"), `no skip was warned (${r.warn.trim()})`);
 }
 
-// ── on, a second full wave at a descendant head: still the whole branch, not a delta
+// ── a second full wave at a descendant head: still the whole branch, not a delta
 {
-  const r = await round(undefined, true);
+  const r = await round(true);
   assert(
     r.lens.deltaReview === undefined && r.lens.noReview !== true,
-    `(on) the second full wave reviewed the whole branch (${JSON.stringify(r.lens.deltaReview)})`,
+    `the second full wave reviewed the whole branch (${JSON.stringify(r.lens.deltaReview)})`,
   );
-}
-
-// ── off ("0"): today's computation — nothing recorded, and the skip says why
-{
-  const r = await round("0");
-  assert(r.recorded.ok && r.recorded.latest === undefined, "(off) no lens row is recorded");
-  assert(
-    /ledger write skipped for lean\/issue-7 — no patch id \(empty diff: /.test(r.warn),
-    `(off) the skip names the empty diff (${r.warn.trim()})`,
-  );
-  assert(!r.warn.includes("unknown"), "(off) and never the literal `unknown`");
 }
 
 cleanupRoots();

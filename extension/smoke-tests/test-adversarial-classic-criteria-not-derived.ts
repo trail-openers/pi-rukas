@@ -7,24 +7,21 @@
  * that field is lean's review seam (`lean/review-deps.ts`), which hands the loop
  * the prose with its `pi-spec v1` block stripped and the criteria as a section.
  * A loop that derived a section from `issueBody` would put one in front of every
- * caller that never asked for it — and with the switch at its default ON, that is
- * the classic /work driver and the `adversarial_loop` tool, whose issue bodies
+ * caller that never asked for it — and the split is always on, so that is the
+ * classic /work driver and the `adversarial_loop` tool, whose issue bodies
  * carry a `pi-spec v1` block whenever `/plan` filed them.
  *
  * The defect this file exists for was exactly that derive arm, and the reason it
  * shipped: no other test drove a CLASSIC caller with a spec-bearing body, so
  * nothing compared those two prompts against the pre-split render.
  *
- * Two arms, each run at the switch's DEFAULT (ON) and asserted against the OFF arm
- * of the very same call, so a comparison cannot pass on a fixture that happens to
- * render nothing:
+ * Two arms, each driven once and asserted on what it rendered:
  *
  *   1. **classic caller** — `runAdversarialLoop` with an `issueBody` carrying a
- *      real parsable block and NO `reviewCriteria`: the reviewer's prompt and the
- *      loop's own fix-round prompt are each `===` to what the same call produced
- *      with `PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT=0`; neither carries a criteria
- *      section, and both still carry the raw block (the proof the match is against
- *      the pre-split prompt and not an empty one).
+ *      real parsable block and NO `reviewCriteria`: neither the reviewer's prompt
+ *      nor the loop's own fix-round prompt carries a criteria section, and both
+ *      still carry the raw block — the proof the section's absence is the
+ *      caller's, not a bound that cut it or a fixture with nothing to render.
  *   2. **tool path** — raw args carrying `reviewCriteria` never reach either
  *      prompt, the way the forged budget keys are stripped at the boundary. Asserted
  *      BOTH on the params object the boundary hands the loop and on both prompts:
@@ -45,7 +42,6 @@ import {
   stubAdversarialChildren,
 } from "./lib/classic-caller-harness.ts";
 import { CLASSIC_SPEC_BODY } from "./lib/lean-review-spec-fixture.ts";
-import { withEnv } from "./lib/env-scope.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -196,42 +192,24 @@ try {
     "fixture: the classic body carries a parsable pi-spec block with the criteria's JSON in it",
   );
 
-  // ── 1. classic caller: no criteria section, byte-identical to the off arm ───
-  let onReviewer = "";
-  let onFixer = "";
-  await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
-    const r = await driveClassic("feature/classic-criteria-on");
-    onReviewer = r.reviewer;
-    onFixer = r.fixer;
-  });
-  let offReviewer = "";
-  let offFixer = "";
-  await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: "0" }, async () => {
-    const r = await driveClassic("feature/classic-criteria-off");
-    offReviewer = r.reviewer;
-    offFixer = r.fixer;
-  });
-
+  // ── 1. classic caller: no criteria section, and the raw block still whole ───
+  const classic = await driveClassic("feature/classic-criteria");
   assert(
-    onReviewer.length > 200 && onFixer.length > 200 && offReviewer.length > 200,
-    `arms: both seats got a real prompt on both arms (reviewer ${String(onReviewer.length)}/${String(offReviewer.length)}, fixer ${String(onFixer.length)}/${String(offFixer.length)})`,
+    classic.reviewer.length > 200 && classic.fixer.length > 200,
+    `classic caller: both seats got a real prompt (reviewer ${String(classic.reviewer.length)}, fixer ${String(classic.fixer.length)})`,
   );
 
-  for (const [seat, on, off] of [
-    ["reviewer", onReviewer, offReviewer],
-    ["fixer", onFixer, offFixer],
+  for (const [seat, brief] of [
+    ["reviewer", classic.reviewer],
+    ["fixer", classic.fixer],
   ] as const) {
     assert(
-      on.length > 0 && on === off,
-      `classic caller with the switch ON: the ${seat}'s prompt is === to the switch-OFF prompt for the same call (${String(on.length)} vs ${String(off.length)} chars)`,
-    );
-    assert(
-      !on.includes(LEAN_REVIEW_CRITERIA_HEADING),
+      !brief.includes(LEAN_REVIEW_CRITERIA_HEADING),
       `classic caller: the ${seat}'s prompt carries NO criteria section`,
     );
     assert(
-      on.includes('"AC8"') && on.includes("pi-spec v1"),
-      `classic caller: and the ${seat} still reads the raw block, so the match above is the pre-split prompt and not an empty one`,
+      brief.includes('"AC8"') && brief.includes("pi-spec v1"),
+      `classic caller: the ${seat} still reads the raw block whole, so the absence above is the caller's, not a bound that cut it`,
     );
   }
 
@@ -240,12 +218,12 @@ try {
   let toolReviewer = "";
   let toolFixer = "";
   let toolParams: Record<string, unknown> = {};
-  await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
+  {
     const r = await driveTool("feature/tool-criteria-on", { reviewCriteria: forged });
     toolReviewer = r.reviewer;
     toolFixer = r.fixer;
     toolParams = r.params;
-  });
+  }
 
   assert(
     toolReviewer.length > 200 && toolFixer.length > 200,

@@ -19,6 +19,8 @@
  *
  * Lives apart from the ON-arm file because both drive a real temp repo and a
  * mocked spawn, and the two cases must not share one module's spawn mock.
+ *
+ * The split ships always-on, so the cases run on the ambient environment.
  */
 
 import {
@@ -26,7 +28,6 @@ import {
   renderSpecCriteriaSection,
 } from "../src/lean/review-criteria.ts";
 import { fixPrompt, lensContext } from "../src/lean/review-deps.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { runReviewStepCapturingAll } from "./lib/lean-review-adversarial-capture.ts";
 import { SHORT_CRITERION_IDS, SHORT_SPEC_BODY } from "./lib/lean-review-spec-fixture.ts";
@@ -90,7 +91,7 @@ function fixerArgs(issueBody: string): Record<string, unknown> {
   };
 }
 
-await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
+async function main(): Promise<void> {
   const payload = rawBlockPayload(SHORT_SPEC_BODY);
   const goldenCriteria = renderSpecCriteriaSection(SHORT_SPEC_BODY);
   // Non-vacuity, first: a seat that strips nothing MUST print the block's JSON
@@ -134,7 +135,9 @@ await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
     goldenCriteria,
   );
   judge("fixPrompt", fixPrompt(fixerArgs(SHORT_SPEC_BODY) as never), payload, goldenCriteria);
-});
+}
+
+await main();
 
 console.log(
   `\n${failures() === 0 ? "short-body seats green" : "short-body seats RED"} (${String(failures())} failing)`,

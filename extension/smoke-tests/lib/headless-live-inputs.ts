@@ -30,12 +30,9 @@ import { leanDetectVerifyEnabled } from "../../src/lean/config-detect.ts";
 import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
 import { leanBuildIssueProseEnabled } from "../../src/lean/issue-prose.ts";
-import { leanLensLedgerAtHeadEnabled } from "../../src/lean/review-deps.ts";
 import { leanPrefixHeadEnabled } from "../../src/lean/review-log.ts";
 import { leanPreflightProbeContainEnabled } from "../../src/lean/preflight-probe-switch.ts";
-import { leanReviewSpecSplitEnabled } from "../../src/lean/review-spec-split.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
-import { leanDeriveRegressionGuardsEnabled } from "../../src/lean/derive-guards.ts";
 import { leanSpecifyReaskEnabled } from "../../src/lean/specify-reask.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../../src/lens-evidence.ts";
 import { lensLargeDiffEnabled } from "../../src/lens-large-diff-switch.ts";
@@ -193,11 +190,7 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN", leanPreflightProbeContainEnabled],
   // The lean review seats' spec split. The reader is `v !== "0"`, so the LIVE
   // assertion in the gate (env deleted) pins "unset means on".
-  ["PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT", leanReviewSpecSplitEnabled],
-  // #2212 — #2179's preflight/submodule behaviour. The reader is `v !== "0"`, so
-  // the gate's LIVE loop (env deleted) pins "unset means on".
   ["PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT", leanRunnerPreflightEnabled],
-  ["PI_ENSEMBLE_LEAN_DERIVE_REGRESSION_GUARDS", leanDeriveRegressionGuardsEnabled],
   // The specify re-ask for unsubmitted criteria; its arms are pinned by test-lean-specify-reask.ts.
   ["PI_ENSEMBLE_LEAN_SPECIFY_REASK", leanSpecifyReaskEnabled],
   // Default OFF: the reader is `v === "1"`, so the LIVE loop pins "unset means off".
@@ -216,9 +209,6 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // table, the docs row and the off-arm call shape are pinned by
   // test-lean-handback-net-git-switch.ts.
   ["PI_ENSEMBLE_LEAN_HANDBACK_NET_GIT", leanHandbackNetGitEnabled],
-  // The lean lens ledger row bound to the reviewed head. The reader is `v !== "0"`, so
-  // the gate's LIVE loop (env deleted) pins "unset means on".
-  ["PI_ENSEMBLE_LEAN_LENS_LEDGER_AT_HEAD", leanLensLedgerAtHeadEnabled],
   // #2199 — the review fix wave's saved pre-fix head; truth table and off arm in
   // test-lean-prefix-head.ts.
   ["PI_ENSEMBLE_LEAN_PREFIX_HEAD", leanPrefixHeadEnabled],

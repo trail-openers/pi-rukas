@@ -25,11 +25,6 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // switch: one renderer serves all three and the section ships on.
   // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
   flag("LEAN_BUILD_ISSUE_PROSE", true),
-  // Derive sets ticket lines that only ask existing checks to keep passing beside
-  // the criteria as regression guards, which need no red test; `0` restores the
-  // derive output with no guards. The reader is
-  // `leanDeriveRegressionGuardsEnabled` in lean/derive-guards.ts.
-  flag("LEAN_DERIVE_REGRESSION_GUARDS", true),
   // Default OFF, on only at `1`: a repo with neither `.pi/work.json` nor `.pi/verify-cmd`
   // gets verify tiers detected at the base (pytest, or a package.json test script) instead
   // of `ready`'s setup refusal — the refusal a host's driver fallback keys on. The shared
@@ -54,11 +49,6 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // `leanHandbackNetGitEnabled` in lean/handback-net-git-switch.ts; the push's argv is
   // not in scope — its `--atomic` and its unforced lease-bound refspec ship with the rule.
   flag("LEAN_HANDBACK_NET_GIT", true),
-  // The lean lens ledger row is bound to the reviewed head, so a round the step ran is
-  // recorded although the run checkout it hands the layer sits at the base commit. `0`
-  // computes the identity from that checkout's working tree, as before: nothing recorded.
-  // The reader is `leanLensLedgerAtHeadEnabled` in lean/review-deps.ts.
-  flag("LEAN_LENS_LEDGER_AT_HEAD", true),
   // A review fix wave saves the head it starts from before the fixer runs, and the
   // range rides the step's reason, a PR comment, the handback and `issues[].preFixHead`. `0`
   // saves and names nothing. The reader is `leanPrefixHeadEnabled` in lean/review-log.ts.
@@ -83,12 +73,6 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // PR: each criterion, the frozen test the run recorded for it, and what the
   // newest green `verify` reported for it at the certified head. The table is READ,
   // never executed, and is composed once per attempt by `lean/review-acceptance.ts`.
-  // Show the lean review seats (six lenses, adversarial reviewer, review fixer)
-  // the issue's prose and the spec's criteria as two sections, so a long
-  // statement cannot cut the criteria by competing with its own block for one
-  // bound. 0 restores the single bounded block. The reader is
-  // `leanReviewSpecSplitEnabled` in lean/review-spec-split.ts.
-  flag("LEAN_REVIEW_SPEC_SPLIT", true),
   // #2212 — #2179's runner preflight and the reset's submodule init, both off
   // only on `"0"`, which restores v0.14.71's specify (no probe, no submodule
   // call, exit 11 where the preflight would have handed back at 10).

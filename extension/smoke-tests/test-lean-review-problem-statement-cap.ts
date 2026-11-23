@@ -17,16 +17,14 @@
  * kept length of an over-cap statement, and the WHOLE payload of a statement that
  * sits between `MAX_ISSUE_CHARS` and the cap.
  *
- * The statement's own switch retired with the rule shipping default-on; the split lever
- * is pinned to its ambient default here — and read by the fixtures at their own load,
- * which is why the pin wraps the imports' use rather than relying on the ambient default.
+ * The statement's own switch and the split lever both retired with the rules
+ * shipping default-on, so every case here runs on the ambient environment.
  *
  * Offline: pure functions over strings, no child, no model, no token.
  */
 
 import { MAX_ISSUE_CHARS } from "../src/adversarial-prompts.ts";
 import { renderSpecCriteriaSection } from "../src/lean/review-criteria.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   GOLDEN_PROBLEM_MARKER,
@@ -44,9 +42,7 @@ import {
 
 const { assert, failures } = makeAssert();
 
-await withEnv(
-  { PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined },
-  async () => {
+async function main(): Promise<void> {
     // ── the over-cap side: the kept span is the cap, to the character ────────
     {
       const kept = keptStatementSpan(renderSpecCriteriaSection(STATEMENT_OVER_CAP_BODY));
@@ -101,8 +97,9 @@ await withEnv(
         "(cap) and its last characters are present — the absence of the marker is a fact about the cap, not about a body that reached no bound",
       );
     }
-  },
-);
+}
+
+await main();
 
 console.log(
   `\n${failures() === 0 ? "statement cap green" : "statement cap RED"} (${String(

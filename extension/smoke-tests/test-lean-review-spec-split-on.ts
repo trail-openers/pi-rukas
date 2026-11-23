@@ -11,12 +11,13 @@
  *   - `SPEC_BODY` — the statement is over the cap by itself: the prose keeps one
  *     issue marker, the criteria are all there, and the machine block is gone;
  *   - `MEDIUM_SPEC_BODY` — only the block pushes the body over the cap: with the
- *     split on the prose is short enough to survive WHOLE, which the off arm
- *     cannot produce (that case is asserted red-by-construction below);
+ *     split the prose is short enough to survive WHOLE, which one bound over the
+ *     raw body cannot produce (asserted red-by-construction below);
  *   - `NO_SPEC_BODY` / `UNTERMINATED_SPEC_BODY` — nothing parsable: no criteria
- *     section at all, and the prose bounded exactly as the off arm bounds it.
+ *     section at all, and the prose bounded by the fallback, byte for byte.
  *
- * Every case runs under `withEnv` — the reader is read at call time.
+ * The rules ship always-on, so every case runs on the ambient environment: there is
+ * no arm left to pin.
  */
 
 import { MAX_ISSUE_CHARS } from "../src/adversarial-prompts.ts";
@@ -25,12 +26,7 @@ import {
   renderSpecCriteriaSection,
 } from "../src/lean/review-criteria.ts";
 import { fixPrompt, lensContext } from "../src/lean/review-deps.ts";
-import {
-  leanReviewSpecSplitEnabled,
-  renderReviewIssueBlock,
-  renderReviewProse,
-} from "../src/lean/review-spec-split.ts";
-import { withEnv } from "./lib/env-scope.ts";
+import { renderReviewIssueBlock, renderReviewProse } from "../src/lean/review-spec-split.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { runReviewStepCapturingAll } from "./lib/lean-review-adversarial-capture.ts";
 import {
@@ -46,7 +42,7 @@ import {
   SPEC_TAIL_CONSTRAINT,
   UNTERMINATED_SPEC_BODY,
 } from "./lib/lean-review-spec-fixture.ts";
-import { goldenLensContext } from "./lib/lean-review-spec-split-golden.ts";
+import { goldenFixIssueSection, goldenLensContext } from "./lib/lean-review-spec-split-golden.ts";
 
 const { assert, failures } = makeAssert();
 (globalThis as { __captured?: unknown }).__captured = undefined;
@@ -94,12 +90,19 @@ function criterionLine(id: string): RegExp {
   return new RegExp(`\\*\\*${id}\\*\\* \\[(test|command|manual)\\]`);
 }
 
+/** The part of the fixer's brief the split governs: from the prompt's first
+ * newline to the findings heading — the issue block and the decline section that
+ * follows it. */
+function fixIssueSection(brief: string): string {
+  return brief.slice(brief.indexOf("\n"), brief.indexOf("\n## The findings"));
+}
+
 /** The character a fence is built from, as a string: the same reason the
  * assertions below count it with `split` — in a regex literal it is the terminator,
  * not the character. */
 const FENCE_CHAR = "\u0060";
 
-await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
+async function main(): Promise<void> {
   // ── (1) the statement is over the cap on its own ───────────────────────────
   {
     const s = seats(SPEC_BODY);
@@ -175,7 +178,7 @@ await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
     );
   }
 
-  // ── (3) nothing parsable: no criteria section, prose bounded as today ──────
+  // ── (3) nothing parsable: no criteria section, prose bounded as the fallback ──
   for (const [name, body] of [
     ["no spec block", NO_SPEC_BODY],
     ["unterminated fence", UNTERMINATED_SPEC_BODY],
@@ -192,7 +195,15 @@ await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
     );
     assert(
       s.lens === goldenLensContext(body),
-      `(3) "${name}"'s lens brief is byte-identical to the pre-split render — no spec, no change`,
+      `(3) "${name}"'s lens brief is byte-identical to the no-block fallback render — no spec, no split`,
+    );
+    // The fallback owns the fixer's whole issue section on this shape, so the
+    // brief is compared to the pre-split expression end to end rather than to the
+    // block alone: a seat that fell back for the lens and split for the fixer is
+    // the half-split this catches.
+    assert(
+      fixIssueSection(s.fix) === goldenFixIssueSection(body),
+      `(3) "${name}"'s fixer issue section is byte-identical to the no-block fallback render`,
     );
   }
 
@@ -317,7 +328,9 @@ await withEnv({ PI_ENSEMBLE_LEAN_REVIEW_SPEC_SPLIT: undefined }, async () => {
       `(5) and the brief's fences still pair (${String(fences)})`,
     );
   }
-});
+}
+
+await main();
 
 console.log(
   `\n${failures() === 0 ? "on arm green" : "on arm RED"} (${String(failures())} failing)`,
