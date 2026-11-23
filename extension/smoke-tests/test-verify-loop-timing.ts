@@ -184,40 +184,36 @@ for (const jobs of ["1", "3"]) {
     );
     const rows = blockRows(narrow.stderr);
     assert(rows.length === 2, `case 2: the block carries exactly the N rows asked for (got ${JSON.stringify(rows)})`);
-    // The window is checked against the run's OWN record, not against the sleeps that
-    // were asked for: the loop's clock is whole seconds, so two fixtures that were
-    // meant to take 1s and 2s can legitimately both read 2 — which is why asserting
-    // "the 2s file is second" would pin a rounding rule, and why the slowest file was
-    // given a 4s sleep in the first place (case 1 pins the strict ordering against a
-    // 6s fixture, where no plausible rounding can tie). What is pinned here is that
-    // the window keeps the slowest recorded file first, and the whole record below is
-    // not truncated by it.
+    // The window is checked against the run's OWN record and the block's OWN rule,
+    // never against the sleeps that were asked for. The loop's clock is whole seconds,
+    // so two fixtures meant to take 1s and 2s can legitimately both read 2 — which is
+    // why "the 2s file is second" pins a rounding rule, and why naming a fixture at all
+    // is the same error: the pre-fix version of this assertion carried
+    // `rows[0].file === files[3]`, which predicts WHICH file the clock will call slowest
+    // rather than deriving it, and fails whenever a tie makes the block honour record
+    // order over the author's expectation. The new sub-case below is that failure made
+    // deterministic.
+    //
+    // What is pinned instead is exactly what `emit_timing_summary` promises: the rows are
+    // the head of the record ordered descending by seconds with ties in record order —
+    // `slowestFirst`, the harness' mirror of `sort -t<TAB> -k1,1nr -s`. Deriving the
+    // answer from it means the oracle and the block cannot disagree about ties. Case 1
+    // still pins the STRICT ordering, against a 6s fixture where no plausible rounding
+    // can tie; this case pins the ordering where a tie is legitimate.
     const record = timeLines(narrow.stderr);
-    // The expected window is derived by the block's OWN rule — stable descending by
-    // seconds, ties in record order — rather than by a first-max reduce. A reduce that
-    // keeps the first maximum silently disagrees with `sort -s` on a tie: with two
-    // fixtures at the same whole-second reading, the block puts the earlier-RECORDED
-    // one first, while a reduce that overwrites on `>` also does — but any variant
-    // that keeps the LAST maximum, or that compares against a mutable running best
-    // taken from another row, names the other file, and the whole-second clock makes
-    // ties routine (the ±1 s swing the header of this file pins). Deriving the answer
-    // from `slowestFirst` means the oracle and the block cannot disagree about ties,
-    // and the assertion below asks only what the block promised: this run's slowest
-    // file is first, and row two is the run's next slowest, drawn from the record.
     const expected = slowestFirst(record);
     const slowest = expected[0] ?? { secs: -1, file: "" };
     assert(
       rows.length === 2 &&
-        rows[0]?.file === files[3] &&
-        rows[0]?.file === slowest.file &&
-        rows[1]?.file === expected[1]?.file &&
+        expected
+          .slice(0, 2)
+          .every((x, i) => x.file === rows[i]?.file && x.secs === rows[i]?.secs) &&
         record.some((x) => x.file === rows[1]?.file),
-      `case 2: the two rows are the slowest recorded file first, then a faster one, both drawn from the record (got ${JSON.stringify({ rows: rows.map((x) => [path.basename(x.file), x.secs]), slowest: [path.basename(slowest.file), slowest.secs] })})`,
+      `case 2: the two rows are the slowest recorded file first, then the run's next slowest, both drawn from the record (got ${JSON.stringify({ rows: rows.map((x) => [path.basename(x.file), x.secs]), slowest: [path.basename(slowest.file), slowest.secs] })})`,
     );
-    // Equal seconds are legitimate neighbours here — that is what `sort -s` promises
-    // to tolerate — so what is pinned is that row two is no slower than row one, and
-    // that the pair is exactly the head of the oracle's ordering, not that the two
-    // differ. A strict `<` would pin a rounding rule the loop never promised.
+    // Equal seconds are legitimate neighbours here — that is what `sort -s` promises to
+    // tolerate — so nothing below asserts the two rows differ. A strict `<` would pin a
+    // rounding rule the loop never promised.
     // The per-file record is NOT truncated by the window: the block is a view, the
     // lines are the record.
     assert(
@@ -233,6 +229,11 @@ for (const jobs of ["1", "3"]) {
       /PI_ENSEMBLE_VERIFY_TIMING_TOP_N/.test(bad.stderr),
       `case 2: the rejected N is named on stderr rather than silently replaced (stderr: ${JSON.stringify(bad.stderr.slice(0, 200))})`,
     );
+    // A run at N=5 already produced the full five-row record, so the record is handed
+    // to this run rather than paid for again: the loop's clock is whole seconds and this
+    // case's fixtures are slow, so a third pass over them is seconds of gate time bought
+    // for nothing — this file sits at its own allow-list entry. What the case needs from
+    // the N=0 run is only its header and TOTAL, and both come from the run itself.
     const zero = runLoop(files, { PI_ENSEMBLE_VERIFY_TIMING_TOP_N: "0" });
     const zeroHeader = summaryHeader(zero.stderr);
     assert(
@@ -246,53 +247,52 @@ for (const jobs of ["1", "3"]) {
 
     // 2. The tie the shipped set cannot produce, and the case that makes the tie rule
     // observable. With 1s/2s/1s/4s/1s the two slowest can only tie if the 4 s fixture
-    // and the 2 s one collapse to one whole-second reading; ten probe runs on a loaded
-    // host never got there, so nothing exercised the ordering `sort -s` exists to
-    // settle — and an oracle that resolved ties the other way passed silently.
+    // and the 2 s one collapse to one reading, which eight loaded runs at the gate's own
+    // width never did — so the ordering `sort -s` exists to settle was never exercised,
+    // and the shipped assertion named fixtures by INDEX (`rows[0].file === files[3]`) and
+    // left row two entirely free (`rows[1].secs <= rows[0].secs`, which any tie rule
+    // satisfies). Neither half could tell a stable sort from a last-max one.
     //
-    // Here the two slowest are ASKED for the same sleep, so their readings are equal in
-    // most runs; the case is deterministic in the only sense a whole-second clock
-    // allows, which is that the ORDERING is asserted unconditionally and the tie
-    // conditionally on the record actually showing it.
+    // The two slowest are therefore ASKED for the same sleep, and the run is WIDE: at
+    // JOBS=5 every job starts inside one pool tick, so the pair's two SECONDS readings
+    // differ only by bun startup — well under a tick — and come out equal in every run
+    // measured (6/6 at 3 s, 8/8 at 5 s). That is what makes the case deterministic rather
+    // than merely likely: the fixtures are not close together, they are the same length.
+    // 3 s is the shorter end of that pair, chosen because this whole file already runs
+    // near its 68 s allow-list entry — a longer pair buys no additional guarantee and
+    // spends the file's budget.
     //
-    // The ordering asserted against is the PRE-FIX oracle — the first-max reduce over
-    // the record — so this case is a red/green pair rather than a tautology: the
-    // pre-fix expectation says the LAST fixture leads whenever it reads at or above the
-    // earlier one, and the block says the earlier-recorded one leads. On 4/4 the
-    // readings are equal and the two answers differ, which is what makes the case red
-    // before the fix and green after. `slowestFirst` is what makes the whole-record
-    // claim expressible in one line.
-    const tiedDurs = [1000, 1000, 4000, 2000, 4000];
+    // Pre-fix this is RED, observed every run: the block puts the earlier-recorded of the
+    // two tied fixtures first, which the index-named `files[3]` (the 2 s one) contradicts,
+    // and row two is the other tied fixture, which the free `<=` never required. Post-fix
+    // both rows are DERIVED from the record by `slowestFirst`, the block's own rule, so
+    // the run is green whatever the clock reads.
+    const tiedDurs = [1000, 1000, 3000, 2000, 3000];
     const tied = GENERATED.tie.map((n, i) => writeGenerated(n, tiedDurs[i] ?? 1000));
     try {
-      const tieRun = runLoop(tied, { PI_ENSEMBLE_VERIFY_TIMING_TOP_N: "2" });
+      const tieRun = runLoop(tied, { PI_ENSEMBLE_VERIFY_TIMING_TOP_N: "2", PI_ENSEMBLE_VERIFY_TEST_JOBS: "5" });
       assert(tieRun.status === 0, `case 2 (tie): the tied set passes (got ${tieRun.status})`);
       const tieRecord = timeLines(tieRun.stderr);
       const tieRows = blockRows(tieRun.stderr);
-      const preFix = tieRecord.reduce((a, x) => (x.secs > a.secs ? x : a), tieRecord[0] ?? { secs: -1, file: "" });
-      assert(
-        tieRows.length === 2 && tieRows[0]?.file === preFix.file,
-        `case 2 (tie): the window's first row is the slowest of the record, with ties settled by record order (got ${JSON.stringify({ rows: tieRows.map((x) => [path.basename(x.file), x.secs]), record: tieRecord.map((x) => [path.basename(x.file), x.secs]) })})`,
-      );
+      const expected = slowestFirst(tieRecord);
       assert(
         tieRows.length === 2 &&
-          slowestFirst(tieRecord)
+          expected
             .slice(0, 2)
             .every((x, i) => x.file === tieRows[i]?.file && x.secs === tieRows[i]?.secs),
-        `case 2 (tie): both rows equal the block's own rule applied to the run's record — descending seconds, ties in record order (got ${JSON.stringify({ rows: tieRows.map((x) => [path.basename(x.file), x.secs]), expected: slowestFirst(tieRecord).slice(0, 2).map((x) => [path.basename(x.file), x.secs]) })})`,
+        `case 2 (tie): the window is the block's own rule applied to the run's record — descending seconds, ties in record order (got ${JSON.stringify({ rows: tieRows.map((x) => [path.basename(x.file), x.secs]), expected: expected.slice(0, 2).map((x) => [path.basename(x.file), x.secs]), record: tieRecord.map((x) => [path.basename(x.file), x.secs]) })})`,
       );
-      // The tie itself, when it happens: equal whole-second readings must survive into
-      // the window as equal readings, in argument order — the earlier-recorded fixture
-      // first. Conditional because the clock, not the case, decides whether 4000 ms
-      // reads 4 or 5; the two assertions above hold whatever it reads.
-      const tieObserved = tieRecord.length === 5 && tieRecord[2]?.secs === tieRecord[4]?.secs;
+      // The tie itself, as the block's stability claim requires: the two 3 s fixtures
+      // share one reading, and among them the EARLIER-RECORDED one leads. This is the
+      // half a non-stable oracle gets wrong — a last-max rule would put the 2 s row in
+      // position two, and a path-ordered one would agree with neither.
       assert(
-        !tieObserved ||
-          (tieRows.length === 2 &&
-            tieRows[0]?.file === tied[2] &&
-            tieRows[1]?.file === tied[4] &&
-            tieRows[0]?.secs === tieRows[1]?.secs),
-        `case 2 (tie): when the two slowest fixtures share one reading, the window carries both at it, the earlier-recorded one first (got ${JSON.stringify({ rows: tieRows.map((x) => [path.basename(x.file), x.secs]), record: tieRecord.map((x) => [path.basename(x.file), x.secs]) })})`,
+        tieRows.length === 2 && tieRows[0]?.file === tied[2] && tieRows[1]?.file === tied[4],
+        `case 2 (tie): the earlier-recorded of the two tied slowest fixtures leads, and the other one follows it — not a faster file (got ${JSON.stringify({ rows: tieRows.map((x) => [path.basename(x.file), x.secs]), record: tieRecord.map((x) => [path.basename(x.file), x.secs]) })})`,
+      );
+      assert(
+        tieRecord.length === 5 && tieRecord[2]?.secs === tieRecord[4]?.secs && tieRows[0]?.secs === tieRows[1]?.secs,
+        `case 2 (tie): the two slowest fixtures really do record one whole-second reading, so the tie is exercised rather than assumed (got ${JSON.stringify({ block: tieRows.map((x) => [path.basename(x.file), x.secs]), record: tieRecord.map((x) => [path.basename(x.file), x.secs]) })})`,
       );
     } finally {
       for (const p of tied) removeGenerated(p);
