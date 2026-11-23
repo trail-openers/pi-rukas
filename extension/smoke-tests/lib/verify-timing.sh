@@ -148,20 +148,24 @@ else
   fi
   VERIFY_TIMING_CEILING_S=0
 fi
-# `TIMING_ALLOWLIST_EAGER=1` is the mutant twin the off-path canary uses: it forces a
-# bound where the operator named none, so the cost of consulting the list can be
-# observed red instead of argued. It lands AFTER the parse above (an empty env value,
-# which is what the loop tests pin it to, would otherwise re-clear it) and it is the
-# ONLY place the ceiling is forced — every gate then reads one fact. It can never
-# invent an exemption: the list still has to exist and name the path. Nothing shipped
-# sets it; the harness `env()` pins it off the way it pins the ceiling.
-if [ "${TIMING_ALLOWLIST_EAGER:-0}" = "1" ]; then
-  VERIFY_TIMING_CEILING_S=1
-fi
-
+# NO SHIPPED CODE PATH FORCES A CEILING. The off-path canary of
+# test-verify-timing-ceiling.ts needs a run that asked for no bound and still walks the
+# list, and the seam that used to supply it was read HERE, from the loop's own
+# environment: one exported name armed the ratchet for a run nobody asked to grade and
+# failed it with nothing naming why. So nothing below this parse can turn the ceiling
+# on, and the canary arms it per spawn instead — `lib/verify-loop-timing-harness.ts`
+# assigns the parsed value in the child's own frame after sourcing this file (the seam
+# `_timing_seed_ceiling` names). It can never invent an exemption: the list still has
+# to exist and name the path. The read the canary observes is the SAME fork an armed
+# run pays for, so a forced ceiling and an operator-named one are indistinguishable
+# below this line — which is what lets the canary's probe be evidence.
 # The committed exemption list — see `_timing_allowlist_entries`. Its path is
 # overridable so a test exercises an exemption against a temp file instead of editing
-# the shipped one, which the parallel suite would read half-written.
+# the shipped one, which the parallel suite would read half-written. It is a PATH and
+# nothing more: it decides WHICH file an armed run reads, never WHETHER one is read —
+# the knob above is the only arm of the ceiling. The harness names an explicit path on
+# every spawn rather than relying on the default below, which is resolved relative to
+# this file and so names no list when a caller has copied these halves elsewhere.
 TIMING_ALLOWLIST="${TIMING_ALLOWLIST:-$(dirname "${BASH_SOURCE[0]}")/../../timing-allowlist.json}"
 
 # The base the allow-list is written against: `extension/`, resolved from THIS file's
@@ -207,33 +211,61 @@ timing_over_ceiling() {
   [ "$secs" -gt "$VERIFY_TIMING_CEILING_S" ]
 }
 
-# One allow-list entry per line, `secs<TAB>key`, from the committed JSON. Parsed by
-# awk alone — no jq or python, because the loop runs where neither is guaranteed.
+# The allow-list of the current run, `secs<TAB>key` per entry, one line each, in the
+# order the committed JSON declares them. Populated by the ONE read this file makes —
+# `_timing_allowlist_entries` below — and emptied by `timing_start`, so every
+# `timing_ceiling_offenders` in the shell's next run re-reads. A sourced file's
+# variables survive the previous run in the same shell, so the reset is part of the
+# record's reset and not an extra: a stale list would exempt the previous run's files.
+_TIMING_ALLOWLIST_ROWS=""
+# Has the list been read since the record opened? Deliberately NOT derived from the
+# rows above being empty: a list that parses to zero entries has been read, and a run
+# would otherwise fork it once per row — which is the cost this cache exists to pay
+# down, and the shape the warning below has to be able to see.
+_TIMING_ALLOWLIST_LOADED=0
+
+# Read the committed allow-list AT MOST ONCE per run: one `secs<TAB>key` line per entry
+# on stdout, and the same lines cached in `_TIMING_ALLOWLIST_ROWS` for `timing_listed`.
+# Printing them is the contract two offline gates read —
+# test-verify-timing-allowlist.ts sources this file and calls this function bare, and
+# its whole shrink-only ratchet is judged against the rows this prints — so the cache
+# sits BEHIND the print rather than replacing it, and the gate sees the same bytes
+# before and after the cache landed. stdout is the answer and stderr is the diagnostic,
+# the same split `timing_ceiling_offenders` keeps for the same reason.
 #
-# THE KNOB GATE IS THE WHOLE COST CLAIM, AND THE PROBE MEASURES IT FROM THE OUTSIDE:
-# a run that asked for no ceiling must not read this list at all, because every read
-# forks the awk at the bottom of this function (~2 forks per timing row was ~3,154
+# The knob gate at the top is the whole cost claim, and the probe measures it from the
+# OUTSIDE: a run that asked for no ceiling must not read this list at all, because the
+# read forks the awk at the bottom of this function (~2 forks per timing row was ~3,154
 # forks / ~21 s on this repo's own suite). `TIMING_ALLOWLIST_PROBE` names a file that
 # gets one line per read — a caller cannot see a fork, so the read announces itself,
 # and case 7g of test-verify-timing-ceiling.ts runs a whole loop with the knob unset
-# and asserts that file stays EMPTY. `TIMING_ALLOWLIST_EAGER=1` is its mutant twin and
-# the reason the same assertion is observed RED rather than argued: a gate nobody has
-# watched fail proves nothing. It forces the parsed ceiling once, where the parse
-# lands, so every gate in the chain below reads one fact — forcing it inside a caller
-# would be discarded with that frame's `$(…)` subshell before the next gate read it.
-# It can never invent an exemption: the list still has to exist and name the path. Both
-# knobs are unset in the shipped state and pinned off by the harness `env()`.
+# and asserts that file stays EMPTY. Its mutant twin is a harness-only seam (see the
+# note at the ceiling's parse): the canary forces the ceiling in the child's own frame,
+# so the same assertion is observed RED rather than argued — a gate nobody has watched
+# fail proves nothing. Forcing it can never invent an exemption: the list still has to
+# exist and name the path. The probe is counted here, at the fork, and NOT in the
+# caller-side gates above it: a row that was under the bound asked the list nothing and
+# must not be tallied as a read, or the off-path witness would report reads the run
+# never paid for. Both seams are unset in the shipped state and pinned off by the
+# harness `env()`.
 #
 # The fields ACCUMULATE ACROSS LINES: the file may carry one entry per line, or the
 # same JSON pretty-printed with one field per line (what a formatter does to it), and
 # a parser that required both on one line read the pretty-printed shape as an EMPTY
 # list — every entry silently stopped exempting anything, and a run whose only fault
 # was its formatting failed on its whole slow set. A `file` with no following
-# `seconds` yields no record, so junk costs an exemption rather than inventing one,
-# and an absent or unreadable list exempts NOTHING — the fail-closed side.
+# `seconds` yields no record, so junk costs an exemption rather than inventing one.
+#
+# ABSENT, UNREADABLE OR EMPTY IS DISCLOSED, NEVER SILENT: each of those three states
+# prints ONE line naming the path, and exempts NOTHING — the fail-closed side. Silence
+# is the bug this closes: an operator who armed the ratchet against a list whose path
+# was wrong read a run that failed every slow file and said nothing about the list, so
+# the obvious next move was to widen it. One line per RUN, not per row: the gate below
+# returns before the read, so a run of a hundred rows warns once.
 _timing_allowlist_entries() {
   [ "$VERIFY_TIMING_CEILING_S" -gt 0 ] || return 0
-  [ -f "$TIMING_ALLOWLIST" ] || return 0
+  [ "$_TIMING_ALLOWLIST_LOADED" -eq 1 ] && { printf '%s\n' "$_TIMING_ALLOWLIST_ROWS"; return 0; }
+  _TIMING_ALLOWLIST_LOADED=1
   # One line per read of the list, which is one line per fork. The `if` rather than a
   # trailing `… && echo` keeps the function's status about the READ, not about whether
   # a probe was asked for — a caller's `x && _timing_allowlist_entries` chain must not
@@ -241,7 +273,7 @@ _timing_allowlist_entries() {
   if [ -n "${TIMING_ALLOWLIST_PROBE:-}" ]; then
     echo "$$" >>"$TIMING_ALLOWLIST_PROBE" 2>/dev/null || :
   fi
-  awk '
+  _TIMING_ALLOWLIST_ROWS="$(awk '
     {
       if (match($0, /"file"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
         f = substr($0, RSTART, RLENGTH)
@@ -253,23 +285,46 @@ _timing_allowlist_entries() {
         sub(/^"seconds"[[:space:]]*:[[:space:]]*/, "", n)
         if (f != "") { print n "\t" f; f = "" }
       }
-    }' "$TIMING_ALLOWLIST" 2>/dev/null
+    }' "$TIMING_ALLOWLIST" 2>/dev/null)"
+  if [ ! -f "$TIMING_ALLOWLIST" ]; then
+    echo "warn: verify-loop: timing ceiling is on but no allow-list at $TIMING_ALLOWLIST; nothing is exempt" >&2
+  elif [ ! -r "$TIMING_ALLOWLIST" ]; then
+    echo "warn: verify-loop: timing ceiling is on but the allow-list at $TIMING_ALLOWLIST is unreadable; nothing is exempt" >&2
+  elif [ -z "$_TIMING_ALLOWLIST_ROWS" ]; then
+    echo "warn: verify-loop: timing ceiling is on but the allow-list at $TIMING_ALLOWLIST has no entries; nothing is exempt" >&2
+  fi
+  [ -n "$_TIMING_ALLOWLIST_ROWS" ] && printf '%s\n' "$_TIMING_ALLOWLIST_ROWS"
+  return 0
 }
 
+# Is <key> named by the list? Asks the loader above, which answers from its cache on
+# every call after the first, so the read count is one per run however many rows a run
+# has. The match is pure shell — the newline-bounded test admits only a whole field, so
+# a key that is a prefix of an entry does not match it — and the cache is what lets it
+# be pure shell: one parameter substitution over the run's rows, where the old shape
+# forked `awk` twice for every row past the bound. The rows are this file's own,
+# written by the loader in `secs<TAB>key` form; `key` is a path, never a newline.
 timing_listed() {
-  # No knob gate here on purpose: the two callers that fork (`timing_exempt` and
-  # `timing_ceiling_offenders`) both gate first, and a gate HERE would refuse the
-  # forced read the off-path canary in test-verify-timing-ceiling.ts needs to observe
-  # red. The cost claim it is not weakened: `timing_exempt`'s gate is the statement
-  # that keeps a knob-off run from ever reaching this line.
-  # `needle`, not `k`: this file is SOURCED, so `local k` here would clobber the
-  # caller's own `k` — `timing_exempt` keeps the normalised key in a global `k` — and
-  # empty it out under the caller's feet, so the match would run against "" and
-  # nothing would ever be listed. The same trap the timing helpers document for
-  # `line`.
+  _timing_allowlist_entries >/dev/null
   local needle="${1:-}"
   [ -n "$needle" ] || return 1
-  _timing_allowlist_entries | awk -F'\t' -v k="$needle" '$2 == k {found = 1} END {exit found ? 0 : 1}'
+  [ -n "$_TIMING_ALLOWLIST_ROWS" ] || return 1
+  case $'\n'"$_TIMING_ALLOWLIST_ROWS"$'\n' in
+    *$'\n'"$needle"$'\t'*$'\n'*) return 0 ;;
+  esac
+  return 1
+}
+
+# The harness' seam, and nothing else's: it assigns the ceiling in the frame that
+# sourced this file, where the assignment survives — see the note at the ceiling's
+# parse for why no shipped path may reach it. A value that is not 1-4 digits changes
+# nothing: the seam is there to arm a bound a case can name, not to become a second
+# parse with its own opinion about junk.
+_timing_seed_ceiling() {
+  local secs="${1:-}"
+  [[ "$secs" =~ ^[0-9]{1,4}$ ]] || return 1
+  VERIFY_TIMING_CEILING_S="$((10#$secs))"
+  return 0
 }
 
 # Is <file> exempt from the ceiling? The knob gate here is the caller-side half of
@@ -354,6 +409,12 @@ timing_start() {
     return 1
   fi
   TIMING_FILE="$run_dir/timing.tsv"
+  # Drop the previous run's cached allow-list with the previous run's record: this
+  # file is SOURCED, so the rows survive a run in the same shell, and a list that
+  # still read as loaded would exempt this run's files by the last run's answer — a
+  # renamed or emptied list would keep exempting under the old rows.
+  _TIMING_ALLOWLIST_ROWS=""
+  _TIMING_ALLOWLIST_LOADED=0
   return 0
 }
 

@@ -312,14 +312,15 @@ const stripTiming = (s: string): string => s.split("\n").filter((l) => !isTiming
   );
 
   // The same assertion observed RED, which is the only evidence that the green above
-  // is a measurement and not a vacuity. `TIMING_ALLOWLIST_EAGER=1` forces the
-  // ceiling's parse to a bound where the operator named none, so a run that asked for
-  // nothing still walks the record and consults the list — the exact cost 7g exists to
-  // stop. Two knobs must be named because the off path is a CHAIN of gates and eager
-  // forces only the first: a slow passing file (so a row exists whose time is over the
-  // forced bound, where the harness' own 60 s watchdog bound is not) and a temp list
-  // (so the read has a real file to read; forcing the fork must never be able to
-  // invent an exemption, and it cannot — the list still has to name the path).
+  // is a measurement and not a vacuity. The arm forces a ceiling on a spawn whose
+  // operator knob stayed off, so a run that asked for nothing still walks the record
+  // and consults the list — the exact cost 7g exists to stop. Two things must be named
+  // because the off path is a CHAIN of gates and the arm forces only the first: a slow
+  // passing file (so a row exists whose time is over the forced bound, where the
+  // harness' own 60 s watchdog bound is not) and a temp list (so the read has a real
+  // file to read; forcing the fork must never be able to invent an exemption, and it
+  // cannot — the list still has to name the path). The arm is a harness setting, not an
+  // environment name the loop parses: see `TimingArm` in the harness.
   const canaryDir = mkdtempDirSync(path.join(tmpdir(), "pi-2449-eager-"));
   const canaryProbe = path.join(canaryDir, "probe.log");
   // Its OWN list, naming both fixtures. `writeAllowlist` — not the committed file —
@@ -335,12 +336,16 @@ const stripTiming = (s: string): string => s.split("\n").filter((l) => !isTiming
   let eagerBytes = -1;
   let eager: { status: number; stdout: string; stderr: string };
   try {
-    eager = runLoop([PASS, CEILING_OVER], {
-      FIXTURE_CEILING_MS: "8000",
-      TIMING_ALLOWLIST: canaryList,
-      TIMING_ALLOWLIST_PROBE: canaryProbe,
-      TIMING_ALLOWLIST_EAGER: "1",
-    });
+    eager = runLoop(
+      [PASS, CEILING_OVER],
+      {
+        FIXTURE_CEILING_MS: "8000",
+        TIMING_ALLOWLIST: canaryList,
+        TIMING_ALLOWLIST_PROBE: canaryProbe,
+      },
+      [],
+      { ceiling: "1" },
+    );
     try {
       eagerBytes = statSync(canaryProbe).size;
     } catch {

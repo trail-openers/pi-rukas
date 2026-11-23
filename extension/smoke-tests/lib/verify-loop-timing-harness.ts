@@ -100,14 +100,46 @@ export function env(
     PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "60",
     PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "",
     TIMING_ALLOWLIST: "",
-    // The two seams that make the allow-list read observable (the probe file) and
-    // simulate an off-path read (eager). Both must be absent in every case that does
-    // not name them, exactly as the ceiling itself must be.
+    // The seam that makes an allow-list read observable from outside the process. It
+    // must be absent in every case that does not name it, exactly as the ceiling
+    // itself must be — an inherited probe path would have a case assert on a file it
+    // never allocated.
     TIMING_ALLOWLIST_PROBE: "",
-    TIMING_ALLOWLIST_EAGER: "",
+    // The harness' own arm, read by NOTHING the loop ships. It used to be an
+    // environment name the shipped parser read (`TIMING_ALLOWLIST_EAGER`), which let
+    // one exported name arm a ceiling on a run nobody asked to grade and fail it with
+    // nothing naming why. The arm is now the `arm` argument of `runLoop` — a harness
+    // setting carried in the child's startup hook, never a knob a shipped file parses.
+    VERIFY_TIMING_TEST_CEILING_S: "",
   };
   return { ...process.env, ...base, ...extra };
 }
+
+/**
+ * The child's startup hook, which carries a per-spawn arm into the loop's frame.
+ *
+ * Bash consults `ENV` (the function) when a non-interactive shell starts, and nothing
+ * in `verify-loop.sh` or its sourced halves runs an `ENV`-shaped command or names that
+ * function, so the hook shadows nothing and costs a plain run nothing. The body is
+ * inert unless `VERIFY_TIMING_TEST_CEILING_S` names a ceiling: it defines a function
+ * whose only job is to seed the ceiling from that variable, and a run the arm never
+ * armed therefore changes no state at all. So the off-path runs of case 7g take the
+ * plain path — no file is read and the probe stays empty — whether or not the arm is
+ * in the environment at all, which is what AC4 and AC3 both need.
+ *
+ * The seeding is not a no-op dressed up as a canary: `_timing_seed_ceiling` is the
+ * seam `lib/verify-timing.sh` documents, and the pool's own source of that file runs
+ * AFTER it, so the seeded value is the one every gate in the loop reads — which is how
+ * case 7g's canary is observed RED before it is trusted green.
+ */
+const CHILD_HOOK =
+  `ENV() { [ -n "\${VERIFY_TIMING_TEST_CEILING_S:-}" ] && . "${LIB}/verify-timing.sh" ` +
+  `>/dev/null 2>&1 && _timing_seed_ceiling "$VERIFY_TIMING_TEST_CEILING_S"; };`;
+
+/** Per-spawn arm for `runLoop`: the ceiling a case forces on a spawn whose operator-
+ * facing knob stays off. Harness-only by construction — the name it travels in is read
+ * by the hook above and by no shipped code path. */
+export type TimingArm = { ceiling: string };
 
 export function runLoop(
   files: string[],
@@ -116,7 +148,13 @@ export function runLoop(
   // here rather than smuggled through the environment, where the loop would never
   // see it and the case would quietly test normal mode twice.
   prefix: string[] = [],
+  // The mutant twin, per spawn rather than per environment (see `TimingArm`). Omit it
+  // and the loop is spawned exactly as it always was.
+  arm?: TimingArm,
 ): { status: number; stdout: string; stderr: string } {
+  if (arm !== undefined && !/^[0-9]{1,4}$/.test(arm.ceiling)) {
+    harnessFatal(`timing arm ceiling must be 1-4 digits, got ${JSON.stringify(arm.ceiling)}`);
+  }
   const r = spawnSync("bash", [LOOP, ...prefix, ...files], {
     // `extension/`, the directory every other verify-loop test invokes the loop from
     // (see runLoopEnv in verify-loop-lib.ts): the loop resolves its own lib/ halves by
@@ -125,7 +163,12 @@ export function runLoop(
     cwd: REPO,
     encoding: "utf8",
     timeout: 240_000,
-    env: env(extraEnv),
+    env: {
+      ...env(extraEnv),
+      // Only an armed spawn carries the startup hook at all: an unarmed run is the
+      // shipped shape, byte for byte, with no `ENV` defined in its frame.
+      ...(arm ? { BASH_ENV: CHILD_HOOK } : {}),
+    },
   });
   return { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
