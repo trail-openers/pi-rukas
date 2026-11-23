@@ -455,15 +455,20 @@ this config also needs a `verify.roster` (below) or
   could not be run at all, blocks nothing.
 - **`verify.format`** — optional `{file}` template, run in argv form like
   `verify.test` (same rules: one whole-word `{file}`, no shell metacharacters).
-  The project's formatter, e.g. `rustfmt --edition 2021 {file}` or
-  `npx prettier --write {file}`. `specify` and `challenge` run it on each
-  submitted test **before** proving it red and freezing it, so the bytes proven,
-  committed and later re-hashed are already in the project's format — a frozen
-  test can then never fail the project's own format check, which `build` could
-  not fix. A file the formatter refuses (non-zero exit) is dropped with its
-  reason; a formatter that cannot start or times out, or that writes any path it
-  was not handed, hands the run back. Use a per-file formatter: `cargo fmt`
-  rewrites the whole crate. Absent, nothing runs.
+  The project's formatter, e.g. `npx prettier --write {file}`. `specify` and
+  `challenge` run it on each submitted test **before** proving it red and
+  freezing it, so the bytes proven, committed and later re-hashed are already in
+  the project's format — a frozen test can then never fail the project's own
+  format check, which `build` could not fix. A non-zero exit whose output names
+  the file drops that file, with the formatter's output in the reason. A
+  non-zero exit that does not name it (a toolchain proxy that cannot pick a
+  version), a formatter that cannot start or times out, or one that writes any
+  path it was not handed, hands the run back. Use a per-file formatter that
+  touches only the file it is handed: `cargo fmt` rewrites the whole crate, and
+  `rustfmt <path>` follows the file's out-of-line `mod x;` declarations, failing
+  on a module the test declares but nobody wrote. For Rust, point the template
+  at a small script that feeds the file to `rustfmt --edition 2021 --emit stdout`
+  on stdin and writes the result back. Absent, nothing runs.
 - **`autoMerge`** — boolean, default `false`. **The merge grant**: `land` reads
   it at the run's base sha and refuses the merge without it. An unreadable
   config refuses too, naming the read rather than pretending the project declined.
