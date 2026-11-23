@@ -23,6 +23,7 @@
  * The split ships always-on, so the cases run on the ambient environment.
  */
 
+import { fencedIssueBody } from "../src/adversarial-prompts.ts";
 import {
   LEAN_REVIEW_CRITERIA_HEADING,
   renderSpecCriteriaSection,
@@ -31,9 +32,19 @@ import { fixPrompt, lensContext } from "../src/lean/review-deps.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { runReviewStepCapturingAll } from "./lib/lean-review-adversarial-capture.ts";
 import { SHORT_CRITERION_IDS, SHORT_SPEC_BODY } from "./lib/lean-review-spec-fixture.ts";
-import { rawBlockPayload } from "./lib/lean-review-spec-split-golden.ts";
+
 
 const { assert, failures } = makeAssert();
+
+/** The block keys a seat that strips nothing WOULD print, read off the raw render
+ * of THIS body — a hand-picked key is an assertion about the fixture's spelling,
+ * and a body that renames one passes on a seat that stripped nothing at all. */
+function rawBlockPayload(issueBody: string): string[] {
+  const printed = fencedIssueBody(issueBody);
+  return ["problem", "criteria", "id", "text", "verify"]
+    .map((k) => `"${k}"`)
+    .filter((needle) => printed.includes(needle));
+}
 
 /** A criterion id the child can only have read from the criteria section: the
  * renderer's own bullet shape, id and verify kind together. */

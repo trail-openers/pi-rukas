@@ -403,7 +403,6 @@
     "smoke-tests/test-merge-evidence-gl-retry-bound.ts",
     "smoke-tests/test-merge-guard-ci-evidence-gitlab.ts",
     "smoke-tests/lib/lean-review-spec-fixture.ts",
-    "smoke-tests/lib/lean-review-spec-split-golden.ts",
     "smoke-tests/lib/lean-review-adversarial-capture.ts",
     "smoke-tests/test-lean-review-spec-split-on.ts",
     "smoke-tests/test-lean-review-spec-split-order.ts",

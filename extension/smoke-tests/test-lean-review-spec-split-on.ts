@@ -20,7 +20,13 @@
  * no arm left to pin.
  */
 
-import { MAX_ISSUE_CHARS } from "../src/adversarial-prompts.ts";
+import {
+  ADVERSARIAL_FINDING_RULE,
+  MAX_ISSUE_CHARS,
+  fencedIssueBody,
+  fencedIssuePromptBlock,
+} from "../src/adversarial-prompts.ts";
+import { FIXER_DECLINE_RULE } from "../src/work-driver-lens-issue.ts";
 import {
   LEAN_REVIEW_CRITERIA_HEADING,
   renderSpecCriteriaSection,
@@ -42,7 +48,6 @@ import {
   SPEC_TAIL_CONSTRAINT,
   UNTERMINATED_SPEC_BODY,
 } from "./lib/lean-review-spec-fixture.ts";
-import { goldenFixIssueSection, goldenLensContext } from "./lib/lean-review-spec-split-golden.ts";
 
 const { assert, failures } = makeAssert();
 (globalThis as { __captured?: unknown }).__captured = undefined;
@@ -96,6 +101,32 @@ function criterionLine(id: string): RegExp {
 function fixIssueSection(brief: string): string {
   return brief.slice(brief.indexOf("\n"), brief.indexOf("\n## The findings"));
 }
+
+/** The lens brief a body with NO parsable block gets: the shared bounded block,
+ * trimmed and joined to the scope line the way `lensContext` joins it. Written
+ * from the shared renderers rather than imported from the module under change, so
+ * a fallback that stopped happening is caught rather than agreed with. */
+function fallbackLensContext(issueBody: string): string {
+  const block = fencedIssuePromptBlock(issueBody, ADVERSARIAL_FINDING_RULE, fencedIssueBody);
+  return block === "" ? FALLBACK_SCOPE_LINE : [FALLBACK_SCOPE_LINE, block.trim()].join("\n\n");
+}
+
+/** The scope line `lensContext` prints first for a full-round pass — the one part
+ * of the brief the split does not touch. */
+const FALLBACK_SCOPE_LINE = "/work-lean issue #7, lens-review full review of the branch";
+
+/** The fixer's issue section for a body with no parsable block: the raw bounded
+ * block plus the decline section after it, spelled as `fixPrompt` prints them. */
+function fallbackFixIssueSection(issueBody: string): string {
+  const block = fencedIssuePromptBlock(issueBody, FIXER_LEAD_IN, fencedIssueBody);
+  return block === ""
+    ? "\n"
+    : `\n${block}\n## Declining a finding that contradicts the issue\n\n${FIXER_DECLINE_RULE}\n`;
+}
+
+/** The lead-in `fixPrompt` prints with its issue block. */
+const FIXER_LEAD_IN =
+  "A finding you cannot apply without contradicting it is declined, not implemented — how is stated below.";
 
 /** The character a fence is built from, as a string: the same reason the
  * assertions below count it with `split` — in a regex literal it is the terminator,
@@ -155,7 +186,7 @@ async function main(): Promise<void> {
     // The off arm cannot produce this brief: same body, same renderer, one
     // bound. Asserting the inequality here is what makes (1) non-vacuous.
     assert(
-      s.lens !== goldenLensContext(SPEC_BODY),
+      s.lens !== fallbackLensContext(SPEC_BODY),
       "(1) and the ON render differs from the frozen pre-split render for the same body",
     );
   }
@@ -194,7 +225,7 @@ async function main(): Promise<void> {
       `(3) "${name}" keeps exactly one issue truncation marker, exactly as today`,
     );
     assert(
-      s.lens === goldenLensContext(body),
+      s.lens === fallbackLensContext(body),
       `(3) "${name}"'s lens brief is byte-identical to the no-block fallback render — no spec, no split`,
     );
     // The fallback owns the fixer's whole issue section on this shape, so the
@@ -202,7 +233,7 @@ async function main(): Promise<void> {
     // block alone: a seat that fell back for the lens and split for the fixer is
     // the half-split this catches.
     assert(
-      fixIssueSection(s.fix) === goldenFixIssueSection(body),
+      fixIssueSection(s.fix) === fallbackFixIssueSection(body),
       `(3) "${name}"'s fixer issue section is byte-identical to the no-block fallback render`,
     );
   }
