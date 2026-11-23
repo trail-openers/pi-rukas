@@ -16,7 +16,7 @@
  *   - `NO_SPEC_BODY` / `UNTERMINATED_SPEC_BODY` — nothing parsable: no criteria
  *     section at all, and the prose bounded by the fallback, byte for byte.
  *
- * The rules ship always-on, so every case runs on the ambient environment: there is
+ * The rules have no knob, so every case runs on the ambient environment: there is
  * no arm left to pin.
  */
 
@@ -199,8 +199,8 @@ async function main(): Promise<void> {
         SPEC_CRITERION_IDS.every((id) => criterionLine(id).test(s.criteria)),
       `(1) the prose carries the bound's marker (${String(s.prose.length)} chars) while every tail criterion is still delivered — the two bounds are independent`,
     );
-    // The off arm cannot produce this brief: same body, same renderer, one
-    // bound. Asserting the inequality here is what makes (1) non-vacuous.
+    // One bound over the same body cannot produce this brief. Asserting the
+    // inequality here is what makes (1) non-vacuous.
     assert(
       s.lens !== fallbackLensContext(SPEC_BODY),
       "(1) and the ON render differs from the frozen pre-split render for the same body",

@@ -6,12 +6,11 @@
  * never prove red, and coverage `all-criteria` refuses the whole run over it. A guard is therefore
  * NOT a criterion: `derive` keeps it beside the contract (`DerivedSpec.guards`), it never enters
  * `testCriteria`, and the run's full verify tier — which `ci` requires before a run can land — is
- * what enforces it. No guard is ever executable text: derive authors no command, and the split
- * ships always-on — there is no off arm to restore.
+ * what enforces it. No guard is ever executable text: derive authors no command.
  *
  * The deriving child is asked to sort guards out itself; {@link isRegressionGuard} is the
- * deterministic arm that moves a bullet whose WHOLE text is such a demand, so the split does not
- * depend on model wording. It is deliberately narrow, because a bullet it moves loses its red
+ * deterministic arm that moves a bullet whose WHOLE text is such a demand, so separating
+ * guards from criteria does not depend on model wording. It is deliberately narrow, because a bullet it moves loses its red
  * test: the subject must be named as existing ("the existing …", "all pre-existing …"), so "the
  * other tabs still work" — which may be the bug itself — is left to the child, which sees the
  * ticket; and a mixed sentence ("X returns 3 and the build still passes") stays a criterion.

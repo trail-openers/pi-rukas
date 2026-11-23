@@ -17,8 +17,8 @@
  * kept length of an over-cap statement, and the WHOLE payload of a statement that
  * sits between `MAX_ISSUE_CHARS` and the cap.
  *
- * The statement's own switch and the split lever both retired with the rules
- * shipping default-on, so every case here runs on the ambient environment.
+ * The statement's cap and the split both ship with no knob, so every case here
+ * runs on the ambient environment.
  *
  * Offline: pure functions over strings, no child, no model, no token.
  */

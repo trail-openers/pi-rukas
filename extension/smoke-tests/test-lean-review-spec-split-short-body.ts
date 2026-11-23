@@ -20,7 +20,7 @@
  * Lives apart from the ON-arm file because both drive a real temp repo and a
  * mocked spawn, and the two cases must not share one module's spawn mock.
  *
- * The split ships always-on, so the cases run on the ambient environment.
+ * The split has no knob, so the cases run on the ambient environment.
  */
 
 import { fencedIssueBody } from "../src/adversarial-prompts.ts";

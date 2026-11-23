@@ -13,8 +13,9 @@
  * head, so the bound's cut separates the two: `SPEC_CRITERION_IDS` are the ids
  * that sit past the cap for the body alone and therefore reach a child ONLY
  * through the split's own section, and `TAIL_CONSTRAINT` is a prose sentence the
- * split's strip is what keeps whole. The off arm of every case below is asserted
- * to lose exactly those, which is what makes the ON assertions non-vacuous.
+ * split's strip is what keeps whole. The single-bound render these bodies are
+ * compared against loses exactly those, which is what makes the split's
+ * assertions non-vacuous.
  *
  * Lives in lib/ so the smoke glob never self-executes it.
  */
