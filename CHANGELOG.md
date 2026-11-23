@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.11](https://github.com/trail-openers/pi-rukas/compare/v0.15.10...v0.15.11) (2026-11-23)
+
+
+### Bug Fixes
+
+* **lean:** show the formatter's output when verify.format refuses a test ([#2592](https://github.com/trail-openers/pi-rukas/issues/2592)) ([133a184](https://github.com/trail-openers/pi-rukas/commit/133a184d743704c1d5d0386fe4af7b25ffc9a7f7))
+
 ## [0.15.10](https://github.com/trail-openers/pi-rukas/compare/v0.15.9...v0.15.10) (2026-11-23)
 
 
