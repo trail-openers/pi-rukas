@@ -2,7 +2,10 @@ name: Release Please
 
 on:
   push:
-    branches: [main]
+    # Releases come only from release/X.Y branches. main is excluded while a
+    # downstream picker that takes the newest v0.* tag would ship main's next
+    # minor to running hosts; release-please on main is what cuts that tag.
+    branches: ['release/**']
 
 permissions:
   contents: write
@@ -35,3 +38,4 @@ jobs:
           token: ${{ secrets.RELEASE_PAT }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          target-branch: ${{ github.ref_name }}
