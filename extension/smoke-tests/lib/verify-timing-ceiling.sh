@@ -197,18 +197,24 @@ _timing_allowlist_entries() {
 
 # Is <key> named by the list? Asks the loader above, which answers from its cache on
 # every call after the first, so the read count is one per run however many rows a run
-# has. The match is pure shell — the newline-bounded test admits only a whole field, so
-# a key that is a prefix of an entry does not match it — and the cache is what lets it
-# be pure shell: one parameter substitution over the run's rows, where the old shape
-# forked `awk` twice for every row past the bound. The rows are this file's own,
-# written by the loader in `secs<TAB>key` form; `key` is a path, never a newline.
+# has. The match is pure shell, and the newline on BOTH sides of the needle is what makes
+# it a whole-field test: the rows are `secs<TAB>key` with one row per line, so a key is
+# preceded by a tab and followed by a newline — pinning the newline after it is what
+# stops a key that is a PREFIX of an entry from matching that entry (a list that exempts
+# `a/b.ts` must not exempt `a/b.tsx`, and an entry ending in a directory component must
+# not exempt a sibling file under it). A tab after the needle could never match: the key
+# is the row's LAST field, terminated by the newline. The cache is what lets the match be
+# pure shell at all — one parameter substitution over the run's rows, where the old shape
+# forked `awk` twice for every row past the bound.
 timing_listed() {
   _timing_allowlist_entries >/dev/null
   local needle="${1:-}"
   [ -n "$needle" ] || return 1
   [ -n "$_TIMING_ALLOWLIST_ROWS" ] || return 1
+  local nl
+  nl="$(printf '\n')"
   case $'\n'"$_TIMING_ALLOWLIST_ROWS"$'\n' in
-    *$'\n'"$needle"$'\t'*$'\n'*) return 0 ;;
+    *"$nl$needle$nl"*) return 0 ;;
   esac
   return 1
 }

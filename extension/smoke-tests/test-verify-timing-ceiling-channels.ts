@@ -32,11 +32,13 @@ import {
   GENERATED,
   isTimingLine,
   mkdtempDirSync,
+  removeAllowlist,
   removeGenerated,
   runLoop,
+  writeAllowlist,
   writeGenerated,
 } from "./lib/verify-loop-timing-harness.ts";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
@@ -146,6 +148,144 @@ function assert(cond: boolean, msg: string): void {
     !body.includes(path.basename(PASS)),
     `case 9: the passing file is NOT in the report — only the clock failed (got: ${JSON.stringify(body)})`,
   );
+}
+
+// ------------------------- Case 10: AC1's cost half — the list is read ONCE per run
+
+{
+  // "Read at most once per run, whatever the number of over-bound rows" is a count, and
+  // a count is measured, not argued. `TIMING_ALLOWLIST_PROBE` names a file that gets
+  // exactly one line per read of the list — one line per `awk` fork — so N over-bound
+  // rows against a 1 s ceiling must still leave the file holding ONE line. This is the
+  // assertion the cache exists to satisfy: the shape that preceded it forked `awk` twice
+  // for every row past the bound, so a ten-row run read the list ten times.
+  //
+  // Three slow files, so the run has three offenders. The probe is handed to the loop
+  // and read back by the case; nothing else writes it. The list names NO file, so every
+  // row reaches it (an exempt row never asks the list a question and must not be
+  // counted — see the probe's placement inside the loader).
+  // Generated slow files, not the committed fixture: an exemption is keyed on a PATH,
+  // and this run must exempt nothing so every row asks the list its question. Names from
+  // `GENERATED.many` are the ones the harness already removes after every case.
+  const rows = GENERATED.many.slice(0, 3).map((n) => writeGenerated(n, 8000));
+  const probeDir = mkdtempDirSync(path.join(tmpdir(), "pi-2465-readcount-"));
+  const probe = path.join(probeDir, "probe.log");
+  const list = writeAllowlist([]);
+  try {
+    const r = runLoop(rows, {
+      PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "2",
+      FIXTURE_CEILING_MS: "8000",
+      PI_ENSEMBLE_VERIFY_TEST_JOBS: "3",
+      TIMING_ALLOWLIST: list,
+      TIMING_ALLOWLIST_PROBE: probe,
+    });
+    const offenders = ceilingLines(r.stderr);
+    // The run must actually have been over the bound three times: a run with no
+    // offenders would prove the count vacuously, which is the failure mode this whole
+    // suite treats as the worst answer.
+    assert(
+      offenders.length === 3 && r.status === 1,
+      `case 10: three files sat over the ceiling and failed the run (${JSON.stringify(offenders)}, status ${r.status})`,
+    );
+    let reads = 0;
+    try {
+      reads = readFileSync(probe, "utf8").split("\n").filter((l) => l !== "").length;
+    } catch {
+      reads = -1;
+    }
+    assert(
+      reads === 1,
+      `case 10: AC1 — with the ceiling armed and ${offenders.length} over-bound rows, the allow-list was read ${reads} time(s); exactly ONE read per run is the claim the cache exists to hold (probe ${JSON.stringify(probe)})`,
+    );
+  } finally {
+    removeAllowlist(list);
+    for (const p of rows) removeGenerated(p);
+    try {
+      rmSync(probeDir, { recursive: true, force: true });
+    } catch {
+      /* a leftover scratch dir is reaped with TMPDIR */
+    }
+  }
+}
+
+// ------------------------- Case 11: AC2 — an armed run whose list cannot be read says so
+
+{
+  // The ceiling is fail-CLOSED: a list that is absent, unreadable, or parses to nothing
+  // exempts nothing. That half was already pinned. What was NOT pinned is that it says
+  // so — an operator who armed the ratchet against a wrong path read a run that failed
+  // every slow file and printed nothing about the list, so the obvious next move was to
+  // widen it. Each state below must print exactly ONE warning naming the path (one per
+  // RUN, not per row: the loader returns before its gate), must still exempt nothing,
+  // and must still fail the offender.
+  const env = {
+    PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "2",
+    FIXTURE_CEILING_MS: "8000",
+    PI_ENSEMBLE_VERIFY_TEST_JOBS: "2",
+  };
+  const missing = path.join(mkdtempDirSync(path.join(tmpdir(), "pi-2465-nolist-")), "nope.json");
+
+  // An EMPTY list that exists, and an UNREADABLE one that exists — both built once and
+  // shared by the three arms below, since each arm only varies which path the loop is
+  // pointed at.
+  const emptyList = writeAllowlist([]);
+  const unreadableDir = mkdtempDirSync(path.join(tmpdir(), "pi-2465-unreadable-"));
+  const unreadable = path.join(unreadableDir, "timing-allowlist.json");
+  try {
+    writeFileSync(unreadable, JSON.stringify({ entries: [{ file: "x.ts", seconds: 9 }] }));
+    chmodSync(unreadable, 0o000);
+  } catch {
+    /* an unreadable fixture this host will not produce is skipped by the arm below */
+  }
+
+  const arms: [string, string][] = [
+    ["absent", missing],
+    ["unreadable", unreadable],
+    ["empty", emptyList],
+  ];
+  try {
+    for (const [state, list] of arms) {
+      if (state === "unreadable" && !existsSync(unreadable)) continue;
+      const r = runLoop([PASS, CEILING_OVER], { ...env, TIMING_ALLOWLIST: list });
+      const warns = r.stderr
+        .split("\n")
+        .filter((l) => /^warn: verify-loop: timing ceiling is on but/.test(l));
+      assert(
+        warns.length === 1 && warns[0]!.includes(list),
+        `case 11: an armed run whose list is ${state} prints ONE warning naming the path (got ${JSON.stringify(warns)})`,
+      );
+      assert(
+        ceilingLines(r.stderr).length === 1 && r.status === 1,
+        `case 11: a ${state} list exempts NOTHING — the verdict is unchanged, the offender still fails (status ${r.status})`,
+      );
+    }
+    // The witness that this is not a vacuous green: a run whose list IS readable prints
+    // no such warning at all, so the warning is about the list and not about the run.
+    const good = writeAllowlist([
+      { file: "smoke-tests/fixtures/verify-loop/fixture-ceiling-over.ts", seconds: 9 },
+    ]);
+    try {
+      const r = runLoop([PASS, CEILING_OVER], { ...env, TIMING_ALLOWLIST: good });
+      assert(
+        !/timing ceiling is on but/.test(r.stderr),
+        `case 11: canary — a readable list prints no list warning (stderr ${JSON.stringify(r.stderr.slice(0, 200))})`,
+      );
+    } finally {
+      removeAllowlist(good);
+    }
+  } finally {
+    removeAllowlist(emptyList);
+    try {
+      chmodSync(unreadable, 0o600);
+    } catch {
+      /* already gone */
+    }
+    try {
+      rmSync(unreadableDir, { recursive: true, force: true });
+    } catch {
+      /* a leftover scratch dir is reaped with TMPDIR */
+    }
+  }
 }
 
 process.exit(exit);
