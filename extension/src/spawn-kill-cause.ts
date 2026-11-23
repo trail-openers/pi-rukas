@@ -31,8 +31,9 @@ export function resolveKillCause(facts: {
   toolInactivityKilled: boolean;
   timedOut: boolean;
   tokenBudgetKilled: boolean;
-  /** #1567 — the child-supervision kills. Optional while no piece emits
-   * them; each enforcing piece passes its own flag. */
+  /** #1567 — the child-supervision kills. Optional because each enforcing
+   * piece passes only its own flag (`noProgressKilled`: the inactivity poll's
+   * opt-in PI_ENSEMBLE_PROGRESS_SILENCE_MS arm). */
   stuckToolKilled?: boolean;
   noProgressKilled?: boolean;
   childBoundKilled?: boolean;

@@ -24,7 +24,7 @@
 import type { ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { BudgetProgressSteer } from "./budget-progress.ts";
-import type { ChildProgress } from "./child-progress.ts";
+import { type ChildProgress, progressSilenceMs } from "./child-progress.ts";
 import type { PiJsonEvent } from "./pi-event-shapes.ts";
 import { type RunningState, ingestEvent, recordedDurationMs } from "./progress.ts";
 import type { SkillReadGuard } from "./review-bounds.ts";
@@ -166,15 +166,25 @@ export function isStdinEcho(kind: string): boolean {
  * the tighter poll) so a test-shortened tool budget still fires promptly;
  * production clamps both to 30s. `toolInactivityKilled` / `inactivityKilled`
  * are exclusive by construction.
+ *
+ * The same tick carries the opt-in no-progress arm (`ChildProgress.stall`,
+ * PI_ENSEMBLE_PROGRESS_SILENCE_MS): a child that still emits lines but makes
+ * no progress. Silence is checked first, so a silent child keeps its silence
+ * cause; with the knob unset the arm never fires and the poll is unchanged.
  */
 export function createInactivityPoll(opts: {
   /** Headless S4 (#1024): the child leads its own process group (spawn-kill.ts). */
   child: ChildProcess;
   inFlightTools: InFlightTools;
   lastActivityAt: () => number;
-  onKill: (cause: "inactivity" | "tool-inactivity", budgetMs: number, toolNames: string[]) => void;
+  childProgress: ChildProgress;
+  onKill: (
+    cause: "inactivity" | "tool-inactivity" | "no-progress",
+    budgetMs: number,
+    toolNames: string[],
+  ) => void;
 }): () => void {
-  const { child, inFlightTools, lastActivityAt, onKill } = opts;
+  const { child, inFlightTools, lastActivityAt, childProgress, onKill } = opts;
   const inactivityMs = inactivityTimeoutMs();
   const toolInactivityMs = toolInactivityTimeoutMs();
   const armedBudget = () =>
@@ -184,13 +194,19 @@ export function createInactivityPoll(opts: {
   const pollBudgetMs = Math.min(
     inactivityMs > 0 ? inactivityMs : Number.POSITIVE_INFINITY,
     toolInactivityMs > 0 ? toolInactivityMs : Number.POSITIVE_INFINITY,
+    progressSilenceMs(false) || Number.POSITIVE_INFINITY,
   );
   if (pollBudgetMs === Number.POSITIVE_INFINITY) return () => undefined;
   const interval = setInterval(
     () => {
-      const budget = armedBudget();
-      if (budget.ms <= 0) return; // this budget is disabled; the other is checked in its own branch
-      if (Date.now() - lastActivityAt() >= budget.ms) {
+      const armed = armedBudget();
+      const now = Date.now();
+      // A disabled budget (ms <= 0) never fires; the other is checked in its own branch.
+      const budget =
+        armed.ms > 0 && now - lastActivityAt() >= armed.ms
+          ? armed
+          : childProgress.stall(now, inFlightTools.active);
+      if (budget) {
         onKill(budget.cause, budget.ms, inFlightTools.toolNames());
         // #1510 — this runs on its OWN setInterval, so a throw here is an
         // uncaught exception at timer level: it aborts the parent and takes
@@ -221,7 +237,7 @@ export function createInactivityPoll(opts: {
 export function createStdoutLineHandler(opts: {
   start: number;
   inFlightTools: InFlightTools;
-  /** #1567 — the per-spawn progress tracker (child-progress.ts); observation only. */
+  /** #1567 — the per-spawn progress tracker (child-progress.ts). */
   childProgress: ChildProgress;
   appendStderr: (s: string) => void;
   runningState: RunningState;
@@ -315,7 +331,7 @@ export function createStdoutLineHandler(opts: {
     // closes). Runs on the SAME hot path where lastActivityAt resets, so the
     // watchdog's poll below sees the current set at every tick.
     inFlightTools.observe(parsed);
-    // #1567 — record progress (child-progress.ts). Nothing acts on it yet.
+    // #1567 — record progress (child-progress.ts); the poll's no-progress arm reads it.
     childProgress.observe(parsed);
     // #1827 — count this child's reads of its OWN skill file. Observation only
     // here: the caller decides when the count becomes a steer and when it

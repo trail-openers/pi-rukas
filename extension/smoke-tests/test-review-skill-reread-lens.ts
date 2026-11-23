@@ -109,6 +109,12 @@ assert(
 assert(spawnCalls.length === 1, "a re-read-killed lens is NOT retried");
 assert(withFindings.attempts === 1, "…and records one attempt");
 
+// A no-progress kill is the same: a stalled lens re-spawned is another full window for nothing.
+spawnCalls.length = 0;
+nextResult = () => killed({ killCause: "no-progress" });
+await run();
+assert(spawnCalls.length === 1, "a no-progress-killed lens is NOT retried either");
+
 // (1) findings → evidence kept, not blocked, round not incomplete.
 assert(withFindings.findings.length === 1, "a re-read-killed lens KEEPS its finding");
 assert(withFindings.blocked === false, "…and is not blocked");

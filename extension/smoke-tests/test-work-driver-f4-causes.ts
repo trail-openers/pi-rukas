@@ -17,6 +17,7 @@ import {
   classifyFailureCause,
   failureCauseReason,
   failureCauseReasonForClass,
+  stepRetryBudget,
 } from "../src/work-driver-failure-taxonomy.ts";
 import { buildCompletionEvent } from "../src/work-driver-merged.ts";
 
@@ -50,7 +51,9 @@ for (const [cause, killCause] of [
 
 // #951 — tool-inactivity self-kill → shouldRetry TRUE, maxRetries 1 (same as inactivity).
 {
-  const cls = classifyFailureCause(mkEvent({ killCause: "tool-inactivity", kind: "dispatch-failed" }));
+  const cls = classifyFailureCause(
+    mkEvent({ killCause: "tool-inactivity", kind: "dispatch-failed" }),
+  );
   assert(
     cls.cause === "self-killed:tool-inactivity" && cls.shouldRetry === true && cls.maxRetries === 1,
     "tool-inactivity → self-killed:tool-inactivity, retries like inactivity",
@@ -68,12 +71,27 @@ for (const [cause, killCause] of [
 // switches is compile-exhaustive.
 for (const [cause, killCause] of [
   ["self-killed:review-skill-reread", "review-skill-reread"],
+  // The opt-in progress-silence kill: a retry replays the stall.
+  ["self-killed:no-progress", "no-progress"],
 ] as const) {
   const cls = classifyFailureCause(mkEvent({ killCause, kind: "dispatch-failed" }));
   assert(
     cls.cause === cause && cls.shouldRetry === false && cls.maxRetries === 0,
     `${killCause} → ${cause}, no retry`,
   );
+}
+
+// A RETRY_ONCE step (adversarial, lens-review) spends no semantic re-dispatch
+// on a no-progress kill — the router reads this budget for both its retry
+// decision and its step-failed line. Other self-kills keep their one retry.
+{
+  const budget = (killCause: string) =>
+    stepRetryBudget(classifyFailureCause(mkEvent({ killCause })), false);
+  assert(
+    budget("no-progress") === 0,
+    `no-progress: RETRY_ONCE budget 0 (got ${budget("no-progress")})`,
+  );
+  assert(budget("loop") === 1, `loop: RETRY_ONCE budget unchanged at 1 (got ${budget("loop")})`);
 }
 
 // (canary, #1827 round 1) The clean end is absent from the kill-cause
@@ -126,6 +144,7 @@ for (const [cause, killCause] of [
   ["self-killed:tool-inactivity", "tool-inactivity"],
   // #1827 — the reviewer-bound causes each need their own defined reason line.
   ["self-killed:review-skill-reread", "review-skill-reread"],
+  ["self-killed:no-progress", "no-progress"],
 ] as const) {
   const cls = classifyFailureCause(mkEvent({ killCause, kind: "dispatch-failed" }));
   const reason = failureCauseReason(mkEvent({ killCause, kind: "dispatch-failed" }));
@@ -201,6 +220,7 @@ for (const [killCause, needle] of [
   // not listed: it sets no cause, so it reads as the ordinary `finished` row it
   // is (asserted in test-review-post-verdict-result.ts).
   ["review-skill-reread", "skill file"],
+  ["no-progress", "no progress"],
 ] as const) {
   const report = formatSingleReport(`f4-${killCause}`, "developer", {
     role: "developer",
@@ -240,6 +260,7 @@ for (const [killCause, needle] of [
     // #1827 — the reviewer bound names its OWN knob, so the operator is not
     // sent to the inactivity timeout or the develop bound for a reviewer kill.
     ["review-skill-reread", "PI_ENSEMBLE_REVIEW_SKILL_READS"],
+    ["no-progress", "PI_ENSEMBLE_PROGRESS_SILENCE_MS"],
   ] as const) {
     const ev = await buildCompletionEvent(ctx, "develop", "developer", "developer", {
       role: "developer",

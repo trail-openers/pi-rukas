@@ -119,6 +119,17 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
   );
 }
 
+// ── 1b. The opt-in progress-silence kill takes the same parity and projection.
+{
+  const r = mkResult({ killCause: "no-progress" });
+  const cls = classifyDispatchOutcome(r);
+  assert(
+    cls.cause === "self-killed:no-progress" && cls.shouldRetry === false,
+    `classifyDispatchOutcome: no-progress → self-killed:no-progress, no retry (got ${cls.cause})`,
+  );
+  assert(retryLadderKillCause(r) === "no-progress", "retryLadderKillCause keeps no-progress");
+}
+
 // ── 2. Exactly one reviewer dispatch, with no `-retry` tag.
 {
   const tags: string[] = [];

@@ -100,6 +100,16 @@ export function classifyDispatchOutcome(r: DispatchResult): {
         "killed by pi-rukas (per-child run bound) — it was steered to wrap up and never finished; re-spawning would spend the bound again",
     };
   }
+  // Parity with the taxonomy's `no-progress` branch, for the same reason.
+  if (r.killCause === "no-progress") {
+    return {
+      cause: "self-killed:no-progress",
+      shouldRetry: false,
+      maxRetries: 0,
+      headline:
+        "killed by pi-rukas (no progress past PI_ENSEMBLE_PROGRESS_SILENCE_MS) — re-spawning would replay the stall",
+    };
+  }
 
   // Provider error-stop (transport severance, timeout, 429, missing model).
   // #79 — the driver's taxonomy decides, so a reviewer child and a step

@@ -51,10 +51,10 @@ export function capKillOutcomeFields(result: DispatchResult): Partial<Adversaria
  */
 type RetryLadderKillCause = Exclude<
   NonNullable<DispatchResult["killCause"]>,
-  // #1863 — `child-bound` is no longer excluded: it survives the projection
+  // #1863 — `child-bound` and `no-progress` are not excluded: each survives the projection
   // below, because the projection is the ONLY channel by which a cause survives
   // `infraFailureResult` (see `retryLadderKillCause`).
-  "loop" | "token-budget" | "no-progress" | "stuck-tool"
+  "loop" | "token-budget" | "stuck-tool"
 >;
 
 const RETRY_LADDER_KILL_CAUSES: readonly RetryLadderKillCause[] = [
@@ -70,6 +70,7 @@ const RETRY_LADDER_KILL_CAUSES: readonly RetryLadderKillCause[] = [
   // handler is what acts on the cause — it records `child-timeout:adversarial`,
   // and that is the consumer whose absence this fixes.
   "child-bound",
+  "no-progress",
 ] as const;
 
 function isRetryLadderKillCause(cause: string): cause is RetryLadderKillCause {

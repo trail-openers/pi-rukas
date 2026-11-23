@@ -354,7 +354,8 @@ export async function runLensChild(opts: {
         (result.killCause === "loop" ||
           result.killCause === "token-budget" ||
           result.killCause === "child-bound" ||
-          result.killCause === "review-skill-reread")
+          result.killCause === "review-skill-reread" ||
+          result.killCause === "no-progress")
       ) {
         break;
       }

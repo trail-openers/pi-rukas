@@ -194,6 +194,8 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   dir("PM_PROMPT", null),
   flag("POLICY_JUDGE", true),
   flag("PR_PREFLIGHT", true),
+  // 0 = off: no child is ended for lack of progress (ChildProgress.stall).
+  ms("PROGRESS_SILENCE_MS", 0),
   dir("PROMPTS_DIR", null),
   flag("PROTECTED_PATHS", true),
   family(str("PROVIDER_<ROLE>", null), ROLE_MEMBERS),

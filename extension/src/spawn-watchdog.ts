@@ -13,7 +13,7 @@
  * Two seams, deliberately kept apart because the ordering between them is
  * load-bearing:
  *
- *   1. `declareKillFlags` — the six mutable kill flags, returned as
+ *   1. `declareKillFlags` — the seven mutable kill flags, returned as
  *      getter/setter closures. The spawn body reads them AFTER
  *      `await once(child, "exit")` (the stderr attribution lines, `killCause`,
  *      `killBudgetMs`, `lastActivity`), so a snapshot at construction would
@@ -62,6 +62,9 @@ export interface KillFlags {
    * arrived, and the silence outlasted the tool-inactivity bound. */
   toolInactivityKilled(): boolean;
   setToolInactivityKilled(v: boolean): void;
+  /** The opt-in no-progress arm of the same poll fired (ChildProgress.stall). */
+  noProgressKilled(): boolean;
+  setNoProgressKilled(v: boolean): void;
   /** #951 — the budget that actually fired (set by the inactivity poll's
    * onKill callback; the active bound, since exactly one is armed per poll). */
   killedBudgetMs(): number;
@@ -75,13 +78,14 @@ export interface KillFlags {
 }
 
 /**
- * Declare the six kill flags every spawn reports with. Fresh per call — the
+ * Declare the seven kill flags every spawn reports with. Fresh per call — the
  * state is per-spawn and must not outlive the child.
  */
 export function declareKillFlags(): KillFlags {
   let timedOut = false;
   let inactivityKilled = false;
   let toolInactivityKilled = false;
+  let noProgressKilled = false;
   let killedBudgetMs = 0;
   let aborted = false;
   let childExited = false;
@@ -97,6 +101,10 @@ export function declareKillFlags(): KillFlags {
     toolInactivityKilled: () => toolInactivityKilled,
     setToolInactivityKilled: (v) => {
       toolInactivityKilled = v;
+    },
+    noProgressKilled: () => noProgressKilled,
+    setNoProgressKilled: (v) => {
+      noProgressKilled = v;
     },
     killedBudgetMs: () => killedBudgetMs,
     setKilledBudgetMs: (v) => {
@@ -163,6 +171,7 @@ export function armCapSession(
     timedOut: flags.timedOut,
     inactivityKilled: flags.inactivityKilled,
     toolInactivityKilled: flags.toolInactivityKilled,
+    noProgressKilled: flags.noProgressKilled,
     aborted: flags.aborted,
     capKillGraceMs: capKillGraceMs(),
     childExited: flags.childExited,
@@ -217,7 +226,7 @@ export function armAbortSignal(
 }
 
 /**
- * #1827 — the four kill-cause stderr lines, moved verbatim out of `spawn.ts`
+ * #1827 — the five kill-cause stderr lines, moved verbatim out of `spawn.ts`
  * for the §12 size cap. They belong beside the flags they report: each line
  * names the budget that the flag's setter recorded, and the comment-retention
  * gate #948 keeps the wording identical. `appendStderr` is the spawn's ring
@@ -237,6 +246,11 @@ export function traceKillCauses(
   if (flags.toolInactivityKilled()) {
     appendStderr(
       `\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms with a tool call in flight (tool-inactivity)`,
+    );
+  }
+  if (flags.noProgressKilled()) {
+    appendStderr(
+      `\n[pi-rukas] killed after ${flags.killedBudgetMs()}ms without progress (no-progress)`,
     );
   }
   if (flags.aborted()) {

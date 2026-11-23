@@ -2580,11 +2580,12 @@ Two mechanisms, and only one of them is meant to fire in normal operation.
 |---|---|---|---|
 | Inactivity watchdog (model silence) | 30 min of **zero stdout** while no tool call is in flight | `PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS` (`0` disables only this watch) | The real hang detector for a stalled model turn. A healthy child emits an event at every turn boundary, so silence — not slowness — is the signal. |
 | Tool-inactivity watchdog | 60 min of **zero stdout** while a tool call is in flight | `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS` (`0` disables only this watch) | The bound for a silent *tool* — a long bash (the full offline gate, a CI watch) is the normal shape, a wedged tool the bad one. One poll, two budgets: while the in-flight set is non-empty this bound applies, otherwise the model-silence bound. |
-| Runaway backstop | 2 h wall-clock | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS` | Catches a child looping forever while still emitting events, which liveness cannot see. Nothing else should reach it. |
+| No-progress watch (opt-in) | Off; when set, at least 30 min (60 min with a tool call in flight) without a tool result, new tool output or a changed turn | `PI_ENSEMBLE_PROGRESS_SILENCE_MS` (unset or `0` = off) | A child that still emits — repeated identical turns, token growth, steer echoes — but gets nowhere, which the silence watchdogs cannot see. Kill cause `no-progress`; not retried, since a re-spawn replays the stall. |
+| Runaway backstop | 2 h wall-clock | `PI_ENSEMBLE_SPAWN_TIMEOUT_MS` | Catches a child looping forever while still emitting events, which liveness cannot see (the no-progress watch, when set, ends it sooner). Nothing else should reach it. |
 
 This replaced a table of six per-role wall-clock caps. Those were raised twice — [#296](https://github.com/trail-openers/pi-rukas/issues/296) and [#553](https://github.com/trail-openers/pi-rukas/issues/553) — and both times the finding was the same: the number was too small for a *healthy* child. Provider speed varies by an order of magnitude, so a wall-clock number never means the same thing on two models, and the per-role table had already drifted out of sync with this documentation.
 
-There is no fourth row: **no role has a built-in token budget**. The only ceiling is the opt-in `PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>`, and "Lens lanes report findings then get killed after a few minutes" (next section) is its one owner.
+There is no token-budget row: **no role has a built-in token budget**. The only ceiling is the opt-in `PI_ENSEMBLE_TOKEN_BUDGET_<ROLE>`, and "Lens lanes report findings then get killed after a few minutes" (next section) is its one owner.
 
 **If a child hits the backstop**, treat it as a decomposition problem, not a budget one: two hours of continuous output without finishing means the workstream is too large or the child is looping. Split the issue, or take over manually.
 
