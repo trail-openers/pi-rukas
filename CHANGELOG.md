@@ -8,6 +8,19 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.8](https://github.com/trail-openers/pi-rukas/compare/v0.15.7...v0.15.8) (2026-11-23)
+
+
+### Features
+
+* **lean:** detect verify tiers behind an off-by-default switch ([#2579](https://github.com/trail-openers/pi-rukas/issues/2579)) ([2e395cf](https://github.com/trail-openers/pi-rukas/commit/2e395cf6c689c7cb1b909c23756c523a99d69df7))
+
+
+### Bug Fixes
+
+* **dispatch:** put detached developer trees on a branch ([#2578](https://github.com/trail-openers/pi-rukas/issues/2578)) ([77015ba](https://github.com/trail-openers/pi-rukas/commit/77015ba692da0823b74a1a7894f63a816de3cdd6))
+* **lean:** persist the pre-fix head before the review fix wave ([#2576](https://github.com/trail-openers/pi-rukas/issues/2576)) ([c9803d7](https://github.com/trail-openers/pi-rukas/commit/c9803d7ed81f27c50bdf55ff4da0441627616059))
+
 ## [0.15.7](https://github.com/trail-openers/pi-rukas/compare/v0.15.6...v0.15.7) (2026-11-23)
 
 
