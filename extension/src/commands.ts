@@ -41,6 +41,7 @@ import type {
 import { notifyAgent } from "./agent-message.ts";
 import { backlogReminderSection } from "./backlog-reminder.ts";
 import { execp } from "./exec.ts";
+import { formatInstallGaps, installGaps } from "./install-gaps.ts";
 import { registerWorkLeanCommand } from "./lean/command.ts";
 import { buildMemoryPanel } from "./memory-panel.ts";
 import { GLOBAL_KEY, getAllOverrides } from "./model-config.ts";
@@ -279,6 +280,7 @@ export function registerCommands(pi: ExtensionAPI) {
       const overrides = getAllOverrides();
       const globalOverride = overrides[GLOBAL_KEY];
       const runsLine = await transcriptsSummary().catch(() => "");
+      const gaps = await installGaps();
       const modelLines = modelConfigSnapshot().map(({ role, choice }) => {
         const m = choice.model
           ? choice.provider
@@ -319,6 +321,7 @@ export function registerCommands(pi: ExtensionAPI) {
         "tools:            dispatch_specialist, dispatch_parallel, adversarial_loop, dispatch_lens_review (all async),",
         "                  dispatch_status, dispatch_kill, dispatch_peek, dispatch_steer, check_review_cap",
         ...(runsLine ? [`transcripts:      ${runsLine}`] : []),
+        ...(gaps.length > 0 ? formatInstallGaps(gaps) : ["install:          complete"]),
         "",
         "subagent models  (change via /ensemble-model — saved to ~/.pi/agent/ensemble-models.json)",
         ...(globalOverride

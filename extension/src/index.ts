@@ -14,6 +14,7 @@ import { registerDispatchSteerTool } from "./dispatch-steer.ts";
 import { registerDispatchTools } from "./dispatch.ts";
 import { armExitCause } from "./exit-cause.ts";
 import { scrubGitLocation } from "./git-env.ts";
+import { warnInstallGapsOnce } from "./install-gaps.ts";
 import { registerLeanTool } from "./lean-tool.ts";
 import { registerLensReviewTool } from "./lens-review-tool.ts";
 import * as lifecycle from "./lifecycle-events.ts";
@@ -156,6 +157,8 @@ export default async function (pi: ExtensionAPI) {
     workWidget.attach(ctx);
     pendingJobs.attach(ctx);
     decisionShadow.attach(ctx);
+    // A gallery install skips install.sh's config steps; name what is missing.
+    warnInstallGapsOnce(ctx);
   });
   // #916 SLICE B — the "PM active" badge seam: the parent agent's streaming
   // state is exposed on the ExtensionContext (ctx.isIdle), not on the TUI.

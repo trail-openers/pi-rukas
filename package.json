@@ -34,6 +34,7 @@
     "extension/src/",
     "extension/scripts/review-accept.ts",
     "agents.json",
+    "install-preflight.sh",
     "dist/prompts/standard/",
     "docs/",
     "pi-prompts/",

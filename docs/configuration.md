@@ -20,11 +20,15 @@ All optional. Defaults are reasonable for typical use. This file holds the full 
 
 ## Installing from the Pi package gallery
 
-`pi install npm:@trail-openers/pi-rukas` installs pi-rukas in host mode, and `pi update --extensions` upgrades it. Pi loads the extension, the built role prompts and the bundled skills from the package; skills are not symlinked into `~/.pi/agent/skills/`. Use one install path, not both: a host that ran `./install.sh` already loads pi-rukas through `~/.pi/agent/extensions/pi-rukas` and the skill symlinks, so remove those first or every command and skill registers twice. A git source (`pi install git:github.com/trail-openers/pi-rukas`) builds the role prompts at install time and needs `jq`. It skips `install.sh`'s minimum-version check on `pi`: compare `pi --version` with [pi-compatibility.md](pi-compatibility.md) yourself.
+`pi install npm:@trail-openers/pi-rukas` installs pi-rukas in host mode, and `pi update --extensions` upgrades it. Pi loads the extension, the built role prompts and the bundled skills from the package; skills are not symlinked into `~/.pi/agent/skills/`. Use one install path, not both: a host that ran `./install.sh` already loads pi-rukas through `~/.pi/agent/extensions/pi-rukas` and the skill symlinks, so remove those first or every command and skill registers twice. A git source (`pi install git:github.com/trail-openers/pi-rukas`) builds the role prompts at install time and needs `jq`.
+
+Each install step a gallery install skips is checked when a session starts. Until it is done, the session opens with a `pi-rukas setup is incomplete` warning that names it; pi-rukas never edits your config itself. `/ensemble-debug` lists the same gaps, or `install: complete`.
+
+- **pi-version**: the running `pi` is older than `install.sh`'s minimum version (`MIN_PI_VERSION` in `install-preflight.sh`, which the package ships). The warning carries the upgrade command.
 
 `./install.sh` also edits two user config files. A gallery install does not, so make these edits yourself:
 
-- **codebase-memory-mcp** (required by the code-search doctrine). Install the binary as the README describes, then add the server to `~/.pi/agent/mcp.json`:
+- **mcp**: codebase-memory-mcp (required by the code-search doctrine) is registered in neither `~/.pi/agent/mcp.json` nor the project's `.pi/mcp.json`. Install the binary as the README describes, then add the server to `~/.pi/agent/mcp.json`:
 
   ```json
   {
@@ -34,9 +38,9 @@ All optional. Defaults are reasonable for typical use. This file holds the full 
   ```
 
   Full reference: [mcp.md](mcp.md).
-- **Provider retries** (recommended). In `~/.pi/agent/settings.json`, set `"httpIdleTimeoutMs": 300000` at the top level and `"retry": { "provider": { "timeoutMs": 600000, "maxRetries": 3, "maxRetryDelayMs": 60000 } }`. Without `maxRetries`, Pi does not retry a failed provider request. The table under [Environment variables](#environment-variables) explains each value.
+- **retries**: `retry.provider.maxRetries` is absent (an explicit `0` is your choice and is not flagged). In `~/.pi/agent/settings.json`, set `"httpIdleTimeoutMs": 300000` at the top level and `"retry": { "provider": { "timeoutMs": 600000, "maxRetries": 3, "maxRetryDelayMs": 60000 } }`. Without `maxRetries`, Pi does not retry a failed provider request. The table under [Environment variables](#environment-variables) explains each value.
 
-Sandbox mode, the `pi-rukas` wrapper and `pi-rukas-headless` need the git checkout and `./install.sh`.
+The **wrapper** gap means `pi-rukas` is not on `PATH`, so sandbox mode and `pi-rukas-headless` are unavailable. Only `/ensemble-debug` names this one, since host mode is complete without it. Both wrappers run from the git checkout (the sandbox wrapper falls back to building `.devcontainer/`, and the headless one runs the extension's TypeScript under bun with the checkout's own dependencies), so the package cannot ship them. To use them, switch install paths: `pi remove npm:@trail-openers/pi-rukas`, then follow the README Quickstart. `./install.sh` pulls the sandbox image and links both wrappers into `~/.local/bin/`.
 
 ## Private backlog (optional)
 
