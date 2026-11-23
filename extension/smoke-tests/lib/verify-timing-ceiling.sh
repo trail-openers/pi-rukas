@@ -197,24 +197,31 @@ _timing_allowlist_entries() {
 
 # Is <key> named by the list? Asks the loader above, which answers from its cache on
 # every call after the first, so the read count is one per run however many rows a run
-# has. The match is pure shell, and the newline on BOTH sides of the needle is what makes
-# it a whole-field test: the rows are `secs<TAB>key` with one row per line, so a key is
-# preceded by a tab and followed by a newline — pinning the newline after it is what
-# stops a key that is a PREFIX of an entry from matching that entry (a list that exempts
-# `a/b.ts` must not exempt `a/b.tsx`, and an entry ending in a directory component must
-# not exempt a sibling file under it). A tab after the needle could never match: the key
-# is the row's LAST field, terminated by the newline. The cache is what lets the match be
-# pure shell at all — one parameter substitution over the run's rows, where the old shape
-# forked `awk` twice for every row past the bound.
+# has. The match is pure shell, and it is anchored on BOTH delimiters of the key field:
+# the rows are `secs<TAB>key` with one row per line, so a key is PRECEDED BY A TAB and
+# FOLLOWED BY A NEWLINE. Both halves are load-bearing. The tab is what stops a needle
+# matching inside the seconds column, and the newline is what stops a needle that is a
+# PREFIX of an entry from matching it (a list that exempts `a/b.ts` must not exempt
+# `a/b.tsx`, and an entry ending in a directory component must not exempt a sibling file
+# under it). A tab after the needle could never match: the key is the row's LAST field,
+# terminated by the newline. So the needle is one field flanked by two DIFFERENT
+# separators and each side has to name its own; a single character variable used on both
+# sides cannot do that, and it is the reason this function builds its pattern from two
+# literals rather than one delimiter. A newline carried in a variable is no delimiter at
+# all — command substitution strips trailing newlines, so `nl="$(printf '\n')"` is the
+# EMPTY string and the whole-field pattern silently degrades to an unanchored substring
+# test over the cached rows, where any over-bound path containing a listed key (or one
+# character of any row) is exempted. The anchors below are therefore written where no
+# substitution can eat them. The cache is what lets the match be pure shell at all — one
+# parameter substitution over the run's rows, where the old shape forked `awk` twice for
+# every row past the bound.
 timing_listed() {
   _timing_allowlist_entries >/dev/null
   local needle="${1:-}"
   [ -n "$needle" ] || return 1
   [ -n "$_TIMING_ALLOWLIST_ROWS" ] || return 1
-  local nl
-  nl="$(printf '\n')"
   case $'\n'"$_TIMING_ALLOWLIST_ROWS"$'\n' in
-    *"$nl$needle$nl"*) return 0 ;;
+    *$'\t'"$needle"$'\n'*) return 0 ;;
   esac
   return 1
 }
