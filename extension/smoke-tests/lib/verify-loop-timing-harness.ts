@@ -30,6 +30,11 @@ export const GENERATED = {
   slow2: "generated-timing-slow-2.ts",
   slow1: "generated-timing-slow-1.ts",
   many: [0, 1, 2, 3, 4].map((i) => `generated-timing-many-${i}.ts`),
+  /** The tied-slowest set: two fixtures asked for the same sleep, the first of them
+   * earlier in the argument list, so the block's tie rule is what decides their order
+   * (test-verify-loop-timing.ts case 2). Distinct names from `many` so a case that
+   * leaves one behind cannot change what another case measures. */
+  tie: [0, 1, 2, 3, 4].map((i) => `generated-timing-tie-${i}.ts`),
 };
 
 /** The committed ceiling fixtures (the AC1 pair), resolved here so the cases name
@@ -292,6 +297,32 @@ export function timeLines(stdout: string): Row[] {
     if (m) rows.push({ secs: Number(m[1]), file: m[2] ?? "" });
   }
   return rows;
+}
+
+/**
+ * The block's own ordering rule, applied to the record: descending by `secs`, ties
+ * keeping record order. `emit_timing_summary` prints exactly this —
+ * `sort -t<TAB> -k1,1nr -s`, whose `-s` is documented in that file's comment as
+ * "ties keep the order they were recorded in" — so a case that derives the expected
+ * rows through here asks the same question the block answers.
+ *
+ * `Array.prototype.sort` is required to be stable since ES2019, so the `index`
+ * tiebreaker is belt-and-braces rather than the mechanism; what matters is that the
+ * comparison returns 0 for equal seconds and lets the record's own order stand.
+ * It is NOT a total order: two rows with equal seconds are interchangeable as far as
+ * the block is concerned, and a case must not assert a strict inequality between
+ * them.
+ *
+ * The index is carried explicitly rather than relying on the caller's array being
+ * the record: `timeLines` returns rows in argument order, which IS the record order
+ * here (`pool_collect` registers jobs in argument order and the replay writes rows
+ * in that same order), so `index` is the position `sort -s` preserves.
+ */
+export function slowestFirst(record: Row[]): Row[] {
+  return record
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => b.row.secs - a.row.secs || a.index - b.index)
+    .map((x) => x.row);
 }
 
 export function summaryHeader(stdout: string): { shown: number; total: number; n: number } | null {
