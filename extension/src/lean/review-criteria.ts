@@ -47,8 +47,8 @@ const PROBLEM_TRUNCATION_MARKER = "…(problem truncated)";
 export const LEAN_REVIEW_CRITERIA_HEADING = "## The acceptance criteria (pi-spec v1)";
 
 /** What the seat is told to do with the list. Wording that the `review` row of
- * docs/lean.md restates and `test-lean-review-spec-split-switch.ts` greps, so the
- * needle and the sentence move together. */
+ * docs/lean.md restates, so the sentence in the docs and the sentence the child
+ * reads move together. */
 export const LEAN_REVIEW_CRITERIA_LEAD =
   "Every criterion below is a requirement of this issue, printed in full up to its own cap, with its own marker when that cap cut it. A finding whose fix would contradict one is not a finding.";
 
