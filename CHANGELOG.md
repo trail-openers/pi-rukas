@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.12](https://github.com/trail-openers/pi-rukas/compare/v0.15.11...v0.15.12) (2026-11-23)
+
+
+### Bug Fixes
+
+* **test:** make the timing block's tie case deterministic ([#2598](https://github.com/trail-openers/pi-rukas/issues/2598)) ([4a6198e](https://github.com/trail-openers/pi-rukas/commit/4a6198e36a4e74335321e6c00cd6c6fb5f8a4d1f)), closes [#2580](https://github.com/trail-openers/pi-rukas/issues/2580)
+
 ## [0.15.11](https://github.com/trail-openers/pi-rukas/compare/v0.15.10...v0.15.11) (2026-11-23)
 
 
