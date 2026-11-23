@@ -217,6 +217,19 @@ assert(
   idCorpus.every((c) => c.header.includes(`(${ID})`)),
   "id-bearing arm: every case's header really carries the id (the arm is not asking the id-less question)",
 );
+// The same non-vacuity guard for the fold arm, which has no `header` field to
+// check: if `withThreadIds`' anchor stopped matching, this arm would silently
+// re-measure the id-less pairs and still report the counts it always reported.
+assert(
+  foldPairsIdBearing.every((p) =>
+    [p.base, p.change].every(
+      (t) =>
+        /^thread '[^']+' \(\d+\) panicked at /m.test(t) &&
+        !/^thread '[^']+' panicked at /m.test(t),
+    ),
+  ),
+  "id-bearing fold arm: both runs of every pair really carry their ids (no header left in the id-less spelling)",
+);
 assert(
   idArm.fidelityFailures === 0,
   `id-bearing arm fidelity: model and production extractor agree on every id-bearing permutation (got ${idArm.fidelityFailures})`,

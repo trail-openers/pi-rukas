@@ -251,7 +251,9 @@ const excuseCases: ExcuseCase[] = [
       "running 2 tests",
       rustPanicHeaderWithId("a::t", "src/a.rs:7:5", 40001),
       "explicit panic",
-      "test a::t ... ok",
+      // libtest decorates a should_panic test's VERDICT line and not its
+      // header's thread name — the spelling the captured golden carries.
+      "test a::t - should panic ... ok",
       "test a::other ... FAILED",
       rustPanicHeaderWithId("a::other", "src/a.rs:9:9", 40002),
       "assertion failed: the real failure",

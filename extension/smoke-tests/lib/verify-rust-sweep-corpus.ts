@@ -39,6 +39,21 @@ const PADS = [0, 2, 7, 25];
 const MARKERS = [true, false];
 
 /**
+ * The verdict line libtest prints for a PASSING `#[should_panic]` test.
+ * libtest DECORATES that verdict line with ` - should panic` and does NOT
+ * decorate the panic header's thread name — the captured golden
+ * `verify-rust-golden.ts` carries both halves of the asymmetry side by side
+ * (`thread 'tests::should_panic_capture' (2348438) panicked at …` above
+ * `test tests::should_panic_capture - should panic ... ok`). So a capture case
+ * spelled `test a::t ... ok` is a line libtest never prints for the test whose
+ * print it claims to capture: the header's name would then have no verdict line
+ * at all, the quote veto would answer "not observed passing", and the sweep
+ * would certify a class it never asked. Every capture below carries the
+ * decoration the toolchain prints.
+ */
+const shouldPanicOk = (name: string): string => `test ${name} - should panic ... ok`;
+
+/**
  * The model extractor: the FIRST panic header the veto under test does not
  * refuse, returned as the header (the sameness key). Only valid for the
  * generated corpus, whose recognised lines are panic headers and verdict /
@@ -99,8 +114,8 @@ export function cases(): Case[] {
             ...head,
             "running 3 tests",
             ...(before
-              ? [header("a::t", "src/a.rs:7:5"), "explicit panic", "test a::t ... ok"]
-              : ["test a::t ... ok", header("a::t", "src/a.rs:7:5"), "explicit panic"]),
+              ? [header("a::t", "src/a.rs:7:5"), "explicit panic", shouldPanicOk("a::t")]
+              : [shouldPanicOk("a::t"), header("a::t", "src/a.rs:7:5"), "explicit panic"]),
             "test a::one ... ok",
             "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured",
             "make: *** [Makefile:12: e2e] Error 1",
@@ -118,7 +133,7 @@ export function cases(): Case[] {
         stream: [
           ...head,
           "running 1 test",
-          "test shared::t ... ok",
+          shouldPanicOk("shared::t"),
           header("shared::t", "src/a.rs:1:1"),
           "captured print of the passing crate",
           ...pad(p, "sf"),
@@ -243,7 +258,7 @@ export function cases(): Case[] {
 const FOLD_CAPTURE = (extra: string[]): string[] => [
   "FAILED: smoke-tests/test-gate.ts",
   "running 1 test",
-  "test fold::t ... ok",
+  shouldPanicOk("fold::t"),
   header("fold::t", "src/f.rs:1:1"),
   "captured print of the passing crate",
   ...extra,
@@ -257,7 +272,7 @@ export const foldPairs: Array<{ base: string; change: string }> = [
     change: [
       "FAILED: smoke-tests/test-gate.ts",
       "running 1 test",
-      "test fold::t ... ok",
+      shouldPanicOk("fold::t"),
       header("fold::t", "src/f.rs:1:1"),
       "captured print of the passing crate",
       header("y::added", "src/y.rs:8:8"),
@@ -277,7 +292,7 @@ export const foldPairs: Array<{ base: string; change: string }> = [
   {
     base: [
       "running 1 test",
-      "test dup::t ... ok",
+      shouldPanicOk("dup::t"),
       "test dup::t ... FAILED",
       "assertion failed: the sibling crate really failed",
       "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured",
@@ -287,7 +302,7 @@ export const foldPairs: Array<{ base: string; change: string }> = [
     ].join("\n"),
     change: [
       "running 1 test",
-      "test dup::t ... ok",
+      shouldPanicOk("dup::t"),
       "test dup::t ... FAILED",
       "assertion failed: the sibling crate really failed",
       "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured",

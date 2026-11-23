@@ -74,8 +74,41 @@ export function isLibtestVerdictLine(line: string): boolean {
  * the re-spell goes red. This line is the ONLY evidence
  * {@link panicIsCapturedPrint} and {@link panicCanExcuseChange} consult, and
  * each line speaks for exactly one test.
+ *
+ * The whole span is what libtest PRINTS, decoration included — a passing
+ * `#[should_panic]` test's line carries ` - should panic` while its OWN panic
+ * header does not. The fold that makes the two comparable lives in
+ * {@link perTestVerdictLine}, the ONE reader of this regex.
  */
 const LIBTEST_PER_TEST_VERDICT_RE = /^test\s+(.+?)\s+\.\.\.\s+(ok|FAILED)\b/;
+
+/**
+ * libtest's decoration on a `#[should_panic]` test's OWN verdict line, anchored
+ * at the END of the captured name span (which stops before ` ... `), so it comes
+ * off a name and never off a message or a path. A unit-test name cannot carry it
+ * (Rust identifiers have no spaces) and a doctest name always ends in ` (line N)`,
+ * so the only name this changes is one libtest itself decorated — the class whose
+ * captured print the quote veto exists to refuse. Folding it therefore only ADDS
+ * refusals for real streams; leaving it in made a passing should_panic capture
+ * have no verdict line at all, which {@link panicIsCapturedPrint} answers `false`
+ * for — the #746/#798 silent quote — and which is why
+ * {@link changePanicsAreBaseFailures} never took its documented SKIP for the class.
+ */
+const LIBTEST_SHOULD_PANIC_DECORATION_RE = / - should panic$/;
+
+/**
+ * The name/verdict pair ONE line reports, or `undefined` when the line is not a
+ * per-test verdict line. THE reader of {@link LIBTEST_PER_TEST_VERDICT_RE}: both
+ * views below go through it, so the monotone and the non-monotone answer cannot
+ * hold a decoration the other folds (or fails to), which is the disagreement
+ * this module's header forbids.
+ */
+function perTestVerdictLine(line: string): { name: string; ok: boolean } | undefined {
+  const m = LIBTEST_PER_TEST_VERDICT_RE.exec(line.trim());
+  const printed = m?.[1];
+  if (m === null || printed === undefined) return undefined;
+  return { name: printed.replace(LIBTEST_SHOULD_PANIC_DECORATION_RE, ""), ok: m[2] === "ok" };
+}
 
 /**
  * The verdict libtest's per-test lines report for the EXACT `name` — `"ok"`
@@ -88,9 +121,9 @@ const LIBTEST_PER_TEST_VERDICT_RE = /^test\s+(.+?)\s+\.\.\.\s+(ok|FAILED)\b/;
 function perTestVerdictFor(stream: string, name: string): "ok" | "FAILED" | undefined {
   let verdict: "ok" | "FAILED" | undefined;
   for (const raw of stream.split("\n")) {
-    const m = LIBTEST_PER_TEST_VERDICT_RE.exec(raw.trim());
-    if (m === null || m[1] !== name) continue;
-    if (m[2] === "ok") return "ok";
+    const seen = perTestVerdictLine(raw);
+    if (seen === undefined || seen.name !== name) continue;
+    if (seen.ok) return "ok";
     verdict ??= "FAILED";
   }
   return verdict;
@@ -120,14 +153,12 @@ export type PerTestVerdicts = { ok: boolean; failed: boolean };
 function perTestVerdictIndex(stream: string): Map<string, PerTestVerdicts> {
   const index = new Map<string, PerTestVerdicts>();
   for (const raw of stream.split("\n")) {
-    const m = LIBTEST_PER_TEST_VERDICT_RE.exec(raw.trim());
-    if (m === null) continue;
-    const name = m[1];
-    if (name === undefined) continue;
-    const seen = index.get(name) ?? { ok: false, failed: false };
-    if (m[2] === "ok") seen.ok = true;
-    else seen.failed = true;
-    index.set(name, seen);
+    const seen = perTestVerdictLine(raw);
+    if (seen === undefined) continue;
+    const entry = index.get(seen.name) ?? { ok: false, failed: false };
+    if (seen.ok) entry.ok = true;
+    else entry.failed = true;
+    index.set(seen.name, entry);
   }
   return index;
 }
@@ -161,7 +192,9 @@ export function perTestVerdictsFor(stream: string, name: string): PerTestVerdict
  * was fix wave 4's defect). Two observations, one answer:
  *
  *   - OBSERVED PASSING — MONOTONE. ANY per-test verdict line whose name
- *     equals `name` byte-for-byte and reads `ok` vetoes. Not the last word
+ *     equals `name` (after libtest's ` - should panic` verdict-line
+ *     decoration is folded off — {@link perTestVerdictLine}) and reads `ok`
+ *     vetoes. Not the last word
  *     for the name: a stream holding `test x ... ok` and a later
  *     `test x ... FAILED` printed the same-named test TWICE (two crates of
  *     one workspace run the same name), and under last-word semantics the

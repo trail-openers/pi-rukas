@@ -184,12 +184,21 @@ export function rustPanicHeaderIn(text: string): string | undefined {
  * to the whole clipped string was the substring-containment rule that ticket
  * exists to remove, reachable again through the one dialect that anchors sameness
  * on a header. The fail-closed half is asked of anything that merely LOOKS like a
- * header ({@link PANIC_HEADER_LOOK_RE}), which includes the pre-1.73 inline form:
- * its token run does not end at a colon, its identity is not what the key
- * extracts, and a quote that only resembles a parseable header compares as
- * nothing rather than reopening the containment rule. That inline form keeps its
- * known misparse when its message contains a colon; it is a disclosed limitation
- * of the pre-1.73 spelling, not a case this key folds. Any other assertion —
+ * header ({@link PANIC_HEADER_LOOK_RE}), which is where a clipped or
+ * prefix-lifted quote lands: it compares as nothing rather than reopening the
+ * containment rule.
+ *
+ * The pre-1.73 INLINE form is the one spelling that paragraph does not cover, and
+ * here is what it does, not what it ought to. `thread 'main' panicked at 'boom:
+ * oh', src/main.rs:5:5` DOES reach the identity match, because its token run ends
+ * at a colon — the one inside the quoted message — so the key is the truncated
+ * `thread 'main' panicked at 'boom:`. Two inline-form failures of the SAME test
+ * at the SAME line with different messages therefore carry that one key and
+ * compare as the SAME assertion whenever their messages agree up to that first
+ * colon (an inline message with no colon before its first space reaches the
+ * fail-closed half instead, and answers `null`). Disclosed, and out of scope: a
+ * pre-1.73 spelling current cargo no longer prints, and a case this key does not
+ * fold. Any other assertion —
  * every shape that does not open with the panic look — is its own key; exact
  * containment is unchanged for it.
  */
