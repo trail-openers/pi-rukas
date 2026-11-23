@@ -153,12 +153,10 @@ fi
 # list, and the seam that used to supply it was read HERE, from the loop's own
 # environment: one exported name armed the ratchet for a run nobody asked to grade and
 # failed it with nothing naming why. So nothing below this parse can turn the ceiling
-# on, and the canary arms it per spawn instead — `lib/verify-loop-timing-harness.ts`
-# assigns the parsed value in the child's own frame after sourcing this file (the seam
-# `_timing_seed_ceiling` names). It can never invent an exemption: the list still has
-# to exist and name the path. The read the canary observes is the SAME fork an armed
-# run pays for, so a forced ceiling and an operator-named one are indistinguishable
-# below this line — which is what lets the canary's probe be evidence.
+# on. The canary arms its run from OUTSIDE the shipped code instead — the harness hands
+# that one spawn the real knob through bash's startup file, and the parse above is the
+# only thing that can read it back. Forcing it can never invent an exemption either:
+# the list still has to exist and name the path.
 # The committed exemption list — see `_timing_allowlist_entries`. Its path is
 # overridable so a test exercises an exemption against a temp file instead of editing
 # the shipped one, which the parallel suite would read half-written. It is a PATH and
@@ -313,18 +311,6 @@ timing_listed() {
     *$'\n'"$needle"$'\t'*$'\n'*) return 0 ;;
   esac
   return 1
-}
-
-# The harness' seam, and nothing else's: it assigns the ceiling in the frame that
-# sourced this file, where the assignment survives — see the note at the ceiling's
-# parse for why no shipped path may reach it. A value that is not 1-4 digits changes
-# nothing: the seam is there to arm a bound a case can name, not to become a second
-# parse with its own opinion about junk.
-_timing_seed_ceiling() {
-  local secs="${1:-}"
-  [[ "$secs" =~ ^[0-9]{1,4}$ ]] || return 1
-  VERIFY_TIMING_CEILING_S="$((10#$secs))"
-  return 0
 }
 
 # Is <file> exempt from the ceiling? The knob gate here is the caller-side half of

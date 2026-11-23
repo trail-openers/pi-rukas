@@ -45,6 +45,7 @@ import {
   CEILING_LISTED,
   CEILING_OVER,
   CEILING_RE,
+  ARM_HOOK_BODY,
   FAIL,
   GENERATED,
   HANG,
@@ -362,6 +363,18 @@ const stripTiming = (s: string): string => s.split("\n").filter((l) => !isTiming
   assert(
     eagerBytes > 0,
     `case 7g canary: an off path that DOES read the list is caught — with the ceiling forced where none was asked for, the probe holds ${eagerBytes} byte(s) (a green 7g without this line would be vacuous)`,
+  );
+  // The arm has to be a thing the harness actually carries, or the green above is a
+  // spawn that armed itself by accident and 7g proves nothing. `ARM_HOOK_BODY` is the
+  // exact text the harness writes to the startup file it points `BASH_ENV` at, so a
+  // change that stops forcing the ceiling — or forces it from a name the harness does
+  // not set — reddens HERE as well as on the probe. Pinned by content, not by
+  // existence: an empty or inert body is the same nothing as no seam at all.
+  assert(
+    ARM_HOOK_BODY.includes("VERIFY_TIMING_TEST_CEILING_S") &&
+      ARM_HOOK_BODY.includes("export PI_ENSEMBLE_VERIFY_TIMING_CEILING_S=") &&
+      ARM_HOOK_BODY.includes("unset VERIFY_TIMING_TEST_CEILING_S"),
+    `case 7g canary: the harness still carries the per-spawn arm — it arms the shipped knob and scrubs its own name (body ${JSON.stringify(ARM_HOOK_BODY.slice(0, 90))})`,
   );
   assert(
     eager.status === 0,

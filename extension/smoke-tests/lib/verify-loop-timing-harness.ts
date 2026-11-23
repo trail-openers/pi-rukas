@@ -108,37 +108,90 @@ export function env(
     // The harness' own arm, read by NOTHING the loop ships. It used to be an
     // environment name the shipped parser read (`TIMING_ALLOWLIST_EAGER`), which let
     // one exported name arm a ceiling on a run nobody asked to grade and fail it with
-    // nothing naming why. The arm is now the `arm` argument of `runLoop` — a harness
-    // setting carried in the child's startup hook, never a knob a shipped file parses.
+    // nothing naming why. The arm is now the `arm` argument of `runLoop`, and the name
+    // below is scrubbed from every spawn's inherited environment so an operator or a
+    // CI step that happens to export it cannot arm a case's run.
     VERIFY_TIMING_TEST_CEILING_S: "",
   };
   return { ...process.env, ...base, ...extra };
 }
 
 /**
- * The child's startup hook, which carries a per-spawn arm into the loop's frame.
+ * The per-spawn arm's carrier: a `BASH_ENV` FILE the harness writes, which bash
+ * sources at the very start of a non-interactive shell — before the loop reads its
+ * ceiling knob at all.
  *
- * Bash consults `ENV` (the function) when a non-interactive shell starts, and nothing
- * in `verify-loop.sh` or its sourced halves runs an `ENV`-shaped command or names that
- * function, so the hook shadows nothing and costs a plain run nothing. The body is
- * inert unless `VERIFY_TIMING_TEST_CEILING_S` names a ceiling: it defines a function
- * whose only job is to seed the ceiling from that variable, and a run the arm never
- * armed therefore changes no state at all. So the off-path runs of case 7g take the
- * plain path — no file is read and the probe stays empty — whether or not the arm is
- * in the environment at all, which is what AC4 and AC3 both need.
+ * It is a file, not a shell fragment. Bash takes `BASH_ENV` as a PATH; the
+ * `ENV`/`BASH_ENV` FUNCTION hooks are another shell's mechanism and bash demonstrably
+ * ignores a function exported under either name, so a file is the only per-spawn seam
+ * that reaches the loop's own frame.
  *
- * The seeding is not a no-op dressed up as a canary: `_timing_seed_ceiling` is the
- * seam `lib/verify-timing.sh` documents, and the pool's own source of that file runs
- * AFTER it, so the seeded value is the one every gate in the loop reads — which is how
- * case 7g's canary is observed RED before it is trusted green.
+ * The arm is handed to the loop through the loop's OWN knob rather than by assigning
+ * the parsed variable. That is not a simplification: the pool sources
+ * `verify-timing.sh` AFTER this hook has run, so the file's own parse executes again
+ * and a bare assignment made here is re-parsed back to zero (observed). Exporting the
+ * knob the parse reads is the only shape that survives that second parse — and it is
+ * the honest one, because the armed run then takes the same code path an operator-
+ * named ceiling takes, which is what makes the canary's probe evidence.
+ *
+ * Three halves, all load-bearing:
+ *
+ *   * The name it arms from is pinned EMPTY by `env()` in every spawn, so an ARMED run
+ *     is one that passed `arm` to `runLoop`. An ambient value an operator, a CI step or
+ *     the suite itself exported therefore arms nothing — no shipped path and no
+ *     inherited name forces a ceiling (AC4). The hook then UNSETS the name: the loop
+ *     exports `LC_ALL` for the whole run, so an unscrubbed arm would reach every `bun`
+ *     test child, where a case could read the very variable that armed its own run —
+ *     the shape verify-report-file.sh exists to close. The 1-4 digit gate is the
+ *     shipped parse's own, so junk handed to `arm` arms nothing rather than naming a
+ *     number the loop would then reject.
+ *   * It runs NOTHING unless the name is set. No source, no assignment, no unset, so a
+ *     plain run's environment — and its probe file — are exactly what they were before
+ *     this existed. `runLoop` does not even pass `BASH_ENV` without an `arm`.
+ *   * It is the only place a ceiling is forced, and case 7g's canary is what watches it
+ *     fail: point the seeding at a name nothing sets, or drop the export, and the
+ *     canary's probe reads empty and the assertion goes RED. A gate nobody has watched
+ *     fail proves nothing.
  */
-const CHILD_HOOK =
-  `ENV() { [ -n "\${VERIFY_TIMING_TEST_CEILING_S:-}" ] && . "${LIB}/verify-timing.sh" ` +
-  `>/dev/null 2>&1 && _timing_seed_ceiling "$VERIFY_TIMING_TEST_CEILING_S"; };`;
+const ARM_HOOK =
+  `if [ -n "\${VERIFY_TIMING_TEST_CEILING_S:-}" ] && ` +
+  `[[ "\${VERIFY_TIMING_TEST_CEILING_S}" =~ ^[0-9]{1,4}$ ]]; then
+` +
+  `  export PI_ENSEMBLE_VERIFY_TIMING_CEILING_S="\$VERIFY_TIMING_TEST_CEILING_S"
+` +
+  `fi
+` +
+  `unset VERIFY_TIMING_TEST_CEILING_S
+`;
+
+/** The scratch file behind `BASH_ENV` for an armed spawn. Written on every armed
+ * spawn rather than cached: a fixed path in a shared TMPDIR is a symlink target for
+ * another process, and the write is one syscall against a case that runs a whole
+ * loop. Nothing removes it — a scratch file in TMPDIR is reaped with TMPDIR, the same
+ * convention every temp allow-list in this file follows. */
+function armHookPath(): string {
+  const dir = mkdtempDirSync(path.join(tmpdir(), "pi-2449-arm-"));
+  const p = path.join(dir, "seed.sh");
+  try {
+    writeFileSync(p, ARM_HOOK, { mode: 0o600 });
+  } catch (e) {
+    harnessFatal(`could not write the timing arm hook at ${p}: ${String(e)}`);
+  }
+  return p;
+}
+
+/**
+ * The ONE place a ceiling is forced for a test, as the child sees it — for
+ * test-verify-timing-ceiling.ts case 7g's canary, which asserts this is NON-EMPTY on
+ * an armed spawn and would otherwise have no way to tell a hook that ran from one that
+ * never fired. A run whose canary cannot be observed failing is an assertion about
+ * nothing, and the harness is the only party that knows whether it armed the spawn.
+ */
+export const ARM_HOOK_BODY = ARM_HOOK;
 
 /** Per-spawn arm for `runLoop`: the ceiling a case forces on a spawn whose operator-
- * facing knob stays off. Harness-only by construction — the name it travels in is read
- * by the hook above and by no shipped code path. */
+ * facing knob stayed off. Harness-only by construction — the shipped loop parses no
+ * such name, and the harness pins it empty so an inherited value cannot arm a run. */
 export type TimingArm = { ceiling: string };
 
 export function runLoop(
@@ -149,11 +202,17 @@ export function runLoop(
   // see it and the case would quietly test normal mode twice.
   prefix: string[] = [],
   // The mutant twin, per spawn rather than per environment (see `TimingArm`). Omit it
-  // and the loop is spawned exactly as it always was.
+  // and the loop is spawned with exactly the environment it has always had — no
+  // `BASH_ENV`, no hook file, no arm.
   arm?: TimingArm,
 ): { status: number; stdout: string; stderr: string } {
-  if (arm !== undefined && !/^[0-9]{1,4}$/.test(arm.ceiling)) {
-    harnessFatal(`timing arm ceiling must be 1-4 digits, got ${JSON.stringify(arm.ceiling)}`);
+  const armed: Record<string, string | undefined> = {};
+  if (arm !== undefined) {
+    if (!/^[0-9]{1,4}$/.test(arm.ceiling)) {
+      harnessFatal(`timing arm ceiling must be 1-4 digits, got ${JSON.stringify(arm.ceiling)}`);
+    }
+    armed.VERIFY_TIMING_TEST_CEILING_S = arm.ceiling;
+    armed.BASH_ENV = armHookPath();
   }
   const r = spawnSync("bash", [LOOP, ...prefix, ...files], {
     // `extension/`, the directory every other verify-loop test invokes the loop from
@@ -163,12 +222,7 @@ export function runLoop(
     cwd: REPO,
     encoding: "utf8",
     timeout: 240_000,
-    env: {
-      ...env(extraEnv),
-      // Only an armed spawn carries the startup hook at all: an unarmed run is the
-      // shipped shape, byte for byte, with no `ENV` defined in its frame.
-      ...(arm ? { BASH_ENV: CHILD_HOOK } : {}),
-    },
+    env: env({ ...extraEnv, ...armed }),
   });
   return { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
