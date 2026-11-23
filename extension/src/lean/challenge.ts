@@ -51,7 +51,6 @@ import { frozenFromLog, testsFromLog } from "./build.ts";
 import { ChallengeInfraError, dispatchAdversary } from "./challenge-dispatch.ts";
 import type { ChallengeDispatch, ChallengeExec } from "./challenge-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
-import { type TestLocation, testLocationOf } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
@@ -81,6 +80,7 @@ import {
   readDispatched,
 } from "./step-budget.ts";
 import { extractSubmitTests } from "./submit-tests-extract.ts";
+import { withTestHelpers } from "./verify-roster-base.ts";
 
 export interface ChallengeDeps {
   exec: ChallengeExec;
@@ -272,7 +272,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   // could only ever report `none`, which is not a verdict about the code — it is
   // a missing setting wearing one, so the refusal names the setting.
   const runnerTemplate: string | undefined = config.verify.test;
-  const testLocation: TestLocation | undefined = testLocationOf(config.verify);
+  const testLocation = await withTestHelpers(deps.exec, repoRoot, ctx.run.baseSha, config.verify);
   if (runnerTemplate === undefined)
     throw new ChallengeInfraError(
       "no test runner configured (.pi/work.json verify.test) for a spec with test criteria",

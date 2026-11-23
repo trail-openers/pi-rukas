@@ -558,6 +558,9 @@ second round cannot double it). Two call-cost bounds sit beside them: one
 paths probed against the base, and a test the run already froze may never be
 resubmitted — the adversary cannot replace the contract the builder is measured
 against.
+The bounds assume the harness lives outside the test, so both adversary prompts
+name the shared non-test files the test dirs hold at the base (a `common/mod.rs`,
+a `conftest.py`, the first 12, shallowest first) and tell the child to reuse them.
 
 ## Running it
 

@@ -19,6 +19,8 @@
 export interface TestLocation {
   testDirs: readonly string[];
   testGlob: string;
+  /** Shared non-test files under the test dirs at the run's base, filled by `withTestHelpers`, never by config. */
+  helpers?: readonly string[];
 }
 
 /**
