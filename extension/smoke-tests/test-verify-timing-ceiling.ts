@@ -44,29 +44,21 @@
 import {
   CEILING_LISTED,
   CEILING_OVER,
-  CEILING_RE,
   ARM_HOOK_BODY,
-  FAIL,
-  GENERATED,
   HANG,
-  HEADER_RE,
   PASS,
-  REPO,
-  TIME_RE,
-  TOTAL_RE,
   ceilingLines,
   isTimingLine,
   mkdtempDirSync,
   removeAllowlist,
   stripTiming,
-  removeGenerated,
   runLoop,
   timeLines,
   timingOutput,
   writeAllowlist,
   writeGenerated,
 } from "./lib/verify-loop-timing-harness.ts";
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 

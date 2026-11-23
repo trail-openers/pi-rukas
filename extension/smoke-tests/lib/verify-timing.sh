@@ -132,6 +132,22 @@ fi
 # the five timing names runs. `TIMING_FILE` above is read, never assigned, by it.
 . "$(dirname "${BASH_SOURCE[0]}")/verify-timing-ceiling.sh"
 
+# The split is only safe while BOTH halves arrive. `verify-pool.sh` hard-checks the
+# five timing names, but it runs BEFORE this file is sourced by anything that needs
+# them, and `timing_ceiling_offenders` is the name whose absence is silent: with the
+# half missing, an armed run calls nothing, prints no `CEILING:` line and exits 0 — the
+# ratchet off while every knob says it is on, which is the one verdict a reader cannot
+# distinguish from a run with nothing over the bound. A missing file here is a broken
+# install, not a configuration, so it is a hard stop naming the file rather than a
+# warning the summary scrolls past.
+for _timing_ceiling_name in timing_ceiling_offenders timing_key; do
+  if [ "$(type -t "$_timing_ceiling_name" 2>/dev/null)" != "function" ]; then
+    echo "verify-loop: $(dirname "${BASH_SOURCE[0]}")/verify-timing-ceiling.sh did not define $_timing_ceiling_name; the timing ceiling cannot run" >&2
+    exit 2
+  fi
+done
+unset _timing_ceiling_name
+
 # The record lives beside the captures, in the run's private directory. Kept in a
 # variable rather than derived at each call site, so the functions below cannot
 # disagree about which file holds the run's timings.
@@ -153,6 +169,15 @@ timing_start() {
   TIMING_FILE=""
   VERIFY_POOL_STARTED_AT=""
   VERIFY_POOL_WALL=0
+  # Drop the previous run's cached allow-list with the previous run's record: this
+  # file is SOURCED, so the rows survive a run in the same shell, and a list that
+  # still read as loaded would exempt this run's files by the last run's answer — a
+  # renamed or emptied list would keep exempting under the old rows. FIRST, ahead of
+  # every early return below: a run that timed itself off, or got no run directory, or
+  # could not create its record still ends the previous run's authority, and a reset
+  # parked after those returns left a stale list loaded for whatever came next.
+  _TIMING_ALLOWLIST_ROWS=""
+  _TIMING_ALLOWLIST_LOADED=0
   if [ "$VERIFY_TIMING" -ne 1 ]; then return 0; fi
   local run_dir="${1:-}"
   if [ -z "$run_dir" ]; then
@@ -164,12 +189,6 @@ timing_start() {
     return 1
   fi
   TIMING_FILE="$run_dir/timing.tsv"
-  # Drop the previous run's cached allow-list with the previous run's record: this
-  # file is SOURCED, so the rows survive a run in the same shell, and a list that
-  # still read as loaded would exempt this run's files by the last run's answer — a
-  # renamed or emptied list would keep exempting under the old rows.
-  _TIMING_ALLOWLIST_ROWS=""
-  _TIMING_ALLOWLIST_LOADED=0
   return 0
 }
 

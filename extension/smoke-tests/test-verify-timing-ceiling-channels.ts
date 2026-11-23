@@ -37,16 +37,17 @@ import {
   REPO,
   ceilingLines,
   GENERATED,
-  isTimingLine,
   LIB,
   mkdtempDirSync,
   removeAllowlist,
   removeGenerated,
   runLoop,
+  stripTiming,
   writeAllowlist,
   writeGenerated,
+  env,
 } from "./lib/verify-loop-timing-harness.ts";
-import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 
@@ -89,12 +90,12 @@ function assert(cond: boolean, msg: string): void {
       PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "30",
       PI_ENSEMBLE_VERIFY_TIMING: "0",
     });
-    // The same `isTimingLine` filter as 7f (which also drops `CEILING:`, the shape
-    // this run can print). Case 5 of test-verify-loop-timing.ts is the sibling claim
-    // with no ceiling in play.
-    const stripped = ceiling.stderr.split("\n").filter((l) => !isTimingLine(l));
+    // The one filter, as 7f uses it (it also drops `CEILING:`, the shape this run can
+    // print). Case 5 of test-verify-loop-timing.ts is the sibling claim with no ceiling
+    // in play. Two hand-written filters over one channel are two claims that can drift
+    // apart; `stripTiming` is the single seam that says which lines belong to the clock.
     assert(
-      stripped.join("\n") === off.stderr,
+      stripTiming(ceiling.stderr) === off.stderr,
       `case 8: turning the timing off removes the ceiling lines and nothing else (stderr ${JSON.stringify(off.stderr.slice(0, 160))})`,
     );
   } finally {
@@ -369,6 +370,96 @@ function assert(cond: boolean, msg: string): void {
     });
   } finally {
     removeAllowlist(list);
+  }
+}
+
+// ------------------------- Case 13: a run whose ceiling half is missing cannot be green
+
+{
+  // The ceiling is split into its own half so the record's file stays under the size
+  // cap, and a split is only safe while BOTH halves arrive. Nothing enforced that.
+  // `verify-pool.sh` hard-checks the five RECORD names, but not the ceiling's own, and
+  // `timing_ceiling_offenders` is the one name whose absence is silent: the loop calls
+  // it in a `while … done < <(…)` and a missing function there yields no rows, so a
+  // run with the knob ON, a file past the bound and no ceiling half printed no `CEILING:`
+  // line, named no offender and EXITED 0. The ratchet off while every knob said it was
+  // on — the one verdict a reader cannot tell apart from a run with nothing over the
+  // bound, which is worse than a crash. The case below is the pre-fix behaviour measured
+  // (status 0), and the fix: the source now checks the two ceiling names it depends on
+  // and stops with 2 naming the file. Measured on a COPIED lib dir with the half deleted
+  // — a real broken install, and the only shape where a missing file is the whole input.
+  const mkCopy = (mutate: (ceil: string) => void): string => {
+    const dir = mkdtempDirSync(path.join(tmpdir(), "pi-2465-half-"));
+    cpSync(LIB, path.join(dir, "lib"), { recursive: true });
+    mutate(path.join(dir, "lib", "verify-timing-ceiling.sh"));
+    return dir;
+  };
+  const runCopied = (dir: string) =>
+    spawnSync("bash", [path.join(dir, "lib", "verify-loop.sh"), CEILING_OVER], {
+      cwd: REPO,
+      encoding: "utf8",
+      timeout: 240_000,
+      env: env({
+        // The armed run this is about: the knob on, and the file over the bound, so a
+        // silent ratchet is a run that SHOULD have failed and did not.
+        PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "2",
+        FIXTURE_CEILING_MS: "8000",
+        PI_ENSEMBLE_VERIFY_TEST_JOBS: "1",
+      }),
+    });
+  const broken = [
+    ["deleted", (ceil: string) => rmSync(ceil)] as [string, (ceil: string) => void],
+    // The twin that a file-exists check would sail past: the half is THERE, it just
+    // defines nothing (a truncated copy, a botched merge), so the check has to be about
+    // the names, not the path.
+    ["emptied", (ceil: string) => writeFileSync(ceil, "# defines nothing\n")] as [
+      string,
+      (ceil: string) => void,
+    ],
+  ];
+  for (const [state, mutate] of broken) {
+    const dir = mkCopy(mutate);
+    try {
+      const r = runCopied(dir);
+      const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+      assert(
+        r.status === 2 && out.includes("verify-timing-ceiling.sh") && /did not define/.test(out),
+        `case 13: a copied lib whose ceiling half is ${state} stops the run with 2 and names the file (status ${r.status}, stderr ${JSON.stringify((r.stderr ?? "").slice(0, 140))})`,
+      );
+      // The pre-fix shape this closes: with the half missing the loop produced NO
+      // verdict channel at all — no `CEILING:` line and no `FAILED:` marker — so the run
+      // was green on a file sitting past its bound. Asserting the absence here pins that
+      // the stop is what saved the verdict, not that the fixture happened to be fast.
+      assert(
+        !/CEILING:/.test(out) && !/FAILED:/.test(out),
+        `case 13: the broken install produced no verdict at all — no CEILING line, no FAILED marker (status ${r.status})`,
+      );
+    } finally {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* a leftover scratch dir is reaped with TMPDIR */
+      }
+    }
+  }
+
+  // The witness that this is not a broken copy script: the SAME copy, with the half
+  // intact, runs the real armed loop and fails it on the clock. Without this the two
+  // reds above would be consistent with a copy that never runs at all — the vacuous
+  // green this suite treats as the worst answer.
+  const intact = mkCopy(() => {});
+  try {
+    const r = runCopied(intact);
+    assert(
+      r.status === 1 && ceilingLines(r.stderr).length === 1,
+      `case 13 canary: the same copied lib WITH its ceiling half armed the ratchet and failed the run (status ${r.status}, ceiling lines ${JSON.stringify(ceilingLines(r.stderr))})`,
+    );
+  } finally {
+    try {
+      rmSync(intact, { recursive: true, force: true });
+    } catch {
+      /* a leftover scratch dir is reaped with TMPDIR */
+    }
   }
 }
 
