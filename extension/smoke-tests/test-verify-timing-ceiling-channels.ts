@@ -19,25 +19,38 @@
  *      too, on a run whose tests all PASSED. A change that stopped joining offenders
  *      would keep the stdout summary green and hand the driver `FAILED-TESTS: 0` on an
  *      exit-1 run — the shape the driver treats as unattributable.
- *   3. Case 12 — the exemption matcher answers about a KEY FIELD and nothing else: the
- *      cached rows are `secs<TAB>key`, so a needle has to sit between a tab and a
- *      newline. A single newline variable on both sides of the pattern was the empty
- *      string (command substitution strips trailing newlines), which made the whole-field
- *      test an unanchored substring test — enough for one character of any row to exempt
- *      a file no list ever named.
+ *   3. Case 13 — the ceiling's own half is a SEPARATE source file, and a run whose
+ *      copied install is missing it must stop with 2 and name the file. The one failure
+ *      a reader cannot tell apart from a clean run is the silent ratchet: no `CEILING:`
+ *      line, no offender, exit 0, with the knob on and a file past the bound.
  *
- * Durations are a busy-wait at 4× the bound, for the ±50% host-load swing recorded in
- * the sibling file's header.
+ * Case 12 — the allow-list MATCHER — moved to test-verify-timing-listed.ts with this
+ * file's split for the §12 cap: it is the only channel case that never starts the loop,
+ * so it is a seam rather than a scatter.
+ *
+ * Durations sit well past the bound — far enough that a run several times as slow as
+ * measured still lands on the right side of the verdict — and they are timers, not spin
+ * loops: the loop's clock is bash `SECONDS`, so wall time is all the record needs and a
+ * busy wait charged a core for every second of it while measuring nothing but its own
+ * scheduler. The bound is on the cheap side of that pair: a verdict that needs a row
+ * OVER the bound is satisfied by 2 s against 1 s (never sub-second — a 0.5 s fixture's
+ * `TIME` row rounds down onto the bound and the case passes on nothing), and 4× is
+ * reserved for the arms that assert a row is UNDER it. See the sibling file's header for
+ * the ±50% swing that sets the margin.
  */
 import { spawnSync } from "node:child_process";
+import { chmodSync, cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import {
   CEILING_OVER,
+  env,
   FAIL,
+  GENERATED,
+  LIB,
   PASS,
   REPO,
   ceilingLines,
-  GENERATED,
-  LIB,
   mkdtempDirSync,
   removeAllowlist,
   removeGenerated,
@@ -45,11 +58,7 @@ import {
   stripTiming,
   writeAllowlist,
   writeGenerated,
-  env,
 } from "./lib/verify-loop-timing-harness.ts";
-import { chmodSync, cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import * as path from "node:path";
 
 
 let exit = 0;
@@ -69,7 +78,13 @@ function assert(cond: boolean, msg: string): void {
   // stream the tally, the `FAILED:` markers and the 800-char evidence window are
   // read from — is byte-identical while no file is over the bound, and the opted-
   // out stderr is the opted-in stderr with the timing lines deleted, nothing else.
-  const A = writeGenerated(GENERATED.slow1, 1000);
+  //
+  // The set carries a slow file that stays IN bounds under the 30 s knob — a 2 s
+  // generated timer, 1/15th of the bound, so its `TIME` row can never be read as past
+  // it — because a run with nothing slow in it would pass this on the absence of the
+  // ceiling's rows rather than on their being additive. The fixture's own printed line
+  // is a constant, which is what lets two runs of it be compared byte for byte.
+  const A = writeGenerated(GENERATED.slow1, 2000);
   const set = [A, PASS, FAIL];
   try {
     const base = runLoop(set);
@@ -86,11 +101,15 @@ function assert(cond: boolean, msg: string): void {
       ceilingLines(ceiling.stderr).length === 0,
       `case 8: no CEILING line for a file under the bound (got ${JSON.stringify(ceilingLines(ceiling.stderr))})`,
     );
+    // `PI_ENSEMBLE_VERIFY_TIMING: "0"` is the knob half of the off path and the ceiling
+    // knob itself is pinned off by the harness, so this arm takes the loop's own
+    // first-return gate — the shape 7f of the sibling file pins as the off path, and the
+    // one this comparison must match line for line. At 30 s nothing in the set is over
+    // the bound, so the two channels are comparable at all.
     const off = runLoop(set, {
       PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "30",
       PI_ENSEMBLE_VERIFY_TIMING: "0",
-    });
-    // The one filter, as 7f uses it (it also drops `CEILING:`, the shape this run can
+    });    // The one filter, as 7f uses it (it also drops `CEILING:`, the shape this run can
     // print). Case 5 of test-verify-loop-timing.ts is the sibling claim with no ceiling
     // in play. Two hand-written filters over one channel are two claims that can drift
     // apart; `stripTiming` is the single seam that says which lines belong to the clock.
@@ -128,8 +147,8 @@ function assert(cond: boolean, msg: string): void {
   // the state the driver's `O_EXCL` creates before it spawns the loop.
   writeFileSync(report, "");
   const ceiling = runLoop([PASS, path.resolve(REPO, CEILING_OVER)], {
-    PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "2",
-    FIXTURE_CEILING_MS: "8000",
+    PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "1",
+    FIXTURE_CEILING_MS: "2000",
     VERIFY_REPORT_FILE: report,
   });
   let body = "";
@@ -176,14 +195,22 @@ function assert(cond: boolean, msg: string): void {
   // Generated slow files, not the committed fixture: an exemption is keyed on a PATH,
   // and this run must exempt nothing so every row asks the list its question. Names from
   // `GENERATED.many` are the ones the harness already removes after every case.
-  const rows = GENERATED.many.slice(0, 3).map((n) => writeGenerated(n, 8000));
+  //
+  // 1 s ceiling against 2 s fixtures, never a sub-second fixture: the row the count
+  // depends on is a whole-second floor, so the input has to sit at least a clear second
+  // past the bound — 2 s against 1 s is the smallest pair for which `TIME 1` cannot be
+  // the honest reading of a 2 s wait. The assertion is a COUNT of list reads over N
+  // over-bound rows and does not care how far past the bound a row sits, so the cheap
+  // side of the pair is the ceiling, not the fixture, and three rows cost two seconds
+  // instead of eight.
+  const rows = GENERATED.many.slice(0, 3).map((n) => writeGenerated(n, 2000));
   const probeDir = mkdtempDirSync(path.join(tmpdir(), "pi-2465-readcount-"));
   const probe = path.join(probeDir, "probe.log");
   const list = writeAllowlist([]);
   try {
     const r = runLoop(rows, {
-      PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "2",
-      FIXTURE_CEILING_MS: "8000",
+      PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "1",
+      FIXTURE_CEILING_MS: "2000",
       PI_ENSEMBLE_VERIFY_TEST_JOBS: "3",
       TIMING_ALLOWLIST: list,
       TIMING_ALLOWLIST_PROBE: probe,
@@ -227,9 +254,16 @@ function assert(cond: boolean, msg: string): void {
   // widen it. Each state below must print exactly ONE warning naming the path (one per
   // RUN, not per row: the loader returns before its gate), must still exempt nothing,
   // and must still fail the offender.
+  //
+  // The pair is 1 s against a 2 s fixture. The verdict these arms pin is ONE offender
+  // row per run, and a row only has to be over the bound: the smallest whole-second
+  // pair that cannot be read back as in bounds is 2 s against 1 s, so the case buys the
+  // same verdict for two seconds of fixture instead of eight. A sub-second fixture is
+  // not the cheap option — its `TIME` row would round down onto the bound and the arm
+  // would pass on a run that had nothing to report.
   const env = {
-    PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "2",
-    FIXTURE_CEILING_MS: "8000",
+    PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "1",
+    FIXTURE_CEILING_MS: "2000",
     PI_ENSEMBLE_VERIFY_TEST_JOBS: "2",
   };
   const missing = path.join(mkdtempDirSync(path.join(tmpdir(), "pi-2465-nolist-")), "nope.json");
@@ -297,82 +331,6 @@ function assert(cond: boolean, msg: string): void {
   }
 }
 
-// ------------------------- Case 12: the allow-list match is anchored on the whole key
-
-{
-  // The exemption is the ONE thing that turns an over-bound row green, so the matcher
-  // that grants it has to answer about a KEY FIELD and nothing else. The cached rows
-  // are `secs<TAB>key` with one row per line, so the needle is legal only between a tab
-  // and a newline — flanked by two DIFFERENT delimiters. When the pattern was built from
-  // a single newline variable on both sides, and that variable was filled by
-  // `nl="$(printf '\n')"`, command substitution stripped the trailing newline and the
-  // variable was the EMPTY string: the whole-field test silently became an unanchored
-  // substring test over the raw rows, so `s` (one character of any row), `23` (the
-  // seconds of a row) and `smoke-tests/x/test-a.tsx` (a listed key plus one character)
-  // all exempted a file no list ever named. That is not a strictness nicety — each of
-  // them lets a file that never ran slow sit past the bound.
-  //
-  // Driven through the shipped source (`verify-timing.sh`, whose parse block sources the
-  // ceiling half) exactly as test-verify-timing-allowlist.ts drives `timing_key` and
-  // `_timing_allowlist_entries`, so the case judges the matcher the loop runs rather
-  // than a copy of it here. The needle is a KEY, not a path: `timing_exempt` reduces
-  // every spelling through `timing_key` first, and that normaliser is pinned by the
-  // sibling gate. Its own temp list, because the ceiling is armed per spawn through the
-  // environment and the shipped list is the shrink-only gate's subject.
-  const list = writeAllowlist([
-    { file: "smoke-tests/x/test-a.ts", seconds: 23 },
-    { file: "smoke-tests/y/other.ts", seconds: 9 },
-    { file: "smoke-tests/z/third.ts", seconds: 31 },
-  ]);
-  const listed = (needle: string): boolean => {
-    // The cache is filled by the loader's ONE read; `timing_listed` then answers from
-    // it, which is the shape of every call after the first in a real run. The ceiling
-    // is forced to 1 s so the loader's own knob gate lets the read happen at all.
-    const script =
-      `. "${path.join(LIB, "verify-timing.sh")}" >/dev/null 2>&1; ` +
-      `VERIFY_TIMING_CEILING_S=1; TIMING_ALLOWLIST=${JSON.stringify(list)}; ` +
-      `_timing_allowlist_entries >/dev/null; timing_listed ${JSON.stringify(needle)}`;
-    const r = spawnSync("bash", ["-c", script], { cwd: REPO, encoding: "utf8" });
-    return (r.status ?? -1) === 0;
-  };
-  const KEPT = "smoke-tests/x/test-a.ts";
-  const cases: [string, boolean][] = [
-    // The entry itself, and every row of the three-row list — the middle and last rows
-    // pin the anchoring at both ends: a pattern anchored only against the start of the
-    // haystack would keep the first row and lose these two.
-    [KEPT, true],
-    ["smoke-tests/y/other.ts", true],
-    ["smoke-tests/z/third.ts", true],
-    // A SUFFIX of the key: matches nothing, because the tab before it is missing.
-    ["test-a.ts", false],
-    ["a.ts", false],
-    ["x/test-a.ts", false],
-    // A substring of the seconds column, and one character of a row — each matched the
-    // row under an unanchored test, since rows are separated only by newlines.
-    ["s", false],
-    ["23", false],
-    // A key that is a PREFIX of an entry must not exempt the longer path: the newline
-    // after the needle is what refuses it. The empty-string delimiter above left this
-    // half unanchored on BOTH sides, so it reddened only with the others — a mutant that
-    // drops just the trailing newline is caught by this row alone.
-    ["smoke-tests/x/test-a.tsx", false],
-    // A path the list never names, spelled as an entry in the list would be.
-    ["smoke-tests/fixtures/verify-loop/fixture-ceiling-over.ts", false],
-  ];
-  try {
-    const verdicts = cases.map(([needle]) => listed(needle));
-    cases.forEach(([needle, want], i) => {
-      const got = verdicts[i] === true;
-      assert(
-        got === want,
-        `case 12: ${want ? "IS" : "is NOT"} listed — ${JSON.stringify(needle)} over a list naming ${JSON.stringify(KEPT)} at 23 s (got ${got})`,
-      );
-    });
-  } finally {
-    removeAllowlist(list);
-  }
-}
-
 // ------------------------- Case 13: a run whose ceiling half is missing cannot be green
 
 {
@@ -388,10 +346,31 @@ function assert(cond: boolean, msg: string): void {
   // (status 0), and the fix: the source now checks the two ceiling names it depends on
   // and stops with 2 naming the file. Measured on a COPIED lib dir with the half deleted
   // — a real broken install, and the only shape where a missing file is the whole input.
+  //
+  // The copy is the NINE files the loop actually sources, not the 3 MB `lib/` directory:
+  // `verify-loop.sh` and the seven halves it and its children dot-source (verify-git-env,
+  // verify-kill, verify-pool, verify-timing, verify-timing-ceiling, verify-tree,
+  // verify-report, verify-report-file), each resolved through `BASH_SOURCE` and so still
+  // found in the copy. The rest of `lib/` is other tests' harnesses — no source reaches
+  // them, and copying them only made the case pay for 3 MB of files it never reads.
+  const LOOP_HALVES = [
+    "verify-loop.sh",
+    "verify-git-env.sh",
+    "verify-kill.sh",
+    "verify-pool.sh",
+    "verify-timing.sh",
+    "verify-timing-ceiling.sh",
+    "verify-tree.sh",
+    "verify-report.sh",
+    "verify-report-file.sh",
+  ];
   const mkCopy = (mutate: (ceil: string) => void): string => {
     const dir = mkdtempDirSync(path.join(tmpdir(), "pi-2465-half-"));
-    cpSync(LIB, path.join(dir, "lib"), { recursive: true });
-    mutate(path.join(dir, "lib", "verify-timing-ceiling.sh"));
+    const lib = path.join(dir, "lib");
+    for (const half of LOOP_HALVES) {
+      cpSync(path.join(LIB, half), path.join(lib, half));
+    }
+    mutate(path.join(lib, "verify-timing-ceiling.sh"));
     return dir;
   };
   const runCopied = (dir: string) =>
@@ -401,9 +380,13 @@ function assert(cond: boolean, msg: string): void {
       timeout: 240_000,
       env: env({
         // The armed run this is about: the knob on, and the file over the bound, so a
-        // silent ratchet is a run that SHOULD have failed and did not.
-        PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "2",
-        FIXTURE_CEILING_MS: "8000",
+        // silent ratchet is a run that SHOULD have failed and did not. 2 s against a 1 s
+        // ceiling is 2× the bound — far enough that the whole-second clock cannot round
+        // it down onto the bound, and short enough that this case pays two seconds per
+        // arm rather than eight. Never sub-second: a 0.5 s fixture would land on `0` or
+        // `1` and read as in bounds.
+        PI_ENSEMBLE_VERIFY_TIMING_CEILING_S: "1",
+        FIXTURE_CEILING_MS: "2000",
         PI_ENSEMBLE_VERIFY_TEST_JOBS: "1",
       }),
     });
