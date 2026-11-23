@@ -9,8 +9,8 @@
  * what enforces it. No guard is ever executable text: derive authors no command.
  *
  * The deriving child is asked to sort guards out itself; {@link isRegressionGuard} is the
- * deterministic arm that moves a bullet whose WHOLE text is such a demand, so separating
- * guards from criteria does not depend on model wording. It is deliberately narrow, because a bullet it moves loses its red
+ * deterministic arm that moves a bullet whose WHOLE text is such a demand, so the
+ * guard/criterion split does not depend on model wording. It is deliberately narrow, because a bullet it moves loses its red
  * test: the subject must be named as existing ("the existing …", "all pre-existing …"), so "the
  * other tabs still work" — which may be the bug itself — is left to the child, which sees the
  * ticket; and a mixed sentence ("X returns 3 and the build still passes") stays a criterion.
