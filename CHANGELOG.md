@@ -8,6 +8,18 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.13](https://github.com/trail-openers/pi-rukas/compare/v0.15.12...v0.15.13) (2026-11-23)
+
+
+### Features
+
+* **lean:** type the missing-spec refusal as failure.kind "no-spec" ([#2608](https://github.com/trail-openers/pi-rukas/issues/2608)) ([32376b5](https://github.com/trail-openers/pi-rukas/commit/32376b5aa772b5e1c64ea8a215205eb47d970585))
+
+
+### Bug Fixes
+
+* **spawn:** forward settings.json packages to subagents ([#2605](https://github.com/trail-openers/pi-rukas/issues/2605)) ([04d67bd](https://github.com/trail-openers/pi-rukas/commit/04d67bd783a6ce309f592f627e42e0f5f9d5ca34))
+
 ## [0.15.12](https://github.com/trail-openers/pi-rukas/compare/v0.15.11...v0.15.12) (2026-11-23)
 
 
