@@ -57,6 +57,13 @@ const cliPath = join(here, "..", "src", "headless", "cli.ts");
 // stdout-ownership case spawns this instead of the CLI (see its header).
 const latchFixture = join(here, "lib", "headless-stdout-latch-fixture.ts");
 const tmpRoot = await mkdtemp(join(tmpdir(), "pi-1863-runner-"));
+// Every real run fails the issue-body fetch (no remote) and ends in a handoff.
+// What is pinned here is the document the run ends with, so the runs neither
+// sleep the jittered retry backoff nor hand the body to a live LLM ops child
+// that would post to a forge: the host channel keeps the handoff in-process
+// and puts its body in the result document. The CLI children inherit both.
+process.env.PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS = "0";
+process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "host";
 
 /** Run the real CLI and collect stdout/stderr/exit without a shell. */
 async function runCli(
