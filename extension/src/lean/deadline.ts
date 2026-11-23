@@ -1,11 +1,9 @@
 /**
  * lean/deadline — the caller's whole-cycle deadline, read the way `work` reads it.
  *
- * `work` stops STARTING steps once its deadline is inside the handoff allowance and hands off. A lean run had
- * no such boundary, so a host's `--timeout` killed the container mid-step with no result document. The
- * reporting exemption is the rule this module states: `test-lean-cycle-arm.ts` (e) drives a run that ARRIVES
- * at `handback` with its deadline already gone, and `test-lean-verified-handback-deadline.ts` drives the same
- * exemption through a real origin. Deleting the `REPORT_STATES` branch turns both red.
+ * A lean run stops STARTING steps once its deadline is inside the handoff allowance, as `work` does, so a
+ * host's `--timeout` never kills it mid-step with no result document. The reporting states are exempt:
+ * `test-lean-cycle-arm.ts` (e) and `test-lean-verified-handback-deadline.ts` pin that.
  *
  * Both rules read the helpers `work` reads — `resolveCycleDeadline` and `handoffDispatchTimeoutMs` — so one
  * env contract drives both engines: `leanDeadline` resolves the host's `--timeout`,

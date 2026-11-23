@@ -1,9 +1,8 @@
 /**
  * lean/config-test-location — where the adversary's acceptance tests live.
  *
- * Split from `config.ts` for the file-size cap; the same `.pi/work.json` `verify` block, read and validated
- * at the same boundary. The three questions here are the three a project answers when it wants its OWN CI
- * to run the tests a lean run freezes:
+ * The same `.pi/work.json` `verify` block `config.ts` reads. The three questions here are the three a
+ * project answers when it wants its OWN CI to run the tests a lean run freezes:
  *
  *   - `validateTestDir` — is this a repo-relative directory, or something that only looks like one? Each
  *     `verify.testDirs` entry answers the same question.

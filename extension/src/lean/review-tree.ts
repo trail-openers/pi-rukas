@@ -12,16 +12,13 @@
  */
 
 import { existsSync } from "node:fs";
-import path from "node:path";
 import { traceWarn } from "../trace.ts";
-import { provisionWorktree } from "../worktree-provision.ts";
 import { worktreePath } from "../worktree.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { ReviewWave } from "./review-args.ts";
 import type { FixRunId } from "./review.ts";
-import { type ReviewDeps, ReviewInfraError } from "./review.ts";
+import type { ReviewDeps } from "./review.ts";
 import { gitQuiet } from "./specify-reset.ts";
-import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
  * The fixer's tree for ONE FIX OF ONE ATTEMPT: `<repoRoot>/.worktrees/lean-<issue>-fix-<arm>-<wave>-

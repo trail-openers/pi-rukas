@@ -20,7 +20,7 @@
  *
  * The reason a red comes back with is composed by `verify-red-reason.ts`.
  *
- * The PROJECT ROSTER has precedence over the whole-line excuse (#2410 R4), and `arbitrate` is how
+ * The PROJECT ROSTER has precedence over the whole-line excuse, and `arbitrate` is how
  * the step hands that judgement in: it is asked BEFORE `baselineExcuse`, and a `red` from it ends
  * the arm. An `uninvolved` answer — the roster could not read this tier's report — leaves the line
  * rule in charge, which is what the arm did before the roster existed. The two judgements are

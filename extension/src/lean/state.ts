@@ -21,7 +21,7 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { assertDeadline } from "./deadline-record.ts";
-import { type DerivedSpec, assertDerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
+import { type DerivedSpec, assertDerivedSpec } from "./state-derived-spec.ts";
 // The verdict SHAPE is re-exported so every caller of the record keeps one
 // import site: `state.ts` says what a run IS, `state-outcome-record.ts` says
 // what a step may report into it, `state-store.ts` says where it lives.
@@ -69,7 +69,6 @@ export function isTerminal(state: LeanState): boolean {
 }
 
 /** What a step decided. The fields the engine reads are named on `Outcome` below. */
-
 export interface Step {
   /** `${issue}:${state}:${n}` — unique per (state, attempt). */
   key: string;
@@ -177,31 +176,15 @@ export function stepKey(issue: number, state: LeanState, n: number): string {
 }
 
 /**
- * A step's attempt number, or `undefined` when its key has no `:N` suffix.
- *
- * The engine's replay decision has to tell "this is attempt 0" apart from
- * "this key is corrupt": treating both as 0 let a hand-edited key collide
- * with the real first step of its state, and the run then replayed an
- * outcome for a step it had never run. `loadRun` refuses such a file; this
- * is the same distinction on the inside, where a caller must not fall back
- * to 0.
- */
-function attemptOfStrict(key: string): number | undefined {
-  const suffix = key.slice(key.lastIndexOf(":") + 1);
-  return /^\d+$/.test(suffix) ? Number(suffix) : undefined;
-}
-
-/**
  * The next attempt number for a state: the number of entries the log already
  * holds for it.
  *
  * The engine keys a write-ahead with this and the fold in resume.ts derives a
  * step's identity from the same quantity — the count of earlier entries of
  * that state — so the two agree by construction rather than by convention.
- * `attemptOfStrict` is what a key must read back as, and a key that does not
- * is refused by `loadRun`; a corrupt key therefore never reaches here as a
- * silently-low count. A max-based count would differ exactly when a key was
- * edited, which is the case that must not be able to disagree.
+ * `loadRun` refuses a key without a numeric `:N` suffix, so a corrupt key
+ * never reaches here as a silently-low count. A max-based count would differ
+ * exactly when a key was edited, which is the case that must not disagree.
  */
 export function nextAttempt(run: LeanRun, state: LeanState): number {
   let n = 0;
@@ -366,8 +349,6 @@ function assertResult(
   if (typeof v.reason !== "string") bad("result.reason must be a string");
   return { code: v.code, reason: v.reason };
 }
-
-/** Lock file path for a run. One per issue, alongside the state file. */
 
 /** Every state a run can be sitting in mid-flight. */
 const NON_TERMINAL: readonly LeanState[] = [

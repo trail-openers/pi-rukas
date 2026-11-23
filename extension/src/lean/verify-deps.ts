@@ -14,7 +14,7 @@
 import { execp } from "../exec.ts";
 import { loadWorkConfig } from "./config.ts";
 import { fetchIssueBody } from "./io.ts";
-import type { Outcome, Step } from "./state.ts";
+import type { Step } from "./state.ts";
 import type { VerifyExec, VerifyRosterConfig, VerifyTiers } from "./verify-types.ts";
 
 /**

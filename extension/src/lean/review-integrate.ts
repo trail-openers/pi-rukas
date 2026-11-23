@@ -1,8 +1,7 @@
 /**
  * lean/review-integrate — the fixer's commits, moved onto the run's branch and pushed.
  *
- * Split from `review-git.ts` for the 500-line gate (AGENTS §12) along a seam that file's own header
- * already draws: `review-git.ts` reads origin and reads the diff, and this file is the fix ROUND —
+ * `review-git.ts` reads origin and reads the diff; this file is the fix ROUND —
  * the disposable tree, the fixer's one child and its one continuation, and the push that leaves the
  * clone. `FixRoundOutcome` stays declared where the round's reader narrows on it (`review-git.ts`
  * exports the type; both halves of the round import it from there), so the two files are one seam
@@ -22,7 +21,6 @@ import { provisionWorktree } from "../worktree-provision.ts";
 import { frozenMatches } from "./build-git.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { ReviewWave } from "./review-args.ts";
-import { type ReviewFixArgs, fixWriteFence } from "./review-deps.ts";
 import { askTruncatedFixer, foldFix, runFixer } from "./review-fix-child.ts";
 import { fixTree } from "./review-fix-tree.ts";
 import { type FixArm, removeWorktree } from "./review-tree.ts";

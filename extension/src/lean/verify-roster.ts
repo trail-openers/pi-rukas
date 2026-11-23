@@ -1,41 +1,3 @@
-/**
- * lean/verify-roster — the PROJECT's own pre-existing tests, run at head and at the base, as a
- * per-test record the run cannot talk into.
- *
- * The frozen contract covers only what this run authored. Two bench cells landed patches that
- * broke tests nobody in the run looked at: one where verify never ran the changed module's own
- * tests, one where the run edited an existing test's expectation, verify ran the EDITED copy,
- * and the hidden run restored the original and failed. A roster closes both — the project's
- * pre-existing test files, run at head AND at `run.baseSha`, keyed by test name.
- *
- * Four rules the module is built around:
- *
- *   1. **"Pre-existing" is a fact about the base commit**, not the working tree: the config pair
- *      `verify.testDir` (or every `verify.testDirs` root) + `verify.testGlob` listed at
- *      `run.baseSha` with `git ls-tree`, the same base-existence reading `existsInCommit` (behind
- *      `submit-tests-cap.ts`'s `existsAtBase`) applies. A frozen acceptance test the RUN added is not pre-existing.
- *
- *   2. **The unit is the test NAME**, read from the runner's machine-readable report — a
- *      `verify.roster` template when configured, otherwise the derived `--junitxml=<file>`
- *      pytest default. With no readable report there is no roster and the step hands back.
- *
- *   3. **Absence is never a pass.** An empty roster and a suite that ran nothing are different
- *      answers; only a run that observed itself running tests, on BOTH sides, becomes a roster.
- *      Every unreadable stream, killed child, or report naming fewer tests than it tallied ends
- *      in `none`, which the caller turns into a hand-back (`VerifyInfraError`), not a green.
- *
- *   4. **The roster is the arbiter for project tests.** Where it can be read it outranks the
- *      whole-line `baselineExcuse`: a test the base roster shows PASSING and head fails is this
- *      run's regression and is `red`. Line excuse and roster are never combined to turn a roster
- *      red into a green.
- *
- * The base version of an edited file runs through `runTestFile` (the project's `verify.test`
- * template, argv form), so its verdict is per FILE. Base bytes come from
- * `git show <baseSha>:<path>` — the object store, never the tree the run may have rewritten —
- * and are materialised by `writeCaptured`, the same write path `specify`'s reset uses.
- */
-
-import path from "node:path";
 import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { linkShareableDeps } from "../worktree-provision.ts";
 import { testLocationOf } from "./config-test-location.ts";
@@ -53,7 +15,6 @@ import { probeWorktreePath } from "./verify-baseline.ts";
 import { listProjectTestFilesAtBase, undeliveredDeps } from "./verify-roster-base.ts";
 import {
   type SuiteRun,
-  parseJUnitCases,
   renderRosterCommand,
   retargetRosterCommand,
   runProjectSuite,
@@ -178,6 +139,9 @@ export async function buildProjectRoster(opts: {
   // The frozen filter runs over the FULL enumeration, before any cap: it is what keeps this run's own
   // acceptance tests out of the pre-existing set, and after the cap a run could bury one past entry 200.
   const preexisting = listed.files.filter((f) => opts.frozen[f] === undefined);
+  // An empty pre-existing set is `none` (the hand-back), never a roster whose totals would be
+  // refused on load: a project that configures a test location with no tests in it has given the
+  // gate nothing to judge, which is not the same as a suite that passed.
   if (preexisting.length === 0)
     return none(
       `the base commit carries no test file matching ${loc.testDirs.map((d) => `${d}/${loc.testGlob}`).join(" or ")}, so there is no project suite for this gate to judge`,
@@ -185,10 +149,6 @@ export async function buildProjectRoster(opts: {
 
   const rendered = renderRosterCommand(config, wt);
   if ("reason" in rendered) return none(rendered.reason);
-
-  // An empty pre-existing set is `none` (the hand-back), never a roster whose totals would be
-  // refused on load: a project that configures a test location with no tests in it has given the
-  // gate nothing to judge, which is not the same as a suite that passed.
 
   const head = await runProjectSuite(exec, {
     cwd: wt,
@@ -247,7 +207,7 @@ export async function buildProjectRoster(opts: {
 
   // The base roster is the record of what was already broken. Anything failing at head that the
   // base shows PASSING is this run's regression, and the roster — not the line comparison — is
-  // the arbiter (parent #2410 R4).
+  // the arbiter.
   const basePassed = new Set(base.passed);
   const newlyFailing = headFailed.filter((name) => basePassed.has(name));
   if (newlyFailing.length > 0) return redWith(newlyFailingReason(newlyFailing, baseSha));
@@ -368,7 +328,7 @@ export type RosterArbitration =
   | { kind: "uninvolved" };
 
 /**
- * The roster's precedence over the whole-line baseline excuse (parent #2410 R4).
+ * The roster's precedence over the whole-line baseline excuse.
  *
  * `headFailed` and `baseFailed` are the failing names each run's report read — the same sets the
  * roster was built from, so the tier and the roster cannot disagree about what the suite did. A

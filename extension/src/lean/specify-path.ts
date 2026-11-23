@@ -1,8 +1,7 @@
 /**
  * lean/specify-path — the per-path shape judgements the submit boundary calls.
  *
- * Split from `specify-tree.ts` for the file-size cap; it is the same boundary. Four
- * judgements, each answering one question about ONE path:
+ * Four judgements, each answering one question about ONE path:
  *
  *   - `pathProblem`    — a worktree-relative path that does not traverse and avoids
  *     the directories a test never lives in;

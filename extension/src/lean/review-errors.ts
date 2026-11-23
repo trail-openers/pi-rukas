@@ -2,10 +2,8 @@
  * lean/review — the error a review step throws when the infrastructure failed.
  *
  * A leaf module: it imports only the row type and the cap, so `review.ts`,
- * `review-progress.ts` and the smoke fixtures can all throw it without one of them
- * importing the step's handler. It used to live in `review.ts`, which meant any
- * extracted predicate that needed to refuse something had to import the whole
- * handler back — a cycle for the sake of one `throw`.
+ * `review-progress.ts` and the smoke fixtures can all throw it without importing the
+ * step's handler, which would be a cycle for the sake of one `throw`.
  *
  * **A `ReviewInfraError` is not a verdict.** The step's verdicts are its two
  * routed kinds — `done` (both gates cleared untouched) and `fixed` (a fix round

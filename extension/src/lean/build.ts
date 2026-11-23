@@ -41,7 +41,7 @@
 import { existsSync } from "node:fs";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
-import { trace, traceWarn } from "../trace.ts";
+import { traceWarn } from "../trace.ts";
 import type { DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
@@ -60,11 +60,10 @@ import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { MAX_BUILD_ATTEMPTS } from "./machine.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
-import { specFor } from "./spec-for.ts";
-import type { PiSpec } from "./spec.ts";
+import { rereadSpec } from "./spec-for.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
-import type { LeanRun, Outcome, Step } from "./state.ts";
+import type { Outcome, Step } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 import {
   type BudgetOpts,
@@ -182,36 +181,6 @@ function addedByChallengeFromLog(steps: Step[]): string | undefined {
   return undefined;
 }
 
-/** What the contract re-read from the forge gave the build step. */
-interface SpecRead {
-  spec: PiSpec;
-  /**
-   * The body it was parsed from, kept for the builder's brief — the SAME
-   * fetch, never a second one (`lean/issue-prose.ts`).
-   */
-  body: string;
-}
-
-/** The spec, re-read from the forge: a build against an unread spec is fiction. */
-async function specOf(
-  deps: BuildDeps,
-  repoRoot: string,
-  issue: number,
-  run: LeanRun,
-): Promise<SpecRead> {
-  let body: string;
-  try {
-    body = await deps.fetchIssueBody(repoRoot, issue);
-  } catch (err) {
-    throw new BuildInfraError(`could not read the issue: ${(err as Error).message}`);
-  }
-  // The accessor: a derived run has no block on its issue, and demanding one here
-  // would hand back over a contract `ready` already validated.
-  const read = specFor(body, run);
-  if (!read.ok) throw new BuildInfraError(`the issue's spec is unusable: ${read.reason}`);
-  return { spec: read.spec, body };
-}
-
 /** The `build` step. Returns `ok` | `exhausted` | `blocked`; THROWS on infrastructure. */
 export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
@@ -251,9 +220,15 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   const config = await deps.loadConfig(repoRoot, base).catch((err: unknown) => {
     throw new BuildInfraError(`could not load the project config: ${(err as Error).message}`);
   });
-  const { spec, body: issueBody } = await specOf(deps, repoRoot, issue, ctx.run);
+  // The spec, re-read from the forge: a build against an unread spec is fiction. The accessor,
+  // because a derived run has no block on its issue and `ready` already validated its contract.
+  const { spec, body: issueBody } = await rereadSpec(
+    () => deps.fetchIssueBody(repoRoot, issue),
+    ctx.run,
+    (m) => new BuildInfraError(m),
+  );
   // Rounds this run has DISPATCHED and paid for. `buildAttempts` is the authority
-  // now the table bills a round on entering `build` and never on leaving it: it
+  // because the table bills a round on entering `build` and never on leaving it: it
   // counts dispatches, not table visits, so one child a ceiling stopped costs one
   // round and the retry loop below stops only when the budget is spent. The round
   // this visit is running is not in the count yet — the edge that enters `build`

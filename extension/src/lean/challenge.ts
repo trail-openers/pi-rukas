@@ -40,7 +40,7 @@ import path from "node:path";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
-import type { DispatchResult, DispatchSpec } from "../types.ts";
+import type { DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import type { ExecFn } from "../worktree.ts";
@@ -56,7 +56,7 @@ import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
-import { specFor } from "./spec-for.ts";
+import { rereadSpec } from "./spec-for.ts";
 import { type PiSpec, readiness } from "./spec.ts";
 import { existsInCommit, fileProblem, pathProblem } from "./specify-path.ts";
 import { testCriteria } from "./specify-prompt.ts";
@@ -74,9 +74,7 @@ import {
 } from "./specify-tree.ts";
 import type { LeanRun, Outcome } from "./state.ts";
 import {
-  type BudgetArms,
   type BudgetOpts,
-  type BudgetStop,
   armBudget,
   budgetFor,
   budgetVerdictWithRows,
@@ -109,32 +107,18 @@ const CONTROL_CHARS = new RegExp(
   `[${String.fromCharCode(0x00)}-${String.fromCharCode(0x1f)}${String.fromCharCode(0x7f)}]`,
 );
 
-/** What the contract re-read from the forge gave the challenge step. */
-interface SpecRead {
-  spec: PiSpec;
-  /**
-   * The body it was parsed from, kept for the adversary's brief — the SAME
-   * fetch, never a second one (`lean/issue-prose.ts`).
-   */
-  body: string;
-}
-
 /** The spec, re-read from the forge — the same contract the builder worked to. */
 async function specOf(
   deps: ChallengeDeps,
   repoRoot: string,
   issue: number,
   run: LeanRun,
-): Promise<SpecRead> {
-  let body: string;
-  try {
-    body = await deps.fetchIssueBody(repoRoot, issue);
-  } catch (err) {
-    throw new ChallengeInfraError(`could not read the issue: ${(err as Error).message}`);
-  }
-  // The accessor: same reason as `build`'s re-read.
-  const read = specFor(body, run);
-  if (!read.ok) throw new ChallengeInfraError(`the issue's spec is unusable: ${read.reason}`);
+): Promise<{ spec: PiSpec; body: string }> {
+  const read = await rereadSpec(
+    () => deps.fetchIssueBody(repoRoot, issue),
+    run,
+    (m) => new ChallengeInfraError(m),
+  );
   // The SAME readiness judgement `specify` gates the run on, applied on re-read. The
   // issue is editable while the run is going, so a spec that was ready at `ready` need
   // not be ready now — and the round's whole claim is stated against these criteria. A
@@ -143,7 +127,7 @@ async function specOf(
   const rules = readiness(read.spec);
   if (rules.length > 0)
     throw new ChallengeInfraError(`the issue's spec is not ready: ${rules.join("; ")}`);
-  return { spec: read.spec, body };
+  return read;
 }
 
 // A round can end holding bytes nobody judged, and `verify` refuses a dirty tree:

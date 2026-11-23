@@ -155,14 +155,6 @@ function mainlineRefusal(branch: string): PublishInfraError {
 }
 
 /**
- * The non-interactive env a publish push runs with, in the production seam only.
- *
- * This IS the driver's env — `netGitEnv`, imported directly at the executor. Every other network git call
- * in the harness uses that seam, so a publish push cannot drift from a driver push on what makes ssh fail
- * instead of reading a passphrase from /dev/tty.
- */
-
-/**
  * The three command lines the guard asks its executor, in the order it asks them.
  *
  * Exported for the suites: a "no push" claim means something only if the probes a case scripted are the
@@ -179,8 +171,8 @@ export function publishDeps(headless: boolean): PublishDeps {
   return {
     // One executor for both shapes: `execp`'s opts type declares every field this step passes.
     //
-    // The push is the one call that leaves the clone, so it is the one this seam gives the driver's
-    // non-interactive env to. Every other git call the step makes is local.
+    // The push is the one call that leaves the clone, so it gets the driver's own non-interactive env
+    // (`netGitEnv`) and cannot drift from a driver push. Every other git call the step makes is local.
     //
     // `o?.cwd` is passed through because `netGitEnv` reads the repo's `core.sshCommand` in that directory:
     // with no cwd the lookup is skipped and plain `ssh` is promoted ahead of the config.

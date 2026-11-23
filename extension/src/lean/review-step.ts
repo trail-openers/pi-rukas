@@ -1,7 +1,6 @@
 /**
  * lean/review-step — what the `review` step says about its OWN cost, and the shape of a pass.
- * Split from `review.ts` for the 500-line cap along the seam this change created: `review.ts`
- * is the loop; these are about money — what to say when the operator's ceiling stopped a child,
+ * `review.ts` is the loop; these are about money — what to say when the operator's ceiling stopped a child,
  * how the cleared second pass reads its two review records, and which of the step's two kinds a
  * pass carries. None needs the loop's state, and the loop reads all of them through one import.
  *

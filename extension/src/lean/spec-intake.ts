@@ -1,10 +1,8 @@
 /**
  * lean/spec-intake — where a run's contract comes from.
  *
- * `ready` used to have one answer (the issue body, or nothing) and it lived inline
- * in `command.ts`. It has two now, and the decision is load-bearing enough to sit
- * alone: it is where a run chooses between quoting a human's document and paying a
- * model to draft one. The rule: a block that PARSES always wins; a block present
+ * The decision sits alone because it is where a run chooses between quoting a
+ * human's document and paying a model to draft one. The rule: a block that PARSES always wins; a block present
  * but malformed is reported exactly as `require` reports it in both modes (the
  * author took a position and wrote it wrong — a model quietly writing a better one
  * would hide the defect); a body with NO block is where the switch applies, with
@@ -21,13 +19,7 @@
 import { resolveModel } from "../models.ts";
 import type { WorkConfig } from "./config.ts";
 import type { LeanSeed } from "./seed.ts";
-import {
-  type DeriveDeps,
-  type DeriveOutcome,
-  SpecDeriveError,
-  deriveSpecForRun,
-  traceDerive,
-} from "./spec-derive.ts";
+import { type DeriveDeps, SpecDeriveError, deriveSpecForRun, traceDerive } from "./spec-derive.ts";
 import { type SpecIntake, SpecIntakeError, resolveSpecIntake } from "./spec-intake-switch.ts";
 import type { PiSpec } from "./spec.ts";
 import { parsePiSpec } from "./spec.ts";

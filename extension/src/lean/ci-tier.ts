@@ -2,8 +2,7 @@
  * The `ci` step's two outside reads: the project's full verify tier, and the forge's own answer about
  * the PR/MR.
  *
- * Split out of `ci.ts` because the step grew a second question about a red tier — was every test it named
- * already red at the base — and the two have different owners. This file runs the tier and turns a failed
+ * This file runs the tier and turns a failed
  * exec into an infra throw or a red reason; {@link fullTierExcuse} owns the base-commit question. The forge
  * half is here so `readForge` owns both forges' argv and row grading while `ci.ts` keeps the decision.
  */

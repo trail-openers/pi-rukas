@@ -20,7 +20,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";
-import { traceWarn } from "../trace.ts";
 import type { DispatchSpec } from "../types.ts";
 import { type CycleBudgetMs, flagBudgetMs } from "../work-driver-deadline.ts";
 import { handoffChannel } from "../work-driver-handoff-channel.ts";
@@ -39,23 +38,15 @@ import { reviewDeps } from "./review-deps.ts";
 import { reviewOutcome } from "./review.ts";
 import { type LeanSeed, leanSeed } from "./seed.ts";
 import { type DeriveDeps, type DeriveDispatch, deriveDeps, traceDerive } from "./spec-derive.ts";
-import { specFor } from "./spec-for.ts";
 import type { SpecIntake } from "./spec-intake-switch.ts";
 import { contractOf } from "./spec-intake.ts";
 import { type PiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
-import { type DerivedSpec, derivedSpecProblem } from "./state-derived-spec.ts";
-import type { Step } from "./state.ts";
+import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { BudgetArms, BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
 import { oneLine } from "./text-fence.ts";
 import { verifyDeps } from "./verify-deps.ts";
 import { verifyOutcome } from "./verify.ts";
-import { leanVersion } from "./version.ts";
-
-// The version stamp lives in `lean/version.ts`, its own leaf: the seed needs it too, and
-// importing it from here made the seed depend on this whole handler table. Re-exported because
-// a caller that wants the stamp reaches for it where it reaches for the command.
-export { leanVersion } from "./version.ts";
 
 // Re-exported so the seed stays a leaf: consumers reach for the run's base here.
 export { leanSeed } from "./seed.ts";

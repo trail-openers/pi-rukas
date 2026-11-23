@@ -2,14 +2,10 @@
  * lean/review-spec-split — the issue's prose and the spec's criteria as TWO
  * sections in front of the review seats.
  *
- * Every lean review seat (the six lenses, the adversarial reviewer, the fixer)
- * used to receive the raw issue body through the shared bounded renderer: one
- * `MAX_ISSUE_CHARS` budget covering the body AND its `pi-spec` block together. A
- * long statement therefore cut the machine block first — and, once the statement
- * alone passed the cap, it cut the statement's tail.
- *
- * This module splits the two, the way `lean/issue-prose.ts` splits them for the
- * oracle seats:
+ * One `MAX_ISSUE_CHARS` budget over the body AND its `pi-spec` block lets a long
+ * statement cut the machine block first. This module splits the two for every lean
+ * review seat (the six lenses, the adversarial reviewer, the fixer), the way
+ * `lean/issue-prose.ts` splits them for the oracle seats:
  *
  *   1. the prose is the body with its `pi-spec v1` block stripped
  *      (`stripPiSpecBlocks` on the RAW body, BEFORE any bound — a clip that lands
@@ -31,7 +27,6 @@
 import {
   ADVERSARIAL_FINDING_RULE,
   ISSUE_PROMPT_LEAD,
-  MAX_ISSUE_CHARS,
   fencedIssueBody,
   fencedIssuePromptBlock,
 } from "../adversarial-prompts.ts";

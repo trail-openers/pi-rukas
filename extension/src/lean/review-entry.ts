@@ -2,35 +2,26 @@
  * lean/review-entry — the checks a `review` step refuses BEFORE it pays for
  * anything, and nothing else.
  *
- * `review.ts` is the decision procedure (WHEN the loop runs) and had grown the
- * entry gate into its own body. That is a size accident with a real cause: the
- * gate is a different kind of thing from the loop. The loop's refusals are
- * verdicts about the WORK under review; these four refusals are about whether the
- * step may start at all — is the ref it will push a legal name, is it a name this
- * step is allowed to push, is the base a commit at all. Each asks one question of
- * state-file data and each answers before a child is dispatched, a tree is created
- * or a ref is moved. A leaf module like `review-errors.ts`, so the fixtures and
- * the step share one definition of the shape rather than agreeing by coincidence.
+ * The loop's refusals in `review.ts` are verdicts about the WORK under review; these
+ * four are about whether the step may start at all — is the ref it will push a legal
+ * name, is it a name this step may push, is the base a commit at all. Each answers from
+ * state-file data before a child is dispatched, a tree is created or a ref is moved. A
+ * leaf module, so the fixtures and the step share one definition of the shape.
  *
- * **Placement is the contract, and it is the reason this file exists.** The gate
- * used to sit inside `review-git.ts`'s `integrate()`, which runs AFTER
- * `resetWorktreeToBase` (`checkout -B` moves the run's branch, `reset --hard` drops
- * its commits, `clean -fdx` takes the tree and the provisioner's dependency links
- * with it) and after the fixer dispatch. So a hostile state-file name did its
- * damage before the refusal, and the restore that follows can itself fail and
- * report a clean tree that is not clean. It is also why the cheap `netRefProblem`
- * stays where it is: the two checks are two layers, and the layering — plus the
- * mutation that proves the ordering is real — is stated at the push site in
- * `review-git.ts`.
+ * **Placement is the contract.** `review-git.ts`'s `integrate()` runs AFTER
+ * `resetWorktreeToBase` (`checkout -B`, `reset --hard`, `clean -fdx`) and after the
+ * fixer dispatch, so a refusal there lands after a hostile state-file name has done its
+ * damage. The cheap `netRefProblem` stays at the push site as a second layer; the
+ * layering, and the mutation that proves the ordering, is stated there.
  *
  * `assertPublishableBranch` is `publish`'s own decision, REUSED rather than a third
  * validator written for the review push. Its FAIL-CLOSED mainline rule travels with
- * it: a clone that cannot read its own `origin/HEAD` and has no `gh` no longer skips
+ * it: a clone that cannot read its own `origin/HEAD` and has no `gh` does not skip
  * the rule, it gets asked of origin over the transport this step's own push uses, and
  * a mainline neither will name refuses the push. `exec` is the step's executor for
  * that reason — a guard that probed on a different seam than the push would be
  * answered by a different machine than the one it is protecting. Pinned by
- * `test-lean-review-push-guards.ts` (x3), which now asserts the refusal, and by
+ * `test-lean-review-push-guards.ts` (x3), which asserts the refusal, and by
  * `test-lean-guard-fail-closed-callers.ts` (r1)/(r2), which assert this step's own
  * exec is the seam asked.
  */

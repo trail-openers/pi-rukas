@@ -13,10 +13,6 @@
  * Only the literal `"0"` turns it off. Read at CALL time, not module load: every lean smoke file runs in
  * one bun process and pins its arm with `withEnv`, so a load-time read would let one file's pin disable
  * the next one's.
- *
- * The probe's NAME had a switch of its own (`PREFLIGHT_PROBE_COLLECTABLE`) until #2439 retired it and
- * made its default the only behaviour — a hidden root probe cannot be IMPORTED, so that off arm
- * reproduced a defect rather than escaping one.
  */
 
 /** One environment's answer. A parameter, not `process.env`: pinning the ambient value would leak into

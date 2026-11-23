@@ -18,7 +18,7 @@
  *      close the block the prompt opened.
  *
  * `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` removes the section from the builder's seat ONLY: that per-seat
- * isolation is the point of the knob. The oracle seats have no switch — the section is the rule now.
+ * isolation is the point of the knob. The oracle seats have no switch.
  */
 import { fencedIssueBody } from "../adversarial-prompts.ts";
 import { hasSurvivingSpecShapedFence, normalizeProse, stripPiSpecBlocks } from "./spec.ts";

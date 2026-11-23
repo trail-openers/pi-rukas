@@ -12,7 +12,6 @@ import {
 } from "../fixer-truncation.ts";
 import type { DispatchResult } from "../types.ts";
 import { normaliseBuild } from "./build-normalise.ts";
-import { leanChildOpts } from "./child-opts.ts";
 import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { type ReviewFixArgs, fixPrompt, fixWriteFence } from "./review-deps.ts";

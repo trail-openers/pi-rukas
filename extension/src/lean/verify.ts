@@ -37,7 +37,7 @@
  *
  * Where a tier's red is about the PROJECT's tests, the ROSTER is asked before the whole-line
  * `baselineExcuse`: a failure the base roster shows PASSING is this run's regression and is `red`, whatever
- * the line comparison made of it (parent #2410 R4). A tier whose report the roster cannot read — a typecheck
+ * the line comparison made of it. A tier whose report the roster cannot read — a typecheck
  * tier, a lint tier — is not the roster's to judge and keeps the line rule.
  */
 
@@ -53,13 +53,13 @@ import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
-import type { Outcome, Step } from "./state.ts";
+import type { Outcome } from "./state.ts";
 import { baselineRedArm } from "./verify-baseline-arm.ts";
 import { preexistingReason } from "./verify-baseline-excuse.ts";
 import { baselineUnusableError, flakeReason, probeTierAtBase } from "./verify-baseline.ts";
 import { confirmTierRedFrom } from "./verify-baseline.ts";
-import { type CommandCriteriaOutcome, commandCriteriaOutcome } from "./verify-commands.ts";
-import { type VerifyDeps, clipReason, verifyDeps } from "./verify-deps.ts";
+import { commandCriteriaOutcome } from "./verify-commands.ts";
+import { type VerifyDeps, clipReason } from "./verify-deps.ts";
 import { defectiveFrozenContract } from "./verify-frozen-defect.ts";
 import { frozenTamperReason } from "./verify-frozen.ts";
 import {
@@ -86,7 +86,7 @@ import {
   tiersOf,
 } from "./verify-steps.ts";
 import { tierRunStream } from "./verify-tier-rerun.ts";
-import { VerifyInfraError, type VerifyTiers } from "./verify-types.ts";
+import { VerifyInfraError } from "./verify-types.ts";
 
 /** The first failure among the executed checks; an unobservable one THROWS. */
 function firstFailure(...ran: Executed[]): string | undefined {

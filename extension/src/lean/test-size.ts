@@ -4,9 +4,9 @@
  * MANY files one criterion may end up with across the run, and how LONG each of
  * them may be, including the honest line count that makes the second one real.
  *
- * Split out of `submit-tests-cap.ts` (the boundary that applies them) because
- * they judge the CHILDREN'S work rather than the cost of the call: the numbers,
- * the count and the refusal sentences live here so the prompt that quotes them
+ * Apart from `submit-tests-cap.ts` (the boundary that applies them) because they
+ * judge the CHILDREN'S work, so the numbers, the count and the refusal sentences
+ * live here, where the prompt that quotes them
  * (`specify-prompt.ts`) and the tests that pin them have one place to import.
  */
 

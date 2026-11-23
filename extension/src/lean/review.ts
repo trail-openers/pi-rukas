@@ -28,9 +28,7 @@
  * `budgets.review` in `.pi/work.json` is the money, armed through the same `armBudget`
  * the other dispatching steps use. They are never divided into each other: a cap derived
  * from the turn budget can silently collapse to one round, and one round can fix but can
- * never re-review. A child that spends the budget is NOT a routed verdict the way
- * `build`/`challenge`/`specify` route theirs — this step has no `budget` arrow, so the
- * stop throws with the rows it paid for.
+ * never re-review.
  *
  * **What a gate must say to buy a fixer.** A blocking row or a CRITICAL verdict, never a
  * verdict name. `CRITICAL_ISSUES_FOUND` is the adversarial gate's blocking one and
@@ -70,10 +68,7 @@
 
 import { truncatedFixerOutputTokens } from "../fixer-truncation.ts";
 import { isCarried } from "../lens-review-types.ts";
-import type { runLensReview } from "../lens-review.ts";
 import { traceWarn } from "../trace.ts";
-import type { DispatchResult, DispatchSpec } from "../types.ts";
-import type { WriteFence } from "../write-fence-contract.ts";
 import { frozenFromLog } from "./build.ts";
 import { protectedPathsOf } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
@@ -103,23 +98,17 @@ import {
 import { budgetStopped, reviewedPass } from "./review-step.ts";
 import { reviewTally } from "./review-tally.ts";
 import { closeFixTrees } from "./review-tree.ts";
-import {
-  CAUSE_NO_CHANGE,
-  LENS_DID_NOT_RUN,
-  atOrAboveBar,
-  carriedCriticalIn,
-  lensBlocks,
-} from "./review-waves.ts";
+import { LENS_DID_NOT_RUN, atOrAboveBar, carriedCriticalIn, lensBlocks } from "./review-waves.ts";
 import { specifyBranch } from "./specify-tree.ts";
 // Re-exported so every importer of the step names one module: the error lives in a
 // leaf (so the extracted predicates can throw it without importing this handler back)
 // and the arg shapes live in `review-args.ts`.
 export { ReviewInfraError } from "./review-errors.ts";
-export type { AdversarialArgs, FixRunId, LensArgs, LensRound, ReviewDeps } from "./review-args.ts";
+export type { FixRunId, LensArgs, LensRound, ReviewDeps } from "./review-args.ts";
 import type { LensRound, ReviewDeps, ReviewWave } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
-import type { LeanRun, Outcome, ReviewBoundRecord } from "./state.ts";
-import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
+import type { Outcome, ReviewBoundRecord } from "./state.ts";
+import type { DispatchUsageRow } from "./step-budget.ts";
 import { armBudget, budgetFor } from "./step-budget.ts";
 
 /** The fixer's wall clock, the shape the other steps pass as `childBoundMs`. */

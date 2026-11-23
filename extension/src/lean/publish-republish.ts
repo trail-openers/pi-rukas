@@ -4,13 +4,11 @@
  * `publish.ts` reads origin, pushes under a lease, and opens or reuses the PR; this
  * module holds the one decision that sits between those two facts — whether an
  * UNSETTLED PR row on the branch is a reason to refuse, or the run looking at its own
- * PR. Split out for the §12 file-size cap, along the seam the step already had: the
- * refusal lives here, the push lives there, and `pushLeaseTarget` is the only caller.
+ * PR. `pushLeaseTarget` is the only caller.
  *
- * The rule is deliberately asymmetric in both directions. The fail-closed reading of
- * PR STATE is untouched — a lowercase `"open"`, an empty string or a missing head
- * branch is a row this step has not cleared, and it blocks. What changed is only WHICH
- * ROWS may be exempted, and only after three independent reads agree: origin's ref,
+ * The reading of PR STATE is fail-closed — a lowercase `"open"`, an empty string or a
+ * missing head branch is a row this step has not cleared, and it blocks. A row may be
+ * exempted only after three independent reads agree: origin's ref,
  * the run's own step log, and the forge's row list.
  */
 import { isFullCommitSha } from "../commit-sha.ts";

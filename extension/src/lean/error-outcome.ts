@@ -17,8 +17,7 @@
 
 import { validatedReviewBound } from "./state-dispatches.ts";
 import { DISPATCHES_MAX_ROWS, DISPATCH_STATES, validatedDispatches } from "./state-outcome.ts";
-import type { LeanState, Outcome, ReviewBoundRecord } from "./state.ts";
-import type { DispatchUsageRow } from "./step-budget.ts";
+import type { LeanState, Outcome } from "./state.ts";
 
 /** What the engine records for one handler throw: a message, and what it can prove. */
 type ErrorOutcome = Outcome & { kind: "error" };

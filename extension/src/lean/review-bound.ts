@@ -1,10 +1,8 @@
 /**
  * lean/review-bound — the `review` STEP's own wall clock, and what a stop says.
  *
- * `budgets.review.minutes` was armed on every child through `armBudget` and bounded none
- * of them as a step: the step buys its children serially, each inside its own per-child
- * bound, so the total was unbounded and a field run spent 69 of its ~89 minutes here and
- * starved publish, ci and land. The child levers are unchanged.
+ * The step buys its children serially, each inside its own per-child bound, so without
+ * a step clock the total is unbounded and starves publish, ci and land.
  *
  * Two levers and an out: the **step budget** (`budgets.review.minutes`, read verbatim
  * — no new knob); the **deadline reserve**, `handoffAllowanceMs` PLUS
