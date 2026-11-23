@@ -22,6 +22,9 @@ import { resolveLensReviewBranch } from "./lens-review-branch-resolve.ts";
 import { resolveHeadSha } from "./review-head-sha.ts";
 import { trace } from "./trace.ts";
 
+/** The prefix of the synthetic key a branchless head is budgeted under. */
+export const DETACHED_KEY_PREFIX = "detached:";
+
 export type BudgetKeySource = "branch" | "pr" | "points-at" | "detached";
 
 export type BudgetKey =
@@ -105,5 +108,5 @@ async function resolveBudgetKeyInner(opts: {
   }
   const sole = await soleBranchAt(opts.cwd, sha);
   if (sole) return { key: sole, source: "points-at" };
-  return { key: `detached:${sha}`, source: "detached" };
+  return { key: `${DETACHED_KEY_PREFIX}${sha}`, source: "detached" };
 }

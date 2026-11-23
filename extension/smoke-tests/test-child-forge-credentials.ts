@@ -313,7 +313,7 @@ try {
     // pattern has to match what the tree actually writes (`{ ...process.env }`)
     // and not just one spelling of it: a canary whose regex matches no file
     // reports "every construction reaches the strip" for a set it never opened.
-    // The five sites that DO copy `process.env` today spawn neither a Pi child
+    // The six sites that DO copy `process.env` today spawn neither a Pi child
     // nor a credentialed forge read (a notify hook, a `git show`, the headless
     // supervisor), so they are out of the strip's contract — which is why the
     // gate is an allow-list of named files rather than "all files": a NEW
@@ -325,6 +325,7 @@ try {
       "work-notify.ts", // the desktop-notify hook, no forge access
       "review-findings-head.ts", // `git show`, read-only
       "work-driver-integrate-verify.ts", // driver-side git/gh verify, not a child env
+      "develop-branch.ts", // local `git rev-parse` / `checkout -B` in the developer tree, no forge access
     ]);
     const offenders: string[] = [];
     const inspected: string[] = [];

@@ -71,7 +71,9 @@ export interface LedgerNoteHelpers {
    * so it does not re-resolve. */
   branch: string | undefined;
   /** Thread the note into a result's text at every return (all seven exits
-   * share the same wording; a no-op when the branch resolved). */
+   * share the same wording; a no-op when the branch resolved). With
+   * `failUnrecorded` it also fails the result: a verdict nothing recorded is
+   * not a pass the merge guard will ever see. */
   withLedgerNote: (r: DispatchResult) => DispatchResult;
 }
 
@@ -85,6 +87,7 @@ export async function buildLedgerNote(opts: {
   branch?: string;
   head?: string;
   workCwd?: string;
+  failUnrecorded?: boolean;
 }): Promise<LedgerNoteHelpers> {
   const resolution = await resolveReviewBranch(
     { branch: opts.branch, head: opts.head, cwd: opts.workCwd ?? process.cwd() },
@@ -92,6 +95,12 @@ export async function buildLedgerNote(opts: {
   );
   const ledgerNote = resolution.branch ? undefined : NOT_RECORDED_NOTE;
   const withLedgerNote = (r: DispatchResult): DispatchResult =>
-    ledgerNote ? { ...r, text: `${r.text}\n\n${ledgerNote}` } : r;
+    ledgerNote
+      ? {
+          ...r,
+          ...(opts.failUnrecorded ? { ok: false } : {}),
+          text: `${r.text}\n\n${ledgerNote}`,
+        }
+      : r;
   return { branch: resolution.branch, withLedgerNote };
 }

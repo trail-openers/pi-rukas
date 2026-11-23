@@ -9,6 +9,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { runAdversarialLoop } from "./adversarial.ts";
 import { startJob } from "./async-jobs.ts";
+import { prepareDevelopTree } from "./develop-branch.ts";
+import { assertNotDriverWorktree } from "./dispatch.ts";
 import { computeRangeDiff } from "./review-diff.ts";
 
 /**
@@ -122,6 +124,13 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         params.reportOnly === true
           ? { reportOnly: true as const, reportVerdict: "terminal" as const }
           : { reportOnly: false as const, reportVerdict: undefined };
+      // A loop that may fix puts its fix developer in workCwd, so that tree gets
+      // the developer-dispatch treatment before the loop resolves its ledger branch.
+      let treeNote: string | undefined;
+      if (!policy.reportOnly) {
+        assertNotDriverWorktree({ role: "developer", prompt: "", cwd: params.workCwd });
+        treeNote = await prepareDevelopTree("developer", params.workCwd);
+      }
       const { jobId } = startJob(pi, {
         label: "adversarial_loop",
         role: "adversarial-loop",
@@ -156,7 +165,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `Dispatched async adversarial_loop job ${jobId}. Verdict will arrive as a [ensemble:async] user message. End your turn.`,
+            text: `Dispatched async adversarial_loop job ${jobId}. Verdict will arrive as a [ensemble:async] user message. End your turn.${treeNote ? `\n${treeNote}` : ""}`,
           },
         ],
         details: { jobId, role: "adversarial-loop", async: true },

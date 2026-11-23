@@ -15,7 +15,8 @@
  *   2d. empty roster    → REVIEW_INCOMPLETE (never a silent APPROVED)
  *   4.  lensPassed(REVIEW_INCOMPLETE, …) === false at every threshold
  *   5a. #980 tool path, no branch, named-branch checkout → HEAD-resolved key
- *   5b. #980 tool path, detached HEAD → visible NOT-posted note, no entry
+ *   5b. #980 tool path, detached HEAD → NOT-posted note, no entry, (#1938) unrecorded
+ *   5c. #1938 a clean verdict keyed `detached:<sha>` is unrecorded; a branch key is not
  *
  * The ledger write under test is stubbed at the `appendLedgerEntry` seam:
  * the fire-and-forget write is deterministic (no file to sleep on) and the
@@ -374,6 +375,7 @@ const allFail = () => ({
       entries?.[0]?.branch === "feature/x",
       "(5a) the ledger entry is keyed on the HEAD-resolved branch `feature/x`",
     );
+    assert(s.unrecorded === undefined, "(5a) a branch-keyed review is not flagged unrecorded");
   } finally {
     fix.cleanup();
     repo.cleanup();
@@ -444,6 +446,40 @@ const allFail = () => ({
       entries === null || entries.length === 0,
       "(5b) no ledger entry written (no branch resolvable)",
     );
+    assert(s.unrecorded === true, "(5b) the review is flagged unrecorded (the tool fails it)");
+    assert(/REVIEW NOT RECORDED/.test(s.note ?? ""), "(5b) the note says the review failed");
+  } finally {
+    fix.cleanup();
+    repo.cleanup();
+  }
+}
+// (5c) #1938 — a CLEAN verdict keyed only `detached:<sha>` is unrecorded too; a
+// round key naming a branch is a row the merge guard reads, so it is not.
+{
+  const fix = fixtureSkillsDir("toolpath-detached-clean");
+  const repo = setupRepo();
+  execSync("git checkout -q --detach HEAD", { cwd: repo.repo, stdio: "ignore" });
+  const clean = async () =>
+    ({
+      lens: "SIMPLICITY",
+      ok: true,
+      ms: 10,
+      startMs: 0,
+      findings: [],
+      summary: "Checked the diff; nothing in this lane.",
+      attempts: 1,
+      blocked: false,
+    }) as unknown as LensRunResult;
+  try {
+    const run = (ledgerKey: string) =>
+      withLedgerEnv(fix.dir, async () =>
+        runLensReview({ diff: "diff --git a/a b/a\n+x", cwd: repo.repo, ledgerKey, lensChildFn: clean }),
+      );
+    const detached = await run(`detached:${"a".repeat(40)}`);
+    eq(detached.verdict, "APPROVED", "(5c) detached HEAD, clean lenses → APPROVED");
+    assert(detached.unrecorded === true, "(5c) a clean verdict keyed `detached:` is unrecorded");
+    const keyed = await run("feature/x");
+    assert(keyed.unrecorded === undefined, "(5c) a branch round key is not flagged unrecorded");
   } finally {
     fix.cleanup();
     repo.cleanup();
