@@ -334,7 +334,9 @@ this config also needs a `verify.roster` (below) or
   test names from. Unset, the command is derived pytest-style from `verify.test`
   (`--junitxml={report} {dir}`), so with the roster on (the default) `ready`
   **refuses a run** whose `verify.test` has no argv word named `pytest` or
-  `py.test`: `verify.roster is unset and verify.test is not pytest …`. The rule
+  `py.test`: `verify.roster is unset and verify.test is not pytest …`. A set
+  `verify.roster` whose `--junitxml` path is absolute or climbs out with `..` is
+  refused the same way (`verify.roster writes its report to …`). The rule
   is mechanical, not a guess — a wrapper that forwards to pytest without naming
   it sets `verify.roster` to its own derived form (`scripts/test.sh
   --junitxml={report} {dir}`). Two recipes for runners that are not pytest:

@@ -271,6 +271,9 @@ export function makeVerifyExec(opts: {
           stdout: "",
         }),
       );
+    if (o.roster?.baseDepListingRejects === true && cmd === "git" && o2?.argv?.includes("ls-tree"))
+      if (o2.argv.includes("node_modules"))
+        return Promise.reject(new Error("git ls-tree: fatal: bad object"));
     if (rosterRuns.isRosterSuiteRun(cmd, o2))
       return rosterRuns.runRosterSuite(cmd, o2, rosterSideOf(String(o2?.cwd ?? ""), wt, probeDir));
     // A frozen-test run is the argv-form call the runner template makes: `runTestFile`

@@ -36,10 +36,11 @@ export async function undeliveredDeps(
   repoRoot: string,
   baseSha: string,
   tree: string,
-): Promise<string[]> {
+): Promise<string[] | undefined> {
   if (!isFullCommitSha(baseSha)) return [];
   const listed = await trackedPathsAt(exec, repoRoot, baseSha, SHAREABLE_DEPS);
-  if (listed === undefined) return [];
+  // Git refused to list the base: what it tracks is unknown, which is not "nothing to deliver".
+  if (listed === undefined) return undefined;
   // A directory is expected where the commit tracks a path under one of the shareable names; the
   // recorded path's first segment is the dependency directory itself.
   const expected = new Set<string>();

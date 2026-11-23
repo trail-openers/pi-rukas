@@ -4588,7 +4588,11 @@ missing, and it is one of:
   be multi-segment (`test/units`) when that is where the project keeps them.
 - **`at head: …`** / **`at the base commit: …`** — the suite ran and wrote nothing the gate can
   read: no report at the path `{report}` names, a report that names no `<testcase>`, or a run with
-  no exit status at all (a kill, a timeout, a buffer overflow).
+  no exit status at all (a kill, a timeout, a buffer overflow). A report whose every `<testcase>`
+  was skipped names no test either. `at the base commit: the base commit's dependency listing could
+  not be read` is git refusing to list which dependency directories the base tracks (a broken object
+  store, a sha it cannot resolve): the gate cannot tell whether the base checkout could import its
+  suite, so it does not run it. Repair the clone (`git fsck`) and re-run.
 - **`the base versions of …`** — a pre-existing test file the run edited could not be read at the
   base commit, so its base version cannot be run against the head code; or more than 20 edited
   files' base versions fail against it, more than a review may accept.
@@ -4620,7 +4624,11 @@ handed-back at exit 10, nothing posted), so a runner that cannot take `--junitxm
 rather than at every verify; the shell and `cargo nextest` recipes are in [lean.md](lean.md). A project with no `verify.testDir`/`verify.testGlob` pair (the bare `sh {file}` runner) has no suite for a `verify.roster` to report, so its way out is the lever below. `{report}` is the absolute path the runner must write its JUnit XML to and `{dir}` the
 tree it runs in; both must
 appear as whole words, and the command is argv form, never a shell — a `;`, `|`, `$`, backtick or
-quote in it is refused at load. Keep the report out of the index (`.gitignore` the path, as a
+quote in it is refused at load. With the roster on, `ready` also refuses a `verify.roster` whose
+`--junitxml` path is absolute or climbs out with `..` (a `setup` refusal): each run reads its report
+from inside its own tree, so name the report `{report}`. A test the report lists more than once
+(a retrying runner) counts as failed if any attempt failed, and so does a `<testcase>` carrying any
+child other than `skipped`, `properties`, `system-out` or `system-err`. Keep the report out of the index (`.gitignore` the path, as a
 project already does for its `test.xml`): the step demands a clean tree afterwards and will
 otherwise report its own scratch bytes as a tier leaving the worktree dirty.
 
@@ -4670,8 +4678,9 @@ the issue, and its headless result carries `issues[].failure.kind: "setup"`.
 **Cause:** the repository cannot run lean, judged at the run's base before the issue was read or any
 model called. `failure.message` names which: `.pi/work.json at the run's base is unusable: …` (the
 file does not parse or the loader refused a field), `verify.test is unset at the run's base …` (no
-`.pi/work.json` at all, or one without a per-file runner), or `verify.roster is unset and verify.test
-is not pytest …` (the roster can get no JUnit report).
+`.pi/work.json` at all, or one without a per-file runner), `verify.roster is unset and verify.test
+is not pytest …` (the roster can get no JUnit report), or `verify.roster writes its report to …,
+outside the tree …` (its `--junitxml` path is absolute or climbs out with `..`; name it `{report}`).
 
 **Fix:** commit the config the message asks for to the mainline, remove the finished run's
 `.pi/lean-state/<issue>.json` (a finished record answers a second run with its stamped result), and
