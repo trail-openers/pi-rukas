@@ -53,6 +53,10 @@ export const FAILURE_KINDS = [
    *  roster), refused at `ready` before the issue was read or any model was called. Never an
    *  issue cause; the key a host falls back to another driver on. */
   "setup",
+  /** `work-lean` only: the ISSUE carries no `pi-spec v1` block and the run derived none, refused at
+   *  `ready` before any model was called. The run ends `not-ready` at exit 11; the key a host runs
+   *  another driver on for an issue lean will not take. */
+  "no-spec",
   /** No failure: the cap's own rule stopped the cycle (a round cap, a park, awaiting merge). */
   "cap",
 ] as const;

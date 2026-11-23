@@ -48,11 +48,6 @@ const REGISTRY: Record<string, { spawnCalls: number; stamp: RegExp }> = {
     stamp: /^\s*workCycleTrust: runOpts\.workCycleTrust,$/m,
   },
   "work-driver-policy.ts": { spawnCalls: 1, stamp: /^\s*workCycleTrust,$/m },
-  // The spec-intake child, reached from `work-driver.ts` through `command.ts` →
-  // `spec-intake.ts`. `deriveDeps(headless)` is the only thing that spawns it, so the
-  // stamp is the run's own threaded mode and the budget's kill reaches the child's
-  // tool tree through its own process group.
-  "lean/spec-derive.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
   // The approved-spec check child, reached through lean publish's `publishDeps(headless)`.
   // Classic `work` runs the same check through `cycleDispatch` (work-driver-issue-spec.ts).
   "issue-spec.ts": { spawnCalls: 1, stamp: /^\s*\.\.\.leanChildOpts\(headless\),$/m },
@@ -189,9 +184,8 @@ function auditDispatchSites(
  */
 function auditLeanDispatchSites(readFn: (rel: string) => string): string[] {
   const files = new Map<string, string>();
-  // `lean/spec-derive.ts` needs no root here: the spec-intake child is dispatched from
-  // inside `ready`, so its closure hangs off `command.ts` and section 2 already reaches
-  // it through `command.ts` → `spec-intake.ts`.
+  // `lean/spec-derive.ts` needs no root of its own: the spec-intake child is dispatched
+  // from inside `ready`, so it is in the `lean/command.ts` closure below.
   for (const root of ["lean/build.ts", "lean/challenge.ts", "lean/command.ts"]) {
     for (const [rel, text] of closureOf(root, readFn)) {
       if (rel.startsWith("lean/")) files.set(rel, text);

@@ -19,8 +19,7 @@
 import { trace } from "../trace.ts";
 import { leanDetectVerifyEnabled } from "./config-detect.ts";
 import { specFor } from "./spec-for.ts";
-import { NO_BLOCK_RULE } from "./spec-intake.ts";
-import { readiness } from "./spec.ts";
+import { NO_BLOCK_RULE, readiness } from "./spec.ts";
 import type { Criterion } from "./spec.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import type { ContractSource } from "./state-derived-spec.ts";

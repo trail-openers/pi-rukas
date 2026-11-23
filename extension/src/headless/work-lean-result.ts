@@ -45,6 +45,7 @@
  */
 
 import { redactClip } from "../decision-log.ts";
+import { NO_BLOCK_RULE } from "../lean/spec.ts";
 import { specifyBranch } from "../lean/specify-tree.ts";
 import { type LeanRun, type Outcome, REPORT_STATES, type Step } from "../lean/state.ts";
 import { budgetSentence, budgetTrio } from "../lean/step-budget.ts";
@@ -107,6 +108,14 @@ function outcomeText(outcome: Outcome | undefined): string | undefined {
   return undefined;
 }
 
+/** `ready` refused the issue for carrying no `pi-spec v1` block and derived none. A `fail` whose
+ * only rule is that one is the single issue refusal a host can route to another driver, so it is
+ * matched exactly: any other rule beside it is a refusal the other driver would meet too. */
+function noSpec(outcome: Outcome | undefined): boolean {
+  const rules = outcome?.failedRules;
+  return outcome?.kind === "fail" && rules?.length === 1 && rules[0] === NO_BLOCK_RULE;
+}
+
 /**
  * The newest step whose outcome reports a failure of its own, or undefined —
  * child text a host prints, so its reason is bounded and redacted on exit.
@@ -125,7 +134,8 @@ function newestFailureStep(steps: Step[]): Step | undefined {
       kind === "blocked" ||
       kind === "exhausted" ||
       kind === "refused" ||
-      kind === "setup"
+      kind === "setup" ||
+      noSpec(steps[i]?.outcome)
     )
       return steps[i];
   }
@@ -176,8 +186,11 @@ function lastRole(steps: Step[]): string | undefined {
  *      carried past on its way to `verify` (#1883) — is older than the newest
  *      working step, so position, not prose, decides;
  *   3. otherwise scan the WHOLE log backwards for the newest step whose own
- *      outcome reports a failure and map it: `error` → `crashed` (a handler
- *      threw), `red` → `verify` (the run's own gate judged the code),
+ *      outcome reports a failure and map it: `setup` → `setup` (`ready` refused
+ *      the repository), `fail` → `no-spec` (counted as a failure only when its
+ *      sole rule is exactly `NO_BLOCK_RULE`, see `noSpec`; any other `fail` is
+ *      skipped), `error` → `crashed` (a handler threw), `red`/`blocked` →
+ *      `verify` (the run's own gate judged the code),
  *      `exhausted`/`refused` → `process` (out of rounds, or the forge refused —
  *      neither judges the code, none is transient). Its `message` is the
  *      outcome's own reason or message, or a fallback naming the state and kind;
@@ -238,17 +251,20 @@ function leanFailure(run: LeanRun): ResultFailure | undefined {
         kind === "setup"
           ? // `ready` refused the repository's setup: the one kind a host falls back on.
             "setup"
-          : kind === "error"
-            ? // A handler threw: the engine recorded its message and handed back.
-              "crashed"
-            : kind === "red" || kind === "blocked"
-              ? // The run's own gate judged the code, or the builder proved the
-                // frozen tests cannot all pass together (the driver ran them). Both
-                // are a judgement about the code, so a host routes them the same way.
-                "verify"
-              : // `exhausted` / `refused`: the step ran out of rounds, or the forge
-                // refused. Neither is a judge of the code and none is transient.
-                "process",
+          : kind === "fail"
+            ? // Only the no-block refusal reaches here (`noSpec`); the run ends not-ready at exit 11.
+              "no-spec"
+            : kind === "error"
+              ? // A handler threw: the engine recorded its message and handed back.
+                "crashed"
+              : kind === "red" || kind === "blocked"
+                ? // The run's own gate judged the code, or the builder proved the
+                  // frozen tests cannot all pass together (the driver ran them). Both
+                  // are a judgement about the code, so a host routes them the same way.
+                  "verify"
+                : // `exhausted` / `refused`: the step ran out of rounds, or the forge
+                  // refused. Neither is a judge of the code and none is transient.
+                  "process",
       message: redactClip(message, TEXT_MAX),
     };
   }

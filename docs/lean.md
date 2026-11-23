@@ -172,7 +172,8 @@ an authored one is worth:
   is present but **malformed** — the author took a position on the contract and wrote
   it wrong, and a model quietly writing a better one would hide the defect. A
   non-blank body with no block at all is exactly what `derive` exists for: `require`
-  declines it (`no pi-spec v1 block`), `derive` drafts its contract.
+  declines it (`no pi-spec v1 block`, headless `failure.kind: "no-spec"`), `derive`
+  drafts its contract.
 - **A failed derivation is a handback, not a decline.** A dead child, a fired
   budget, an empty reply or an unparsable reply all `handback` naming their own
   cause (`ready`'s `infra` verdict, exit 10) rather than posting "your ticket is not
