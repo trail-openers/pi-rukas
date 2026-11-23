@@ -30,11 +30,11 @@ export async function formatSubmitted(
   const refused: { path: string; reason: string }[] = [];
   for (const file of files) {
     const ran = await runTestFile(exec as VerifyExec, { wt, template, file });
-    // A formatter that never started, hung or overflowed says nothing about the child's file.
-    if (ran.kind === "infra")
-      throw new SpecifyInfraError(`verify.format \`${ran.cmd}\`: ${ran.detail}`);
-    if (ran.kind !== "green")
-      refused.push({ path: file, reason: `verify.format \`${ran.cmd}\` failed: ${ran.detail}` });
+    const why = `verify.format \`${ran.cmd}\`: ${ran.detail}${ran.kind === "infra" || !ran.output ? "" : `: ${ran.output}`}`;
+    // Never started, hung, overflowed, or failed without naming the file (a toolchain proxy that cannot
+    // pick a version): nothing about the child's file, so the step hands back.
+    if (ran.kind === "infra" || ran.kind === "unclear") throw new SpecifyInfraError(why);
+    if (ran.kind === "red") refused.push({ path: file, reason: why });
   }
   const handed = new Set(files);
   const stray = (await changedPaths(exec, wt))

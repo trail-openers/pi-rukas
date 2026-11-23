@@ -74,14 +74,15 @@ async function run(format: string | undefined, files: Record<string, string> = {
 }
 
 {
+  // `false` exits 1 naming nothing: it said nothing about the file, so the step hands back.
   const r = await run("false {file}");
   assert(
     r.outcome?.frozen === undefined || r.outcome.frozen[TEST] === undefined,
-    `a formatter that refuses the file drops it (${(r.outcome?.reason ?? r.threw?.message ?? "").slice(0, 160)})`,
+    `a formatter that fails without naming the file freezes nothing (${(r.outcome?.reason ?? r.threw?.message ?? "").slice(0, 160)})`,
   );
   assert(
-    /verify\.format `false .*` failed/.test(r.outcome?.reason ?? ""),
-    "…and the reason names the formatter",
+    /verify\.format `false .*`: exited 1 without naming/.test(r.threw?.message ?? ""),
+    "…and hands back, naming the formatter",
   );
 }
 
