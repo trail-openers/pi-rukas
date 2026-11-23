@@ -128,6 +128,22 @@ function fallbackFixIssueSection(issueBody: string): string {
 const FIXER_LEAD_IN =
   "A finding you cannot apply without contradicting it is declined, not implemented — how is stated below.";
 
+/** The characters the criteria fence KEPT: the payload of its LAST fenced block (the
+ * statement is the first), measured rather than inferred — an assertion that the
+ * section "contains the marker" is true for any cap, so only this number pins which
+ * cap was applied. */
+function criteriaPayloadOf(section: string): string {
+  const OPEN = `${"\u0060".repeat(3)}text\n`;
+  const open = section.lastIndexOf(OPEN);
+  const close = open < 0 ? -1 : section.indexOf(`\n${"\u0060".repeat(3)}`, open + OPEN.length);
+  if (open < 0 || close < 0) {
+    throw new Error(
+      "criteriaPayloadOf: the section carries no fenced criteria payload to measure.",
+    );
+  }
+  return section.slice(open + OPEN.length, close);
+}
+
 /** The character a fence is built from, as a string: the same reason the
  * assertions below count it with `split` — in a regex literal it is the terminator,
  * not the character. */
@@ -258,6 +274,22 @@ async function main(): Promise<void> {
       (lens.match(/…\(issue truncated\)/g) ?? []).length === 1 &&
         (lens.match(/…\(criteria truncated\)/g) ?? []).length === 1,
       "(4) and the two cuts stay tellable apart in one brief",
+    );
+    // The cap by number, not by marker: a truncation marker is printed by ANY cap,
+    // so `MAX_CRITERIA_CHARS = 6_000` leaves every assertion above green. The kept
+    // span of the list's fence is the cap `fenceText` sliced to, the ellipsis it
+    // appends, the newline before the notice, and the criteria marker — measured
+    // against a literal restated here rather than read back from the module under
+    // change, so the number can be moved only by a change this test refuses.
+    const criteriaFence = criteriaPayloadOf(criteria);
+    const CRITERIA_CAP = 20_000;
+    assert(
+      criteriaFence.length === CRITERIA_CAP + 1 + 1 + "…(criteria truncated)".length &&
+        criteriaFence.endsWith(`\u2026\n…(criteria truncated)`) &&
+        criteriaFence[CRITERIA_CAP] === "\u2026",
+      `(4) and the kept criteria span is exactly the ${String(CRITERIA_CAP)}-char cap plus the ellipsis and its own marker — measured ${String(
+        criteriaFence.length,
+      )} chars, not merely a section that carries a marker`,
     );
     // The arm the plain list cannot reach: here the clip falls INSIDE a run of
     // backticks, and `fenceText` neutralises backticks after slicing, so the clip
