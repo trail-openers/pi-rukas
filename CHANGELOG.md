@@ -8,6 +8,19 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.7](https://github.com/trail-openers/pi-rukas/compare/v0.15.6...v0.15.7) (2026-11-23)
+
+
+### Features
+
+* **lean:** format submitted tests before freezing them ([#2575](https://github.com/trail-openers/pi-rukas/issues/2575)) ([94667bb](https://github.com/trail-openers/pi-rukas/commit/94667bb5f6a1a9441038d28b8e3bb45f81d9c86f))
+* **spawn:** add opt-in no-progress kill to the inactivity poll ([#2571](https://github.com/trail-openers/pi-rukas/issues/2571)) ([6aa7051](https://github.com/trail-openers/pi-rukas/commit/6aa70515e48d247a09b3603d0036ea52d642e1a8))
+
+
+### Bug Fixes
+
+* **lean:** harden the project test roster's parse, report and verdicts ([#2573](https://github.com/trail-openers/pi-rukas/issues/2573)) ([424fcc0](https://github.com/trail-openers/pi-rukas/commit/424fcc089d7b6ac96f44a103adcc18615d99f885))
+
 ## [0.15.6](https://github.com/trail-openers/pi-rukas/compare/v0.15.5...v0.15.6) (2026-11-22)
 
 
