@@ -96,7 +96,14 @@ export async function prepareExploreBodies(args: {
   return { state: next, bodies, emptyBodyIssues };
 }
 
-/** The halt every failed body earns: the cycle stops before any explore dispatch. */
+/**
+ * The halt every failed body earns: the cycle stops before any explore dispatch.
+ *
+ * Strict rather than degraded on purpose: an empty body cascades silently into a
+ * prompt with a hole in it, and explore then works the wrong issue. The operator
+ * gets a named reason instead — fix `gh` auth, the `gh` version or the network,
+ * then re-run the cycle.
+ */
 export function appendBodiesEmpty(state: WorkState, emptyBodyIssues: EmptyBodyIssue[]): WorkState {
   return appendEvent(
     { ...state, pipelineState: { ...state.pipelineState, emptyBodyIssues } },

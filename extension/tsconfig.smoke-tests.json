@@ -474,7 +474,6 @@
     "smoke-tests/test-adversarial-verdict-reask-child.ts",
     "smoke-tests/test-adversarial-verdict-reask-off-arm.ts",
     "smoke-tests/test-work-driver-explore-reask.ts",
-    "smoke-tests/lib/work-driver-explore-reask-fixture.ts",
     "smoke-tests/lib/adversarial-reask-fixtures.ts",
     "smoke-tests/lib/adversarial-verdict-reask-off-arm-golden.ts",
     "smoke-tests/test-build-prompt-writes-atomic.ts",

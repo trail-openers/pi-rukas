@@ -56,6 +56,7 @@ import { getPiInvocation } from "./pi-binary-resolve.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLES, type RoleName } from "./roles.ts";
 import { withOperatorConfigGuard } from "./spawn-operator-config.ts";
+import { assertLiveSpawnAllowed } from "./spawn-support.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
 import { trace } from "./trace.ts";
 
@@ -160,6 +161,7 @@ export async function spawnExploreReaskChild(args: {
   prompt: string;
 }): Promise<ExploreReaskOutcome> {
   if (!existsSync(args.transcriptPath)) return { ok: false, reason: "no-session" };
+  assertLiveSpawnAllowed("explore");
   try {
     preflightChildGuards();
   } catch (err) {
