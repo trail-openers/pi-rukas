@@ -8,7 +8,12 @@
  * production builders — the argv, the bound, the env, and the settle that turns
  * a stream into an answer — without a live `pi` (case (5) launches a shell stub
  * as the child; no `pi` is spawned anywhere, and `assertLiveSpawnAllowed` would
- * refuse one offline).
+ * refuse one offline). The stub-spawning cases therefore carry
+ * `PI_ENSEMBLE_ALLOW_LIVE_SPAWN=1` in their own `withEnv`, the way
+ * `test-child-forge-credentials.ts` does: the offline gate exports
+ * `PI_ENSEMBLE_FORBID_LIVE_SPAWN=1` and `assertLiveSpawnAllowed` whitelists only
+ * the two reviewer roles, so a case that substitutes a stub `pi` has to clear the
+ * fence itself rather than widen the production whitelist for a test binary.
  *
  * The row that decides this file exists (review of PR #2614, HIGH): the env the
  * re-ask child runs with. It used to be built with `forgeReadChildEnv` alone,
@@ -237,6 +242,15 @@ try {
     let out: Awaited<ReturnType<typeof spawnExploreReaskChild>> | undefined;
     await withEnv(
       {
+        // The offline gate's fence names the two reviewer roles only, so this
+        // case — which swaps in a stub and never forks a real `pi` — states its
+        // own bypass, scoped to the block like the `PI_ENSEMBLE_PI_BIN` it pairs
+        // with. Same pattern as `test-child-forge-credentials.ts`'s poison env.
+        PI_ENSEMBLE_ALLOW_LIVE_SPAWN: "1",
+        // The stamp is written into a fresh object, never read from the parent,
+        // so an inherited `PI_ENSEMBLE_ROLE` cannot be what case (4) mistakes for
+        // the switch's own output.
+        [CHILD_ROLE_ENV]: undefined,
         // A stale pair from an outer pi-rukas process: the strip must still own
         // it, the way the normal spawn path's does.
         PI_ENSEMBLE_FORGE_READ_SOCKET: "/tmp/outer/broker.sock",
@@ -323,9 +337,19 @@ try {
       lines: [agentEnd("INTENT-VERDICT: proceed\n\n## Spec\n\n### Intent\nx")],
       lingerMs: 0,
     });
-    await withEnv({ PI_ENSEMBLE_CHILD_ROLE_ENV: "0" }, async () => {
-      await spawnExploreReaskChild(ASK);
-    });
+    await withEnv(
+      {
+        PI_ENSEMBLE_ALLOW_LIVE_SPAWN: "1",
+        PI_ENSEMBLE_CHILD_ROLE_ENV: "0",
+        // The precondition the case states for itself: an inherited role (every
+        // pi-rukas child session carries one) would survive the switch as a plain
+        // env entry and read as a stamp the switch failed to suppress.
+        [CHILD_ROLE_ENV]: undefined,
+      },
+      async () => {
+        await spawnExploreReaskChild(ASK);
+      },
+    );
     const rec = readRecorded();
     assert(
       rec.argv.length > 0 && rec.env.GIT_EDITOR === "true",
@@ -348,16 +372,25 @@ try {
       lines: [agentEnd("INTENT-VERDICT: proceed\n\n## Spec\n\n### Intent\nx")],
       lingerMs: 30_000,
     });
-    const answered = await spawnExploreReaskChild({ ...ASK, boundMs: 400 });
+    // The same shape as case (3): an optional local plus the explicit `!==
+    // undefined` conjunct, which is both the runtime precondition pin (a spawn
+    // that never ran must not read as a pass) and what narrows the union below.
+    let answered: Awaited<ReturnType<typeof spawnExploreReaskChild>> | undefined;
+    await withEnv({ PI_ENSEMBLE_ALLOW_LIVE_SPAWN: "1" }, async () => {
+      answered = await spawnExploreReaskChild({ ...ASK, boundMs: 400 });
+    });
     assert(
-      answered.ok === true && answered.text.includes("INTENT-VERDICT"),
+      answered !== undefined && answered.ok === true && answered.text.includes("INTENT-VERDICT"),
       `(5) a child the bound killed still answers with the reply it printed before the kill (${JSON.stringify(answered)})`,
     );
 
     installStubPi({ lines: [], lingerMs: 30_000 });
-    const silent = await spawnExploreReaskChild({ ...ASK, boundMs: 400 });
+    let silent: Awaited<ReturnType<typeof spawnExploreReaskChild>> | undefined;
+    await withEnv({ PI_ENSEMBLE_ALLOW_LIVE_SPAWN: "1" }, async () => {
+      silent = await spawnExploreReaskChild({ ...ASK, boundMs: 400 });
+    });
     assert(
-      silent.ok === false && silent.reason === "timeout",
+      silent !== undefined && silent.ok === false && silent.reason === "timeout",
       `(5) and a child that printed nothing is still a timeout, not an empty answer (${JSON.stringify(silent)})`,
     );
 
@@ -365,6 +398,9 @@ try {
       lines: [agentEnd("INTENT-VERDICT: proceed\n\n## Spec\n\n### Intent\nx")],
       lingerMs: 0,
     });
+    // No bypass here: the ask fails on the missing session file BEFORE the
+    // production spawn is reached, so the fence stays armed and a resume that
+    // somehow got as far as a real `pi` would throw instead of answering.
     const missing = await spawnExploreReaskChild({
       ...ASK,
       transcriptPath: MISSING_SESSION,

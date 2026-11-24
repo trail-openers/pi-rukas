@@ -867,8 +867,9 @@ fresh child, because the first child already did the investigation and its conte
 holds the evidence (#2611). Check the state file or the `/work` status: an
 `explore-reasked` row says the ask ran and whether it answered, and
 `explore-spec-source` names the path that finally produced the spec (`first-reply`,
-`reask`, `redispatch`, `artifact`). No `explore-reasked` row at all means the reply
-named no session to resume, so only the fresh re-dispatch ran.
+`reask`, `redispatch`, `artifact`). No `explore-reasked` row at all means the ask was
+never reached — the first reply already satisfied its contract, the reply named no
+session to resume, or the spawn threw — and only the fresh re-dispatch ran.
 
 ### The develop gate fails on missing dependencies, not on the diff
 
