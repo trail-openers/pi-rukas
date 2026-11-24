@@ -49,35 +49,13 @@ function assert(cond: boolean, msg: string) {
 // (#625, b8af99d), handoff-consolidated (#674, handoff fragment),
 // worktree-leftover-handled (#730 emitter, issue #735). Shared by the
 // all-kinds array (via spread) and the resume-shaped loop below.
+// The four kinds the pre-fix KNOWN_EVENT_KINDS tuple omitted — the live bug of
+// #986. Shared by the all-kinds array (via spread) and the resume-shaped loop.
 const incidentKindEvents: WorkEvent[] = [
-  {
-    kind: "worktree-provisioned",
-    at: 1,
-    worktreeId: "default",
-    worktreePath: "/wt",
-    outcome: "symlink",
-  },
-  {
-    kind: "safety-net-commit",
-    at: 1,
-    workstreamId: "default",
-    worktreePath: "/wt",
-    commitSha: "abc",
-    filesCommitted: 2,
-  },
-  {
-    kind: "handoff-consolidated",
-    at: 1,
-    branchName: "feature/x",
-    workstreams: ["default"],
-  },
-  {
-    kind: "worktree-leftover-handled",
-    at: 1,
-    path: "/wt",
-    action: "adopt",
-    refs: [],
-  },
+  { kind: "worktree-provisioned", at: 1, worktreeId: "default", worktreePath: "/wt", outcome: "symlink" },
+  { kind: "safety-net-commit", at: 1, workstreamId: "default", worktreePath: "/wt", commitSha: "abc", filesCommitted: 2 },
+  { kind: "handoff-consolidated", at: 1, branchName: "feature/x", workstreams: ["default"] },
+  { kind: "worktree-leftover-handled", at: 1, path: "/wt", action: "adopt", refs: [] },
 ];
 
 /** #1652 — the plan step's refused report_workstream calls (one fixture, used once below). */
@@ -100,6 +78,11 @@ const everyKindEvent: WorkEvent[] = [
     verdictParsed: true,
     firstJobId: "j1",
   },
+  // #2611 — the same-session ask (answered, and unanswered with its reason), and
+  // the record of which path produced the spec.
+  { kind: "explore-reasked", step: "explore", at: 1, verdictParsed: false, answered: true, firstJobId: "j1" },
+  { kind: "explore-reasked", step: "explore", at: 1, verdictParsed: false, answered: false, reason: "timeout", firstJobId: "j1" },
+  { kind: "explore-spec-source", step: "explore", at: 1, source: "reask", channel: "prose" },
   { kind: "adversarial-approved", at: 1, jobId: "j1", rounds: 1 },
   {
     kind: "adversarial-rejected",

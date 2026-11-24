@@ -124,6 +124,12 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
     case "explore-retried":
       // #1094 — the one automatic explore re-dispatch after a reply with no `## Spec`.
       return `  explore-retried · ${e.missing ?? `no \`## Spec\` in reply${e.verdictParsed ? " (verdict present)" : ""}`} · first ${e.firstJobId}`;
+    case "explore-reasked":
+      // #2611 — the same-session ask that runs BEFORE the re-dispatch above.
+      return `  explore-reasked · ${e.answered ? "answered" : `no answer (${e.reason ?? "unknown"})`} · verdict ${e.verdictParsed ? "present" : "absent"} · first ${e.firstJobId}`;
+    case "explore-spec-source":
+      // #2611 — which path produced the spec the cycle routes on.
+      return `  explore-spec-source · ${e.source} · ${e.channel}`;
     case "dispatch-completed":
       return `  dispatch-completed · ${e.step} · ${e.label} · ${fmtElapsed(e.ms)}`;
     case "dispatch-failed":

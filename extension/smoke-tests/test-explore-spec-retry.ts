@@ -211,7 +211,7 @@ async function badTwice() {
   assert(
     cap?.kind === "cap-hit" &&
       cap.evidence ===
-        "INTENT-VERDICT present but no `## Spec` heading parsed (explore re-dispatched once)",
+        "INTENT-VERDICT present but no `## Spec` heading parsed (the same-session re-ask got no answer; explore re-dispatched once)",
     "bad→bad: evidence names the missing `## Spec` after the retry",
   );
 }

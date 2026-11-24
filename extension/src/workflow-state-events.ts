@@ -15,6 +15,11 @@ import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { CommitPrFallbackCause } from "./workflow-state-events-commitpr.ts";
 import type { CorrectiveRoundEvent } from "./workflow-state-events-corrective.ts";
 import type { DeferredCreationEventFragment } from "./workflow-state-events-deferred.ts";
+import type {
+  ExploreReaskedEvent,
+  ExploreRetriedEvent,
+  ExploreSpecSourceEvent,
+} from "./workflow-state-events-explore.ts";
 import type { FenceEvent } from "./workflow-state-events-fence.ts";
 import type { FixPassStraysRevertedEvent } from "./workflow-state-events-fix-pass-strays.ts";
 import type {
@@ -143,22 +148,9 @@ export type WorkEvent =
       round?: number;
     }
   | AdversarialEventFragment
-  /** #1094 — explore re-dispatched once after a completed reply had no `## Spec`. */
-  | {
-      kind: "explore-retried";
-      step: "explore";
-      at: number;
-      /** Whether the unreadable reply still carried an `INTENT-VERDICT:` token. */
-      verdictParsed: boolean;
-      /**
-       * #1548 — what the first reply lacked, in the cap-evidence wording. A
-       * verdict without its `## Spec` is not an accepted verdict; this says so
-       * on the event. Absent on events written before #1548.
-       */
-      missing?: string;
-      /** The job id the unreadable attempt's dispatch-completed was recorded under. */
-      firstJobId: string;
-    }
+  | ExploreRetriedEvent
+  | ExploreReaskedEvent
+  | ExploreSpecSourceEvent
   | DispatchStartedEvent
   | {
       kind: "dispatch-completed";

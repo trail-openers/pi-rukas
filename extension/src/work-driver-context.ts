@@ -19,6 +19,7 @@ import type { OnSlowCallback } from "./slow-notice.ts";
 import type { DispatchResult, DispatchSpec, WriteFenceOpt } from "./types.ts";
 import { routeCiTier } from "./work-driver-context-ci-route.ts";
 import type { DriverPublishContextFields } from "./work-driver-context-publish.ts";
+import type { ExploreReaskFn } from "./work-driver-explore-reask.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import type { EmitSink } from "./work-state-emit.ts";
@@ -147,6 +148,17 @@ export interface DriverContext extends DriverPublishContextFields {
       onSlow?: OnSlowCallback;
     },
   ) => Promise<DispatchResult>;
+  /**
+   * #2611 — optional injection point for tests: the ONE same-session follow-up
+   * an explore reply gets when it ended its turn with neither an
+   * `INTENT-VERDICT:` line nor a `## Spec` block. Production callers omit this
+   * and get `spawnExploreReaskChild` (`work-driver-explore-reask.ts`), the same
+   * re-ask seam shape the adversarial verdict re-ask carries. Tests that pin
+   * what the ask SAID inject a stub; a test that pins the no-ask path injects
+   * one that reports it was never reached (`asked: false`), since absence here
+   * means the real child, not no ask.
+   */
+  exploreReask?: ExploreReaskFn;
   /**
    * PR11 — optional injection point for tests: replace the `gh issue view`
    * fetch in runExplore. Production callers omit this; the default

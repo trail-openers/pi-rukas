@@ -13,10 +13,17 @@ import { readMarker } from "./reply-markers.ts";
 import { slowRecorder } from "./slow-events.ts";
 import { exploreChildBoundMs } from "./spawn-child-bound.ts";
 import { transcriptPathFor } from "./spawn-support.ts";
+import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { cycleDispatch } from "./work-driver-cycle-entry.ts";
 import { driverDeckOpts } from "./work-driver-deck-header.ts";
+import {
+  EXPLORE_REASK_SOURCE_TAG,
+  exploreReaskBoundMs,
+  exploreReaskPrompt,
+  spawnExploreReaskChild,
+} from "./work-driver-explore-reask.ts";
 import { readSpecArtifact, resolveIntentVerdict } from "./work-driver-intent-artifact.ts";
 import { recoverOffloadedSpec } from "./work-driver-intent-offload.ts";
 import type { NormalisedSpec } from "./work-driver-intent.ts";
@@ -37,6 +44,84 @@ export interface ExploreAttempt {
 export interface ResolvedExploreSpec {
   spec: NormalisedSpec;
   source: "prose" | "artifact";
+}
+
+/**
+ * #2611 — one same-session follow-up to an explore reply that carried neither a
+ * verdict nor a spec. Returns the reply's own transcript (the session that must
+ * be resumed), the re-ask's readable spec when it answered, and the fields the
+ * caller records on the `explore-reasked` event.
+ *
+ * Returns `{ spec: undefined, answered: false }` — and the caller records the ask
+ * but changes nothing else — when there is no session to name or the ask itself
+ * threw: a step must not pretend an ask that never ran produced anything, and a
+ * failed ask must land on today's fresh re-dispatch exactly as it did before this
+ * existed. The answer is read by `resolveExploreSpec`, the SAME reader the
+ * original reply went through, so prose or a fenced spec stays unreadable here as
+ * it was there.
+ *
+ * The ask is `ctx.exploreReask` when the caller injected one (the offline suite)
+ * and {@link spawnExploreReaskChild} otherwise.
+ */
+export async function reaskExploreSession(args: {
+  ctx: CycleContext;
+  reply: DispatchResult;
+  /** The job id the reply being asked about was recorded under. */
+  firstJobId: string;
+  /** Whether the reply being asked about carried an `INTENT-VERDICT:` token. */
+  verdictParsed: boolean;
+}): Promise<{
+  spec: ResolvedExploreSpec | undefined;
+  /** Whether a child (or the injected seam) was actually reached. */
+  asked: boolean;
+  answered: boolean;
+  reason?: string;
+}> {
+  const transcriptPath = args.reply.transcriptPath;
+  if (transcriptPath === undefined || transcriptPath === "") {
+    // No session, nothing to ask: the caller's fresh re-dispatch is the only path.
+    return { spec: undefined, asked: false, answered: false, reason: "no-session" };
+  }
+  const ask = args.ctx.exploreReask ?? spawnExploreReaskChild;
+  const boundMs = exploreReaskBoundMs();
+  const prompt = exploreReaskPrompt();
+  let out: Awaited<ReturnType<typeof ask>>;
+  try {
+    out = await ask({ transcriptPath, role: "explore", cwd: args.ctx.repoRoot, boundMs, prompt });
+  } catch (err) {
+    trace(
+      `${EXPLORE_REASK_SOURCE_TAG}: the ask threw for ${transcriptPath}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return { spec: undefined, asked: false, answered: false, reason: "spawn-failed" };
+  }
+  if (out === null || typeof out !== "object" || typeof out.ok !== "boolean") {
+    // The seam is an injected function, and a promise that fulfils something this
+    // reader cannot read IS a no-answer — the arm the caller already handles.
+    trace(`${EXPLORE_REASK_SOURCE_TAG}: the ask returned a non-outcome for ${transcriptPath}`);
+    return { spec: undefined, asked: false, answered: false, reason: "no-answer" };
+  }
+  if (out.ok !== true) {
+    // Narrowed through the union's own discriminant, so the reason is read only
+    // where the type says one exists. A seam that says it was never reached
+    // (`asked: false` — the test shape for "the ask could not run") is not an
+    // ask that ran, and the caller must not record one.
+    return {
+      spec: undefined,
+      asked: !("asked" in out && out.asked === false),
+      answered: false,
+      reason: out.reason,
+    };
+  }
+  if (typeof out.text !== "string") {
+    return { spec: undefined, asked: true, answered: false, reason: "no-answer" };
+  }
+  const spec = await resolveExploreSpec(args.ctx, out.text);
+  return {
+    spec,
+    asked: true,
+    answered: spec !== undefined,
+    ...(spec === undefined ? { reason: "answered-without-a-readable-spec" } : {}),
+  };
 }
 
 /** The preface the single retry prepends to the original explore prompt (#1094). */
@@ -89,16 +174,32 @@ export function shouldRetryExplore(input: {
 }
 
 /**
- * The cap evidence for an explore reply with no readable spec. The no-verdict
- * wording is the long-standing string (#830); the verdict-present wording says
- * the decision was made but its body was not written, which is a different
- * fault for the operator to act on.
+ * The cap evidence for an explore reply with no readable spec (#1094, #2611).
+ * The no-verdict wording is the long-standing string (#830); the verdict-present
+ * wording says the decision was made but its body was not written, which is a
+ * different fault for the operator to act on. `retried` says a fresh child was
+ * already paid for; `reask` says what the same-session ask did first, so the
+ * handoff names everything the driver tried before it parked.
  */
-export function noSpecEvidence(text: string, retried: boolean): string {
+export function noSpecEvidence(
+  text: string,
+  retried: boolean,
+  /** #2611 — whether the same-session re-ask ran (and whether it answered). */
+  reask?: { asked: boolean; answered: boolean },
+): string {
   const base = hasIntentVerdictToken(text)
     ? "INTENT-VERDICT present but no `## Spec` heading parsed"
     : "no verdict and no spec parsed";
-  return retried ? `${base} (explore re-dispatched once)` : base;
+  const tried: string[] = [];
+  if (reask !== undefined) {
+    tried.push(
+      reask.answered
+        ? "the same-session re-ask answered without a readable spec"
+        : "the same-session re-ask got no answer",
+    );
+  }
+  if (retried) tried.push("explore re-dispatched once");
+  return tried.length === 0 ? base : `${base} (${tried.join("; ")})`;
 }
 
 /**

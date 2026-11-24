@@ -1,14 +1,17 @@
 /**
- * work-driver-explore-run — the `runExplore` step handler, moved VERBATIM
- * from work-driver-explore.ts (the 500-line gate headroom for the #799
- * slow-watch wiring). No behaviour change — the import paths below are the
- * union of both files' imports, and `work-driver-explore.ts` re-exports
- * `runExplore` so existing imports keep their path.
+ * work-driver-explore-run — the `runExplore` step handler: read the issue(s),
+ * dispatch explore, and route on the reply. The pieces with their own contracts
+ * live beside it — `work-driver-explore-bodies.ts` (issue bodies, or the halt
+ * when one never arrived), `work-driver-explore-recovery.ts` (the two recoveries
+ * an unreadable reply gets: the #2611 same-session ask, then the #1094 fresh
+ * child), `work-driver-intent-*.ts` (spec reconciliation and park evidence), and
+ * `work-driver-explore-dispatch.ts` (the dispatch itself). What stays here is the
+ * ordering between them, since that ordering is the step's contract.
  */
 import { execp } from "./exec.ts";
-import { flattenAndClip } from "./text-flatten.ts";
 import { trace } from "./trace.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { appendBodiesEmpty, prepareExploreBodies } from "./work-driver-explore-bodies.ts";
 import {
   EXPLORE_RETRY_PREFACE,
   dispatchExploreAttempt,
@@ -17,24 +20,26 @@ import {
   resolveExploreSpec,
   shouldRetryExplore,
 } from "./work-driver-explore-dispatch.ts";
+import { parkOnIntent } from "./work-driver-explore-intent-park.ts";
+import {
+  type ExploreReaskTried,
+  type ExploreSpecPath,
+  askExploreSessionOnce,
+  redispatchExplore,
+} from "./work-driver-explore-recovery.ts";
 import {
   exploreProducedNoSignal,
   fetchIssueBodyViaGh,
   fetchIssueBodyWithRetry,
 } from "./work-driver-explore.ts";
-import { forgeForCycle } from "./work-driver-forge-ctx.ts";
+import { fetchFailureReason } from "./work-driver-fetch-reason.ts";
 import { deleteSpecArtifact, persistSpecArtifact } from "./work-driver-intent-artifact.ts";
 import { finaliseSpecVerdict } from "./work-driver-intent-finalise.ts";
 import { groundAlreadyImplemented } from "./work-driver-intent-grounding.ts";
-import {
-  awaitingReviewPr,
-  parkEvidence,
-  readCitedPrStates,
-} from "./work-driver-intent-park-evidence.ts";
 import { intentResolutionEnabled } from "./work-driver-intent.ts";
 import { loadIssueComments, withIssueComments } from "./work-driver-issue-comments.ts";
 import { issueImagesFor } from "./work-driver-issue-images.ts";
-import { cycleSpecs, inlineBody, specFetcher } from "./work-driver-issue-spec.ts";
+import { cycleSpecs, specFetcher } from "./work-driver-issue-spec.ts";
 import {
   type ExploreVerdict,
   parseExploreVerdict,
@@ -50,18 +55,6 @@ import {
   persistCycle,
   writeDispatchArtifact,
 } from "./workflow-state.ts";
-
-/**
- * A fetch rejection reduced to one line that is safe to put in evidence: the
- * message with control characters flattened and at most 300 characters. A
- * rejection that carries no message yields "", which the caller reads as unavailable.
- */
-function fetchFailureReason(reason: unknown): string {
-  let message = "";
-  if (reason instanceof Error) message = reason.message;
-  else if (typeof reason === "string") message = reason;
-  return flattenAndClip(message, 300);
-}
 
 /**
  * Step 1 — Read the issue and project context.
@@ -152,93 +145,14 @@ export async function runExplore(
   // reliably classify
   // work that hasn't been read. Live evidence (v10r 2026-06-25 / PR #483):
   // 4 of 5 empty bodies cascaded silently into wrong-issue work landing
-  // on main. Strict halt — operator gets a clear remediation message and
-  // can fix gh auth / version / network before re-running.
-  const emptyBodyIssues: Array<{ issue: number; reason: string }> = [];
-
-  // PR13 — per-issue body content for inlining in the explore prompt.
-  // Capped at 16 KiB per body — covers virtually every real-world issue
-  // body. Larger bodies get a truncation marker pointing at the cached
-  // artifact so the agent can `cat` for the rest if needed.
-  const INLINE_BODY_CAP = 16 * 1024;
-  const bodiesForPrompt: Array<{
-    issue: number;
-    body: string;
-    truncated: boolean;
-  }> = [];
-
-  // Persist each issue body as a claim-check artifact (best-effort).
-  // For single-issue cycles, the first body is stored under the legacy
-  // "issue-body" name so back-compat readers still find it; additional
-  // bodies use "issue-body-<N>" naming.
-  for (let i = 0; i < issues.length; i++) {
-    const n = issues[i];
-    if (n === undefined) continue;
-    const result = bodySettled[i];
-    if (result?.status === "fulfilled") {
-      const body = result.value.stdout;
-      if (!body.trim()) {
-        emptyBodyIssues.push({
-          issue: n,
-          reason:
-            "gh issue view returned empty stdout on every attempt (possible projectCards GraphQL deprecation, gh extension hijack, or auth lapse)",
-        });
-        continue;
-      }
-      let artifactPath: string | undefined;
-      try {
-        const artifactName = issues.length === 1 ? "issue-body" : `issue-body-${n}`;
-        artifactPath = await writeDispatchArtifact(ctx.repoRoot, ctx.issue, artifactName, body);
-        // Only set issueBodyArtifact for the PRIMARY issue (back-compat
-        // path readers look for `state.pipelineState.issueBodyArtifact`).
-        if (n === ctx.issue) {
-          next = {
-            ...next,
-            pipelineState: {
-              ...next.pipelineState,
-              issueBodyArtifact: artifactPath,
-            },
-          };
-        }
-      } catch (err) {
-        trace(
-          `work-driver: failed to persist issue-body artifact for #${n}: ${(err as Error).message}`,
-        );
-      }
-      const { text, truncated } = inlineBody(body, INLINE_BODY_CAP);
-      const shown = truncated
-        ? `${text}\n[... truncated; full body at ${artifactPath ?? "(artifact write failed)"}]`
-        : text;
-      bodiesForPrompt.push({ issue: n, body: shown, truncated });
-    } else if (result?.status === "rejected") {
-      const reason = (result.reason as Error).message?.slice(0, 200) ?? "(no error message)";
-      trace(`work-driver: gh issue view ${n} failed after every attempt: ${reason}`);
-      emptyBodyIssues.push({
-        issue: n,
-        reason: `gh issue view rejected on every attempt: ${reason}`,
-      });
-    }
+  // PR11 — a blank or rejected body is a hard pre-condition failure: the operator
+  // fixes gh and re-runs, and nothing is spent on an explore bound to halt.
+  const prepared = await prepareExploreBodies({ ctx, state: next, issues, bodySettled });
+  next = prepared.state;
+  const bodiesForPrompt = prepared.bodies;
+  if (prepared.emptyBodyIssues.length > 0) {
+    return appendBodiesEmpty(next, prepared.emptyBodyIssues);
   }
-
-  // PR11 — halt the cycle if ANY issue body failed to fetch. Pre-condition
-  // failure; the operator fixes gh and re-runs. PR13 moves this check
-  // above the dispatch so we don't spend tokens on an explore that's
-  // bound to halt anyway. Same routing as before.
-  if (emptyBodyIssues.length > 0) {
-    next = {
-      ...next,
-      pipelineState: { ...next.pipelineState, emptyBodyIssues },
-    };
-    next = appendEvent(next, {
-      kind: "cap-hit",
-      at: Date.now(),
-      cap: "explore-bodies-empty",
-      reviewRound: 0,
-      nextStep: "handoff",
-    });
-    return next;
-  }
-
   // PR13 — now dispatch with bodies embedded in the prompt. Verdict can
   // be sound from a single turn — no race, no agency-dependence.
   // #397 — ask for exactly one verdict protocol, and read the one we asked
@@ -273,30 +187,50 @@ export async function runExplore(
   // One read per reply: the retry decision and the routing below both use it.
   let resolved = useIntent ? await resolveExploreSpec(ctx, responseText) : undefined;
   let retried = false;
-  // At most one retry: this is the only site that re-dispatches. The second
-  // attempt's reply is not re-checked here, so control flow cannot come back
-  // to this block.
+  // #2611 — the ask's outcome, and which path produced the routed spec.
+  let reaskTried: ExploreReaskTried | undefined;
+  let specPath: ExploreSpecPath | undefined =
+    resolved === undefined
+      ? undefined
+      : resolved.source === "artifact"
+        ? "artifact"
+        : "first-reply";
+  // The two recoveries an unreadable reply gets, in order: the same session is
+  // asked once (#2611), and only a reply it leaves unreadable is followed by a
+  // fresh child (#1094). Both run only after a COMPLETED dispatch — a failed one
+  // returned above, keeping the provider path's own recovery — and neither can
+  // loop: nothing below returns here.
+  const reasked = await askExploreSessionOnce({
+    ctx: dctx,
+    state: next,
+    useIntent,
+    reply: first.reply,
+    spec: resolved,
+    jobId: first.jobId,
+    verdictParsed: hasIntentVerdictToken(responseText),
+  });
+  next = reasked.state;
+  reaskTried = reasked.tried;
+  if (reasked.spec !== undefined) {
+    resolved = reasked.spec;
+    specPath = reasked.specPath;
+  }
   if (shouldRetryExplore({ useIntent, spec: resolved?.spec })) {
-    // #1548 — a verdict without its `## Spec` is not an accepted verdict: the
-    // event names what the first reply lacked, so the re-dispatch reads as the
-    // deliberate re-verdict it is.
-    const missing = noSpecEvidence(responseText, false);
-    trace(`work-driver: explore ${first.jobId}: ${missing} — re-dispatching explore once (#1094)`);
-    next = appendEvent(next, {
-      kind: "explore-retried",
-      step: "explore",
-      at: Date.now(),
-      verdictParsed: hasIntentVerdictToken(responseText),
-      missing,
+    const second = await redispatchExplore({
+      ctx: dctx,
+      state: next,
+      prompt,
+      useIntent,
+      firstReplyText: responseText,
       firstJobId: first.jobId,
     });
-    if (useIntent) await deleteSpecArtifact(ctx.repoRoot, ctx.issue);
-    const second = await dispatchExploreAttempt(dctx, next, `${EXPLORE_RETRY_PREFACE}${prompt}`);
     next = second.state;
-    if (second.reply === undefined) return next;
-    responseText = second.reply.text ?? "";
-    transcriptPath = second.reply.transcriptPath;
-    resolved = useIntent ? await resolveExploreSpec(ctx, responseText) : undefined;
+    // A failed re-dispatch has no reply to route on: it returns here, as before.
+    if (!second.completed) return next;
+    responseText = second.replyText;
+    transcriptPath = second.transcriptPath;
+    resolved = second.spec;
+    specPath = second.specPath;
     retried = true;
   }
 
@@ -355,6 +289,16 @@ export async function runExplore(
         ? finalised
         : await settleSpecTitle(finalised, exploreTitleAsk(transcriptPath, ctx.repoRoot));
     if (resolved !== undefined && finalSpec !== undefined) {
+      // #2611 — WHICH path produced this spec (first reply, same-session re-ask,
+      // fresh re-dispatch, restored artifact), recorded where the cycle takes it:
+      // "a spec was parsed" is then answerable from the state file alone.
+      next = appendEvent(next, {
+        kind: "explore-spec-source",
+        step: "explore",
+        at: Date.now(),
+        source: specPath ?? (resolved.source === "artifact" ? "artifact" : "first-reply"),
+        channel: resolved.source,
+      });
       next = {
         ...next,
         pipelineState: { ...next.pipelineState, normalisedSpec: finalSpec },
@@ -364,28 +308,7 @@ export async function runExplore(
         `work-driver: intent verdict=${finalSpec.verdict}${finalSpec.parkReason ? ` (${finalSpec.parkReason})` : ""}, ${finalSpec.deliverables.length} deliverable(s) (source: ${resolved.source})`,
       );
       if (finalSpec.verdict === "park") {
-        // #657 — carry the machine-readable park reason on the cap-hit itself
-        // so the renderers can show `intent-park (contradicted-by-code)`.
-        // #1561 — and the decisive evidence, so the headless `failure.message`
-        // says why; a cited PR's state is read from the forge, not the prose.
-        const prStates = await readCitedPrStates(
-          finalSpec,
-          ctx.forge ??
-            (await forgeForCycle(ctx, ctx.verifyExecFn ?? execp, new Map(), {
-              execOpts: { timeout: 20_000 },
-            })),
-        );
-        const openPr = awaitingReviewPr(finalSpec, prStates);
-        return appendEvent(next, {
-          kind: "cap-hit",
-          at: Date.now(),
-          cap: "intent-park",
-          reviewRound: next.pipelineState.reviewRound,
-          nextStep: "handoff",
-          ...(finalSpec.parkReason ? { parkReason: finalSpec.parkReason } : {}),
-          evidence: parkEvidence(finalSpec, ctx.issue, prStates),
-          ...(openPr !== undefined ? { awaitingReviewPr: openPr } : {}),
-        });
+        return await parkOnIntent(ctx, next, finalSpec);
       }
       return next;
     }
@@ -423,7 +346,7 @@ export async function runExplore(
         cap: "explore-needs-clarification",
         reviewRound: next.pipelineState.reviewRound,
         nextStep: "handoff",
-        evidence: noSpecEvidence(responseText, retried),
+        evidence: noSpecEvidence(responseText, retried, reaskTried),
       });
     }
     if (verdict === "ALREADY_COMPLETE" || verdict === "NEEDS_CLARIFICATION") {
