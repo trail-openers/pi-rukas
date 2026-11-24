@@ -203,7 +203,18 @@ run_test_with_timeout() {
   # unattributable shape rather than a passing one. `env -u` takes the variable
   # out of the CHILD's environment only, and every test descendant goes through
   # this one spawn.
-  env -u VERIFY_REPORT_FILE bun run "$t" >"$cap" 2>&1 &
+  #
+  # The same spawn also drops the identity, date, config-count and forge-token
+  # names a factory container exports (the bot's GIT_AUTHOR_*/GIT_COMMITTER_*, a
+  # cycle GH_TOKEN): tests assert on the identity they set themselves and on the
+  # token branch of their own fixtures, so an ambient value turns an unmodified
+  # tree red. `test-verify-loop-git-env.ts` fails naming any name removed here.
+  # PI_ENSEMBLE_SMOKE_HOST_GIT=1 still means host git CONFIG only, not these.
+  env -u VERIFY_REPORT_FILE \
+    -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_AUTHOR_DATE \
+    -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL -u GIT_COMMITTER_DATE \
+    -u GIT_CONFIG_COUNT -u GH_TOKEN -u GITHUB_TOKEN -u GH_CONFIG_DIR -u GITLAB_TOKEN \
+    bun run "$t" >"$cap" 2>&1 &
   pid=$!
   # Poll every 0.1s (sleep 0.1 works on macOS and GNU coreutils), comparing
   # elapsed wall-clock via SECONDS (second resolution — the bound is still

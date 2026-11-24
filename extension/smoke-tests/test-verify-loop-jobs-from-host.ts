@@ -119,6 +119,9 @@ function childEnv(
     FIXTURE_WINDOW_DIR: recordDir,
     PI_ENSEMBLE_VERIFY_TEST_TIMEOUT_S: "30",
     PI_ENSEMBLE_VERIFY_TEST_JOBS: jobs,
+    // An empty root: the sweep above is about getconf, and the machine's own
+    // cgroup quota must not lower it (test-verify-loop-cgroup-quota.ts owns that).
+    VERIFY_CGROUP_ROOT: trackedDir("verify-nocgroup-"),
   };
   return Object.fromEntries(Object.entries(base).filter(([, v]) => v !== undefined)) as Record<
     string,
