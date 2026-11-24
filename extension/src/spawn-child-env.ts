@@ -22,11 +22,20 @@
  *      `TMPDIR`/`TMP`/`TEMP` can win (#2241; the placement is pinned by
  *      test-child-tmpdir-2241.ts's canary, which reads this call site in
  *      `spawn.ts` — the caller passes the per-spawn dir and nothing after this
- *      line may touch the env).
+ *      line may touch the env). The same six rules are what
+ *      {@link buildResumedChildEnv} stacks for a child that resumes a session
+ *      outside `spawnSpecialist`, so "the child's env" has one definition.
  *
  * Nothing here decides policy: every rule lives with its owner and this module
  * only composes them. It takes the values the caller resolved rather than the
  * plan object, so the seam stays free of the permission module's types.
+ *
+ * A child spawned OUTSIDE `spawnSpecialist` — a resumed session re-asked for the
+ * one artefact it owed — calls {@link buildResumedChildEnv} rather than the forge
+ * strip on its own. The strip alone leaves out the role stamp, the per-child temp
+ * root and the read-only role's scratch `HOME`/XDG, and those three are what make
+ * the child-side guards judge anything: a re-ask that built its env that way was
+ * the same role running unjudged (#2611).
  */
 
 import { childCodemodeWorkersEnv } from "./child-codemode.ts";
@@ -140,4 +149,35 @@ export function buildChildEnv(
     Object.assign(childEnv, childTempEnv(childTmp));
   }
   return childEnv;
+}
+
+/**
+ * The env of a child that RESUMES an existing session outside `spawnSpecialist`
+ * (#2611): the same rules the dispatch path stacks, over a permission plan that
+ * adds nothing.
+ *
+ * A resumed re-ask has no broker of its own to hand out and no fence to name, so
+ * its plan is empty — which is the shape `applyChildPermissionEnv` answers by
+ * DELETING both halves of any inherited forge-read pair rather than trusting it.
+ * Everything else the dispatched child gets is here: the forge strip, the role
+ * stamp (`PI_ENSEMBLE_ROLE`), the non-interactive git pins, the per-child temp
+ * root and, for a read-only role, the scratch `HOME`/XDG under it. Those are the
+ * rules the sibling re-ask sites quietly lacked, and the role stamp is the one
+ * that matters: every role-scoped child-side rule reads the role out of the
+ * child's own env, so a re-ask built on `forgeReadChildEnv` alone ran the same
+ * role with every one of those guards inert.
+ *
+ * `childTmp` is the caller's own per-child dir — this names a tree it does not
+ * allocate, so the caller creates it and its `finally` removes it. Nothing writes
+ * the env after this returns: the caller hands the result straight to `spawn()`.
+ */
+export function buildResumedChildEnv(role: string, childTmp: string): Record<string, string> {
+  const noPlan = {
+    subagentGuardEnabled: false,
+    trustChild: false,
+    forge: { keepsLogin: false },
+    ready: Promise.resolve(),
+    stopForgeBroker: (): void => {},
+  } satisfies ChildPermissionPlan;
+  return buildChildEnv(role, noPlan, undefined, childTmp);
 }

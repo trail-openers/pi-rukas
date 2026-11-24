@@ -184,22 +184,40 @@ export function shouldRetryExplore(input: {
 export function noSpecEvidence(
   text: string,
   retried: boolean,
-  /** #2611 — whether the same-session re-ask ran (and whether it answered). */
-  reask?: { asked: boolean; answered: boolean },
+  /** #2611 — whether the same-session re-ask ran, whether it answered, and what
+   * the ask itself reported. `reason` is what separates the two readings the
+   * operator acts on differently: an ask that got NO reply at all, and one whose
+   * child replied but whose reply the reader could not parse. */
+  reask?: { asked: boolean; answered: boolean; reason?: string },
 ): string {
   const base = hasIntentVerdictToken(text)
     ? "INTENT-VERDICT present but no `## Spec` heading parsed"
     : "no verdict and no spec parsed";
   const tried: string[] = [];
   if (reask !== undefined) {
-    tried.push(
-      reask.answered
-        ? "the same-session re-ask answered without a readable spec"
-        : "the same-session re-ask got no answer",
-    );
+    tried.push(reaskPhrase(reask));
   }
   if (retried) tried.push("explore re-dispatched once");
   return tried.length === 0 ? base : `${base} (${tried.join("; ")})`;
+}
+
+/**
+ * What the same-session ask did, in the handoff's words.
+ *
+ * "got no answer" is only true of an ask that received nothing; a child that
+ * replied in prose, inside a fence, or with a description of a spec DID answer,
+ * and telling the operator it did not sends them looking for a wedged provider
+ * when the fault is the reply's form. The reason is the one the ask itself
+ * carried on the `explore-reasked` event — this function invents no new state.
+ */
+function reaskPhrase(reask: { asked: boolean; answered: boolean; reason?: string }): string {
+  if (reask.answered) return "the same-session re-ask answered without a readable spec";
+  if (reask.reason === "answered-without-a-readable-spec") {
+    return "the same-session re-ask answered but its reply held no readable spec";
+  }
+  return reask.reason === undefined
+    ? "the same-session re-ask got no answer"
+    : `the same-session re-ask got no answer (${reask.reason})`;
 }
 
 /**

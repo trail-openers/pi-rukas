@@ -32,10 +32,14 @@ import { type WorkState, appendEvent } from "./workflow-state.ts";
 /** Which path produced the spec the cycle routes on. */
 export type ExploreSpecPath = "first-reply" | "reask" | "redispatch" | "artifact";
 
-/** What the same-session ask did, for the cap evidence when nothing worked. */
+/** What the same-session ask did, for the cap evidence when nothing worked.
+ * `reason` is the ask's own report (a failure reason, or the fact that it
+ * replied with nothing readable), so the handoff never calls an unanswered
+ * question an unanswered reply. */
 export interface ExploreReaskTried {
   asked: boolean;
   answered: boolean;
+  reason?: string;
 }
 
 /**
@@ -88,7 +92,15 @@ export async function askExploreSessionOnce(args: {
     firstJobId: jobId,
   });
   if (!(asked.answered && asked.spec !== undefined)) {
-    return { state: next, spec: undefined, tried: { asked: true, answered: asked.answered } };
+    return {
+      state: next,
+      spec: undefined,
+      tried: {
+        asked: true,
+        answered: asked.answered,
+        ...(asked.reason === undefined ? {} : { reason: asked.reason }),
+      },
+    };
   }
   // The same child answered with the contract it owed: the cycle proceeds as if
   // the first reply had carried it, and no fresh child is dispatched.

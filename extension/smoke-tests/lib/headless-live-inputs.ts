@@ -59,6 +59,7 @@ import {
   lensChildBoundMs,
   settledReapMs,
 } from "../../src/spawn-child-bound.ts";
+import { exploreReaskBoundMs } from "../../src/work-driver-explore-reask.ts";
 import { spawnCap } from "../../src/spawn-semaphore.ts";
 import {
   inactivityTimeoutMs,
@@ -124,6 +125,8 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // returns IS what an unset/empty knob yields, in the entry's own unit.
   ["PI_ENSEMBLE_DEVELOPER_BASH_TIMEOUT_MS", () => developerBashBoundSeconds()! * 1000],
   ["PI_ENSEMBLE_EXPLORE_BOUND_MS", exploreChildBoundMs],
+  // #2611 — the bound on the ONE same-session explore re-ask.
+  ["PI_ENSEMBLE_EXPLORE_REASK_BOUND_MS", exploreReaskBoundMs],
   ["PI_ENSEMBLE_SETTLED_REAP_MS", settledReapMs],
   ["PI_ENSEMBLE_LENS_BOUND_MS", lensChildBoundMs],
   // #1742 — the per-lens-fix-dispatch caller ceiling.

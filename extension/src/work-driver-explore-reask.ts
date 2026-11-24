@@ -48,13 +48,12 @@ import {
   reaskReplyText,
   writeReaskPromptFile,
 } from "./adversarial-verdict-reask-child.ts";
-import { forgeReadChildEnv } from "./child-forge-env.ts";
 import { childGuardsArgs, preflightChildGuards } from "./child-guards.ts";
-import { scrubGitLocation } from "./git-env.ts";
 import { resolveModel } from "./models.ts";
 import { getPiInvocation } from "./pi-binary-resolve.ts";
 import { excludeToolsFor } from "./role-tools.ts";
 import { ROLES, type RoleName } from "./roles.ts";
+import { buildResumedChildEnv } from "./spawn-child-env.ts";
 import { withOperatorConfigGuard } from "./spawn-operator-config.ts";
 import { assertLiveSpawnAllowed } from "./spawn-support.ts";
 import { attachStdinErrorGuard } from "./stdin-guard.ts";
@@ -143,9 +142,15 @@ async function writeExplorePromptFile(): Promise<{ dir: string; promptFile: stri
  * The production re-ask: one `pi` child on the explore child's session, one
  * prompt, its own wall clock, and nothing else.
  *
- * The env comes from the same helper `spawn.ts` uses — a re-ask is the same
- * helper role with the same credentials, and a strip placed only at the other
- * site would leave this one fully authenticated. `withOperatorConfigGuard`
+ * The env comes from the ONE builder the dispatch path uses
+ * (`buildResumedChildEnv`, spawn-child-env.ts) — a re-ask is the same helper role
+ * with the same credentials, and a strip placed only at the other site would
+ * leave this one fully authenticated. It is deliberately NOT the forge strip on
+ * its own: that helper stamps no `PI_ENSEMBLE_ROLE`, names no per-child temp
+ * root, and gives a read-only role no scratch `HOME`/XDG, so every role-scoped
+ * child-side guard (the read-only dependency rule, the #2200 deletion roots, the
+ * reviewer bash bound, the reviewer write guard) sat inert for this child while
+ * the same role's normal dispatch was judged by all of them. `withOperatorConfigGuard`
  * wraps the window because this child runs outside `spawnSpecialist`, so it
  * guards its own operator-config window.
  *
@@ -173,6 +178,7 @@ export async function spawnExploreReaskChild(args: {
   const choice = resolveModel(args.role);
   return withOperatorConfigGuard(args.role, async () => {
     let promptDir: string | undefined;
+    let childTmp: string | undefined;
     try {
       const written = await writeExplorePromptFile();
       promptDir = written.dir;
@@ -185,16 +191,24 @@ export async function spawnExploreReaskChild(args: {
           ...(choice.provider === undefined ? {} : { provider: choice.provider }),
         }),
       );
-      return await runExploreReaskChild(invocation.command, invocation.args, args);
+      // The child's own temp root is allocated by the CALLER and handed down, so
+      // this `finally` owns its removal on every arm — success, failure and the
+      // bound alike — exactly as `spawnSpecialist` owns its `tmpDir`. It is the
+      // root the deletion rule (#2200) judges the child against, so it must
+      // exist before `spawn()`.
+      childTmp = await mkdtempChildRoot();
+      return await runExploreReaskChild(invocation.command, invocation.args, args, childTmp);
     } catch (err) {
       traceWarnReask(
         `the child could not be prepared: ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`,
       );
       return { ok: false, reason: "spawn-failed" };
     } finally {
-      if (promptDir !== undefined) {
-        const fs = await import("node:fs/promises");
-        await fs.rm(promptDir, { recursive: true, force: true }).catch(() => undefined);
+      const fs = await import("node:fs/promises");
+      for (const dir of [promptDir, childTmp]) {
+        if (dir !== undefined) {
+          await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+        }
       }
     }
   });
@@ -208,9 +222,14 @@ async function runExploreReaskChild(
   command: string,
   argv: string[],
   args: { cwd: string; boundMs: number; prompt: string },
+  childTmp: string,
 ): Promise<ExploreReaskOutcome> {
-  const childEnv = forgeReadChildEnv(process.env, "explore");
-  scrubGitLocation(childEnv);
+  // The SAME env the dispatch path builds (`buildChildEnv`, spawn-child-env.ts):
+  // the forge strip, the role stamp, the git scrub and its non-interactive pins,
+  // the permission marker, and this child's own temp root with the scratch
+  // `HOME`/XDG derived from it — written LAST, so no inherited `TMPDIR` wins.
+  // Nothing below writes the env: it goes straight to `spawn()`.
+  const childEnv = buildResumedChildEnv("explore", childTmp);
   const child = spawn(command, argv, {
     // The explore child's own tree: the session is resumed by absolute path, so
     // cwd only decides what a `bash` call it makes resolves against.
@@ -262,7 +281,8 @@ async function runExploreReaskChild(
     };
     // A child killed by the bound may still have printed its reply, and that
     // reply is the answer: SIGTERM ends it and the verdict below reads whatever
-    // arrived. Only a child that printed nothing at all fails as a timeout.
+    // arrived. Only a child that printed nothing at all fails as a timeout
+    // (`text` is the reader's answer, examined below).
     const timer = setTimeout(() => {
       try {
         child.kill("SIGTERM");
@@ -283,12 +303,31 @@ async function runExploreReaskChild(
     traceWarnReask(`the child could not be spawned (${settled.reason})`);
     return { ok: false, reason: "spawn-failed" };
   }
-  if (settled.timedOut) {
-    traceWarnReask(`the child hit its ${String(args.boundMs)}ms bound`);
+  // A child the bound killed may well have printed its reply first — the RPC
+  // stream reaches the parent before the process does, so the kill lands on a
+  // child that had already answered. What arrived IS the answer when it is
+  // non-empty: the reader downstream (`resolveExploreSpec`) is the same strict
+  // reader the first reply went through, so a partial, fenced or prose reply
+  // stays unreadable here exactly as it would have on a clean exit. Only a child
+  // that printed nothing at all fails as a timeout.
+  if (settled.timedOut && text === "") {
+    traceWarnReask(`the child hit its ${String(args.boundMs)}ms bound without printing a reply`);
     return { ok: false, reason: "timeout" };
   }
   if (text === "") return { ok: false, reason: "no-answer" };
   return { ok: true, text };
+}
+
+/** The re-ask child's own temp root: a private dir under the run's temp root. The
+ *  caller that spawned the child naming it removes it. `chmod` after `mkdtemp`
+ *  because the mode is what makes a 0700 root, and the sibling re-ask writes its
+ *  prompt tree the same way. */
+async function mkdtempChildRoot(): Promise<string> {
+  const fs = await import("node:fs/promises");
+  const os = await import("node:os");
+  const dir = await fs.mkdtemp(`${os.tmpdir()}/pi-rukas-explore-reask-`);
+  await fs.chmod(dir, 0o700);
+  return dir;
 }
 
 /** The bound the step arms the ask with, read at call time so a test can pin it. */

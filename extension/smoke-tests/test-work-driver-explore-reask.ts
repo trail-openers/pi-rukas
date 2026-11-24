@@ -230,8 +230,8 @@ const reasks = (state: WorkState) =>
   assert(
     cap?.kind === "cap-hit" &&
       cap.evidence ===
-        "no verdict and no spec parsed (the same-session re-ask got no answer; explore re-dispatched once)",
-    `silent: the cap evidence names the absent verdict and everything the driver tried (got ${JSON.stringify(
+        "no verdict and no spec parsed (the same-session re-ask got no answer (no-answer); explore re-dispatched once)",
+    `silent: the cap evidence names the absent verdict, the re-ask's own reason and everything the driver tried (got ${JSON.stringify(
       cap?.kind === "cap-hit" ? cap.evidence : undefined,
     )})`,
   );
@@ -256,6 +256,35 @@ const reasks = (state: WorkState) =>
       recorded[0]?.kind === "explore-spec-source" &&
       recorded[0].source === "redispatch",
     "redispatch: the trace records the fresh re-dispatch as the path that produced the spec",
+  );
+}
+
+// ── (3b2) the re-ask ANSWERED in an unreadable form: the evidence says so ────
+// The two failures the operator can act on differently, and the reason the
+// lenses and the adversarial reviewer both flagged: before this, an ask whose
+// child replied in prose was reported exactly like an ask that got nothing.
+{
+  const { state } = await runWith("unreadable", 2619, [STATUS_LINE_REPLY, STATUS_LINE_REPLY], {
+    ok: true,
+    text: "The spec is described above in prose, with no heading.",
+  });
+  const askedEvent = state.eventLog.find((e) => e.kind === "explore-reasked");
+  assert(
+    askedEvent?.kind === "explore-reasked" &&
+      askedEvent.answered === false &&
+      askedEvent.reason === "answered-without-a-readable-spec",
+    `unreadable: the ask event records that the child replied and the reader refused it (got ${JSON.stringify(
+      askedEvent?.kind === "explore-reasked" ? askedEvent.reason : undefined,
+    )})`,
+  );
+  const cap = state.eventLog.find((e) => e.kind === "cap-hit");
+  assert(
+    cap?.kind === "cap-hit" &&
+      cap.evidence !== undefined &&
+      cap.evidence.includes("the same-session re-ask answered but its reply held no readable spec"),
+    `unreadable: the cap evidence says the ask ANSWERED, not that it got nothing (got ${JSON.stringify(
+      cap?.kind === "cap-hit" ? cap.evidence : undefined,
+    )})`,
   );
 }
 
