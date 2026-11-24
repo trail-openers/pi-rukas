@@ -59,16 +59,13 @@ VERIFY_TEST_JOBS_MAX=16
 # it the lookup fails and the answer is the narrow default — sizing UP off an unknown
 # host is the wrong direction to guess.
 #
-# NOTE: the raw online CPU count, NOT the cgroup CPU quota — a container limited to 2 CPUs
-# on an 8-core host still reports 8 here. The cgroup-aware authority is
-# `extension/src/host-resources.ts` (`hostBudget`), which lowers
-# `os.availableParallelism()` by the quota; this shell-side number is the coarse one.
-#
+# The count is lowered by the cgroup CPU quota (host_cgroup_quota, lib/verify-cgroup.sh): a
+# container limited to 2 CPUs on an 8-core host still reports 8 from getconf.
 # A function rather than an inline substitution at the call site, so the tests can put
 # a stub `getconf` earlier on PATH and pin the formula across a sweep of CPU counts
 # (plus the no-working-getconf fallback) without owning a machine of each kind.
 host_job_count() {
-  local cpus
+  local cpus quota
   # No `|| cpus=""`: a getconf that exits non-zero prints its error to stderr
   # (discarded) and nothing to stdout, so `$cpus` is already the empty string the `''`
   # arm below handles — and a non-zero exit that DID print a count is a count.
@@ -79,6 +76,7 @@ host_job_count() {
   # run alone does not catch: bash reads a leading zero as OCTAL, so a getconf that printed
   # `08` is string-valid but kills `$(( ))` before $width is set, leaving run_pool an empty
   # ceiling. Guard and arithmetic must agree on what a decimal count is.
+  quota="$(host_cgroup_quota)"
   local width
   case "$cpus" in
     '' | *[!0-9]* | 0[0-9]*)
@@ -92,6 +90,7 @@ host_job_count() {
       # The junk arm above has already rejected every shape but a leading-zero-free
       # decimal run, so this arm is max(2, min(VERIFY_TEST_JOBS_MAX, cpus - 2)).
       width=$((cpus - 2))
+      if [ -n "$quota" ] && [ "$quota" -lt "$cpus" ]; then width=$((quota - 2)); fi
       if [ "$width" -gt "$VERIFY_TEST_JOBS_MAX" ]; then width="$VERIFY_TEST_JOBS_MAX"; fi
       [ "$width" -lt 2 ] && width=2
       ;;
@@ -104,7 +103,7 @@ host_job_count() {
   # than infer it from the peak overlap, which is only ever a lower bound on the ceiling.
   # The `verify-loop.sh:` segment names the pool's own script, matching the `verify-loop:`
   # prefix every other line here carries.
-  echo "note: verify-loop.sh: host_job_count: $width (cpus='${cpus}')" >&2
+  echo "note: verify-loop.sh: host_job_count: $width (cpus='${cpus}') quota=${quota}" >&2
   echo "$width"
 }
 
@@ -166,6 +165,7 @@ JOB_STARTED_AT=()
 POOL_RUNNING=0
 
 . "$(dirname "${BASH_SOURCE[0]}")/verify-timing.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/verify-cgroup.sh"
 # Hard name check, not a silent gap: a half that failed to load would surface as
 # command-not-found only in the replay step, after every test had run — which reads
 # as a suite whose times nobody took.

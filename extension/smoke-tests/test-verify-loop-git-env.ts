@@ -129,6 +129,54 @@ try {
   );
 }
 
+// ── The runner also scrubs the identity, date, config-count and forge-token
+// names a factory container exports. Same shape as the location probe: the
+// hostile value goes into the RUNNER's environment, one name per run, and the
+// child reports whether it sees it. verify-kill.sh's `env -u` list is the one
+// seam every test child passes through; a name dropped from it is named here.
+{
+  const AMBIENT_NAMES = [
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+    "GIT_CONFIG_COUNT",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_CONFIG_DIR",
+    "GITLAB_TOKEN",
+  ];
+  const probeRoot = mkdtempSync(path.join(tmpdir(), "verify-loop-ambient-"));
+  const probe = path.join(probeRoot, "ambient-probe.ts");
+  writeFileSync(
+    probe,
+    [
+      `const names = ${JSON.stringify(AMBIENT_NAMES)};`,
+      "console.log('LEAK=' + names.filter((n) => process.env[n] !== undefined).join(','));",
+      "",
+    ].join("\n"),
+  );
+  const leaked: string[] = [];
+  for (const name of AMBIENT_NAMES) {
+    const r = spawnSync("bash", [RUNNER, probe], {
+      encoding: "utf8",
+      env: { ...clean, [name]: name === "GIT_CONFIG_COUNT" ? "1" : "bot@e" },
+    });
+    const line = (r.stdout ?? "").split("\n").find((l) => l.startsWith("LEAK="));
+    if (line === undefined) leaked.push(`${name}(no output — probe did not run)`);
+    // Only the injected name counts: a token already in this process's own
+    // environ rides every run, and attributing it to each name would hide which leaked.
+    else if (line.slice(5).split(",").includes(name)) leaked.push(name);
+  }
+  rmSync(probeRoot, { recursive: true, force: true });
+  assert(
+    leaked.length === 0,
+    `the runner leaves no ambient identity or token name in a test child (${AMBIENT_NAMES.length} names checked, leaked: ${JSON.stringify(leaked)})`,
+  );
+}
+
 // ── A `lib/` fixture executor that spawns git carries the scrub itself.
 //
 // The runner above is a belt for the whole run; it cannot be the only defence,

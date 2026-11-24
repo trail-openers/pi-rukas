@@ -173,7 +173,7 @@ const STUB_PATH = stubbedPath();
  * and silently decide a case with: each is unset unless the case sets it. The
  * `?? undefined` makes an explicit `delete` in the case's own object mean "unset
  * this name" rather than "inherit it" — a plain spread cannot remove a key. */
-const ALWAYS_UNSET = ["GLAB_CONFIG_DIR", "XDG_CONFIG_HOME", "GITLAB_TOKEN", "GITLAB_HOST", "GITLAB_CI"];
+const ALWAYS_UNSET = ["GLAB_CONFIG_DIR", "XDG_CONFIG_HOME", "GITLAB_TOKEN", "GITLAB_HOST", "GITLAB_CI", "GH_TOKEN", "GITHUB_TOKEN"];
 
 /** Run one driver verb in a fresh bash; returns the rows it emitted. */
 function run(verb: string, env: Record<string, string | undefined>): string[] {
