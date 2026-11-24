@@ -76,6 +76,11 @@ export const KNOWN_EVENT_KINDS = [
   "lens-skipped-empty-diff",
   // #1094 — explore re-dispatched once after a completed reply had no `## Spec`.
   "explore-retried",
+  // #2611 — the one same-session follow-up an explore reply gets when it ended on
+  // a status line, and the record of which path produced the spec. Omit either
+  // and a cycle that logged it refuses to resume (#986's shape).
+  "explore-reasked",
+  "explore-spec-source",
   // #654 — the empty-diff re-dispatch marker; no step field (it names the
   // review round + worktree instead), so the validator's step check skips it.
   "lens-fix-empty-resend",

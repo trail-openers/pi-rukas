@@ -104,6 +104,24 @@ export function reaskReplyText(rawStdout: string): string {
   return last;
 }
 
+/** The flags that make a resumed child a FOLLOW-UP on one session: rpc mode, no
+ * discovered extensions (the MCP built-in re-enabled), the session file, the
+ * mode-independent guards. Shared with the explore reply re-ask
+ * (`work-driver-explore-reask.ts`), which is the same child shape with a
+ * different role and tool roster — one grammar for "one prompt, on that session". */
+export function reResumeChildArgs(transcriptPath: string): string[] {
+  return [
+    "--mode",
+    "rpc",
+    "--no-extensions",
+    "-e",
+    "builtin:mcp",
+    "--session",
+    transcriptPath,
+    ...childGuardsArgs(),
+  ];
+}
+
 /** The re-ask child's argv: the reviewer's own role, system prompt, tool fence
  * and model, on the session file the reviewer wrote. */
 export function reaskChildArgs(args: {
@@ -114,14 +132,7 @@ export function reaskChildArgs(args: {
   provider?: string;
 }): string[] {
   const argv = [
-    "--mode",
-    "rpc",
-    "--no-extensions",
-    "-e",
-    "builtin:mcp",
-    "--session",
-    args.transcriptPath,
-    ...childGuardsArgs(),
+    ...reResumeChildArgs(args.transcriptPath),
     "--append-system-prompt",
     args.promptFile,
   ];

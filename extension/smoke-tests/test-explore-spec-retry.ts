@@ -152,6 +152,33 @@ function evidenceWording() {
   );
   assert(hasIntentVerdictToken("**INTENT-VERDICT: park**"), "bold park counts as a verdict token");
   assert(!hasIntentVerdictToken("no token here"), "absent token is not a verdict");
+  // #2611 review — an ask whose child REPLIED with something unreadable is not
+  // an ask that got no answer, and the operator reading the handoff needs the
+  // difference: one points at a wedged provider, the other at the reply's form.
+  assert(
+    noSpecEvidence("nothing useful", false, { asked: true, answered: false }) ===
+      "no verdict and no spec parsed (the same-session re-ask got no answer)",
+    "re-ask with no reason reported: still reads as no answer",
+  );
+  assert(
+    noSpecEvidence("nothing useful", false, {
+      asked: true,
+      answered: false,
+      reason: "answered-without-a-readable-spec",
+    }) ===
+      "no verdict and no spec parsed (the same-session re-ask answered but its reply held no readable spec)",
+    "re-ask that answered in an unreadable form says so, rather than claiming no answer",
+  );
+  assert(
+    noSpecEvidence("nothing useful", true, { asked: true, answered: false, reason: "timeout" }) ===
+      "no verdict and no spec parsed (the same-session re-ask got no answer (timeout); explore re-dispatched once)",
+    "a failed re-ask names its own reason beside the fresh re-dispatch",
+  );
+  assert(
+    noSpecEvidence("nothing useful", false, { asked: true, answered: true }) ===
+      "no verdict and no spec parsed (the same-session re-ask answered without a readable spec)",
+    "the answered arm's wording is unchanged",
+  );
 }
 
 // 3. Driver: bad then good → exactly 2 dispatches, proceeds, no cap.
@@ -208,11 +235,18 @@ async function badTwice() {
     cap?.kind === "cap-hit" && cap.cap === "explore-needs-clarification",
     "bad→bad: parks with explore-needs-clarification",
   );
+  // #2611 review — the ask's own reason now rides in the evidence. This file's
+  // `runWith` injects no `exploreReask`, so the step reaches the production ask,
+  // which finds a stub reply with no transcript to resume and reports `no-session`
+  // — the reason the handoff now names rather than flattening to "got no answer".
+  // `test-work-driver-explore-reask.ts` (3) and (3b2) pin the other two arms.
   assert(
     cap?.kind === "cap-hit" &&
       cap.evidence ===
-        "INTENT-VERDICT present but no `## Spec` heading parsed (explore re-dispatched once)",
-    "bad→bad: evidence names the missing `## Spec` after the retry",
+        "INTENT-VERDICT present but no `## Spec` heading parsed (the same-session re-ask got no answer (no-session); explore re-dispatched once)",
+    `bad→bad: evidence names the missing \`## Spec\` after the retry (got ${JSON.stringify(
+      cap?.kind === "cap-hit" ? cap.evidence : undefined,
+    )})`,
   );
 }
 

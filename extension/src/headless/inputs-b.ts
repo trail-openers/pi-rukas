@@ -58,6 +58,12 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // Unset: a headless cycle opens its PR as a draft, an interactive one does not.
   flag("DRAFT_PR", null),
   ms("EXPLORE_BOUND_MS", 1_800_000),
+  // #2611 — the wall clock on the ONE same-session follow-up an explore reply
+  // that ended on a status line gets before the step pays for a fresh child
+  // (work-driver-explore-reask.ts). Read per call; zero, a negative or a value
+  // the parser cannot read falls back to the 3-minute default rather than
+  // unbounding the ask or killing it the instant it starts.
+  ms("EXPLORE_REASK_BOUND_MS", 180_000),
   input("EXTRA_IMAGE_DIRS", "list", null, "cycle", { separator: ":", manifestVersion: 1 }),
   // #1846 — the driver's one-shot revert of a fix pass's out-of-fence files. Off,
   // a first stray set parks on its refusal exactly as it did before #1849 and the

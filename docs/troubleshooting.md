@@ -859,6 +859,18 @@ Two new checks can park here, both because explore did not produce a decision th
 
 Revise the issue body (`/plan`) and re-run with `--restart`.
 
+### An explore reply ends on a status line ("Verified. Writing the spec.")
+
+The driver asks that same session once for the two things its reply contract
+requires — the `INTENT-VERDICT:` line and the `## Spec` block — before paying for a
+fresh child, because the first child already did the investigation and its context
+holds the evidence (#2611). Check the state file or the `/work` status: an
+`explore-reasked` row says the ask ran and whether it answered, and
+`explore-spec-source` names the path that finally produced the spec (`first-reply`,
+`reask`, `redispatch`, `artifact`). No `explore-reasked` row at all means the ask was
+never reached — the first reply already satisfied its contract, the reply named no
+session to resume, or the spawn threw — and only the fresh re-dispatch ran.
+
 ### The develop gate fails on missing dependencies, not on the diff
 
 Development happens in a `git worktree`, which contains tracked files only — no `node_modules`, no virtualenv, no vendor tree. If your verify command needs them, it fails for a reason that has nothing to do with the change.
