@@ -145,9 +145,8 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
         case "exhausted":
           // The publish arm is the GREEN arm and nothing else: the gate decides whether a head may ship, so
           // an exhausted round reaches `publish` only when the newest DECIDED `verify` said green — the one
-          // reader `publish` itself consults, so the two cannot disagree about what was verified. Every other
-          // case (none, or one that is not green) hands back through the biller, so the round the builder was
-          // dispatched for is still spent and the draft marker still keeps the run out of `land`.
+          // reader `publish` itself consults, so the two cannot disagree. Every other case (none, or not
+          // green) hands back through the biller: the round stays spent and the marker keeps it from `land`.
           if (newestDecided(run.steps, "verify")?.outcome?.kind === "green")
             return viaBuild(run, "publish", true);
           return viaBuild(run, "handback", true);

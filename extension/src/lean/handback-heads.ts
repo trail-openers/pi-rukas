@@ -5,8 +5,8 @@
  * The rule keys on the LOG, not the stop cause. Two edges put unverified bytes on origin's branch while the
  * run walks: a `review` step whose fix wave pushed (`machine.ts` routes `fixed` back through `verify`, so a
  * run reaching `handback` over a `fixed` review with no decided `verify` behind it never ran that
- * re-verification), and the `build + exhausted` draft publish, which ships a head its own gate never
- * cleared. How either was reached changes nothing about what origin holds.
+ * re-verification), and the `build + exhausted` draft publish. How either was reached changes nothing about
+ * what origin holds.
  *
  * "We know a head we can ship" is a different claim from "the run once saw a gate": the newest DECIDED
  * `verify` must be `green` and must name a head.
@@ -22,13 +22,12 @@ import { type LeanState, REPORT_STATES, type Step } from "./state.ts";
 export const NO_GATE_VERDICT =
   "no verify step of this run decided anything, so no head is verified";
 
-/** What the handback ships: the green's head, or nothing. */
+/**
+ * True when this handback stands over bytes no gate of this run certified: a `fixed` review the gate has not
+ * spoken for since (a gate visit ENTERED and never answered counts as not speaking), or a draft publish whose
+ * own head no green covers.
+ */
 export interface HandbackHeads {
-  /**
-   * True when this handback stands over bytes no gate of this run certified — a `fixed` review the gate has
-   * not spoken for since (a gate visit the run ENTERED and never answered counts as not speaking), or a
-   * draft publish whose own head no green covers.
-   */
   applies: boolean;
   /** The newest decided green `verify`'s head at or before the newest work step; none when absent. */
   verifiedHead?: string;
@@ -55,7 +54,8 @@ export function newestDecidedWorkStep(steps: Step[]): Step | undefined {
 
 /**
  * The newest step of `state` after `after`, verdict or not — a verdictless visit is the one the rule must
- * refuse to ship over. Readers use the step's identity alone.
+ * refuse to ship over. The newest DECIDED `state` at or before `throughAt` is its decided sibling below; a
+ * head is taken only from a gate the run recorded and finished. Readers use a step's identity alone.
  */
 function newestStateStepAfter(steps: Step[], state: LeanState, after: number): Step | undefined {
   for (let i = steps.length - 1; i > after; i--) {
@@ -65,10 +65,6 @@ function newestStateStepAfter(steps: Step[], state: LeanState, after: number): S
   return undefined;
 }
 
-/**
- * The newest DECIDED `verify` at or before `throughAt` — a head is taken only from a gate the run recorded
- * and finished. Readers use the step's identity alone.
- */
 function newestDecidedThrough(
   steps: Step[],
   state: LeanState,
@@ -82,33 +78,28 @@ function newestDecidedThrough(
 }
 
 /**
- * Does a decided green at or before `publishAt` name `head`? "Covers" means exactly that: the gate's own
- * verdict, the head it recorded, and a position no later than the publish that shipped it.
- */
-function coveredByGreen(steps: Step[], publishAt: number, head: string): boolean {
-  const green = newestDecidedThrough(steps, "verify", publishAt);
-  return green?.outcome?.kind === "green" && green.outcome.verifiedHead === head;
-}
-
-/**
  * The head a handback of this log should ship, or the reason it cannot. A log whose newest work step is
  * neither a `fixed` review nor a draft publish gets `{applies: false}` with no reason.
  */
 export function handbackHeads(steps: Step[]): HandbackHeads {
   const newest = newestDecidedWorkStep(steps);
   if (newest?.outcome === undefined) return { applies: false };
-  const at = steps.indexOf(newest);
-  // The draft-publish arm: `build + exhausted` published this head and no green of this run covers it. The
-  // head is the publish step's OWN record, so it prints with origin unreadable, and nothing moved.
+  // The draft-publish arm: `build + exhausted` published this head and no green of this run covers it, so
+  // nothing moved. "Covers" is exact — the gate's verdict, the head it recorded, at or before the publish.
+  // The head named is the publish step's OWN record, so it prints with origin unreadable.
   if (newest.state === "publish") {
     const head = newest.outcome.publishedHead;
-    if (typeof head !== "string" || !isFullCommitSha(head) || coveredByGreen(steps, at, head))
+    // The same rule `land.ts` and `ci.ts` apply to a head: a full commit sha, else nothing to name.
+    if (typeof head !== "string" || !isFullCommitSha(head)) return { applies: false };
+    const green = newestDecidedThrough(steps, "verify", steps.indexOf(newest));
+    if (green?.outcome?.kind === "green" && green.outcome.verifiedHead === head)
       return { applies: false };
     return { applies: true, shippedHead: head, shippedVerified: false };
   }
   if (newest.state !== "review" || newest.outcome.kind !== "fixed") return { applies: false };
-  // Anything the gate stepped into AFTER the review is looked at, verdict or not, before an older green may
-  // speak for the head.
+  const at = steps.indexOf(newest);
+  // Anything the gate stepped into AFTER the review is looked at, verdict or not, before an older green
+  // may speak for the head.
   const trailing = newestStateStepAfter(steps, "verify", at);
   if (trailing !== undefined && trailing.outcome === undefined)
     return {
@@ -125,7 +116,6 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
       reason: `the newest decided verify is ${String(green.outcome?.kind)}, not green, so no head is verified`,
     };
   const head = green.outcome.verifiedHead;
-  // The same rule `land.ts` and `ci.ts` apply to this field: a head is a full commit sha.
   if (typeof head !== "string" || !isFullCommitSha(head))
     return {
       applies: true,

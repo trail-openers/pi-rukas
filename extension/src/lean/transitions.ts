@@ -5,9 +5,9 @@
  * carefully:
  *
  *   - `viaBuild` spends exactly one build attempt, and an attempt is a round DISPATCHED: only an edge whose
- *     destination is `build` may call it. An edge LEAVING build bills nothing. The one edge that leaves
- *     build and bills is `build + exhausted`, which routes on the run's own gate: a decided green publishes
- *     a draft, anything else hands back — either way the round the builder was given is spent.
+ *     destination is `build` may call it. An edge LEAVING build bills nothing, except `build + exhausted`,
+ *     the one edge that leaves build and bills: it routes on the run's own gate, a decided green publishing
+ *     a draft and anything else handing back, with the round spent either way.
  *   - the `draft` marker is a THREE-way parameter, not a boolean. `undefined` passes the run's current
  *     value through — what lets a CI fix round re-enter build without clearing the red a verify step
  *     recorded. A boolean would collapse "do not opine" into "clear it".

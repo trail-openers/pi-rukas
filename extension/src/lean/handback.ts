@@ -24,7 +24,6 @@ import { newestRedVerifyReason } from "./verify-deps.ts";
 
 /** A reason line long enough to be a wall is not a comment a human reads. */
 const REASON_CLIP = 2000;
-
 /** The `Branch:` line, or nothing when the branch is not a printable ref. */
 function branchLine(branch: string): string[] {
   try {
@@ -37,7 +36,6 @@ function branchLine(branch: string): string[] {
 
 /** How much of the frozen contract a comment lists; the full set lives in the step log. */
 const FROZEN_LIST_CAP = 20;
-
 /** How many conflicting files a cause line names; the rest live in the step log. */
 const BLOCKED_LIST_CAP = 20;
 
@@ -108,7 +106,6 @@ function blockedCause(steps: Step[]): string | undefined {
 /** The other reading of a test that passed on the base, which the gap's evidence cannot rule out. */
 const GAP_READING =
   "A test that passes on the base may also mean the criterion already holds there.";
-
 /** `specify`'s child left a criterion with no red test: each rule once, the per-file evidence, and the
  * second reading only where a test really passed on the base. */
 function gapCause(steps: Step[]): string | undefined {
@@ -144,10 +141,7 @@ export function neededFromLog(steps: Step[]): string {
   return reason.length > REASON_CLIP ? `${reason.slice(0, REASON_CLIP)}…` : reason;
 }
 
-/**
- * The exhausted builder's own account, at the newest WORK step only — the position rule {@link budgetCause}
- * applies.
- */
+/** The exhausted builder's own account, at the newest WORK step only — the {@link budgetCause} position. */
 function exhaustedCause(steps: Step[]): string | undefined {
   const step = newestWorkStep(steps);
   if (step?.state !== "build" || step.outcome?.kind !== "exhausted") return undefined;
@@ -283,9 +277,9 @@ interface Heads {
  * The head facts one handback records, from the head origin holds and what the rewind settled on. `render`
  * is the renderer flag and travels to the body only. Called only where the rule applies.
  *
- * A rewind with no head to move records the head origin ACTUALLY holds: the rule fired, found no certified
- * head, and origin still carries what the fix wave pushed. `shippedVerified` includes `alreadyAtVerified`,
- * where the rewind's own pre-move `unshippedHead` is withheld rather than printed as a head this step moved.
+ * A rewind with no head to move records the head origin ACTUALLY holds, uncertified. `shippedVerified`
+ * includes `alreadyAtVerified`, where the rewind's pre-move `unshippedHead` is withheld rather than printed
+ * as a head this step moved.
  */
 function headFacts(rewind: Rewind, originHead: string | undefined): Heads {
   const shippedHead = originHead ?? rewind.unshippedHead;
@@ -296,7 +290,6 @@ function headFacts(rewind: Rewind, originHead: string | undefined): Heads {
     return {
       render: true,
       shippedHead: originHead,
-      // Nothing moved, so origin holds what the fix wave left and the gate never certified it.
       shippedVerified: false,
       // This step displaced nothing.
       ...(why === undefined ? {} : { unshippedReason: why }),
@@ -342,15 +335,15 @@ export async function handbackOutcome(
     if (heads.applies && heads.shippedHead === undefined) {
       moved =
         heads.verifiedHead === undefined
-          ? // `NO_HEAD`'s own `reason` describes a push that did not run; this answers why what shipped
+          ? // `NO_HEAD`'s `reason` describes a push that did not run; this answers why the shipped head
             // was never certified.
             { ...NO_HEAD, noHeadReason: heads.reason }
           : await rewind(heads.verifiedHead);
       // Read AFTER the rewind, so it is origin's post-move value.
       originHead = await readOrigin(ctx);
     }
-    // The draft-publish arm's facts come from the run's own publish record, so an unreadable origin cannot
-    // swallow the line that says the head is unverified.
+    // The draft-publish arm's facts are the run's own publish record, so an unreadable origin cannot swallow
+    // the line that says the head is unverified.
     const facts: Heads = heads.shippedHead
       ? { render: true, shippedHead: heads.shippedHead, shippedVerified: false }
       : moved === undefined
