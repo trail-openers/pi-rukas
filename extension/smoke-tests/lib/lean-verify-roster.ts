@@ -201,8 +201,10 @@ export function rosterTemplate(
   // The fixture's own runner: a committed script that writes the JUnit report the gate reads back.
   // It is written in the shape the gate DERIVES from `verify.test` — the file placeholder gone, the
   // tree and the report named — because a fixture whose template disagrees with the derivation is a
-  // fixture that recognises its own roster runs by an argv the gate never submits.
-  return "sh .lean-roster-runner.sh --junitxml={report} {dir}";
+  // fixture that recognises its own roster runs by an argv the gate never submits. Its script is
+  // named apart from the frozen runner the tier arm spells the same way, so a case whose tier IS the
+  // roster's command can still count the two arms apart.
+  return "sh .lean-roster-suite.sh --junitxml={report} {dir}";
 }
 
 /**

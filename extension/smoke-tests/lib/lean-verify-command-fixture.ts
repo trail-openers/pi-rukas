@@ -269,7 +269,7 @@ export async function runCommandVerify(o: CommandVerifyOpts): Promise<CommandVer
   if (o.noTestLocation !== true) {
     mkdirSync(path.join(repoRoot, "tests"), { recursive: true });
     writeFileSync(path.join(repoRoot, "tests/test-project.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    writeFileSync(path.join(repoRoot, ".lean-roster-runner.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    writeFileSync(path.join(repoRoot, ".lean-roster-suite.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     writeFileSync(path.join(repoRoot, ".gitignore"), `${ROSTER_REPORT_FILE}\n`);
   }
   git(repoRoot, "add", "-A", "-f");
@@ -344,7 +344,7 @@ export async function runCommandVerify(o: CommandVerifyOpts): Promise<CommandVer
           : {
               testDir: "tests",
               testGlob: "test-*.sh",
-              roster: "sh .lean-roster-runner.sh --junitxml={report} {dir}",
+              roster: "sh .lean-roster-suite.sh --junitxml={report} {dir}",
             }),
       },
     }),

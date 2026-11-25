@@ -272,6 +272,8 @@ export interface ProjectRosterRecord {
   fileCount?: number;
   /** No base SUITE ran (head failed no test, so both red arms were empty); owes `baseTotal` 0. */
   baseSkipped?: boolean;
+  /** The `verify.full` tier ran nowhere here: its command is the suite this head run ran, green. */
+  fullSatisfied?: boolean;
   /** Pre-existing files this run edited whose base version PASSED against the head code. */
   editedFiles?: string[];
   /**
@@ -373,6 +375,9 @@ export function projectRosterProblem(value: unknown): string | undefined {
     return "outcome projectRoster.baseFailed must be empty when the base leg is skipped";
   const passed = r.passed as string[];
   const failed = r.failed as string[];
+  if (r.fullSatisfied === true && failed.length > 0)
+    // `fullSatisfied` licenses a tier that ran NOWHERE, so only a run that failed nothing may claim it.
+    return "outcome projectRoster.fullSatisfied may only be claimed by a head run that failed nothing";
   if ((r.total as number) < passed.length + failed.length)
     return "outcome projectRoster.total must be at least the number of names it records";
   if ((r.baseTotal as number) < (r.baseFailed as string[]).length)
@@ -419,6 +424,7 @@ export function validatedProjectRoster(value: unknown): ProjectRosterRecord | un
     baseTotal: r.baseTotal as number,
     ...(r.fileCount === undefined ? {} : { fileCount: r.fileCount as number }),
     ...(r.baseSkipped === undefined ? {} : { baseSkipped: r.baseSkipped as boolean }),
+    ...(r.fullSatisfied === undefined ? {} : { fullSatisfied: r.fullSatisfied as boolean }),
     ...(r.editedFiles === undefined ? {} : { editedFiles: [...(r.editedFiles as string[])] }),
     ...(r.baseVersionRed === undefined
       ? {}

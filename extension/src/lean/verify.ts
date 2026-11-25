@@ -210,6 +210,8 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
       issue,
       timeoutMs: deps.timeoutMs ?? TIER_TIMEOUT_MS,
       config: config.verify,
+      // The one tier the roster can make redundant, in the words it configures it in.
+      fullTier: config.verify.full,
       frozen,
     });
     if (built.status === "none") throw new VerifyInfraError(rosterHandbackReason(built.reason));
@@ -246,6 +248,12 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
    */
   let armTier: string | undefined;
   for (const [name, cmd] of tiers) {
+    // The roster ran this tier's own command at head and failed nothing, so a second run pays a whole
+    // suite for a verdict the record already holds. Every other arm is the loop below.
+    if (name === "full" && roster?.fullSatisfied === true) {
+      tierResults.push({ kind: "pass" });
+      continue;
+    }
     const one = await runTier(name, cmd, wt, deps.exec, deps.timeoutMs);
     if (one.kind === "pass") {
       tierResults.push(one);
@@ -441,6 +449,11 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // `passed (command)` in the PR body.
   const executed = Object.entries(commands.executed);
   const notRunnable = Object.entries(commands.notRunnable);
+  // The satisfied tier rides FIRST, where neither reason clip can cut it away from the green it explains.
+  const satisfiedNote =
+    roster?.fullSatisfied === true
+      ? "verify.full was not run again — the roster's head run covered it; "
+      : "";
   // A tier excused over the base commit rides in the reason the same way a flake does, and in its own recorded
   // field besides: the record is what `publish` renders the disclosure from and what `ci` re-reads instead of
   // probing the base again.
@@ -450,7 +463,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
       : ` — ${preexistingReason(Object.keys(preexisting))}`;
   return {
     kind: "green",
-    reason: `frozen tests and project tiers passed at ${head}${note}${flake === undefined ? "" : ` — ${flake}`}${excuseNote}`,
+    reason: `${satisfiedNote}frozen tests and project tiers passed at ${head}${note}${flake === undefined ? "" : ` — ${flake}`}${excuseNote}`,
     verifiedHead: head,
     ...(roster === undefined ? {} : { projectRoster: roster }),
     ...(Object.keys(preexisting).length === 0 ? {} : { preexistingFailures: preexisting }),

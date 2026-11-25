@@ -72,6 +72,12 @@ export function makeVerifyExec(opts: {
    */
   rosterCmd?: { bin: string };
   /**
+   * The tier command that IS the project's own suite, for the case whose `verify.full` tier is that
+   * command. Counted apart from `tierRuns` because the step skips that tier BEFORE the tier classifier
+   * sees it, so a global tier counter cannot tell the skipped tier from the fast tier that did run.
+   */
+  suiteTier?: string;
+  /**
    * The names each side's roster report holds, as the case declared them. Given for a side, the stub
    * writes that side's report itself rather than running the configured command — "this test passed at
    * head and failed at the base" is a fact about one tree's verdicts, not bytes both trees share.
@@ -91,8 +97,13 @@ export function makeVerifyExec(opts: {
   rosterHeadRunsSeen: () => number;
   /** How many times it ran it in the base checkout — 0 when the base leg was skipped (R4). */
   rosterBaseRunsSeen: () => number;
+  /** How many times the step ran the case's `suiteTier` as a tier. */
+  suiteTierRunsSeen: () => number;
 } {
-  const { wt, probeDir, repoRoot, tiers, opts: o } = opts;
+  const { wt, probeDir, repoRoot, opts: o } = opts;
+  // Not copied: the case's own tier list is a live object it still holds, and a tier the step runs after
+  // this point would otherwise read back as one of the case's configured tiers.
+  const tiers = [...opts.tiers];
   const hookMarks = opts.hookMarks;
   const baseSha = opts.baseSha;
   /** The env every child of this case gets: the fixture's git identity, plus the hook's marker dir. */
@@ -126,6 +137,8 @@ export function makeVerifyExec(opts: {
    * would have the tier go green before the tier ever ran.
    */
   let tierRuns = 0;
+  /** Head runs of the case's `suiteTier`, counted by command identity — see `suiteTierRunsSeen`. */
+  let suiteTierRuns = 0;
   /** How many of HEAD's runs the tier is allowed to fail before it goes green. */
   const redBudget = o.headTierRedRuns ?? 0;
   /** How many of HEAD's runs the step made in the RUN's own worktree. */
@@ -284,6 +297,15 @@ export function makeVerifyExec(opts: {
     if (o.roster?.baseDepListingRejects === true && cmd === "git" && o2?.argv?.includes("ls-tree"))
       if (o2.argv.includes("node_modules"))
         return Promise.reject(new Error("git ls-tree: fatal: bad object"));
+    // The STEP's own tier loop, counted by command identity before the roster's arm can claim a call
+    // whose words are the same command spelled in argv form.
+    if (
+      o.suiteTier !== undefined &&
+      cmd === o.suiteTier &&
+      o2?.argv === undefined &&
+      String(o2?.cwd ?? "") === wt
+    )
+      suiteTierRuns++;
     if (rosterRuns.isRosterSuiteRun(cmd, o2))
       return rosterRuns.runRosterSuite(cmd, o2, rosterSideOf(String(o2?.cwd ?? ""), wt, probeDir));
     // A frozen-test run is the argv-form call the runner template makes: `runTestFile`
@@ -444,5 +466,6 @@ export function makeVerifyExec(opts: {
     rosterRunsSeen: () => rosterRuns.headRuns() + rosterRuns.baseRuns(),
     rosterHeadRunsSeen: () => rosterRuns.headRuns(),
     rosterBaseRunsSeen: () => rosterRuns.baseRuns(),
+    suiteTierRunsSeen: () => suiteTierRuns,
   };
 }

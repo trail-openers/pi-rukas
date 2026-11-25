@@ -192,8 +192,12 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const head = git(wt, "rev-parse", "HEAD");
   // The tier commands this case configured, as strings: a tier runs as a shell
   // command, so the only thing that identifies one to the executor is its own text.
-  const configured: Partial<WorkConfig["verify"]> =
-    opts.noCommand === true ? {} : (opts.config ?? { fast: PASS_TIER });
+  // Copied before `full` is added: the step reads its tiers off the config the seam returns, and the
+  // stub recognises a tier by its text. Two views of one object would let the case's `full` tier be
+  // counted by the stub's tier classifier and by the counter for the case's suite command at once.
+  const configured: Partial<WorkConfig["verify"]> = {
+    ...(opts.noCommand === true ? {} : (opts.config ?? { fast: PASS_TIER })),
+  };
   if (opts.full !== undefined) configured.full = opts.full;
   const tiers: string[] = [configured.fast, configured.full].filter(
     (c): c is string => typeof c === "string" && c.trim() !== "",
@@ -218,8 +222,16 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
   const ctx: HandlerCtx = { ...f.ctx, steps: all };
   ctx.run = { ...ctx.run, steps: all };
 
-  const { exec, redRunsSeen, baseTierRunsSeen, frozenRunsSeen, rosterRunsSeen, rosterHeadRunsSeen, rosterBaseRunsSeen } =
-    makeVerifyExec({
+  const {
+    exec,
+    redRunsSeen,
+    baseTierRunsSeen,
+    frozenRunsSeen,
+    rosterRunsSeen,
+    rosterHeadRunsSeen,
+    rosterBaseRunsSeen,
+    suiteTierRunsSeen,
+  } = makeVerifyExec({
     wt,
     probeDir,
     repoRoot,
@@ -230,6 +242,9 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
     // The roster's project suite reaches the executor in argv form, so the stub needs the
     // command's binary to tell that call from a frozen run's `sh <file>`.
     rosterCmd: rosterCommandFor({ roster: rosterTemplate(opts, configured) }),
+    // The case whose `full` tier IS the project's suite counts that tier by its own words: the step
+    // skips it, so the global tier count cannot say which tier it did run.
+    ...(opts.suiteTier === undefined ? {} : { suiteTier: opts.suiteTier }),
     // What each side's report says. The default is one test that passes in BOTH trees; a case
     // declares names to ask for a red, a missing report, or a test that only the base ran.
     rosterNames: {
@@ -284,6 +299,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       rosterRuns: rosterRunsSeen(),
       rosterHeadRuns: rosterHeadRunsSeen(),
       rosterBaseRuns: rosterBaseRunsSeen(),
+      suiteTierRuns: suiteTierRunsSeen(),
       baseSha: f.ctx.run.baseSha,
     };
   } catch (err) {
@@ -299,6 +315,7 @@ export async function runVerify(opts: VerifyOpts): Promise<VerifyRun> {
       rosterRuns: rosterRunsSeen(),
       rosterHeadRuns: rosterHeadRunsSeen(),
       rosterBaseRuns: rosterBaseRunsSeen(),
+      suiteTierRuns: suiteTierRunsSeen(),
       baseSha: f.ctx.run.baseSha,
     };
   }

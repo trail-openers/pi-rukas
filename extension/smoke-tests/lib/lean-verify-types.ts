@@ -35,6 +35,12 @@ export interface VerifyRun {
    */
   baseTierRuns?: number;
   /**
+   * How many times the step ran the case's `suiteTier` as a tier. For the case whose `verify.full` tier
+   * IS the project's suite command, this — not `tierRuns`, which also counts the fast tier — is the
+   * evidence that the tier ran or was skipped.
+   */
+  suiteTierRuns?: number;
+  /**
    * How many times the step ran a FROZEN file through the `verify.test` runner. The
    * cost-bound cases assert on this rather than on wall clock: a hang's whole cost IS
    * the bound, so counting invocations says "one bound" in milliseconds where timing it
@@ -82,6 +88,11 @@ export interface VerifyOpts extends ProbeShapeOpts {
    * silent helper.
    */
   frozenRunner?: string;
+  /**
+   * The case's `verify.full` tier when it IS the project's own suite command — the words the roster
+   * derives from `verify.test`, less its report flag and its tree. Counted apart from `tierRuns`.
+   */
+  suiteTier?: string;
   /**
    * The run's frozen contract is one that fails whatever the tree holds, so the
    * runner must name it — see `NAMING_RUNNER_TEMPLATE`. Used with `frozenText:
