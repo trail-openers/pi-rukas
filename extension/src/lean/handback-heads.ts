@@ -54,8 +54,8 @@ export function newestDecidedWorkStep(steps: Step[]): Step | undefined {
 
 /**
  * The newest step of `state` after `after`, verdict or not — a verdictless visit is the one the rule must
- * refuse to ship over. The newest DECIDED `state` at or before `throughAt` is its decided sibling below; a
- * head is taken only from a gate the run recorded and finished. Readers use a step's identity alone.
+ * refuse to ship over. Its decided sibling is `newestDecidedThrough`: a head is taken only from a gate the run
+ * recorded and finished. Readers use a step's identity alone.
  */
 function newestStateStepAfter(steps: Step[], state: LeanState, after: number): Step | undefined {
   for (let i = steps.length - 1; i > after; i--) {
@@ -98,8 +98,6 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
   }
   if (newest.state !== "review" || newest.outcome.kind !== "fixed") return { applies: false };
   const at = steps.indexOf(newest);
-  // Anything the gate stepped into AFTER the review is looked at, verdict or not, before an older green
-  // may speak for the head.
   const trailing = newestStateStepAfter(steps, "verify", at);
   if (trailing !== undefined && trailing.outcome === undefined)
     return {
@@ -108,8 +106,6 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
     };
   const green = newestDecidedThrough(steps, "verify", at);
   if (green === undefined) return { applies: true, reason: NO_GATE_VERDICT };
-  // The arm that SHIPS the green the walk stopped at; an inverted comparison shows up only as a record that
-  // shipped nothing when it should have shipped the head.
   if (green.outcome?.kind !== "green")
     return {
       applies: true,

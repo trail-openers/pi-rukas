@@ -34,25 +34,22 @@ function branchLine(branch: string): string[] {
   return [`Branch: \`${branch}\``];
 }
 
-/** How much of the frozen contract a comment lists; the full set lives in the step log. */
-const FROZEN_LIST_CAP = 20;
-/** How many conflicting files a cause line names; the rest live in the step log. */
-const BLOCKED_LIST_CAP = 20;
+/** How much of the frozen contract a comment lists, and how many conflicting files a cause line names; the
+ * full sets live in the step log. */
+const LIST_CAP = 20;
 
-/** The newest DECIDED step of one state whose outcome carries a reason. */
-function newestReason(
-  steps: Step[],
-  state: "verify" | "ci",
-  kind: "red" | "green",
-): string | undefined {
+/** The newest DECIDED step of `state` whose outcome carries a reason. */
+function newestReason(steps: Step[], state: "verify" | "ci", kind: "red" | "green") {
+  let found: string | undefined;
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
     if (step?.state !== state || step.outcome?.kind !== kind) continue;
     const reason = step.outcome.reason ?? step.outcome.message;
     if (typeof reason !== "string" || reason.trim() === "") continue;
-    return reason;
+    found = reason;
+    break;
   }
-  return undefined;
+  return found;
 }
 
 /** Why the run is ending, in the record's own words. */
@@ -67,15 +64,12 @@ function terminalCause(steps: Step[]): string | undefined {
   return undefined;
 }
 
-/** The newest step that was WORK — the rule's reader, shared rather than re-written beside it. */
-const newestWorkStep = newestDecidedWorkStep;
-
 /**
  * The newest WORK step's budget breach. The breach is why the run stopped, and it counts
  * only when nothing that did work is newer.
  */
 function budgetCause(steps: Step[]): string | undefined {
-  const step = newestWorkStep(steps);
+  const step = newestDecidedWorkStep(steps);
   const fired = step === undefined ? undefined : budgetTrio(step.outcome);
   if (step === undefined || fired === undefined) return undefined;
   // The step's own clause about the attempts it spent, kept if it made one.
@@ -88,18 +82,17 @@ function budgetCause(steps: Step[]): string | undefined {
 /** The build step's named unsatisfiable contract — the one cause that names files; counts only at the newest
  * WORK step, like {@link budgetCause}. */
 function blockedCause(steps: Step[]): string | undefined {
-  const step = newestWorkStep(steps);
+  const step = newestDecidedWorkStep(steps);
   if (step?.state !== "build" || step.outcome?.kind !== "blocked") return undefined;
   const entries = Object.entries(step.outcome.blockedBy ?? {});
   if (entries.length === 0) return undefined;
   const named = entries
-    .slice(0, BLOCKED_LIST_CAP)
+    .slice(0, LIST_CAP)
     .map(
       ([file, why]) => `- ${oneLine(file, BLOCKED_PATH_CAP)}: ${oneLine(why, BLOCKED_REASON_CAP)}`,
     )
     .join("\n");
-  const more =
-    entries.length > BLOCKED_LIST_CAP ? `\n…and ${entries.length - BLOCKED_LIST_CAP} more` : "";
+  const more = entries.length > LIST_CAP ? `\n…and ${entries.length - LIST_CAP} more` : "";
   return `the frozen tests cannot all pass together:\n${named}${more}`;
 }
 
@@ -109,7 +102,7 @@ const GAP_READING =
 /** `specify`'s child left a criterion with no red test: each rule once, the per-file evidence, and the
  * second reading only where a test really passed on the base. */
 function gapCause(steps: Step[]): string | undefined {
-  const oc = newestWorkStep(steps)?.outcome;
+  const oc = newestDecidedWorkStep(steps)?.outcome;
   if (oc?.kind !== RED_TEST_GAP) return undefined;
   const rules = oc.failedRules ?? [];
   const reason = oc.reason ?? "";
@@ -127,11 +120,9 @@ export function neededFromLog(steps: Step[]): string {
     blockedCause(steps) ??
     gapCause(steps) ??
     budgetCause(steps) ??
-    // The empty round the hand-back now answers for outranks the gate finding below it.
     exhaustedCause(steps) ??
     newestRedVerifyReason(steps) ??
     newestReason(steps, "ci", "red") ??
-    // Nothing ever went red: fall through to the last verdict of either gate.
     newestReason(steps, "verify", "green") ??
     newestReason(steps, "ci", "green") ??
     // A gate that never decided leaves no verdict to quote; the rule's finding is all this can say.
@@ -143,7 +134,7 @@ export function neededFromLog(steps: Step[]): string {
 
 /** The exhausted builder's own account, at the newest WORK step only — the {@link budgetCause} position. */
 function exhaustedCause(steps: Step[]): string | undefined {
-  const step = newestWorkStep(steps);
+  const step = newestDecidedWorkStep(steps);
   if (step?.state !== "build" || step.outcome?.kind !== "exhausted") return undefined;
   const reason = step.outcome.reason ?? step.outcome.message;
   return typeof reason === "string" && reason.trim() !== "" ? reason : undefined;
@@ -186,9 +177,9 @@ function prUrlFromLog(steps: Step[]): string | undefined {
 /** The frozen list as bullet lines, capped, with the remainder counted. */
 function frozenLines(frozen: string[]): string {
   if (frozen.length === 0) return "- none were recorded";
-  const kept = frozen.slice(0, FROZEN_LIST_CAP).map((f) => `- ${f}`);
-  if (frozen.length <= FROZEN_LIST_CAP) return kept.join("\n");
-  return [...kept, `- …and ${frozen.length - FROZEN_LIST_CAP} more`].join("\n");
+  const kept = frozen.slice(0, LIST_CAP).map((f) => `- ${f}`);
+  if (frozen.length <= LIST_CAP) return kept.join("\n");
+  return [...kept, `- …and ${frozen.length - LIST_CAP} more`].join("\n");
 }
 
 /**
