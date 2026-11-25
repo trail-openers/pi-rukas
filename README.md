@@ -58,7 +58,7 @@ Required CLIs on `$PATH`. The role prompts assume all of these are installed —
 | `jq` | Used by `build.sh` to assemble the capability matrix into the PM prompt. |
 | [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research for the `explore` role. (Homebrew tap.) |
 | [`ctx7`](https://context7.com) | Current third-party library documentation. `ctx7 library <name>` → `ctx7 docs <id> <query>`. Free tier works without login. |
-| [`noni`](https://github.com/randomm/noni) | **Optional.** Decision-ledger CLI that the project hook `.pi/extensions/noni.ts` and AGENTS.md §10 call. Install `uv tool install .` from a checkout of the tagged release `v0.2.3`; without it the hook prints one line and the session continues. |
+| [`noni`](https://github.com/randomm/noni) | **Optional.** Decision-ledger CLI that the project hook `.pi/extensions/noni.ts` and AGENTS.md §10 call. Needs `uv`; install with `uv tool install .` from a checkout of the tagged release `v0.2.3`; without it the hook prints one line and the session continues. |
 
 ### Supply-chain setup (recommended one-time before installing)
 
@@ -105,7 +105,7 @@ parallel-cli login
 # ctx7
 npm install -g --ignore-scripts ctx7
 
-# noni — optional; from the tagged release, with uv's own embargo respected
+# noni — optional; installed from the pinned release tag v0.2.3
 git clone --branch v0.2.3 --depth 1 https://github.com/randomm/noni.git && (cd noni && uv tool install .)
 ```
 
