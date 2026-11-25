@@ -272,6 +272,16 @@ const everyKindEvent: WorkEvent[] = [
     ok: true,
     ms: 1,
   },
+  // The beat between the pair: the gate still waiting on a command it started.
+  // A log carrying only this kind must still validate and resume, so the kind is
+  // in the fixture set beside its bracket.
+  {
+    kind: "verify-heartbeat",
+    at: 3,
+    step: "develop",
+    command: "bash scripts/verify.sh",
+    elapsedSeconds: 300,
+  },
   // #2450 — what the #1647 selector decided for a develop round. Both directions
   // are carried: a selected run and a reasoned fallback are different verdicts, and
   // the second is the one that was invisible while the selector was inert.

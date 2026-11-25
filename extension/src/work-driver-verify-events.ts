@@ -32,11 +32,13 @@ import { makeConsolidatedVerifySkippedEvent } from "./workflow-state-events-veri
 import { makeVerifySelectEvent } from "./workflow-state-events-verify-select.ts";
 import type { VerifySelectArgs } from "./workflow-state-events-verify-select.ts";
 import type { VerifyRunEventFragment, VerifyStartedEvent } from "./workflow-state-events-verify.ts";
+import type { WorkStep } from "./workflow-state-events.ts";
 import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
-import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
+import type { WorkState } from "./workflow-state.ts";
+import { appendEvent, persistCycle } from "./workflow-state.ts";
 
 /**
- * #1415 — record that the develop gate's verify is starting, and PERSIST it
+ * #1415 — record that the gate's verify is starting, and PERSIST it
  * before the command runs: the persist is what puts the event on the host's
  * stream (work-state-emit.ts), so an operator sees the gate start rather than
  * a silent gap the length of the project's suite. The caller's state is not
@@ -47,17 +49,28 @@ import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
  * A failed persist costs only the live line, never the gate: it is traced and
  * the verify runs. A crash mid-gate leaves `currentStep` at develop either
  * way, so re-entry re-runs the step exactly as it would without this write.
+ *
+ * `step` is the CALLER's step, not a fixed `develop`: the commit-pr gate runs
+ * the project's command too and its silence is as long as develop's.
+ *
+ * The returned `at` is the instant the caller hands to the heartbeat as the
+ * run's origin, so a beat's elapsed and the bracket it sits inside are stamped
+ * from the same moment. Only the DEVELOP arm is beaten for: `verifyStepOutcome`
+ * arms the heartbeat in its develop path alone, so the commit-pr bracket this
+ * function can also write has no beats — it stays a start with no line until the
+ * gate returns.
  */
 export async function beginVerifyRun(
   ctx: CycleContext,
   state: WorkState,
+  step: WorkStep,
 ): Promise<VerifyStartedEvent | undefined> {
   const command = await verifyCmdFor(ctx.repoRoot);
   if (command === undefined) return undefined;
   const started: VerifyStartedEvent = {
     kind: "verify-started",
     at: Date.now(),
-    step: "develop",
+    step,
     command,
     target: { kind: "consolidated" },
   };
@@ -81,7 +94,7 @@ export function finishVerifyRun(
     {
       kind: "verify-completed",
       at,
-      step: "develop",
+      step: started.step,
       command: started.command,
       target: started.target,
       status: ok ? "success" : "failure",
