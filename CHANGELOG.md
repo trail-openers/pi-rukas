@@ -8,6 +8,13 @@ After v0.1.0, version bumps are driven automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [0.15.14](https://github.com/trail-openers/pi-rukas/compare/v0.15.13...v0.15.14) (2026-11-25)
+
+
+### Features
+
+* **work:** emit a heartbeat while the verify gate runs ([#2628](https://github.com/trail-openers/pi-rukas/issues/2628)) ([bd24d55](https://github.com/trail-openers/pi-rukas/commit/bd24d556df6006563c187dac2512b70768e2f6e5))
+
 ## [0.15.13](https://github.com/trail-openers/pi-rukas/compare/v0.15.12...v0.15.13) (2026-11-23)
 
 
