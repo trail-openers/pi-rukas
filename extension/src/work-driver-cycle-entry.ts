@@ -18,7 +18,7 @@ import { traceResourceBudget } from "./resource-budget.ts";
 import { dropSlowEvents } from "./slow-events.ts";
 import { cycleChildOpts } from "./work-cycle-trust.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
-import { verifyHeartbeatMs } from "./work-driver-verify-events.ts";
+import { verifyHeartbeatMs } from "./work-driver-verify-heartbeat.ts";
 import { createEmitSink } from "./work-state-emit.ts";
 
 /**

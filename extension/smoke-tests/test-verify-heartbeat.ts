@@ -22,15 +22,16 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { isStableKind, NDJSON_VERSION, formatLine } from "../src/headless/ndjson.ts";
 import type { CycleContext } from "../src/work-driver-context.ts";
 import {
-  armVerifyHeartbeat,
   beginVerifyRun,
   finishVerifyRun,
+} from "../src/work-driver-verify-events.ts";
+import {
+  armVerifyHeartbeat,
   startVerifyHeartbeat,
   VERIFY_HEARTBEAT_DEFAULT_MS,
-} from "../src/work-driver-verify-events.ts";
+} from "../src/work-driver-verify-heartbeat.ts";
 import { appendEvent, initialState, type WorkState } from "../src/workflow-state.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
 import { createEmitSink } from "../src/work-state-emit.ts";
@@ -41,7 +42,12 @@ import {
   stateFor,
 } from "./lib/consolidated-verify-exec.ts";
 import { fixture } from "./lib/consolidated-verify-fixture.ts";
-import { armOnce, countTimerArms, withUnrefProbe } from "./lib/verify-heartbeat-arm.ts";
+import {
+  armOnce,
+  countTimerArms,
+  normalisedLines,
+  withUnrefProbe,
+} from "./lib/verify-heartbeat-arm.ts";
 import { runGate } from "./lib/verify-heartbeat-gate.ts";
 
 // The frontend-only classification and the consolidated-skip would let the gate
@@ -276,7 +282,7 @@ const beatsOf = (states: WorkState[]): Heartbeat[] =>
 const root = mkdtempSync(path.join(tmpdir(), "pi-ens-2625-"));
 {
   // The wiring seam: the only assertions that prove a beat reaches
-  // `persistCycle` and
+  // `appendBeat` and
   // therefore the host's stream, that the abort guard is wired to the cycle's
   // signal, and that a beat's elapsed is measured off the CALLER's `startedAt`.
   // Replacing any of those wiring lines with a no-op or a constant must fail
@@ -289,7 +295,7 @@ const root = mkdtempSync(path.join(tmpdir(), "pi-ens-2625-"));
   });
   assert(
     live.emitted.filter((e) => e.kind === "verify-heartbeat").length === 1,
-    `arm: one fired tick puts exactly ONE beat on the real host stream through the real persistCycle (${JSON.stringify(live.emitted.map((e) => e.kind))})`,
+    `arm: one fired tick puts exactly ONE beat on the real host stream through the real appendBeat sink (${JSON.stringify(live.emitted.map((e) => e.kind))})`,
   );
   {
     const beat = live.emitted.find((e) => e.kind === "verify-heartbeat") as Heartbeat | undefined;
@@ -441,7 +447,7 @@ try {
         pair[1]?.kind === "verify-completed" &&
         pair[0].step === "commit-pr" &&
         pair[1].step === "commit-pr",
-      `finishVerifyRun: the end agrees with its start's step (${JSON.stringify(pair.map((e) => [e.kind, e.step]))})`,
+      `finishVerifyRun: the end agrees with its start's step (${JSON.stringify(pair.map((e: { kind: string; step: string }) => [e.kind, e.step]))})`,
     );
   }
 
@@ -467,22 +473,9 @@ try {
     // run mints its own `at`, `ms` and idempotency key). An event that leaked
     // onto the off arm — a beat, or a beat-shaped field on the bracket — would
     // change these lines and fail here.
-    const lines = (es: WorkEvent[]) =>
-      es
-        .filter((e) => e.kind !== "verify-heartbeat")
-        .map((e, i) =>
-          formatLine({
-            v: NDJSON_VERSION,
-            kind: e.kind,
-            at: "<at>",
-            issue: 2627,
-            key: `<key:${i}>`,
-            event: JSON.parse(JSON.stringify({ ...e, at: 0, ms: 0 })),
-            ...(isStableKind(e.kind) ? {} : { unstable: true as const }),
-          }),
-        );
     assert(
-      JSON.stringify(lines(off.emitted)) === JSON.stringify(lines(on.emitted)),
+      JSON.stringify(normalisedLines(off.emitted, 2627)) ===
+        JSON.stringify(normalisedLines(on.emitted, 2627)),
       "switch at 0: the host's lines are byte-identical to the on arm once its beats are removed",
     );
     assert(

@@ -100,7 +100,7 @@ import { resumeEnabled, sessionReattachEnabled } from "../../src/work-driver-res
 import { stepNoticeThresholdMs } from "../../src/work-driver-step-notice.ts";
 import { timeoutFlagPrecedenceEnabled } from "../../src/work-driver-timeout-flag-precedence-switch.ts";
 import { verifyTimeoutMs } from "../../src/work-driver-verify-budget.ts";
-import { verifyHeartbeatMs } from "../../src/work-driver-verify-events.ts";
+import { verifyHeartbeatMs } from "../../src/work-driver-verify-heartbeat.ts";
 import { verifyPytestDisabled } from "../../src/work-driver-verify-cmd.ts";
 import { verifyCommandCriteriaEnabled } from "../../src/work-driver-verify-develop-command-criteria.ts";
 import { testDeleteTolerance } from "../../src/work-driver-verify-develop-helpers.ts";

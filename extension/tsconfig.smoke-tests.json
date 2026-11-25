@@ -502,6 +502,7 @@
     "smoke-tests/lib/verify-heartbeat-arm.ts",
     "smoke-tests/test-verify-heartbeat.ts",
     "smoke-tests/test-verify-heartbeat-stream.ts",
-    "smoke-tests/test-verify-heartbeat-switch.ts"
+    "smoke-tests/test-verify-heartbeat-switch.ts",
+    "smoke-tests/test-verify-heartbeat-repeat.ts"
   ]
 }

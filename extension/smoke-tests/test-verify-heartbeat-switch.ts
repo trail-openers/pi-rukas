@@ -22,7 +22,7 @@ import { buildCapabilities } from "../src/headless/capabilities.ts";
 import { HEADLESS_INPUTS } from "../src/headless/inputs.ts";
 import { isStableKind, NDJSON_STABLE_FIELDS } from "../src/headless/ndjson.ts";
 import { verifyChildEnv } from "../src/work-driver-verify-cmd.ts";
-import { verifyHeartbeatMs } from "../src/work-driver-verify-events.ts";
+import { verifyHeartbeatMs } from "../src/work-driver-verify-heartbeat.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {

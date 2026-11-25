@@ -21,12 +21,9 @@ import { mergeBaseHealthReport } from "./work-driver-verify-base-health-channels
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import type { ProvenanceDisclosureSink } from "./work-driver-verify-develop-provenance.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
-import {
-  armVerifyHeartbeat,
-  beginVerifyRun,
-  finishVerifyRun,
-} from "./work-driver-verify-events.ts";
+import { beginVerifyRun, finishVerifyRun } from "./work-driver-verify-events.ts";
 import type { DevelopGateRecord } from "./work-driver-verify-gate-reuse.ts";
+import { armVerifyHeartbeat } from "./work-driver-verify-heartbeat.ts";
 import type { VerifyStepOutcomeResult } from "./work-driver-verify-pr17-result.ts";
 import { type VerifyCommandRecord, newVerifyRecordSlot } from "./work-driver-verify-record.ts";
 import type { SelectedVerifyRecord } from "./work-driver-verify-select-exec.ts";
