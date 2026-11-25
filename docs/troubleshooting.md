@@ -1815,6 +1815,27 @@ PR: [#213](https://github.com/trail-openers/pi-rukas/pull/213)
 
 PR: [#213](https://github.com/trail-openers/pi-rukas/pull/213)
 
+## Session start
+
+### The brief is missing at session start, or shows `noni: could not read the brief (…)`
+
+**Symptom:** at session start the project brief is missing — the session opens with no direction to work in — or it opens with the single line `noni: could not read the brief (<reason>)` in place of the brief. The session itself runs normally either way.
+
+**Cause:** the project hook `.pi/extensions/noni.ts` runs `noni brief --repo <state root>` once at session start and after each compaction, and prints what it gets. It comes back empty or as that line when:
+
+- `noni` is not on `PATH` (it is an optional prerequisite — see the README table), so the command cannot run at all;
+- the project is not trusted in Pi — a project extension in `.pi/extensions/` loads only after you trust the project, so an untrusted clone never runs the hook and never shows a brief;
+- the state root has no `noni/` directory in this clone. `.noni-state` is a per-clone private repository, ignored through the clone's own exclude file (`.git/info/exclude`) and never tracked, so a fresh clone simply does not have it;
+- `NONI_STATE_ROOT` is exported and points somewhere else — the hook uses it verbatim and does not fall back to the candidates beside the working directory.
+
+**Fix:** install `noni` from the tagged release (README → Prerequisites); trust the project in Pi so the project extension loads; create or clone the state root at `.noni-state` in the project root; unset a stale `NONI_STATE_ROOT`. Hand check from the project root:
+
+```bash
+noni brief --repo .noni-state
+```
+
+That prints the brief the session should have shown. A clone with no state root is a normal state, not a fault: the hook costs it one line and the session continues.
+
 ## Session resume
 
 ### `pi-rukas -r` opens the picker but selecting a session does nothing

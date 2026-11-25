@@ -224,6 +224,11 @@ There is no retained human merge gate: merging is not a human approval step. Hum
 
 ## 10. Issue-driven development
 
+This project keeps its direction in noni, at the state root `.noni-state`: the standing
+intent, the order of work and the operator's decisions. At session start run
+`noni brief --repo .noni-state` and work in its order. Do not invent direction. When
+something is undecided, ask the operator and record the answer with `noni decide`.
+
 ### Before starting
 
 1. A GitHub issue exists for the work
@@ -270,7 +275,7 @@ If it changes frequently or is task-specific, don't document it as a file. Use i
 
 ### Module-level descriptions live in source jsdoc, not in tables
 
-Don't add file-by-file "what does X own" tables to AGENTS.md or CONTRIBUTING.md. Such tables drift with every refactor and become a second source of truth that is perpetually stale. The authoritative module contract is the **jsdoc header of the source file itself**; the answer to "what does `dispatch-deck.ts` do?" is "open the file". This file enforces principles and load-bearing constraints — it is not a module registry, and each statement here lives in exactly one file: a role prompt may point at a rule, it does not restate it.
+Don't add file-by-file "what does X own" tables to AGENTS.md or CONTRIBUTING.md: such tables drift with every refactor and become a second source of truth. The answer to "what does `dispatch-deck.ts` do?" is "open the file", and each statement here lives in one file.
 
 ### Public repository hygiene
 
