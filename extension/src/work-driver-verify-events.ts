@@ -13,7 +13,7 @@
  * The factory and the event type stay where the union can reach them; the
  * mutation lives here, where importing `workflow-state.ts` is ordinary.
  */
-import { trace } from "./trace.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { FenceLift } from "./work-develop-scope-fence-seam.ts";
 import type { CycleContext } from "./work-driver-context.ts";
 import { synthesizeDriverCompletion } from "./work-driver-events.ts";
@@ -38,7 +38,8 @@ import type {
 } from "./workflow-state-events-verify.ts";
 import type { WorkStep } from "./workflow-state-events.ts";
 import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
-import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
+import type { WorkState } from "./workflow-state.ts";
+import { appendBeat, appendEvent, persistCycle } from "./workflow-state.ts";
 
 /**
  * The default beat interval — how long the gate may be silent on the host's
@@ -49,6 +50,14 @@ import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
 export const VERIFY_HEARTBEAT_DEFAULT_MS = 300_000;
 
 /**
+ * The floor on a beat's interval. Each beat rewrites the whole state file (see
+ * `appendBeat`), so a sub-second interval would turn a liveness line into a
+ * write-storm on the file every other driver persist shares. A positive value
+ * under this reads as the floor; `0` stays the ONLY off value.
+ */
+export const VERIFY_HEARTBEAT_MIN_MS = 1_000;
+
+/**
  * `PI_ENSEMBLE_VERIFY_HEARTBEAT_MS` — the beat's interval in ms, read ONCE per
  * /work invocation by the driver and passed down as an argument. It is never
  * read from the environment inside a project command: `verifyChildEnv` scrubs
@@ -56,13 +65,16 @@ export const VERIFY_HEARTBEAT_DEFAULT_MS = 300_000;
  * this default. A `0` (or anything not a positive finite number) means no beat.
  * A value above the interval is floored to whole ms, and a value that cannot be
  * read as a number is the shipped default rather than an off switch: only an
- * explicit `0` turns the beat off.
+ * explicit `0` turns the beat off. A positive value below {@link
+ * VERIFY_HEARTBEAT_MIN_MS} reads as that floor, because every beat rewrites the
+ * whole state file.
  */
 export function verifyHeartbeatMs(): number {
   const raw = process.env.PI_ENSEMBLE_VERIFY_HEARTBEAT_MS;
   if (raw === undefined || raw.trim() === "") return VERIFY_HEARTBEAT_DEFAULT_MS;
   const n = Number(raw.replace(/_/g, ""));
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : VERIFY_HEARTBEAT_DEFAULT_MS;
+  if (!Number.isFinite(n) || n < 0) return VERIFY_HEARTBEAT_DEFAULT_MS;
+  return Math.max(VERIFY_HEARTBEAT_MIN_MS, Math.floor(n));
 }
 
 /**
@@ -77,13 +89,19 @@ export type VerifyHeartbeatDeps = {
   intervalMs: number | undefined;
   /** The clock the beat is stamped with — also the clock `startedAt` came from. */
   now: () => number;
-  /** Arm one beat. Returns its cancel; unref the timer when it supports unref. */
+  /** Arm the repeating beat. Returns its cancel; unref the timer when it supports unref. */
   setInterval: (fn: () => void, ms: number) => (() => void) | undefined;
   /** Tear the armed beat down. Optional because a fake scheduler may not return one. */
   clearInterval?: (cancel: (() => void) | undefined) => void;
-  /** Make one beat durable — in production, `persistCycle`. */
+  /**
+   * Make one beat durable — in production, {@link appendBeat}, which appends to the
+   * persisted log inside the file's write slot rather than rewriting a snapshot.
+   */
   persist: (state: WorkState) => Promise<unknown>;
-  /** Append a beat to this log and hand the result to `persist`. */
+  /**
+   * The log the pump builds its beat on and hands to `persist`. The injected pump
+   * beats against it; the production wiring ignores it and reads the file instead.
+   */
   state: WorkState;
   /** The step and command the beat names — taken from the run's own start event. */
   step: WorkStep;
@@ -110,22 +128,35 @@ export type VerifyHeartbeatDeps = {
  *   - one beat per tick, each carrying a whole-second `elapsedSeconds` and its own
  *     `at`, so the emit watermark (`index|kind|at`) sees the distinct events they
  *     are rather than one line repeated;
- *   - nothing after `stop()`, and nothing once `aborted()` is true: `persistCycle`
- *     rewrites a `running` snapshot as `interrupted` on an aborted signal and
- *     appends the runner's own interrupt event, which is not the beat's to write;
+ *   - nothing after `stop()`, and nothing once `aborted()` is true: a beat that
+ *     still finds a fired signal persists nothing, because the runner's own
+ *     interrupt event is not the beat's to write (the production persist applies
+ *     `applyInterrupt` for the window between that check and its write slot, and
+ *     appends to the on-disk log rather than rewriting a snapshot — see
+ *     `appendBeat`);
  *   - `intervalMs` 0 arms nothing and returns a no-op stop, which is the
  *     byte-identical stream the off switch promises;
- *   - a `persist` that throws is traced and never rethrown — the beat is progress
- *     for the host, never a gate on the cycle — and the following ticks still beat.
+ *   - a `persist` that throws is reported once (WARN) and never rethrown — the beat
+ *     is progress for the host, never a gate on the cycle — and the following ticks
+ *     still beat.
  *
- * Beats append to the caller's own log, so they land after `verify-started` at
- * fresh indices and the watermark never re-emits them.
+ * In production the pump is armed on a REPEATING timer and the sink is
+ * {@link appendBeat}: the whole point of the beat is that the gate's span outlasts
+ * several intervals, so a one-shot timer would say nothing after the first beat,
+ * and a `persistCycle` of the gate-start snapshot would roll back every driver
+ * persist that landed since. The `state` dependency is what the injected pump
+ * beats against (a fake sink, no file); the production wiring never reads it.
  */
 export function startVerifyHeartbeat(d: VerifyHeartbeatDeps): () => void {
   const interval = d.intervalMs ?? VERIFY_HEARTBEAT_DEFAULT_MS;
   if (!(interval > 0) || !Number.isFinite(interval)) return () => {};
   let beating = true;
   let cancel: (() => void) | undefined;
+  // The first failed beat of a run is the one worth a WARN: a whole gate whose
+  // beats all failed is one silent line, not one per beat, and an operator
+  // staring at a stream with no beats has to be able to tell "switched off" from
+  // "every write failed". Later failures stay on the debug channel.
+  let warned = false;
   const beat = async (): Promise<void> => {
     if (!beating) return;
     if (d.aborted?.() === true) return;
@@ -141,14 +172,19 @@ export function startVerifyHeartbeat(d: VerifyHeartbeatDeps): () => void {
     };
     // Awaited, and never rethrown: the beat's write must settle before the gate's
     // own awaits run on (an unawaited one is also an unhandled rejection), and a
-    // persist that throws or rejects is traced here so it costs the live line and
+    // persist that throws or rejects is reported here so it costs the live line and
     // never the gate. The next tick still beats whatever this one did.
     try {
       await d.persist(appendEvent(d.state, event));
     } catch (err) {
-      trace(
-        `work-driver: verify-heartbeat not persisted — ${(err as Error)?.message?.slice(0, 160) ?? String(err)}`,
-      );
+      const detail = `work-driver: verify-heartbeat not persisted — ${
+        (err as Error)?.message?.slice(0, 160) ?? String(err)
+      } (${d.step}: ${d.command})`;
+      if (warned) trace(detail);
+      else {
+        warned = true;
+        traceWarn(detail);
+      }
     }
   };
   cancel = d.setInterval(() => {
@@ -179,16 +215,25 @@ export function startVerifyHeartbeat(d: VerifyHeartbeatDeps): () => void {
 
 /**
  * Arm the gate's beat for the span of one verify run. The wiring seam for
- * {@link startVerifyHeartbeat}: the real timers (unref'd, so a beat is never the
- * reason a process stays alive), the real clock, and `persistCycle` as the sink.
+ * {@link startVerifyHeartbeat}: a REPEATING unref'd timer (so the beat keeps
+ * coming for the gate's whole span, and a beat is never the reason a process
+ * stays alive), the real clock, and `appendBeat` as the sink.
+ *
+ * Both halves of that pairing are the feature: a one-shot timer beats once and
+ * then says nothing for the rest of a long gate, and `persistCycle` of a snapshot
+ * taken at gate start would rewrite the whole file and roll back whatever the
+ * driver persisted while the gate ran. `appendBeat` re-reads the state inside the
+ * file's write slot and appends there, exactly as `markInterrupted` does.
  *
  * Absent `started` there is no run to beat for — no command was resolved, so the
- * gate wrote no start and must write no beat. `state` is the snapshot the caller
- * handed `beginVerifyRun`, and `startedAt` its `at`, so a beat's elapsed and a
- * beat's `at` come from one clock and cannot disagree.
+ * gate wrote no start and must write no beat. `startedAt` is the `at` of that
+ * start event, so a beat's elapsed and a beat's `at` come from one clock and
+ * cannot disagree. `state` is unused here: the beat appends to what is on disk,
+ * never to a closed-over snapshot.
  */
 export function armVerifyHeartbeat(a: {
   ctx: CycleContext;
+  /** Unused by the production wiring — the beat reads the persisted log instead. */
   state: WorkState;
   /** Absent when no command was resolved: there is no run to beat for. */
   started: VerifyStartedEvent | undefined;
@@ -210,13 +255,22 @@ export function armVerifyHeartbeat(a: {
     command: started.command,
     startedAt: a.startedAt,
     now: Date.now,
+    // A real repeating timer: the pump arms it once and expects it to fire every
+    // interval until cancelled. `unref` keeps a beat from holding the process.
     setInterval: (fn: () => void, ms: number) => {
-      const t = setTimeout(fn, ms);
-      // A beat must never be the reason a process stays alive.
+      const t = setInterval(fn, ms);
       t.unref?.();
-      return () => clearTimeout(t);
+      return () => clearInterval(t);
     },
-    persist: (state) => persistCycle(a.ctx, state),
+    clearInterval: (cancel) => cancel?.(),
+    persist: () =>
+      appendBeat(a.ctx.repoRoot, a.state.issue, a.ctx.emitSink, a.ctx.signal, {
+        kind: "verify-heartbeat",
+        at: Date.now(),
+        step: started.step,
+        command: started.command,
+        elapsedSeconds: Math.max(0, Math.floor((Date.now() - a.startedAt) / 1000)),
+      }),
     aborted: () => a.ctx.signal?.aborted === true,
   });
 }
@@ -239,7 +293,10 @@ export function armVerifyHeartbeat(a: {
  *
  * The returned `at` is the instant the caller hands to the heartbeat as the
  * run's origin, so a beat's elapsed and the bracket it sits inside are stamped
- * from the same moment.
+ * from the same moment. Only the DEVELOP arm is beaten for: `verifyStepOutcome`
+ * arms the heartbeat in its develop path alone, so the commit-pr bracket this
+ * function can also write has no beats — it stays a start with no line until the
+ * gate returns.
  */
 export async function beginVerifyRun(
   ctx: CycleContext,
