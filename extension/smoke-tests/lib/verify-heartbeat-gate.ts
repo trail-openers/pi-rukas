@@ -32,11 +32,10 @@ type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 /** What the run handed the heartbeat pump when it armed it. */
 const execFileP = promisify(execFile);
-// Real git, so the child names the scrub itself: an inherited `GIT_DIR` is
-// honoured ahead of `cwd`, so the commit below would land in whoever's
-// repository the variable names and exit 0 doing it.
-const git = (cwd: string, args: string[]) =>
-  execFileP("git", args, { cwd, env: gitTestEnv() });
+// Real git, so the child names the scrub: an inherited `GIT_DIR` is honoured
+// ahead of `cwd`, so an unscrubbed child writes its commits into whatever repo
+// that variable names and exits 0 doing it.
+const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd, env: gitTestEnv() });
 
 type Heartbeat = Extract<WorkEvent, { kind: "verify-heartbeat" }>;
 type GateCtx = Parameters<typeof verifyStepOutcome>[0];
