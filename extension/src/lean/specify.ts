@@ -158,8 +158,8 @@ function specRules(body: string, run: LeanRun): { spec?: PiSpec; rules: string[]
  * rows.
  *
  * The canary runs in the directory the tier runs the pinned compiler in
- * (`packageDirFor`), and the tier runs with the driver's knobs scrubbed. When
- * provisioning could not give the tree its dependencies, that is said in the message.
+ * (`packageDirFor`), and the tier runs with the driver's knobs scrubbed. Provisioning
+ * trouble is named in the thrown message, never swallowed.
  */
 async function assertBaseHealthy(
   exec: ExecFn,

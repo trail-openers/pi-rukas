@@ -7,10 +7,11 @@
  *   - WHICH submodules the commit registers. The NAME matters as much as the path: `submodule.<name>` is
  *     the section git reads when an entry is registered or retargeted, so keying on the path would target
  *     nothing while every command exited 0. Exit 1 means the file lists nothing; above 1 means git could
- *     not read it, which refuses the run. git's C quoting is undone before anything reaches an argv.
+ *     not read it, which refuses the run — skipping an initialisation the base asked for would test the
+ *     run against an empty directory. git's C quoting is undone before anything reaches an argv.
  *   - WHERE this host holds them: `--git-common-dir` for the shared store, `--absolute-git-dir` for the
  *     tree's own, and the MAIN working tree from the former — never `--show-toplevel`, which inside a
- *     linked worktree answers with that worktree.
+ *     linked worktree answers with that worktree, so the step would seed from the tree it is populating.
  */
 
 import { existsSync } from "node:fs";

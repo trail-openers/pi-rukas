@@ -277,6 +277,22 @@ const CONFIG = { fast: PASS_TIER, test: "sh {file}" } as const;
       undefined,
     "(record) and a roster that failed a test may not claim a satisfied tier",
   );
+  // A persisted record is the attack surface, and it carries JSON rather than the type: a truthy
+  // non-boolean would survive `validatedProjectRoster`'s `as boolean` and read as the claim, the way
+  // `baseSkipped` could not. The refusal, not the consequence, is what this pins.
+  for (const forged of ["yes", 1, {}, []] as const) {
+    assert(
+      outcomeProblem({ kind: "green", projectRoster: { ...roster, fullSatisfied: forged } }, "verify") !==
+        undefined,
+      `(record) a non-boolean fullSatisfied (${JSON.stringify(forged)}) is refused, not read as true`,
+    );
+  }
+  assert(
+    String(outcomeProblem({ kind: "green", projectRoster: { ...roster, fullSatisfied: "yes" } }, "verify")).includes(
+      "fullSatisfied must be a boolean",
+    ),
+    "(record) and the refusal names the field it refused",
+  );
 }
 
 // ------------------------------------ the derivation the whole rule rests on

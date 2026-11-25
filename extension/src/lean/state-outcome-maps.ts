@@ -373,6 +373,8 @@ export function projectRosterProblem(value: unknown): string | undefined {
     return "outcome projectRoster.baseFailed must be empty when the base leg is skipped";
   const passed = r.passed as string[];
   const failed = r.failed as string[];
+  if (r.fullSatisfied !== undefined && typeof r.fullSatisfied !== "boolean")
+    return "outcome projectRoster.fullSatisfied must be a boolean";
   if (r.fullSatisfied === true && failed.length > 0)
     // `fullSatisfied` licenses a tier that ran NOWHERE, so only a run that failed nothing may claim it.
     return "outcome projectRoster.fullSatisfied may only be claimed by a head run that failed nothing";
@@ -392,11 +394,10 @@ export function projectRosterProblem(value: unknown): string | undefined {
     );
     if (problem !== undefined) return problem;
   }
+  if (r.fileCount !== undefined && !Number.isSafeInteger(r.fileCount))
+    return "outcome projectRoster.fileCount must be an integer";
   // A count beside a capped list can only be AT LEAST that list: fewer describes a suite it did not run.
-  if (
-    r.fileCount !== undefined &&
-    (!Number.isSafeInteger(r.fileCount) || (r.fileCount as number) < (r.files as string[]).length)
-  )
+  if (r.fileCount !== undefined && (r.fileCount as number) < (r.files as string[]).length)
     return "outcome projectRoster.fileCount must be an integer at least the list it sits beside";
   return undefined;
 }
