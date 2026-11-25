@@ -1,10 +1,10 @@
 /**
  * lean/review-pass — how a cleared round is reported to the engine.
  *
- * Split from `review.ts`, which passed the size cap once the wave's verification lived beside its decision.
- * These are the step's *clean* surface: everything about a pass that continues the run, with no gate, no git
- * and no dispatch. The step decides; this says what a decision looks like once made — and the clipping rule
- * below is a contract with the state loader that a reader should meet once, in a file whose subject is it.
+ * Split from `review.ts` along its own seam: these are the step's *clean* surface: everything about a pass
+ * that continues the run, with no gate, no git and no dispatch. The step decides; this says what a decision
+ * looks like once made — and the clipping rule below is a contract with the state loader that a reader should
+ * meet once, in a file whose subject is it.
  */
 
 import { neutraliseEvidence } from "../comment-evidence.ts";

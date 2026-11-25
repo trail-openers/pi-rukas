@@ -2,8 +2,7 @@
  * lean/review-round-guards — the two questions a lens round must answer before its verdict means
  * anything.
  *
- * Split from `review.ts`, which passed the size cap once the wave's decision procedure carried its own
- * verification. Both predicates here are *preconditions on evidence*, as `assertFixAdvanced` is one for a
+ * Both predicates here are *preconditions on evidence*, as `assertFixAdvanced` is one for a
  * fixer: they take what a round reported and refuse it, or resolve names to compare, and neither reads a
  * verdict or decides an outcome.
  *
