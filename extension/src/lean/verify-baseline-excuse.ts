@@ -42,7 +42,7 @@ function hasOverWindowLine(stream: string): boolean {
 
 /**
  * The lines the classifier READS as failures: stream order, trimmed, deduplicated, non-empty — the names
- * the `## Pre-existing` disclosure records, not the comparison set ({@link allLinesOf}).
+ * the `## Pre-existing` disclosure records, not the comparison set (`allLinesOf`).
  */
 export function failureLinesOf(stream: string): string[] {
   const seen = new Set<string>();
@@ -227,8 +227,10 @@ function boundedLine(line: string): string {
 }
 
 /**
- * The tail a green carries when a tier was excused over the base commit.
+ * The tail a green carries when a tier was excused over the base commit: what is KNOWN (every failing line
+ * also fails at the base, which this run did not author) — not that a build round could not fix them,
+ * which no gate measured.
  */
 export function preexistingReason(names: readonly string[]): string {
-  return `pre-existing failures on the base commit: ${names.join(", ")} — every failing line also fails at the run's base commit, so no build round can fix them and this run did not author them`;
+  return `pre-existing failures on the base commit: ${names.join(", ")} — every failing line also fails at the run's base commit, which this run did not author them`;
 }

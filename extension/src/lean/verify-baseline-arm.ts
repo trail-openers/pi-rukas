@@ -68,10 +68,9 @@ export async function baselineRedArm(opts: {
   /** Identifies the probe's throwaway tree, which the excuse's two-tree test reads. */
   issue: number;
   /**
-   * The roster's answer about this tier, asked before the line excuse. Optional because the arm is
-   * also reached on the roster switch's off arm, where there is no roster to ask; the step passes a
-   * function that answers `uninvolved` in that case rather than making the hook optional at the call
-   * site, so no caller can forget it.
+   * The roster's answer about this tier, asked before the line excuse. Required even on the roster
+   * switch's off arm, where the step passes a function answering `uninvolved` — so no caller can
+   * forget it.
    */
   arbitrate: () => RosterArbitration;
 }): Promise<BaselineRedArm> {
