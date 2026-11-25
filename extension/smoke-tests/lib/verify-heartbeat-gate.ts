@@ -26,12 +26,17 @@ import {
   stateFor,
 } from "./consolidated-verify-exec.ts";
 import { fixture } from "./consolidated-verify-fixture.ts";
+import { gitTestEnv } from "./git-test-env.ts";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 /** What the run handed the heartbeat pump when it armed it. */
 const execFileP = promisify(execFile);
-const git = (cwd: string, args: string[]) => execFileP("git", args, { cwd });
+// Real git, so the child names the scrub itself: an inherited `GIT_DIR` is
+// honoured ahead of `cwd`, so the commit below would land in whoever's
+// repository the variable names and exit 0 doing it.
+const git = (cwd: string, args: string[]) =>
+  execFileP("git", args, { cwd, env: gitTestEnv() });
 
 type Heartbeat = Extract<WorkEvent, { kind: "verify-heartbeat" }>;
 type GateCtx = Parameters<typeof verifyStepOutcome>[0];
