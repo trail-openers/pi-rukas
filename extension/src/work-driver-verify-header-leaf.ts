@@ -45,8 +45,11 @@ const RUST_PANIC_HEAD_SRC = String.raw`thread\s+'`;
 const RUST_PANIC_NAME_BODY_SRC = String.raw`[^']+`;
 /** …and the same name as group 1, which is the form every reader extracts. */
 const RUST_PANIC_NAME_SRC = String.raw`(${RUST_PANIC_NAME_BODY_SRC})`;
-/** cargo's per-thread id, `(2271626)`, between the name and `panicked at `. */
-const RUST_PANIC_ID_SRC = String.raw`(?:\s+\(\d+\))?`;
+/** cargo's per-thread id, `(2271626)`, between the name and `panicked at ` —
+ * with LINE-LOCAL whitespace only: the id sits inside one printed line, and a
+ * `\s+` arm would let a `(\d+)` from a following line weld onto a header, so a
+ * record whose raw bytes carry no header could still match (and strip) as one. */
+const RUST_PANIC_ID_SRC = String.raw`(?:[ \t]+\(\d+\))?`;
 /** The verb that separates the header's subject from its location. */
 const RUST_PANIC_PANICKED_SRC = String.raw`panicked\s+at\s`;
 
@@ -108,6 +111,18 @@ const RUST_PANIC_HEADER_FORM = new RegExp(
 const PANIC_HEADER_LOOK_RE = /^thread\s+'/;
 
 /**
+ * The consumer-facing form of {@link PANIC_HEADER_LOOK_RE}: does this line
+ * merely OPEN like a panic header? Asked by the extractor's join guard — the
+ * line under a header that opens like ANOTHER header is not the first one's
+ * message — so no consumer outside this leaf spells the header's opening
+ * token run of its own (the property AC6 of `test-verify-rust-id-bearing-arms.ts`
+ * scans all of `src/` for).
+ */
+export function opensLikePanicHeader(line: string): boolean {
+  return PANIC_HEADER_LOOK_RE.test(line);
+}
+
+/**
  * The id-bearing header open with its id as the piece the normaliser drops,
  * composed from the SAME sources as the matchers — so "which token run is a
  * header" has one answer and {@link stripRustPanicThreadIds} cannot recognise a
@@ -117,7 +132,7 @@ const PANIC_HEADER_LOOK_RE = /^thread\s+'/;
  * to the id-less spelling of the same failure.
  */
 const RUST_PANIC_ID_FORM_RE = new RegExp(
-  String.raw`(${RUST_PANIC_HEAD_SRC}${RUST_PANIC_NAME_BODY_SRC}')\s+\(\d+\)\s+(${RUST_PANIC_PANICKED_SRC})`,
+  String.raw`(${RUST_PANIC_HEAD_SRC}${RUST_PANIC_NAME_BODY_SRC}')[ \t]+\(\d+\)[ \t]+(${RUST_PANIC_PANICKED_SRC})`,
   "g",
 );
 

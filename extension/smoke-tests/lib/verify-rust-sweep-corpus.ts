@@ -145,13 +145,16 @@ export function cases(): Case[] {
         kind: "capture",
       });
 
-      // CAPTURE: the `#[should_panic]` DOCTEST print whose thread name IS the
-      // SPACED verdict path (libtest names each test thread after the test) —
-      // the shape the WHOLE-SPAN name group exists for. With a `(\S+)` name
-      // group the matcher captures `src/lib.rs`, the name's `ok` line goes
-      // unmatched, and the passing capture is quoted: this is the one case in
-      // the corpus that tells the two matchers apart, so a re-spell of the
-      // shipped group back to `(\S+)` goes red here and nowhere else.
+      // CAPTURE: a `#[should_panic]` capture whose thread name carries SPACES —
+      // the shape the WHOLE-SPAN name group exists for, spelled like the spaced
+      // DOCTEST verdict path because that is the line family the name must be
+      // matched against. (What cargo really prints for a doctest panic is
+      // `thread 'main' …` — see `verify-rust-golden.ts`; this header is the
+      // device that tells `(.+?)` from `(\S+)`, not a claimed toolchain print.)
+      // With a `(\S+)` name group the matcher captures `src/lib.rs`, the name's
+      // `ok` line goes unmatched, and the passing capture is quoted: this is the
+      // one case in the corpus that tells the two matchers apart, so a re-spell
+      // of the shipped group back to `(\S+)` goes red here and nowhere else.
       const spaced = "src/lib.rs - parses (line 3)";
       out.push({
         stream: [

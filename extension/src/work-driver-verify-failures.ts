@@ -165,9 +165,11 @@ export {
 // both ask, and `changePanicsAreBaseFailures` is that same excuse asked of every
 // failing test the change's own record reports, not of the record as a blob.
 export {
+  opensLikePanicHeader,
   rustPanicHeaderIn,
   rustPanicSamenessKey,
   rustPanicTestName,
+  stripRustPanicThreadIds,
 } from "./work-driver-verify-header-leaf.ts";
 export {
   changePanicsAreBaseFailures,

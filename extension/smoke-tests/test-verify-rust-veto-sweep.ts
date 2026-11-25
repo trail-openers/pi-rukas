@@ -65,6 +65,7 @@
 import {
   NO_SPECIFIC_ASSERTION,
   extractSpecificAssertion,
+  sharesAssertion,
 } from "../src/work-driver-verify-assertion.ts";
 import { rustPanicSamenessKey } from "../src/work-driver-verify-failures.ts";
 import { makeAssert } from "./lib/verify-failure-shapes-fixtures.ts";
@@ -258,6 +259,28 @@ assert(
   preWaveIdFolds > 0,
   `id-bearing control (pre-wave predicate): must see the id-bearing fold across differing ids (got ${preWaveIdFolds})`,
 );
+
+// ── the id arm is LINE-LOCAL (#2372 round 1) ────────────────────────────
+//
+// The id sits INSIDE one printed line. A whitespace arm that crossed newlines
+// let a `(\d+)` from the FOLLOWING line weld onto a header, so a record whose
+// raw bytes contain no header at all could normalise into one and then match a
+// key by containment — widening the identity rule in the permissive direction.
+// The refusal is asserted on the shipped containment path, the one place the
+// normaliser decides an excuse.
+{
+  const raw = "thread 'a::t'\n(40001) panicked at src/a.rs:1:1: msg";
+  const header = "thread 'a::t' (7) panicked at src/a.rs:1:1:";
+  const key = rustPanicSamenessKey(header);
+  assert(
+    key === "thread 'a::t' panicked at src/a.rs:1:1:",
+    `line-local id arm: the real id-bearing header still keys (${JSON.stringify(key)})`,
+  );
+  assert(
+    key !== null && !sharesAssertion(raw, header),
+    "line-local id arm: bytes with no header on one line never contain a key (the normaliser may not weld two lines into one)",
+  );
+}
 
 console.log(failed() ? "SWEEP FAILED" : "All Rust veto sweep checks passed.");
 process.exit(failed() ? 1 : 0);

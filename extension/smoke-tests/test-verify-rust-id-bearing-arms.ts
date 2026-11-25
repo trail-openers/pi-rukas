@@ -38,7 +38,7 @@
  * disclosure in the only form a test can state.
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
   NO_SPECIFIC_ASSERTION,
@@ -459,11 +459,14 @@ const excuseCases: ExcuseCase[] = [
       );
     }
   }
-  // No consumer re-spells the header's opening token run in a literal of its own.
-  for (const [file, text] of [
-    ["work-driver-verify-rust.ts", readers],
-    ["work-driver-verify-shapes.ts", table],
-  ] as const) {
+  // No consumer re-spells the header's opening token run in a literal of its
+  // own — the scan covers ALL of src/, not just the two known consumers: the
+  // one header-shaped literal the two-file scan let through lived in a third
+  // file, and a property that scans only where it already looked is the blind
+  // sweep this ticket names.
+  for (const file of readdirSync(src, { recursive: true })) {
+    if (!file.endsWith(".ts") || file === "work-driver-verify-header-leaf.ts") continue;
+    const text = readFileSync(path.join(src, file), "utf8");
     assert(
       !/thread\\s\+'/.test(text) && !/'\)\s*panicked/.test(text),
       `AC6: ${file} spells no panic-header token run of its own`,

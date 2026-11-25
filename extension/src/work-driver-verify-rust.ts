@@ -50,17 +50,27 @@ import {
  * asked by {@link panicIsCapturedPrint} at all: it reports on a whole TARGET
  * and has no authority over one header's test, so the veto's only evidence is
  * the per-test line for the header's exact name.
+ * PER-TEST form deliberately spells no name matcher of its own here: a second
+ * `\S+`-shaped arm drifted from the decorated (`test a::t - should panic ... ok`)
+ * and spaced-doctest (`test src/lib.rs - f (line 3) ... FAILED`) prints the
+ * per-test reader already sees, and the join guard answered `false` for exactly
+ * the verdict lines it exists to refuse (#2372 round 1). It asks
+ * {@link perTestVerdictLine} instead, so the two cannot disagree about what a
+ * verdict line is.
  */
-const LIBTEST_VERDICT_RE = /^test\s+(?:\S+\s+\.\.\.\s+|result:\s*)(?:ok|FAILED)\b/;
+const LIBTEST_TALLY_RE = /^test\s+result:\s*(?:ok|FAILED)\b/;
 
 /**
  * True when `line` is one of libtest's own verdict lines. Asked by the
  * extractor so a verdict line is never JOINED into an assertion the way a
  * panic MESSAGE is: a verdict the success veto has just cleared is invisible
  * to `classifyFailureLine`, so the join guard cannot rely on the table alone.
+ * Both of libtest's forms are asked through the SAME readers the vetoes use —
+ * {@link perTestVerdictLine} for the per-test line (decoration folded, spaced
+ * doctest path matched), {@link LIBTEST_TALLY_RE} for the tally.
  */
 export function isLibtestVerdictLine(line: string): boolean {
-  return LIBTEST_VERDICT_RE.test(line);
+  return perTestVerdictLine(line) !== undefined || LIBTEST_TALLY_RE.test(line);
 }
 
 /**
@@ -98,10 +108,10 @@ const LIBTEST_SHOULD_PANIC_DECORATION_RE = / - should panic$/;
 
 /**
  * The name/verdict pair ONE line reports, or `undefined` when the line is not a
- * per-test verdict line. THE reader of {@link LIBTEST_PER_TEST_VERDICT_RE}: both
- * views below go through it, so the monotone and the non-monotone answer cannot
- * hold a decoration the other folds (or fails to), which is the disagreement
- * this module's header forbids.
+ * per-test verdict line. THE reader of {@link LIBTEST_PER_TEST_VERDICT_RE}: the
+ * join guard and both views below go through it, so the monotone, the
+ * non-monotone and the join decision cannot hold a decoration the other folds
+ * (or fails to), which is the disagreement this module's header forbids.
  */
 function perTestVerdictLine(line: string): { name: string; ok: boolean } | undefined {
   const m = LIBTEST_PER_TEST_VERDICT_RE.exec(line.trim());
