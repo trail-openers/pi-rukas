@@ -488,6 +488,13 @@
     "smoke-tests/test-verify-timing-ceiling.ts",
     "smoke-tests/test-verify-timing-ceiling-channels.ts",
     "smoke-tests/test-verify-timing-listed.ts",
-    "smoke-tests/test-verify-timing-allowlist.ts"
+    "smoke-tests/test-verify-timing-allowlist.ts",
+    "smoke-tests/fixtures/nested-call-events.ts",
+    "smoke-tests/lib/lean-nested-submit.ts",
+    "smoke-tests/test-lean-docs-nested-submit.ts",
+    "smoke-tests/test-lean-nested-submit-steps.ts",
+    "smoke-tests/test-lean-reporter-tool-names.ts",
+    "smoke-tests/test-spawn-collapse-nested-calls.ts",
+    "smoke-tests/test-spawn-collapse-nested-filter.ts"
   ]
 }

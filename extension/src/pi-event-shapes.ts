@@ -244,6 +244,36 @@ export interface PiMessage {
   details?: unknown;
   /** Pi (>= 1.1.0) stamps this on `toolResult` messages; read through `recordedDurationMs`. */
   durationMs?: unknown;
+  /**
+   * Calls this tool made to OTHER tools (a codemode script's bridge calls),
+   * stamped on the parent's `toolResult` by Pi's nested-call recorder
+   * (`nested-tool-calls.js`, pi-ai's `NestedToolCalls`). Pi keeps it for the
+   * session record and does not send it to the model, so it is invisible to
+   * every assistant-content reader: the ONLY record that a nested call happened
+   * at all. `collapseEvents` credits the two lean companion names from here
+   * (spawn-collapse-events.ts).
+   *
+   * Declared structurally rather than imported from Pi: the pi-ai types are not
+   * a dependency of this project's type-check, and the shape is pinned here the
+   * way the rest of this file's shapes are — by `test-pi-shape-live.ts` when the
+   * pin moves.
+   * `arguments` is absent when Pi dropped it past its per-call/total size bound
+   * (`argumentsBytes` then carries the size), and `status` is `"unfinished"` for
+   * a call still running when the calling tool ended.
+   */
+  nestedCalls?: {
+    calls: Array<{
+      id: string;
+      name: string;
+      arguments?: unknown;
+      argumentsBytes?: number;
+      status: "ok" | "error" | "unfinished";
+      durationMs?: number;
+      error?: string;
+    }>;
+    /** False when calls were dropped, arguments omitted, or calls had not finished. */
+    complete: boolean;
+  };
   content?: PiContentBlock[];
   toolResults?: unknown[];
   usage?: PiUsage;
