@@ -53,6 +53,11 @@ export const NDJSON_STABLE_FIELDS = {
   "verify-started": ["step", "command", "at"],
   // `ok` is the 0.13.0 stable field; `status` was added beside it (#1613).
   "verify-completed": ["step", "command", "ok", "status", "ms", "at"],
+  // The beat between the pair, stable for the same reason: a host's stall rule
+  // is the consumer, and it needs the interval to be a contract rather than an
+  // accident of this release. `elapsedSeconds` is the whole seconds the run has
+  // been going (floor of ms/1000), so it never arrives as a float.
+  "verify-heartbeat": ["step", "command", "elapsedSeconds", "at"],
   "cap-hit": ["cap", "at", "nextStep"],
   "handoff-emitted": ["at", "commentUrl", "labelApplied"],
   "ci-status": ["at", "status", "runUrl"],
