@@ -5,10 +5,9 @@
  * Where `specify` is an adversary writing tests nobody has implemented, `build` is a
  * builder writing the implementation against tests that already exist and are already
  * committed. The step writes no code and runs no tests: `verify` is a separate step
- * that re-runs the frozen files itself, so a build claiming "green" would be a
- * builder grading its own homework. What build owns is the boundary around the child —
- * the tree it hands the child, the prompt it gets, and the single commit that comes
- * out the other side.
+ * that re-runs the frozen files itself. What build owns is the boundary around the
+ * child — the tree it hands the child, the prompt it gets, and the single commit that
+ * comes out the other side.
  *
  * The whole handler is: read the record, prove the tree, dispatch, normalise, commit.
  * In order, because each stage exists so the next one cannot be fooled:
@@ -19,9 +18,8 @@
  *   2. **The worktree must be the run's own** — registered, on the run's branch, and
  *      sitting at the head the frozen records were hashed at, not the base: the commit
  *      `specify` put on top of it IS the contract now.
- *   3. **The preconditions run before the dispatch**, so a model is never paid to work
- *      in a tree the step cannot account for: the frozen map is non-empty and every
- *      frozen blob at that head still hashes to its record.
+ *   3. **The preconditions run before the dispatch**: the frozen map is non-empty and
+ *      every frozen blob at that head still hashes to its record.
  *   4. **One child**, role `developer`, fenced to the worktree. A child that died
  *      mid-work is infrastructure and throws; a killed or quota-stopped one is never
  *      re-dispatched, and only a child that died before its first turn gets the one
