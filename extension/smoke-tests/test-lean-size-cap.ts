@@ -30,88 +30,19 @@
  * to fail is worthless.
  */
 
-import {
-  type Dirent,
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-
-/** The operator's ceiling for the whole directory, held as a literal. */
-const HARD_CAP = 28_000;
-/** The directory under the cap: every `.ts` file at any depth. */
-const LEAN_DIR = path.join("src", "lean");
+import {
+  HARD_CAP,
+  LEAN_DIR,
+  LeanCountError,
+  checkLeanLines,
+  leanTotal,
+} from "../src/lean/lean-size.ts";
 
 const REPO_ROOT = path.join(import.meta.dirname, "..", "..");
 const EXTENSION_ROOT = path.join(REPO_ROOT, "extension");
-
-/**
- * Count newlines — a trailing-newline-terminated file of N lines has N newline
- * characters, matching `wc -l`. Identical to `lineCount()` in
- * test-file-size-limit.ts, duplicated rather than imported for the same reason
- * test-readme-size.ts duplicates it: that gate is not a library, and importing
- * a test from a test makes each the other's failure mode.
- */
-function lineCount(file: string): number {
-  const text = readFileSync(file, "utf8");
-  return (text.match(/\n/g) ?? []).length;
-}
-
-/**
- * A counting failure: the tree could not be measured, so no verdict is honest.
- * The real tree always has `src/lean`, so an unreadable one is a broken gate,
- * and counting it as 0 would pass an unmeasured tree.
- */
-export class LeanCountError extends Error {}
-
-/**
- * Total lines across every `.ts` file under `root`/src/lean, at any depth — a
- * subdirectory is still lean code, so it must count. Symlinked directories are
- * never followed: a link out of the tree would pull in files that are not lean
- * (or loop). A directory or file that cannot be read is a gate failure, not a
- * zero.
- */
-function leanTotal(root: string): { total: number; files: number } {
-  let total = 0;
-  let files = 0;
-  const fail = (target: string, err: unknown) =>
-    new LeanCountError(`${target} is not readable: ${(err as { code?: string }).code ?? err}`);
-  const walk = (dir: string) => {
-    let entries: Dirent[];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch (err) {
-      throw fail(dir, err);
-    }
-    for (const entry of entries) {
-      if (entry.isSymbolicLink()) continue;
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.isFile() && entry.name.endsWith(".ts")) {
-        try {
-          total += lineCount(full);
-        } catch (err) {
-          throw fail(full, err);
-        }
-        files++;
-      }
-    }
-  };
-  walk(path.join(root, LEAN_DIR));
-  return { total, files };
-}
-
-/** The cap violation, or null when the tree fits. */
-export function checkLeanLines(total: number, cap = HARD_CAP): string | null {
-  if (total <= cap) return null;
-  return `extension/src/lean is ${total} lines, over the ${cap}-line hard cap by ${total - cap} — the cap is the operator's ceiling and no gate file lifts it: delete code instead`;
-}
 
 let exit = 0;
 function assert(cond: boolean, msg: string) {
