@@ -115,20 +115,15 @@ export interface SpecifyDeps {
    * Called with a worktree the step has just reset to the base, immediately before
    * the reset asks git to populate that tree's submodules. Supplied only by smoke
    * tests, which use it to break a submodule between the clean and the
-   * `submodule update --init` that has to recover it — the only way to observe git
-   * actually failing that command. Threaded to {@link resetWorktreeToBase}, which
-   * owns the initialisation.
+   * `submodule update --init` that has to recover it. Threaded to
+   * {@link resetWorktreeToBase}, which owns the initialisation.
    */
   beforeSubmoduleInit?: (wt: string) => void | Promise<void>;
   /**
    * Called with what one attempt's no-candidate verdict turned on: the boundary's
-   * attributed drop labels, and the silence decision. Supplied only by smoke tests.
-   *
-   * It exists because neither value reaches the run's outcome, and the outcome is
-   * all a case can otherwise read. The drop labels make the decline's WORDING
-   * non-silent independently of the silence predicate, so an outcome-level assertion
-   * passes with the predicate's `refused.length === 0` conjunct deleted: this is the
-   * one seam through which a case can tell the predicate from its mutant.
+   * attributed drop labels, and the silence decision. Supplied only by smoke tests,
+   * because neither value reaches the run's outcome and the outcome is all a case
+   * can otherwise read.
    */
   observeVerdict?: (v: { refused: string[]; silent: boolean }) => void;
 }
@@ -159,13 +154,12 @@ function specRules(body: string, run: LeanRun): { spec?: PiSpec; rules: string[]
  *
  * A red test is only evidence when the base builds, and a red is a VERDICT — so the
  * question "does the toolchain work at all" must be answered somewhere that cannot
- * be confounded with what a test prints. That place is here, and it is the only
- * place: a failure throws rather than dropping rows.
+ * be confounded with what a test prints, and a failure throws rather than dropping
+ * rows.
  *
  * The canary runs in the directory the tier runs the pinned compiler in
- * (`packageDirFor`), and the tier runs with the driver's knobs scrubbed, as every
- * other verify child does. When provisioning could not give the tree its
- * dependencies, that is said in the message.
+ * (`packageDirFor`), and the tier runs with the driver's knobs scrubbed. When
+ * provisioning could not give the tree its dependencies, that is said in the message.
  */
 async function assertBaseHealthy(
   exec: ExecFn,
