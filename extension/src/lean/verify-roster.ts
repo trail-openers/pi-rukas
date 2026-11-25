@@ -132,7 +132,7 @@ export async function buildProjectRoster(opts: {
   issue: number;
   timeoutMs: number;
   config: VerifyRosterConfig;
-  /** The project's `verify.full` tier, verbatim, for the question below. */
+  /** The project's `verify.full` tier, verbatim, for {@link fullTierSatisfiedBy}. */
   fullTier?: string;
   /** The run's frozen acceptance tests — never part of the pre-existing set. */
   frozen: Record<string, string>;

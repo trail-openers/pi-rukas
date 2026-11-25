@@ -10,8 +10,8 @@
  *
  * What the cases below pin, in the order the ACs state them:
  *
- *   AC1 — a GREEN roster head and a full tier whose words are the roster's argv less its own two
- *         additions: the tier is not executed again, and the step is still green.
+ *   AC1 — a GREEN roster head and a full tier whose words are the roster's argv less its own additions:
+ *         the tier is not executed again, and the step is still green.
  *   AC2 — the step's record says `fullSatisfied`, and the reason carries the same fact as a clause a
  *         reader can tell from a passed tier; the clause survives the reason clip and the PR body clip.
  *   AC3 — every other arm is untouched: a different full tier, a red roster head, an unreadable
@@ -20,16 +20,22 @@
  * The counter that makes AC1 observable is `suiteTierRuns`: the exec stub bumps it for a head run of the
  * case's own tier command, so "0" is the evidence that the tier was not run rather than an absence of
  * measurement — and `tierRuns` stays at 1 for the fast tier, so a green cannot be an absence of tiers.
+ *
+ * Two tier spellings frame AC1, because the ticket's comparison drops the report flag AND the tree: the
+ * roster template with exactly those two words taken back is satisfied, and the same template with either
+ * one still in it is not. The pair together is what keeps a one-word offset in the comparison from
+ * passing — a strip of one satisfies the wrong one. The predicate's own attack table, over the argv
+ * production renders, lives in `test-2620-full-tier-satisfied-predicate.ts`.
  */
 import { rmSync } from "node:fs";
+import { publishBody } from "../src/lean/publish-body.ts";
 import type { ProjectRosterRecord } from "../src/lean/state-outcome-maps.ts";
 import { outcomeProblem } from "../src/lean/state-outcome.ts";
-import { publishBody } from "../src/lean/publish-body.ts";
 import { RED_REASON_CLIP } from "../src/lean/verify-deps.ts";
 import { deriveSuiteTemplate } from "../src/lean/verify-roster-command.ts";
 import { withEnv } from "./lib/env-scope.ts";
-import { FROZEN_FILE } from "./lib/lean-verify-frozen.ts";
 import { ROOTS, runVerify } from "./lib/lean-verify-fixture.ts";
+import { FROZEN_FILE } from "./lib/lean-verify-frozen.ts";
 import { PASS_TIER } from "./lib/lean-verify-tiers.ts";
 
 const SELF = "test-2620-verify-full-tier-satisfied-by-roster.ts";
@@ -45,12 +51,13 @@ function assert(cond: boolean, msg: string): void {
 const FILE = "tests/test-suite.sh";
 const NAME = "tests/test-suite.sh::passes";
 /**
- * The project's own runner, and the two spellings of the case this ticket is about: a `verify.full`
- * tier whose words ARE the roster's suite command, and one that is not. The gate derives the roster's
- * command from `verify.test` itself, so the fixture configures the tier as the project would — the
- * runner's words — and the roster is left to the gate's own derivation.
+ * The project's own suite command as the fixture's roster spells it, and the tier the roster covers: that
+ * template with the roster's own two words (`--junitxml={report}` and `{dir}`) taken back. The gate derives
+ * the fixture's roster from `verify.test` in the same shape, so the tier is compared against the argv the
+ * step actually submitted.
  */
 const RUNNER = "sh .lean-roster-suite.sh";
+const SUITE_TEMPLATE = `${RUNNER} --junitxml={report} {dir}`;
 /** The same runner with one flag more: the tier the roster does not cover. */
 const OTHER_TIER = `${RUNNER} --q`;
 /** A green roster's declared verdicts: the head run ran this and failed nothing. */
@@ -73,8 +80,9 @@ const CONFIG = { fast: PASS_TIER, test: "sh {file}" } as const;
 
 // ---------------------------------------------------------------- AC1 + AC2
 {
-  // A green roster head, and a full tier that IS the roster's suite. One execution of the project's
-  // whole suite, the tier's counter at zero, and a green that says which of its tiers it did not run.
+  // A green roster head, and a full tier that IS the roster's suite with its own two words taken back.
+  // One execution of the project's whole suite, the tier's counter at zero, and a green that says which of
+  // its tiers it did not run.
   const r = await runVerify({
     issue: 2640,
     implement: true,
@@ -120,7 +128,10 @@ const CONFIG = { fast: PASS_TIER, test: "sh {file}" } as const;
   // body clips the same text again at 2 000. A clause at the END of a long reason would be the first
   // thing to disappear, so the claim to test is that it survives, not that it was composed.
   const reason = `verify.full was not run again — the roster's head run covered it${" filler".repeat(RED_REASON_CLIP)}`;
-  assert(reason.length > RED_REASON_CLIP, "(ac2) the reason asked about really is past the record's bound");
+  assert(
+    reason.length > RED_REASON_CLIP,
+    "(ac2) the reason asked about really is past the record's bound",
+  );
   const body = publishBody({
     issue: 2640,
     spec: { problem: "x", criteria: [{ id: "AC1", text: "t", verify: "test" }], size: "S" },
@@ -224,7 +235,7 @@ const CONFIG = { fast: PASS_TIER, test: "sh {file}" } as const;
 {
   // Off is today's behaviour: the tier runs, and no roster-side claim of any kind is written. The
   // tier configured here is one the roster WOULD have satisfied, so the lever is the only difference
-  // between this case and the AC1 case above.
+  // between this case and the AC1 cases above.
   let off!: Awaited<ReturnType<typeof runVerify>>;
   await withEnv({ PI_ENSEMBLE_LEAN_PROJECT_ROSTER: "0" }, async () => {
     off = await runVerify({
@@ -282,15 +293,20 @@ const CONFIG = { fast: PASS_TIER, test: "sh {file}" } as const;
   // `baseSkipped` could not. The refusal, not the consequence, is what this pins.
   for (const forged of ["yes", 1, {}, []] as const) {
     assert(
-      outcomeProblem({ kind: "green", projectRoster: { ...roster, fullSatisfied: forged } }, "verify") !==
-        undefined,
+      outcomeProblem(
+        { kind: "green", projectRoster: { ...roster, fullSatisfied: forged } },
+        "verify",
+      ) !== undefined,
       `(record) a non-boolean fullSatisfied (${JSON.stringify(forged)}) is refused, not read as true`,
     );
   }
   assert(
-    String(outcomeProblem({ kind: "green", projectRoster: { ...roster, fullSatisfied: "yes" } }, "verify")).includes(
-      "fullSatisfied must be a boolean",
-    ),
+    String(
+      outcomeProblem(
+        { kind: "green", projectRoster: { ...roster, fullSatisfied: "yes" } },
+        "verify",
+      ),
+    ).includes("fullSatisfied must be a boolean"),
     "(record) and the refusal names the field it refused",
   );
 }
@@ -299,15 +315,24 @@ const CONFIG = { fast: PASS_TIER, test: "sh {file}" } as const;
 {
   // The skip compares a tier's words against the roster's argv less the two words the roster appends.
   // If the derivation of that argv drifts, the comparison silently stops matching anything — so the
-  // one derivation the gate itself uses is pinned here against the tier this case configures.
+  // one derivation the gate itself uses is pinned here, and the tier this case configures is what comes
+  // out of it, rather than a string this file happens to share with the fixture.
   const derived = deriveSuiteTemplate(`${RUNNER} {file}`);
   assert(
-    derived === `${RUNNER} --junitxml={report} {dir}`,
+    derived === SUITE_TEMPLATE,
     `(derivation) the suite template is the runner's own words plus the report pair (${derived})`,
   );
   assert(
     !derived.includes(FROZEN_FILE),
     "(derivation) and no single test file survives in it — it is the WHOLE suite",
+  );
+  // The AC1 tier is the derivation with the roster's two own words removed, taken back out of the
+  // derivation itself: a fixture whose tier string merely LOOKS like the runner would leave the strip
+  // rule unpinned.
+  const stripped = derived.split(/\s+/).slice(0, -2).join(" ");
+  assert(
+    stripped === RUNNER,
+    `(derivation) and its own two words are the report flag and the tree (${stripped})`,
   );
 }
 

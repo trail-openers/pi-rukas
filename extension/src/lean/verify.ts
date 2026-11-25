@@ -192,11 +192,10 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
 
   // 5. The project's OWN pre-existing tests, at head and at the base, before any tier runs: their verdict
   // ranks with the frozen contract's, and a run that produced no roster must hand back rather than reach
-  // a tier that could grade it green. The base side of the roster runs in its own throwaway checkout, so
-  // it pays for itself once and is the only base read a GREEN depends on.
-  //
-  // The off arm runs NONE of this: no enumeration, no suite run, no roster on the record, and the land
-  // gate asks only the verdict kinds it asked before.
+  // a tier that could grade it green. The base side runs in its own throwaway checkout, so it pays for
+  // itself once and is the only base read a GREEN depends on. The off arm runs NONE of this: no
+  // enumeration, no suite run, no roster on the record, and the land gate asks only the verdict kinds it
+  // asked before.
   let roster: ProjectRosterRecord | undefined;
   let rostered: Executed | undefined;
   // A roster red's record rides only on the step's red: the tiers below arbitrate on a green roster alone.
@@ -210,7 +209,6 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
       issue,
       timeoutMs: deps.timeoutMs ?? TIER_TIMEOUT_MS,
       config: config.verify,
-      // The one tier the roster can make redundant, in the words it configures it in.
       fullTier: config.verify.full,
       frozen,
     });
@@ -249,7 +247,7 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   let armTier: string | undefined;
   for (const [name, cmd] of tiers) {
     // The roster ran this tier's own command at head and failed nothing, so a second run pays a whole
-    // suite for a verdict the record already holds. Every other arm is the loop below.
+    // suite for a verdict the record already holds.
     if (name === "full" && roster?.fullSatisfied === true) {
       tierResults.push({ kind: "pass" });
       continue;
@@ -438,18 +436,16 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   if (afterCommands.kind === "red")
     return { kind: "red", reason: clipReason(afterCommands.reason), ...redRosterField };
 
-  // A command the gate declined to run is not a verdict, but the reason is still worth carrying on a green.
-  // A detected tier is landing authority, so the reason the PR body prints names it and its manifest.
+  // A command the gate declined to run is not a verdict, but the reason still carries it on a green, and a
+  // detected tier is landing authority, so its own words and its manifest are named there.
   const note =
     (tiers.length === 0 ? " (no project verify command — the frozen tests alone decided)" : "") +
     (config.detection === undefined ? "" : ` — ${config.detection}`);
-  // An excused flake rides in the reason: `publish` prints the verify reason in the PR body's Verification
-  // section, so a tier the gate let go on a re-run is disclosed rather than reported as a clean gate.
-  // Rebuilt from the tier's own record rather than spread-cast: `commandCriteria` is what licenses
-  // `passed (command)` in the PR body.
+  // `publish` prints this reason in the PR body's Verification section, so anything the gate let go rides here
+  // as a disclosure rather than reading as a clean gate. The satisfied tier rides FIRST, where no clip can cut
+  // it away from the green it explains.
   const executed = Object.entries(commands.executed);
   const notRunnable = Object.entries(commands.notRunnable);
-  // The satisfied tier rides FIRST, where neither reason clip can cut it away from the green it explains.
   const satisfiedNote =
     roster?.fullSatisfied === true
       ? "verify.full was not run again — the roster's head run covered it; "
