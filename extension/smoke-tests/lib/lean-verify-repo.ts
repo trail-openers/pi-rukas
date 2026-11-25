@@ -174,9 +174,11 @@ export function fixtureSync(
     // is declared per side below, since one file's verdicts differ between the trees.
     // The runner the roster command names, committed so BOTH trees have it — the run's worktree and
     // the probe's throwaway checkout. What it reports is declared per side, so the script itself only
-    // has to exist and exit: the stub writes the report the gate reads back.
-    writeFileSync(dir(".lean-roster-runner.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    chmodSync(dir(".lean-roster-runner.sh"), 0o755);
+    // has to exist and exit: the stub writes the report the gate reads back. The roster's derived
+    // command spells the suite, so its script is named apart from the runner the frozen-test arm
+    // spells — a case whose tier IS the roster's command can still count the two arms apart.
+    writeFileSync(dir(".lean-roster-suite.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    chmodSync(dir(".lean-roster-suite.sh"), 0o755);
     // A project keeps its runner's report out of the index, and the step's own re-check demands a
     // clean tree afterwards, so the fixture earns the same courtesy it would give a real suite.
     writeFileSync(dir(".gitignore"), `${ROSTER_REPORT_FILE}\n`);

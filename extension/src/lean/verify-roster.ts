@@ -21,6 +21,7 @@ import {
   runProjectSuite,
 } from "./verify-roster-command.ts";
 import { editedTestFiles, runEditedBaseVersions } from "./verify-roster-edited.ts";
+import { fullTierSatisfiedBy } from "./verify-suite-command.ts";
 import type { VerifyExec, VerifyRosterConfig } from "./verify-types.ts";
 
 /** The three answers to "what did the project's suite do?". `none` is never read as a colour. */
@@ -131,6 +132,8 @@ export async function buildProjectRoster(opts: {
   issue: number;
   timeoutMs: number;
   config: VerifyRosterConfig;
+  /** The project's `verify.full` tier, verbatim, for {@link fullTierSatisfiedBy}. */
+  fullTier?: string;
   /** The run's frozen acceptance tests — never part of the pre-existing set. */
   frozen: Record<string, string>;
 }): Promise<ProjectRosterOutcome> {
@@ -204,6 +207,7 @@ export async function buildProjectRoster(opts: {
     // Carried only when the cap actually cut the list: a record naming every file has none to disclose.
     ...(preexisting.length > recordedFiles.length ? { fileCount: preexisting.length } : {}),
     ...(skipBase ? { baseSkipped: true } : {}),
+    ...(fullTierSatisfiedBy(opts.fullTier, rendered, head) ? { fullSatisfied: true } : {}),
   };
   const redWith = (reason: string): ProjectRosterOutcome => ({
     status: "red",

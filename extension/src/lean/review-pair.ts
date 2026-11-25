@@ -19,11 +19,10 @@
  *   throw would otherwise report as infrastructure. The lever is the step's ONE
  *   armed `hit`, which whichever child tripped it writes, so the pair asks the arm
  *   itself once both have settled — not the gate's report alone: a child can trip
- *   the lever after the gate's last read and still hand back a clean result, and a
- *   pair that read only the gate would certify a head the operator's ceiling had
- *   already stopped. The breach is turned into the step's throw there, before either
- *   child's result is read for anything else, and because the step arms ONE budget
- *   for both children the lever is named once for the pair.
+ *   the lever after the gate's last read and still hand back a clean result. The
+ *   breach is turned into the step's throw there, before either child's result is
+ *   read for anything else, and because the step arms ONE budget for both children
+ *   the lever is named once for the pair.
  * - **The rows are APPENDED to the caller's running total, never returned** — the
  *   rule both gate adapters already hold (see `review-gates.ts`'s header).
  */

@@ -31,9 +31,8 @@
  * literal between is retried at every offset the `**` can absorb, so both such positions are refused
  * by shape ({@link wildcardBesideDoublestar}), while a leading doublestar, a wildcard after the LAST
  * one, and a bare `*`/`?` SEGMENT beside a doublestar (which the doublestar swallows whole, starting
- * no retry of its own) all stay admitted.
- * The rows of `test-lean-protected-globs.ts` are the matcher's contract; the caps and those
- * refusals are the entry's.
+ * no retry of its own) all stay admitted. The rows of `test-lean-protected-globs.ts` are the
+ * matcher's contract; the caps and those refusals are the entry's.
  *
  * The other half of that bound is the INPUT, and it belongs to the filesystem rather than the
  * config: {@link SEGMENT_CEILING} and {@link PATH_CEILING}. A path past either cannot exist on
@@ -47,8 +46,8 @@
  * block), plus the C0/C1 controls, NEL and the line/paragraph separators. An entry with one in it
  * looks identical to the entry the author meant and matches nothing. The same set
  * `config-test-location.ts` refuses; unlike that module, `*` and `?` are legal here, because a glob
- * is the whole point of the field. A property class is used rather than an enumerated range list
- * because the list had never caught the TAGS block (U+E0001–U+E007F).
+ * is the whole point of the field. A property class is used rather than an enumerated range list so
+ * the invisible class cannot silently omit a block.
  */
 const FORBIDDEN = /[;&|`$<>"'\\\n\r]|\p{Cc}|\p{Cf}|\u0085|\u2028|\u2029/u;
 
@@ -69,7 +68,7 @@ const SEGMENT_WILDCARD_CEILING = 4;
  *  because counts are blind to position. Two spellings pay: a wildcard in a segment BEFORE the first
  *  doublestar, and one BETWEEN two doublestar segments (where it carries a length term for each).
  *  A wildcard the doublestars cannot reach stays admitted, anchored after the LAST one; and a BARE
- *  `*`/`?` SEGMENT never pays, wherever it sits, being one `[^/]*` the doublestar swallows whole.
+ *  `*`/`?` SEGMENT never pays, wherever it sits.
  *
  *  Returns the first offending segment, which the refusal quotes back. */
 function wildcardBesideDoublestar(entry: string): string | undefined {

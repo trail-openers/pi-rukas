@@ -4,8 +4,7 @@
  * `review-git.ts` reads origin and reads the diff; this file is the fix ROUND —
  * the disposable tree, the fixer's one child and its one continuation, and the push that leaves the
  * clone. `FixRoundOutcome` stays declared where the round's reader narrows on it (`review-git.ts`
- * exports the type; both halves of the round import it from there), so the two files are one seam
- * behind one shape rather than two contracts.
+ * exports the type; both halves of the round import it from there).
  *
  * Same rule as the rest of `lean/review*`: every git call is argv form through `ReviewDeps.exec`, and
  * the child goes through the deps' seams, so a test drives the whole round against a real temp repo

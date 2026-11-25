@@ -20,10 +20,7 @@
  * the rule, it gets asked of origin over the transport this step's own push uses, and
  * a mainline neither will name refuses the push. `exec` is the step's executor for
  * that reason — a guard that probed on a different seam than the push would be
- * answered by a different machine than the one it is protecting. Pinned by
- * `test-lean-review-push-guards.ts` (x3), which asserts the refusal, and by
- * `test-lean-guard-fail-closed-callers.ts` (r1)/(r2), which assert this step's own
- * exec is the seam asked.
+ * answered by a different machine than the one it is protecting.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";

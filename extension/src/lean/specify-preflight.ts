@@ -5,7 +5,7 @@
  * The step's refusal vocabulary cannot answer this. A runner that dies before collection — an empty git
  * submodule a test imports from, a suite needing an env var this tree lacks — prints nothing naming the
  * file, so the red proof classifies the run `unclear` and the step ends on `criterion ACn has no red
- * test`: a VERDICT about work the toolchain never judged, blaming the adversary for the environment.
+ * test`: a VERDICT about work the toolchain never judged.
  *
  * So the step asks the runner directly, once, before the first dispatch:
  *
@@ -26,14 +26,14 @@
  *     test; extensionless, so extension-keyed runners ignore it. Right for every family except Python.
  *   - Python's: `_lean_runner_probe.py` INSIDE that test directory, or at the root where it is not on the
  *     tree. A hidden file cannot be IMPORTED — pytest's default prepend import mode dies on the dot.
- *     The stem is dot-free, visible, and checked against the project's OWN `testGlob` with the boundary's
- *     matcher, so it can never be collected as one of the project's tests.
+ *     The stem is dot-free and visible, and checked against the project's OWN `testGlob` with the
+ *     boundary's matcher, so it can never be collected as one of the project's tests.
  *
  * The two shape switches sit apart from `runner-preflight-switch.ts`, which decides whether a probe runs.
  *
- * It costs one runner invocation and no model call, and the probe is removed on every path — including the
- * throw. The retry does NOT re-probe: a runner that broke between attempts is caught by the shared
- * pipeline's per-file infra throw (`assertRan`).
+ * It costs one runner invocation, and the probe is removed on every path — including the throw. The retry
+ * does NOT re-probe: a runner that broke between attempts is caught by the shared pipeline's per-file infra
+ * throw (`assertRan`).
  *
  * `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` returns before any of it; the whole check lives here so the switch
  * has one gate to close. An empty git submodule is one shape this catches, fixed where caused:

@@ -183,9 +183,8 @@ export async function frozenTestFailure(
  * Run one project verify tier as a shell command in the worktree.
  *
  * `env` is the scrubbed child env: the driver's own knobs are stripped so a headless runner's
- * configuration cannot flip behaviour inside the project's tests. `killGroup` makes the timeout real: a build
- * that spawns a grandchild holding stdout keeps the pipe open past Node's own kill, which is why the whole
- * process group is killed.
+ * configuration cannot flip behaviour inside the project's tests. `killGroup` makes the timeout real: a
+ * grandchild holding stdout keeps the pipe open past Node's own kill, so the whole group is killed.
  */
 export async function runTier(
   name: string,

@@ -252,6 +252,7 @@
     "smoke-tests/test-AC11-baseline-excuse-publish.ts",
     "smoke-tests/test-AC12-baseline-excuse-ci-reason.ts",
     "smoke-tests/test-AC13-baseline-excuse-ci-unobserved.ts",
+    "smoke-tests/test-2620-verify-full-tier-satisfied-by-roster.ts",
     "smoke-tests/test-2619-verify-red-names-failures.ts",
     "smoke-tests/test-2619-red-reason-clip-and-prompt.ts",
     "smoke-tests/lib/lean-verify-rerun.ts",

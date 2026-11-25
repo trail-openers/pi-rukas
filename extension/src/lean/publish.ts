@@ -10,8 +10,7 @@
  *      claim about a contract that is editable while the run goes on;
  *   3. the newest DECIDED `verify` verdict is read from the step log, and a green
  *      decided about a different commit than the one about to be pushed is REFUSED
- *      before the push — "green" is a claim about a named tree, and pushing
- *      something else under it is the one lie this step cannot take back;
+ *      before the push: "green" is a claim about a named tree.
  *   4. origin is read first (`remoteBranchSha`), an OPEN PR on the branch is
  *      refused with its URL, and the push ALWAYS carries a lease bound to the sha
  *      that read returned — so a rewrite is legitimate only because it was bound to
@@ -25,11 +24,11 @@
  *      is how a resumed run opens a second PR for the same work.
  *
  * Everything the step cannot observe is a `PublishInfraError` — the engine turns a
- * throw into a handed-back run, the honest answer to "nobody looked". Once the push
- * has landed, every such error names the head and says the push succeeded, so a
- * handoff never sends the next run looking in the wrong place. The recorded outcome
- * carries `prUrl` and nothing else: `state-outcome.ts` refuses that field on any
- * other step, so it stays the run's only evidence that a PR exists at an address.
+ * throw into a handed-back run. Once the push has landed, every such error names the
+ * head and says the push succeeded, so a handoff never sends the next run looking in
+ * the wrong place. The recorded outcome carries `prUrl` and nothing else:
+ * `state-outcome.ts` refuses that field on any other step, so it stays the run's only
+ * evidence that a PR exists at an address.
  *
  * The step's own preconditions read the run's persisted state, so the push target is
  * data rather than a decision — `assertPublishableBranch` in `publish-deps.ts`.

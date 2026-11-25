@@ -8,9 +8,7 @@
  * the two things only this step can observe:
  *
  *   1. **May it merge at all?** `autoMerge`, read from `.pi/work.json` AT the
- *      run's `baseSha` through `loadWorkConfig` — the rule `config.ts`
- *      already enforces, so a run that edited its own config is judged by the
- *      bytes that existed before it started. Two refusals, because the two
+ *      run's `baseSha` through `loadWorkConfig`. Two refusals, because the two
  *      causes need different operator actions: `autoMerge` absent or false →
  *      `refused` naming the missing grant; a config that could not be READ →
  *      also `refused`, but naming the unreadable config. An unreadable config
@@ -35,8 +33,7 @@
  * (`landDeps()` builds it the way the driver builds its own commit title —
  * `deriveConsolidationSubject` over the issue title), because the squash
  * subject BECOMES the commit record on main and release-please derives the
- * version bump and changelog entry from it. Leaving it to the forge's default
- * is leaving the changelog to luck.
+ * version bump and changelog entry from it.
  *
  * The result is READ BACK: `merged` is a claim about the forge, not about the
  * call's return value. If the merge cannot be performed exactly and confirmed,

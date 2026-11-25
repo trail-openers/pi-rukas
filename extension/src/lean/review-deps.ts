@@ -254,9 +254,8 @@ export function renderFindings(summary: LensReviewSummary): string {
 // The briefs. Both exist because lean has no caller to hand the step a context string:
 // the adversarial loop and the six-lens pass each take one free-text `context`, and here
 // the step is the caller. Short on purpose: the diff, the issue body and the finding
-// lists are the substance. The fix brief is the more important one — a fixer handed
-// findings without a diff, an issue or a tree re-derives a solution from scratch, which
-// is how a fix round undoes the previous fix.
+// lists are the substance — a fixer handed findings without a diff, an issue or a tree
+// re-derives a solution from scratch, which is how a fix round undoes the previous fix.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**

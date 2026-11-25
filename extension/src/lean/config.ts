@@ -218,11 +218,7 @@ export const DEFAULT_BUDGETS: Readonly<Record<string, Budget>> = Object.freeze({
   challenge: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 15 }),
   review: Object.freeze({ turns: 400, tokens: 60_000_000, minutes: 30 }),
   ci: Object.freeze({ turns: 0, tokens: 0, minutes: 30 }),
-  // The spec-intake child, which drafts a contract from a prose ticket. Its own row,
-  // not a borrowing of `specify`'s, so an operator can price and bound a drafting
-  // pass without touching a build step's ceiling — and a derivation that runs away
-  // cannot spend the money a build would have needed. One short read-only pass: the
-  // child works from text already in its prompt, with no repository to explore.
+  // Its own row so an operator can price and bound a drafting pass without touching a build step's ceiling.
   derive: DERIVE_DEFAULT_BUDGET,
 });
 

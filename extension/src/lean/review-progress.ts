@@ -2,19 +2,15 @@
  * lean/review-progress — the one predicate that decides whether a fix wave
  * achieved anything.
  *
- * Split from `review.ts`, which passed the size cap when `review-prompt.ts`
- * folded into it. Pure: it takes what a round reported and returns a verdict,
- * with no git, no tree and no dispatch in it. That separation is the point — the
- * step that consults it is the hardest part of `review` to read, and a rule that
- * can only be reasoned about inside it gets reasoned about wrongly.
+ * Pure: it takes what a round reported and returns a verdict, with no git, no tree and no dispatch
+ * in it. That separation is the point — the step that consults it is the hardest part of `review` to
+ * read, and a rule that can only be reasoned about inside it gets reasoned about wrongly.
  *
- * **It is the whole bound on the wave.** There is no round count to bound and no
- * stagnation tie-breaker: the wave has one fixer, so the case the tie-breaker
- * existed for — a gate that re-reports the same findings every round while a
- * fixer keeps committing — cannot recur, because there is no next round to buy.
- * What remains is the one way the wave is worth nothing on its own terms: the
- * fixer was dispatched, paid for, and changed nothing, so re-reviewing would
- * re-review the identical commit the gate just read, and a step that did that
+ * **It is the whole bound on the wave.** There is no round count to bound and no stagnation
+ * tie-breaker: the wave has one fixer, so a gate cannot re-report the same findings across rounds
+ * while a fixer keeps committing — there is no next round to buy. What remains is the one way the
+ * wave is worth nothing on its own terms: the fixer was dispatched, paid for, and changed nothing,
+ * so re-reviewing would re-review the identical commit the gate just read, and a step that did that
  * would report a head it never actually looked at twice.
  */
 

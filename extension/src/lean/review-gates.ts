@@ -16,7 +16,7 @@
  *   gate that did not run is not a gate that approved.
  * - **"Could not read" is never "clean".** `buildEvidence` and `runClaimScan` answer
  *   `undefined` / `[]` both for "found nothing" and for "the branch would not open" —
- *   so the precondition is established BEFORE them, by a read that does distinguish
+ *   so the precondition is established BEFORE them, by a read that distinguishes
  *   the two.
  */
 
@@ -50,8 +50,8 @@ const PASSED_WITH_FINDINGS_MARK = "PASSED WITH FINDINGS";
  * The adversarial statuses that block, per the role's own doctrine, which calls
  * exactly one verdict "Must fix before proceeding". Spelled as an allowlist so a
  * fifth status added to `AdversarialVerdictStatus` is non-blocking until someone
- * classifies it here — the safe direction for a step that spends a child, a
- * re-review and a second gate pass on whatever it reads as blocking.
+ * classifies it here — the safe direction for a step that spends a child and a
+ * re-review on whatever it reads as blocking.
  */
 const BLOCKING_ADVERSARIAL_STATUSES: readonly AdversarialVerdictStatus[] = [
   "CRITICAL_ISSUES_FOUND",

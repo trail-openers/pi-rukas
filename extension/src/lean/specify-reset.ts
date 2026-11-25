@@ -7,12 +7,10 @@
  * reset never consults HEAD — it names the base sha, discards everything else, then proves the tree got there.
  *
  * `clean -fdx` (not `-fd`) is deliberate: `-x` also removes ignored files, and a child that wrote a
- * `.gitignore` hiding a stray file would keep it through the reset, outside what `git status` reports. No
- * exemption list: the provisioned dependency links go with everything else and are rebuilt, so the tree after
- * a reset is built by one code path.
- *
- * `writeCaptured` follows no link: every ancestor must be a real directory, and each file lands through a `wx`
- * temp write plus a rename, so an existing name is never written through.
+ * `.gitignore` hiding a stray file would keep it through the reset. No exemption list: the provisioned
+ * dependency links go with everything else and are rebuilt, so the tree after a reset is built by one
+ * code path. `writeCaptured` follows no link: every ancestor must be a real directory, and each file
+ * lands through a `wx` temp write plus a rename.
  *
  * The COMMIT that follows the freeze — `commitTestFiles` and the `committedBlob` the freeze hashes — is
  * `specify-commit.ts`: discard-and-prove and record-and-prove are two contracts, and the commit is the seam.

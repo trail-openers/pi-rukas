@@ -13,14 +13,13 @@
  *
  * The second half is the reason `land` may trust `ci` at all: a run must not reach
  * the merge on the fast tier plus the frozen tests alone. With no full tier
- * configured this step returns `red` naming that gap — it fails closed rather than
- * reporting a green it did not observe.
+ * configured this step returns `red` naming that gap.
  *
  * A red is a verdict and the machine routes it (one fix round, then handback). A
  * throw is infrastructure — an unreadable `gh`, a killed or un-startable tier, checks
  * that never finished inside the wait's bound, a worktree that is no longer the tree
  * the gate certified — which the engine turns into handed-back rather than a build
- * round, because a result nobody observed is not evidence the code is wrong.
+ * round.
  *
  * **The architectural bound.** Between `build`/`verify` and this handler nothing is
  * pushed, so the code the run produced exists ONLY in this worktree, and `ci`

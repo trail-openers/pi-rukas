@@ -5,9 +5,8 @@
  * sharper question afterwards: the builder says it is done, the frozen tests pass,
  * and is there a case the frozen tests never thought of that still fails? A round
  * that finds one buys a second build against a real gap; a round that finds nothing
- * cost one dispatch and confirmed nothing was found by an adversary paid to look.
- * That asymmetry is why `none` is a VERDICT and not an error — and why the step
- * commits nothing in that case: nothing was proved to fail.
+ * cost one dispatch. That asymmetry is why `none` is a VERDICT and not an error — and
+ * why the step commits nothing in that case: nothing was proved to fail.
  *
  * The machinery is `specify`'s, unchanged, and lives in `specify-run.ts` for both
  * steps. The one thing `challenge` passes differently is the ref: `specify` resets
@@ -26,8 +25,7 @@
  *      and asked for NEW files, and a submission naming a frozen path is refused at
  *      the boundary (`frozenPaths` into `validateSubmitRows`) — the child is not
  *      trusted to obey its own prompt about the one file that would rewrite the
- *      contract.
- *   3. **The red proof is the round's verdict.** Green or unclear means the builder
+ *      contract. *   3. **The red proof is the round's verdict.** Green or unclear means the builder
  *      already handles that case, so the file is dropped; infra throws. Nothing
  *      survives the proof and nothing is committed ⇒ `none`.
  *

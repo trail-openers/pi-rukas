@@ -2,9 +2,8 @@
  * lean/state-outcome-maps — the two-entry-per-field map records an outcome may carry, and the rules
  * that let one into a durable record.
  *
- * Split from `state-outcome.ts`, which passed the size cap when `build` gained its blocked report.
- * `state-outcome.ts` keeps `DISPATCH_STATES`, the ownership table and `outcomeProblem`; this file keeps
- * what a map of paths or criterion ids must look like.
+ * `state-outcome.ts` keeps `DISPATCH_STATES`, the ownership table and `outcomeProblem`; this file
+ * keeps what a map of paths or criterion ids must look like.
  *
  * Each map is BOTH judged (a `*Problem` for the loader) and rebuilt (a `validated*` for `buildOutcome`)
  * from the same bounds, so reader and builder cannot drift apart.
@@ -272,6 +271,8 @@ export interface ProjectRosterRecord {
   fileCount?: number;
   /** No base SUITE ran (head failed no test, so both red arms were empty); owes `baseTotal` 0. */
   baseSkipped?: boolean;
+  /** The `verify.full` tier ran nowhere here: its command is the suite this head run ran, green. */
+  fullSatisfied?: boolean;
   /** Pre-existing files this run edited whose base version PASSED against the head code. */
   editedFiles?: string[];
   /**
@@ -349,9 +350,8 @@ export function projectRosterProblem(value: unknown): string | undefined {
   ] as const) {
     // Only `files` must be non-empty: the suite having tests of its own is what makes it a roster.
     // `passed` may legitimately be empty — a project whose suite was entirely red at the base ran
-    // every one of its tests and passed none of them, which is a roster the disclosure has to show
-    // rather than a hand-back. Requiring a name there would refuse the honest case and leave only the
-    // dishonest one (a report that claims a pass nobody observed).
+    // every one of its tests and passed none of them. Requiring a name there would refuse the honest
+    // case and leave only the dishonest one (a report that claims a pass nobody observed).
     const required = field === "files";
     const problem = required
       ? rosterRequiredListProblem(r[field], field, cap)
@@ -373,6 +373,11 @@ export function projectRosterProblem(value: unknown): string | undefined {
     return "outcome projectRoster.baseFailed must be empty when the base leg is skipped";
   const passed = r.passed as string[];
   const failed = r.failed as string[];
+  if (r.fullSatisfied !== undefined && typeof r.fullSatisfied !== "boolean")
+    return "outcome projectRoster.fullSatisfied must be a boolean";
+  if (r.fullSatisfied === true && failed.length > 0)
+    // `fullSatisfied` licenses a tier that ran NOWHERE, so only a run that failed nothing may claim it.
+    return "outcome projectRoster.fullSatisfied may only be claimed by a head run that failed nothing";
   if ((r.total as number) < passed.length + failed.length)
     return "outcome projectRoster.total must be at least the number of names it records";
   if ((r.baseTotal as number) < (r.baseFailed as string[]).length)
@@ -389,11 +394,10 @@ export function projectRosterProblem(value: unknown): string | undefined {
     );
     if (problem !== undefined) return problem;
   }
+  if (r.fileCount !== undefined && !Number.isSafeInteger(r.fileCount))
+    return "outcome projectRoster.fileCount must be an integer";
   // A count beside a capped list can only be AT LEAST that list: fewer describes a suite it did not run.
-  if (
-    r.fileCount !== undefined &&
-    (!Number.isSafeInteger(r.fileCount) || (r.fileCount as number) < (r.files as string[]).length)
-  )
+  if (r.fileCount !== undefined && (r.fileCount as number) < (r.files as string[]).length)
     return "outcome projectRoster.fileCount must be an integer at least the list it sits beside";
   return undefined;
 }
@@ -419,6 +423,7 @@ export function validatedProjectRoster(value: unknown): ProjectRosterRecord | un
     baseTotal: r.baseTotal as number,
     ...(r.fileCount === undefined ? {} : { fileCount: r.fileCount as number }),
     ...(r.baseSkipped === undefined ? {} : { baseSkipped: r.baseSkipped as boolean }),
+    ...(r.fullSatisfied === undefined ? {} : { fullSatisfied: r.fullSatisfied as boolean }),
     ...(r.editedFiles === undefined ? {} : { editedFiles: [...(r.editedFiles as string[])] }),
     ...(r.baseVersionRed === undefined
       ? {}

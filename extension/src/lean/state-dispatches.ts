@@ -1,11 +1,9 @@
 /**
- * lean/state-outcome — the per-child cost row, and the rules that let one into a
+ * lean/state-dispatches — the per-child cost row, and the rules that let one into a
  * durable record.
  *
- * Split from `state-outcome.ts` along the one seam in that file with no dependency on the rest of it:
- * these are the validators for a single `dispatches` row. They read `DispatchUsageRow`'s shape and
- * nothing else. `state-outcome.ts` keeps `DISPATCH_STATES`, the ownership table, and `outcomeProblem`;
- * this file keeps what a row must look like.
+ * The validators for a single `dispatches` row: they read `DispatchUsageRow`'s shape and nothing
+ * else. `state-outcome.ts` keeps `DISPATCH_STATES`, the ownership table, and `outcomeProblem`.
  *
  * What a row is: one child the step paid for. `usage.byRole` in the headless result is the sum of
  * these, so a row that cannot be attributed to a role, a negative cost, or an `ok` that is not a
@@ -84,9 +82,8 @@ export function isMeasure(value: unknown): value is number {
 }
 
 /**
- * The ONE grammar of a fixer row's `runId`, and the only fix-run-id regex in the product source —
- * exported because a rule two files state is a rule one of them will violate: a reader with its own
- * looser literal silently deleted the fixer row from every review that fixed anything.
+ * The ONE grammar of a fixer row's `runId`, and the only fix-run-id regex in the product source:
+ * a reader with its own looser literal silently deletes the rows it cannot parse.
  *
  * The shape: the epoch milliseconds `fixRunId` mints, then the `-<arm>-<wave>-<attempt>` composite that
  * `fixRound` builds for the fix-tree creation that made this tree. No sign, no fraction, no exponent — a
@@ -121,8 +118,7 @@ function isUsageRow(value: unknown): boolean {
   // `Infinity`, and an infinite total is a record that reads as evidence and compares against nothing.
   if (!["input", "output", "cacheRead", "cacheWrite", "turns"].every((k) => isCount(u[k])))
     return false;
-  // The tool counts are optional (a row written before they existed has none),
-  // but a present one is a count like the others.
+  // The tool counts are optional, but a present one is a count like the others.
   if (!TOOL_COUNTERS.every((k) => u[k] === undefined || isCount(u[k]))) return false;
   if (u.costFromProvider !== undefined && typeof u.costFromProvider !== "boolean") return false;
   // `cost` is the one field that is NOT an integer count: `addUsage` in `pi-usage.ts` accumulates a
