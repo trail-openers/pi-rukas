@@ -11,12 +11,11 @@
  * at most once; `ciFixUsed` gives a red CI one fix round.
  */
 
-import type { LeanRun, LeanState, Outcome } from "./state.ts";
+import { type LeanRun, type LeanState, type Outcome, newestDecided } from "./state.ts";
 import { type Transition, to, viaBuild } from "./transitions.ts";
 
 /** Outcome kinds per state. The handler for a state may return only these; the pair enumeration in
- * `test-lean-machine.ts` asserts each entry equals the registry's set.
- */
+ * `test-lean-machine.ts` asserts each entry equals the registry's set. */
 export const OUTCOME_KINDS = {
   // `infra` is `ready`'s only route to `handback` that is not the author's fault:
   // in `derive` intake mode the contract comes from a model call, and a call that
@@ -102,8 +101,8 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           // run says so on the operator's channel instead of on the ticket.
           return to(run, "handback");
         case "setup":
-          // The repository cannot run lean. Straight to `handed-back` (exit 10): the issue is not
-          // at fault, so no comment goes on it, and a host falls back on `failure.kind: "setup"`.
+          // The repository cannot run lean: straight to `handed-back` (exit 10), no comment on an issue that
+          // is not at fault, and a host falls back on `failure.kind: "setup"`.
           return to(run, "handed-back");
       }
       break;
@@ -111,8 +110,8 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "specify":
       switch (outcome.kind) {
         case "ok":
-          // The contract holds, so the run earns its builder — and this edge DISPATCHES it, so this is
-          // where build's first round is billed.
+          // The contract holds, so the run earns its builder — and this edge DISPATCHES it, so this is where
+          // build's first round is billed.
           return viaBuild(run, "build");
         case BUDGET_KIND:
           // Out of budget before the contract was written.
@@ -139,14 +138,17 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
           return to(run, c.challengeDone ? "verify" : "challenge");
         case "blocked":
-          // Never through the `exhausted` route: publishing a PR over tests the builder proved
-          // unsatisfiable is the one shape where an unsatisfied contract reaches `land`.
+          // Never through the `exhausted` route: publishing a PR over tests the builder proved unsatisfiable
+          // is the one shape where an unsatisfied contract reaches `land`.
           return to(run, "handback");
         case "exhausted":
-          // `draft` set means `verify` said RED. No draft means the code was green and the run ran out
-          // of rounds. A run does not acquire a draft twice.
-          if (c.draft) return to(run, "handback");
-          return viaBuild(run, "publish", true);
+          // The publish arm is the GREEN arm and nothing else: the gate decides whether a head may ship, so
+          // an exhausted round reaches `publish` only when the newest DECIDED `verify` said green — the one
+          // reader `publish` itself consults, so the two cannot disagree. Every other case (none, or not
+          // green) hands back through the biller: the round stays spent and the marker keeps it from `land`.
+          if (newestDecided(run.steps, "verify")?.outcome?.kind === "green")
+            return viaBuild(run, "publish", true);
+          return viaBuild(run, "handback", true);
       }
       break;
 

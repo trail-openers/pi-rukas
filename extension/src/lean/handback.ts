@@ -13,18 +13,17 @@ import { execp } from "../exec.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { handbackHeads } from "./handback-heads.ts";
+import { NO_GATE_VERDICT, handbackHeads, newestDecidedWorkStep } from "./handback-heads.ts";
 import { NO_HEAD, type Rewind, originBranchHead } from "./handback-rewind.ts";
 import { RED_TEST_GAP } from "./specify-gap-switch.ts";
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP, validPrUrl } from "./state-outcome.ts";
-import { type Outcome, REPORT_STATES, type Step } from "./state.ts";
+import type { Outcome, Step } from "./state.ts";
 import { budgetSentence, budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
 import { newestRedVerifyReason } from "./verify-deps.ts";
 
 /** A reason line long enough to be a wall is not a comment a human reads. */
 const REASON_CLIP = 2000;
-
 /** The `Branch:` line, or nothing when the branch is not a printable ref. */
 function branchLine(branch: string): string[] {
   try {
@@ -35,26 +34,22 @@ function branchLine(branch: string): string[] {
   return [`Branch: \`${branch}\``];
 }
 
-/** How much of the frozen contract a comment lists; the full set lives in the step log. */
-const FROZEN_LIST_CAP = 20;
+/** How much of the frozen contract a comment lists, and how many conflicting files a cause line names; the
+ * full sets live in the step log. */
+const LIST_CAP = 20;
 
-/** How many conflicting files a cause line names; the rest live in the step log. */
-const BLOCKED_LIST_CAP = 20;
-
-/** The newest DECIDED step of one state whose outcome carries a reason. */
-function newestReason(
-  steps: Step[],
-  state: "verify" | "ci",
-  kind: "red" | "green",
-): string | undefined {
+/** The newest DECIDED step of `state` whose outcome carries a reason. */
+function newestReason(steps: Step[], state: "verify" | "ci", kind: "red" | "green") {
+  let found: string | undefined;
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
     if (step?.state !== state || step.outcome?.kind !== kind) continue;
     const reason = step.outcome.reason ?? step.outcome.message;
     if (typeof reason !== "string" || reason.trim() === "") continue;
-    return reason;
+    found = reason;
+    break;
   }
-  return undefined;
+  return found;
 }
 
 /** Why the run is ending, in the record's own words. */
@@ -69,21 +64,12 @@ function terminalCause(steps: Step[]): string | undefined {
   return undefined;
 }
 
-/** The newest step that was WORK — a report state is how a run ended, not work. */
-function newestWorkStep(steps: Step[]): Step | undefined {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i];
-    if (step !== undefined && !REPORT_STATES.includes(step.state)) return step;
-  }
-  return undefined;
-}
-
 /**
  * The newest WORK step's budget breach. The breach is why the run stopped, and it counts
  * only when nothing that did work is newer.
  */
 function budgetCause(steps: Step[]): string | undefined {
-  const step = newestWorkStep(steps);
+  const step = newestDecidedWorkStep(steps);
   const fired = step === undefined ? undefined : budgetTrio(step.outcome);
   if (step === undefined || fired === undefined) return undefined;
   // The step's own clause about the attempts it spent, kept if it made one.
@@ -93,38 +79,30 @@ function budgetCause(steps: Step[]): string | undefined {
     : `${budgetSentence(step.state, fired)} ${used}`;
 }
 
-/**
- * The build step's named unsatisfiable contract: the builder's `blocked` verdict is the one
- * cause that names the files and the contradiction. Like {@link budgetCause}, it counts only at
- * the newest WORK step.
- */
+/** The build step's named unsatisfiable contract — the one cause that names files; counts only at the newest
+ * WORK step, like {@link budgetCause}. */
 function blockedCause(steps: Step[]): string | undefined {
-  const step = newestWorkStep(steps);
+  const step = newestDecidedWorkStep(steps);
   if (step?.state !== "build" || step.outcome?.kind !== "blocked") return undefined;
   const entries = Object.entries(step.outcome.blockedBy ?? {});
   if (entries.length === 0) return undefined;
   const named = entries
-    .slice(0, BLOCKED_LIST_CAP)
+    .slice(0, LIST_CAP)
     .map(
       ([file, why]) => `- ${oneLine(file, BLOCKED_PATH_CAP)}: ${oneLine(why, BLOCKED_REASON_CAP)}`,
     )
     .join("\n");
-  const more =
-    entries.length > BLOCKED_LIST_CAP ? `\n…and ${entries.length - BLOCKED_LIST_CAP} more` : "";
+  const more = entries.length > LIST_CAP ? `\n…and ${entries.length - LIST_CAP} more` : "";
   return `the frozen tests cannot all pass together:\n${named}${more}`;
 }
 
 /** The other reading of a test that passed on the base, which the gap's evidence cannot rule out. */
 const GAP_READING =
   "A test that passes on the base may also mean the criterion already holds there.";
-
-/**
- * `specify`'s own child left a criterion with no red test. The rules name each criterion; the reason adds
- * the per-file evidence (`exited 0 on base`), and a rule it already spells is not printed again. The
- * second reading applies only when a test actually passed on the base.
- */
+/** `specify`'s child left a criterion with no red test: each rule once, the per-file evidence, and the
+ * second reading only where a test really passed on the base. */
 function gapCause(steps: Step[]): string | undefined {
-  const oc = newestWorkStep(steps)?.outcome;
+  const oc = newestDecidedWorkStep(steps)?.outcome;
   if (oc?.kind !== RED_TEST_GAP) return undefined;
   const rules = oc.failedRules ?? [];
   const reason = oc.reason ?? "";
@@ -142,14 +120,24 @@ export function neededFromLog(steps: Step[]): string {
     blockedCause(steps) ??
     gapCause(steps) ??
     budgetCause(steps) ??
+    exhaustedCause(steps) ??
     newestRedVerifyReason(steps) ??
     newestReason(steps, "ci", "red") ??
-    // Nothing ever went red: fall through to the last verdict of either gate.
     newestReason(steps, "verify", "green") ??
     newestReason(steps, "ci", "green") ??
+    // A gate that never decided leaves no verdict to quote; the rule's finding is all this can say.
+    (handbackHeads(steps).reason === NO_GATE_VERDICT ? NO_GATE_VERDICT : undefined) ??
     terminalCause(steps) ??
     "the run ended without recording why";
   return reason.length > REASON_CLIP ? `${reason.slice(0, REASON_CLIP)}…` : reason;
+}
+
+/** The exhausted builder's own account, at the newest WORK step only — the {@link budgetCause} position. */
+function exhaustedCause(steps: Step[]): string | undefined {
+  const step = newestDecidedWorkStep(steps);
+  if (step?.state !== "build" || step.outcome?.kind !== "exhausted") return undefined;
+  const reason = step.outcome.reason ?? step.outcome.message;
+  return typeof reason === "string" && reason.trim() !== "" ? reason : undefined;
 }
 
 /**
@@ -189,9 +177,9 @@ function prUrlFromLog(steps: Step[]): string | undefined {
 /** The frozen list as bullet lines, capped, with the remainder counted. */
 function frozenLines(frozen: string[]): string {
   if (frozen.length === 0) return "- none were recorded";
-  const kept = frozen.slice(0, FROZEN_LIST_CAP).map((f) => `- ${f}`);
-  if (frozen.length <= FROZEN_LIST_CAP) return kept.join("\n");
-  return [...kept, `- …and ${frozen.length - FROZEN_LIST_CAP} more`].join("\n");
+  const kept = frozen.slice(0, LIST_CAP).map((f) => `- ${f}`);
+  if (frozen.length <= LIST_CAP) return kept.join("\n");
+  return [...kept, `- …and ${frozen.length - LIST_CAP} more`].join("\n");
 }
 
 /**
@@ -277,26 +265,22 @@ interface Heads {
 }
 
 /**
- * The head facts one handback records, from the head origin holds and what the rewind settled on.
- * `render` is the renderer flag and travels to the body only. Called only where the rule applies.
+ * The head facts one handback records, from the head origin holds and what the rewind settled on. `render`
+ * is the renderer flag and travels to the body only. Called only where the rule applies.
  *
- * A rewind with no head to move records the head origin ACTUALLY holds — the rule fired, found no
- * certified head, and origin still carries what the fix wave pushed. `shippedVerified` includes
- * `alreadyAtVerified`: origin held the certified head already, which is where the rewind's own pre-move
- * `unshippedHead` is withheld rather than printed as a head this step displaced.
+ * A rewind with no head to move records the head origin ACTUALLY holds, uncertified. `shippedVerified`
+ * includes `alreadyAtVerified`, where the rewind's pre-move `unshippedHead` is withheld rather than printed
+ * as a head this step moved.
  */
 function headFacts(rewind: Rewind, originHead: string | undefined): Heads {
   const shippedHead = originHead ?? rewind.unshippedHead;
-  // The arm with nothing to move: the rule fired, the log named no green head, and origin keeps the
-  // head the fix wave pushed.
+  // The arm with nothing to move: origin keeps the head the fix wave pushed, uncertified.
   if (rewind.unshippedHead === undefined && !rewind.shipped) {
     if (originHead === undefined) return { render: false };
-    // The rule's words: the operator's question is why what shipped was never certified.
     const why = rewind.noHeadReason ?? rewind.reason;
     return {
       render: true,
       shippedHead: originHead,
-      // Nothing moved, so origin holds what the fix wave left and the gate never certified it.
       shippedVerified: false,
       // This step displaced nothing.
       ...(why === undefined ? {} : { unshippedReason: why }),
@@ -335,20 +319,27 @@ export async function handbackOutcome(
     // This step never throws, so a body that failed to build is reported like a refused post.
     const prUrl = prUrlFromLog(ctx.steps);
     const heads = handbackHeads(ctx.steps);
-    // The rewind runs BEFORE the body is built, so the comment states where origin stands after it.
+    // The rewind runs BEFORE the body is built, so the comment states where origin stands after it. The
+    // draft-publish arm takes none: nothing moved, and origin is never asked.
     let moved: Rewind | undefined;
     let originHead: string | undefined;
-    if (heads.applies) {
+    if (heads.applies && heads.shippedHead === undefined) {
       moved =
         heads.verifiedHead === undefined
-          ? // `NO_HEAD`'s own `reason` describes a push that did not run; this answers why what
-            // shipped was never certified.
+          ? // `NO_HEAD`'s `reason` describes a push that did not run; this answers why the shipped head
+            // was never certified.
             { ...NO_HEAD, noHeadReason: heads.reason }
           : await rewind(heads.verifiedHead);
       // Read AFTER the rewind, so it is origin's post-move value.
       originHead = await readOrigin(ctx);
     }
-    const facts = moved === undefined ? { render: false } : headFacts(moved, originHead);
+    // The draft-publish arm's facts are the run's own publish record, so an unreadable origin cannot swallow
+    // the line that says the head is unverified.
+    const facts: Heads = heads.shippedHead
+      ? { render: true, shippedHead: heads.shippedHead, shippedVerified: false }
+      : moved === undefined
+        ? { render: false }
+        : headFacts(moved, originHead);
     const { render, ...record } = facts;
     body = handbackBody(ctx.issue, {
       needed: neededFromLog(ctx.steps),
