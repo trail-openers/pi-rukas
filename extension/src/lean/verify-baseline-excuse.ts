@@ -232,5 +232,5 @@ function boundedLine(line: string): string {
  * which no gate measured.
  */
 export function preexistingReason(names: readonly string[]): string {
-  return `pre-existing failures on the base commit: ${names.join(", ")} — every failing line also fails at the run's base commit, which this run did not author them`;
+  return `pre-existing failures on the base commit: ${names.join(", ")} — every failing line also fails at the run's base commit, which this run did not author`;
 }

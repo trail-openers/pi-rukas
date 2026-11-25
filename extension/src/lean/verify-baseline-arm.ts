@@ -124,12 +124,15 @@ export async function baselineRedArm(opts: {
 const clipName = (line: string) =>
   line.length > PREEXISTING_NAME_MAX_CHARS ? line.slice(0, PREEXISTING_NAME_MAX_CHARS) : line;
 
-/** The head's failing lines this step READ, bounded; the count left off the list rides on the end. */
-function headFailureNames(stream: string): string[] {
+/**
+ * The head's failing lines this step READ: the bounded list, plus a separate count sentence for what
+ * the cap left off. The count is NOT a list item — every item is a failing line — and it is a sentence
+ * THIS step wrote, which is what tells it apart from project bytes saying the same words.
+ */
+function headFailureNames(stream: string): [names: readonly string[], omitted?: string] {
   const all = failureLinesOf(stream);
-  if (all.length === 0) return [];
   const kept = all.slice(0, BASELINE_RED_NAMES_CAP).map(clipName);
-  return all.length > kept.length
-    ? [...kept, `omitted ${String(all.length - kept.length)} more`]
-    : kept;
+  const omitted =
+    all.length > kept.length ? `omitted ${String(all.length - kept.length)} more` : undefined;
+  return omitted === undefined ? [kept] : [kept, omitted];
 }

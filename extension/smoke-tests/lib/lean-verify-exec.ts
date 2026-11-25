@@ -210,11 +210,17 @@ export function makeVerifyExec(opts: {
         //     makes the two runs' residue IDENTICAL, which is the only residue shape the
         //     verbatim rule can compare.
         const marker = markerOf(cmd);
+        // The executor's rejection message is `Command failed: <cmd>` PLUS what the child
+        // wrote to stderr (`src/exec.ts`), and every consumer of this seam — `ci-tier.ts`,
+        // `tierRunStream`, the excuse's `harnessResidue` — folds that message back into the
+        // stream. A stub whose message stops at the command leaves the stream one line short
+        // of what a real run produced, and a case cannot tell the difference from inside.
+        const baseStderr = marker === undefined ? "" : `tier-said-${marker}\n`;
         return Promise.reject(
-          Object.assign(new Error(`Command failed: ${cmd}`), {
+          Object.assign(new Error(`Command failed: ${cmd}\n${baseStderr}`), {
             code: 1,
             stdout: o.baseTierOutput,
-            stderr: marker === undefined ? "" : `tier-said-${marker}\n`,
+            stderr: baseStderr,
           }),
         );
       }
@@ -235,11 +241,15 @@ export function makeVerifyExec(opts: {
     // DIFFERENT residue, and the baseline excuse compares the head's lines against the
     // base verbatim, so a stamp that moved would read as a line only the head printed.
     if (run < redBudget - 1 || o.headTierOutput !== undefined) {
+      // Same executor shape as the base arm above: the message carries what the child wrote to
+      // stderr, so the stream the step reads is the one a real red run left.
+      const headMarker = markerOf(cmd);
+      const headStderr = headMarker === undefined ? "" : `tier-said-${headMarker}\n`;
       return Promise.reject(
-        Object.assign(new Error(`Command failed: ${cmd}`), {
+        Object.assign(new Error(`Command failed: ${cmd}\n${headStderr}`), {
           code: 1,
           stdout: o.headTierOutput ?? "",
-          stderr: markerOf(cmd) === undefined ? "" : `tier-said-${markerOf(cmd)}\n`,
+          stderr: headStderr,
         }),
       );
     }

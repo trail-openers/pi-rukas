@@ -29,6 +29,7 @@ import {
 } from "./issue-prose.ts";
 import { criteriaBlock, scopeBlock } from "./spec-blocks.ts";
 import type { PiSpec } from "./spec.ts";
+import { baselineRedReadNoNames } from "./verify-baseline.ts";
 
 /**
  * The builder's scope contract, in one paragraph and pinned by `test-lean-build-wiring.ts`. Each clause
@@ -78,12 +79,15 @@ export function buildPrompt(opts: BuildPromptOpts): string {
   const judged = opts.reentry?.trim() ?? "";
   const stopped = opts.budgetStop?.trim() ?? "";
   // A gate may hand back a red whose output held nothing readable as a failure. Say so, so the builder
-  // reports the gap instead of searching a quoted log for a check that is not in it. A gate's verdict
-  // only: a budget stop is nobody's judgement, and a frozen or roster clause names something to fix.
+  // reports the gap instead of searching a quoted log for a check that is not in it. The fact is the
+  // clause the step wrote at the reason's END, matched by position and never by search: the reason
+  // embeds the project's own bytes, and a log line that SAYS this sentence must not be able to get the
+  // builder told there is nothing to fix. A gate's verdict only: a budget stop is nobody's judgement,
+  // and a frozen or roster clause names something to fix.
   const nothingToFix =
     stopped === "" &&
     /^baseline red: /.test(judged) &&
-    judged.includes("no failing test could be read") &&
+    baselineRedReadNoNames(judged) &&
     !judged.includes("frozen tests failing:") &&
     !judged.includes("fail against the head code")
       ? "\nThe gate read no failing test from its own output, so there is **nothing to fix from this text**: say so in your report rather than searching the log above.\n"
@@ -114,7 +118,7 @@ export function buildPrompt(opts: BuildPromptOpts): string {
       : [
           "## New since your last round",
           "",
-          `A challenge round ran between rounds and ${opts.added.trim()}. They are part of the contract now.`,
+          `A challenge round ran between rounds and ${opts.added.trim()}. They are part of the contract now — make them pass too.`,
           "",
         ].join("\n");
   const runner =

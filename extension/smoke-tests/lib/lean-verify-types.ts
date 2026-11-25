@@ -206,7 +206,10 @@ export interface VerifyOpts extends ProbeShapeOpts {
    * What the BASE PROBE's tier run printed (combined stdout+stderr), for the cases
    * that decide what the base NAMED rather than only what it exited. The base runs
    * at a commit the case built, so only the case can say what that run printed —
-   * the same reason `baseBlobBytes` answers the base's bytes.
+   * the same reason `baseBlobBytes` answers the base's bytes. The stub hands this to
+   * BOTH fields of the executor's rejection — `stdout`, and the `Command failed: <cmd>
+   * \n<stderr>` message every consumer folds back into the stream — so the base's
+   * stream has the same shape the real executor gives a red run's.
    */
   baseTierOutput?: string;
   /**
