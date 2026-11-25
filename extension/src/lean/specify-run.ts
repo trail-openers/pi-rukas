@@ -130,9 +130,7 @@ function clip(detail: string): string {
   return one.length > NOTE_DETAIL_MAX ? `${one.slice(0, NOTE_DETAIL_MAX)}…` : one;
 }
 
-/**
- * A capped `label N: a; b; c` clause, exported because every note family needs the same bound.
- */
+/** A capped `label N: a; b; c` clause — every note family needs the same bound. */
 export function noteClause(label: string, notes: string[]): string {
   if (notes.length === 0) return "";
   const shown = notes.slice(0, NOTE_CAP).map(clip);
@@ -147,10 +145,7 @@ export interface DropLabel {
   reason: string;
 }
 
-/**
- * The attributed form of one drop, `<criterionId> <path>: <reason>`, path omitted when there is none. The
- * retry's feedback and the step's reason both print it.
- */
+/** The attributed form of one drop, `<criterionId> <path>: <reason>`, path omitted when there is none. */
 export function droppedLabel(d: DropLabel): string {
   return `${d.criterionId}${d.path === undefined ? "" : ` ${d.path}`}: ${d.reason}`;
 }

@@ -31,10 +31,8 @@ export const REVIEW_DEADLINE_RESERVE_MS = 15 * 60_000;
 
 /// What the step's clock says, and the stop it describes. `live` past a lever means
 /// dispatch nothing further; `inert` means the caps master switch is off, so the step
-/// stops nothing and says so with the disclosure `armBudget`'s `warning` carries for a
-/// child. `limit`/`value`/`reason` are present exactly when a stop exists and are the
-/// record's own fields, and `reason` is never `budgetSentence`'s wording: "one child ran
-/// long" and "the step ran out" stay two readable facts.
+/// stops nothing and says so. `limit`/`value`/`reason` are present exactly when a stop
+/// exists and are the record's own fields, never `budgetSentence`'s wording.
 
 export interface StepStop {
   live: boolean;
@@ -47,8 +45,8 @@ export interface StepStop {
 }
 
 /// Where the review step stands against its two levers, right now — asked at every
-/// dispatch point, since a bound read once would bound only the first child. The
-/// budget's minutes are read verbatim (no new knob); 0 means the operator disabled it.
+/// dispatch point, since a bound read once would bound only the first child.
+/// The budget's minutes are read verbatim; 0 means the operator disabled it.
 export function stepBound(ctx: HandlerCtx, budgetMinutes: number, now: number): StepStop {
   const minutes = Math.max(0, budgetMinutes);
   // The newest review entry is this attempt's own, so a handler driven outside the
@@ -87,8 +85,7 @@ function reserveMinutes(): number {
 
 /// The lanes a stop must disclose: the roster the step buys MINUS the lens children that
 /// JUDGED, counted by DISTINCT name — a cap-killed or unparsable row judged nothing, so two
-/// rows for one lens cannot stand in for six judged lanes as a row count would have. The
-/// records name WHICH rows ran, never which of the roster was asked, so the gap is counted.
+/// rows for one lens cannot stand in for six judged lanes as a row count would have.
 /// The re-review lane is added when a pushed fix went unjudged.
 export function unjudgedLenses(round: LensRound | undefined, reReview = false): string[] {
   const rows = (round?.lenses ?? []).filter(

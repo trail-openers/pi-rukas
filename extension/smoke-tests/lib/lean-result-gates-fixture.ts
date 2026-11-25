@@ -106,7 +106,7 @@ export interface GatesLogOpts {
   frozen?: Record<string, string> | null;
   tests?: Record<string, string[]> | null;
   /** `null` = the log carries no `challenge` step; `budget` is the ceiling arm. */
-  challenge?: "new-tests" | "none" | "budget" | null;
+  challenge?: "new-tests" | "none" | "budget" | "skipped" | null;
   /** `null` = no `verify` step at all. */
   // `undefined` is a VERDICT here, not an omission: every case whose gate is not the one
   // under test wants a green gate that goes on publishing. `null` is the omission an
@@ -198,7 +198,12 @@ function one(opts: GatesLogOpts, state: Step["state"]): Step | undefined {
       if (opts.challenge === null || opts.challenge === undefined) return undefined;
       return opts.challenge === "budget"
         ? stepWith("challenge", { kind: "budget", limit: "turns", value: 3, used: 3 })
-        : stepWith("challenge", { kind: opts.challenge });
+        : opts.challenge === "skipped"
+          ? stepWith("challenge", {
+              kind: "skipped",
+              reason: "challenge SKIPPED: pre-verify share 40% of the 4200s cell used up (used 1690s)",
+            })
+          : stepWith("challenge", { kind: opts.challenge });
     case "verify":
       if (opts.verify === null) return undefined;
       return opts.verify === "red"
@@ -393,7 +398,15 @@ export async function gatesRun(
         ? of("challenge")
         : opts.challenge === "budget"
           ? [{ kind: "budget", limit: "turns", value: 3, used: 3 }]
-          : [{ kind: "none" }],
+          : opts.challenge === "skipped"
+            ? [
+                {
+                  kind: "skipped",
+                  reason:
+                    "challenge SKIPPED: pre-verify share 40% of the 4200s cell used up (used 1690s)",
+                },
+              ]
+            : [{ kind: "none" }],
     // A `fixed` review routes back through `verify` (that is the whole difference between
     // its two kinds), so a run that reviews needs one more gate verdict than one that
     // does not — and the re-verification's head is the fix wave's, which is the fact the

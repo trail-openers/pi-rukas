@@ -26,6 +26,7 @@ import { forgeReadOffGuardEnabled } from "../../src/forge-read-off-switch.ts";
 import { glabMrCreateArgvEnabled } from "../../src/gl-mr-create-switch.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
 import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.ts";
+import { leanPreVerifySharePercent } from "../../src/lean/pre-verify-share-switch.ts";
 import { leanDetectVerifyEnabled } from "../../src/lean/config-detect.ts";
 import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
@@ -215,6 +216,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth
   // table, the off arm's bytes and the docs row are pinned by
   // test-AC5-project-roster-switch.ts and test-AC7-project-roster-docs.ts.
+  // The pre-verify share: its default is pinned here, its truth table, its inert arms and its
+  // docs row by `test-lean-pre-verify-share-switch.ts`.
+  ["PI_ENSEMBLE_LEAN_PRE_VERIFY_SHARE", leanPreVerifySharePercent],
   ["PI_ENSEMBLE_LEAN_PROJECT_ROSTER", leanProjectRosterEnabled],
   ["PI_ENSEMBLE_LEAN_FIXER_TRUNCATION_REASK", leanFixerTruncationReaskEnabled],
   // #2279 — the handback's origin reads through the network-git wrapper. The reader is

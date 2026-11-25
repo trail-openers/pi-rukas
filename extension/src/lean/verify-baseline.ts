@@ -4,9 +4,8 @@
  * `verify` routes every tier `red` into a build round, which is only right when the tier was green before the
  * change existed. Two questions, both asked only AFTER a tier has gone red (a green tier pays nothing):
  *
- *   - **a re-run at HEAD** — `confirmTierRedFrom` over the re-run's child: green on the second
- *     run means the first observed nothing stable, so the tier counts green and the flake rides
- *     in the PR body's reason;
+ *   - **a re-run at HEAD** — green on the second run means the first observed nothing stable, so
+ *     the tier counts green and the flake rides in the PR body's reason;
  *
  * The probe runs at `baseSha` and never at HEAD: probing at HEAD would let the builder's own commit decide what
  * counts as pre-existing.
@@ -18,7 +17,6 @@
  * The frozen tests inside the probe are the exemption's boundary: a base that passes them has no pre-existing
  * red anywhere, and excusing the tier over that would delete the run's only contract check.
  */
-
 import { trace, traceWarn } from "../trace.ts";
 import { verifyChildEnv, verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { linkShareableDeps, looksLikeMissingDeps } from "../worktree-provision.ts";
@@ -31,9 +29,9 @@ import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 export const BASELINE_RED_MARKER = "baseline red:";
 
 /**
- * The clause a baseline red carries when THIS step read no failing line, written only where
- * {@link baselineRedReason} was handed an empty list and matched only at the reason's END — never by
- * searching the text, which embeds the project's own bytes.
+ * The clause a baseline red carries when THIS step read no failing line — written only by
+ * {@link baselineRedReason} and matched only at the reason's END, never by searching the text,
+ * which embeds the project's own bytes.
  */
 const NO_NAMES_CLAUSE = "; no failing test could be read from this output";
 
@@ -44,12 +42,9 @@ const NO_NAMES_CLAUSE = "; no failing test could be read from this output";
  * KNOWN (the base is red for this command) and what is NOT (whether the head adds a failure the base
  * lacks) — a round IS billed on this red, so nothing here may call one wasted. The names come from
  * THIS STEP's parse, never the project's raw bytes, which keeps `verify-red-attribution.ts` true.
- * The unreadable clause states a fact THIS step measured — that its own parse read no line — and it
- * sits at the end so the project's quoted bytes can neither bury it nor stand in for it.
  *
  * `failing` is the step's own bounded read: the names to list, plus the count sentence for what the
- * cap left off — kept out of the list, so every list item is a failing line and the count is its own
- * clause. Both halves sit after the quoted command, which is the only place the project's bytes appear.
+ * cap left off. Both halves sit after the quoted command, the only place the project's bytes appear.
  */
 export function baselineRedReason(
   name: string,
@@ -370,10 +365,8 @@ export function baselineUnusableError(reason: string): VerifyInfraError {
   return new VerifyInfraError(reason);
 }
 /**
- * The judgement `verify` makes about the tier re-run it spawns through `tierRunStream`.
- *
- * `verify` needs the re-run's OUTPUT as well as its colour, so it spawns the child once
- * there and asks this of the result. "A kill is not a pass" has exactly one reading.
+ * The judgement `verify` makes of the tier re-run it spawns through `tierRunStream`, asked of
+ * the result after that call has already captured the output. "A kill is not a pass."
  */
 export function confirmTierRedFrom(ran: unknown): boolean {
   // An excuse needs a re-run that SAW the work and came back clean: two positive facts, not

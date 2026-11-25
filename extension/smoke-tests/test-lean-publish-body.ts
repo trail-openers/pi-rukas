@@ -27,7 +27,10 @@
  */
 
 import { publishBody } from "../src/lean/publish-body.ts";
-import { challengeBudgetFromLog } from "../src/lean/publish-body.ts";
+import {
+  challengeBudgetFromLog,
+  challengeSkipReasonFromLog,
+} from "../src/lean/publish-body.ts";
 import type { PublishBodyInput } from "../src/lean/publish-body.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
 import type { Outcome } from "../src/lean/state.ts";
@@ -267,6 +270,23 @@ function bodyOf(o: Omit<Partial<PublishBodyInput>, "spec"> & { spec: PiSpec }): 
     !without.includes("challenge stopped"),
     "a body with no challenge stop in the record prints no such line",
   );
+  // The pre-verify skip is a different fact from a ceiling: nothing was paid for, so the
+  // line says the round was never bought. `runSkipped` is the only way it prints.
+  const skipLine = bodyOf({
+    spec: spec("test"),
+    verifyKind: "green",
+    challengeSkipped: "challenge SKIPPED: pre-verify share 40% of the 4200s cell used up (used 1690s)",
+  });
+  assert(
+    lines(skipLine).some((l) =>
+      l.startsWith("- challenge skipped: challenge SKIPPED: pre-verify share 40%"),
+    ),
+    `a skipped round gets its own Run line (${lines(skipLine).find((l) => l.includes("challenge skipped"))})`,
+  );
+  assert(
+    !bodyOf({ spec: spec("test"), verifyKind: "green" }).includes("challenge skipped"),
+    "a body with no skipped round in the record prints no such line",
+  );
   const zero = bodyOf({ spec: spec("test"), challengeBudget: { limit: "turns", value: 0 } });
   assert(
     zero.includes("- challenge stopped at its turns budget (0);"),
@@ -279,6 +299,20 @@ function bodyOf(o: Omit<Partial<PublishBodyInput>, "spec"> & { spec: PiSpec }): 
   assert(
     challengeBudgetFromLog([step(0, stop)])?.value === 15,
     "challengeBudgetFromLog reads the trio off a challenge budget step",
+  );
+  assert(
+    challengeSkipReasonFromLog([
+      step(0, { kind: "skipped", reason: "challenge SKIPPED: share used up" }),
+    ]) === "challenge SKIPPED: share used up",
+    "challengeSkipReasonFromLog reads the skip's reason off a challenge skipped step",
+  );
+  assert(
+    challengeSkipReasonFromLog([step(0, { kind: "skipped" })]) === undefined,
+    "a skipped record with no reason prints nothing rather than a half-sentence",
+  );
+  assert(
+    challengeSkipReasonFromLog([step(0, { kind: "none", reason: "found nothing" })]) === undefined,
+    "a round that ran is not a skip, whatever its reason says",
   );
   assert(
     challengeBudgetFromLog([step(0, { kind: "none" })]) === undefined,

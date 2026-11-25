@@ -5,18 +5,13 @@
  * It reuses `lib/lean-build-fixture.ts` to get the state `challenge` actually
  * starts from: a repo whose HEAD holds the frozen acceptance-test commit and a
  * build commit on top of it. Building that shape here a second time would be a
- * second place to get the interesting part wrong — which commit is HEAD, that
- * the worktree sits on the run's branch AT that head, and that the frozen sha in
- * the step log is the one the committed blob really hashes to.
+ * second place to get the interesting part wrong.
  *
- * On top of it this adds the two things `challenge` alone needs:
- *
- *   - `buildCommit` — a real implementation commit above the frozen test commit,
- *     so the run has built something to attack and `frozenFromLog` sees the
- *     `build:ok` step the machine put there;
- *   - `runChallenge` — the step driven against a stub adversary that writes its
- *     new test files and declares them through `submit_tests`, with the child's
- *     acts and its declarations both supplied per case.
+ * On top of it this adds the two things `challenge` alone needs: a real
+ * implementation commit above the frozen test commit (so `frozenFromLog` sees the
+ * `build:ok` step the machine put there), and `runChallenge` — the step driven
+ * against a stub adversary whose acts and `submit_tests` declarations are both
+ * supplied per case.
  *
  * `headBefore` the step reads is the BUILD commit, not the frozen test commit:
  * the challenge round's whole claim is red-against-the-current-code, so a case
@@ -39,13 +34,10 @@ import { SPEC_BODY } from "./lean-build-asserts.ts";
 import { type Built, RUNNER, buildFixture, git, gitEnvFor, sha } from "./lean-build-fixture.ts";
 
 /**
- * `git show <ref>:<rel>` as RAW BYTES.
- *
- * `spawnSync` with an `encoding` would decode the blob in the HARNESS, which is
- * exactly the mangling the byte-exactness tests exist to catch — and a harness
- * that decodes would agree with a broken step. The fixture's `git()` strips a
- * trailing newline too, and the frozen hashes are over the committed bytes
- * WITH it, so this call must be the one untrimmed, un-decoded path.
+ * `git show <ref>:<rel>` as RAW BYTES. `spawnSync` with an `encoding` would decode
+ * the blob in the HARNESS — the very mangling the byte-exactness tests exist to
+ * catch, and a harness that decodes would agree with a broken step. The fixture's
+ * `git()` also strips a trailing newline, which the frozen hashes do not.
  */
 export function rawShow(wt: string, spec: string): Buffer {
   const r = spawnSync("git", ["show", spec], {
@@ -63,15 +55,7 @@ export function blobSha(wt: string, ref: string, rel: string): string {
   return sha(rawShow(wt, `${ref}:${rel}`));
 }
 
-export {
-  ROOTS,
-  RUNNER,
-  childCommit as childCommitOf,
-  git,
-  put,
-  putOutside,
-  sha,
-} from "./lean-build-fixture.ts";
+export { ROOTS, RUNNER, childCommit as childCommitOf, git, put, putOutside, sha } from "./lean-build-fixture.ts";
 export { SpecifyInfraError } from "../../src/lean/specify.ts";
 
 export interface ChallengeBuilt extends Built {
@@ -85,14 +69,12 @@ function wtOf(built: Built): string {
 }
 
 /**
- * A spec with TWO `verify: "test"` criteria.
- *
- * `SPEC_BODY` has one test criterion and one manual one, which is enough to
- * drive every case except the coverage rule: with a single criterion, "all
- * criteria covered" and "at least one red" are the same question. This body is
- * what makes the two rules separate — a run that is red for AC1 and green for
- * AC2 is a refusal under `specify`'s `"all-criteria"` and a freeze under
- * `challenge`'s `"any-red"`, and the case below is what pins that.
+ * A spec with TWO `verify: "test"` criteria. `SPEC_BODY` has one test criterion and
+ * one manual one, which is enough to drive every case except the coverage rule: with
+ * a single criterion, "all criteria covered" and "at least one red" are the same
+ * question. This body makes the two rules separate — red for AC1 and green for AC2 is
+ * a refusal under `specify`'s `"all-criteria"` and a freeze under `challenge`'s
+ * `"any-red"`.
  */
 export const TWO_AC_BODY = `\`\`\`pi-spec v1
 ${JSON.stringify(
@@ -116,9 +98,8 @@ ${JSON.stringify(
  *
  * `extraFrozen` is how a case extends the contract with a file that is not the
  * fixture's own `tests/AC1-retry.test.sh` — the shape the "adversary may not
- * replace a frozen test" rule needs, since that rule is about a path the run
- * already froze and hashed. The file is written and committed INTO the build
- * commit, and its sha256 is unioned into the frozen map the step log records,
+ * replace a frozen test" rule needs. The file is written and committed INTO the
+ * build commit, and its sha256 is unioned into the frozen map the step log records,
  * so `assertFrozenIntact` reads a real blob and agrees. The caller is
  * responsible for making the file executable if the runner must run it.
  */
@@ -135,17 +116,12 @@ export function challengeFixture(
 ): ChallengeBuilt {
   // A second run against ONE repo is a case the step cannot see apart from the
   // first: `challenge` derives its tree path from `ctx.repoRoot` plus its own
-  // issue, so two runs with the same `repoRoot` share a worktree and the second
-  // judges the first's leftovers — which is exactly how `issueDir` used to be
-  // wired: it handed the OTHER issue to `buildFixture`, so both runs of the (c)
-  // pair landed in ONE tree while the case believed it saw a split. One name,
-  // `issueDir`, one meaning, used identically here and in `runChallenge`: it is
-  // the issue whose REPO the case shares, and the tree is built under this
-  // case's own `issue`, so `specifyWorktreePath(repoRoot, issue)` — what the
-  // step itself computes — puts each run in its own directory. Never a step-log
-  // knob: keys, subject and branch always carry `issue`, because a log keyed
-  // under one issue while `ctx.run.issue` carried another is state `foldLog`
-  // refuses.
+  // issue, so two runs sharing a `repoRoot` share a worktree and the second
+  // judges the first's leftovers. `issueDir` is the issue whose REPO the case
+  // shares; the tree is built under this case's own `issue`, so
+  // `specifyWorktreePath(repoRoot, issue)` — what the step itself computes — puts
+  // each run in its own directory. Never a step-log knob: keys, subject and branch
+  // always carry `issue`.
   const dirIssue = opts?.issueDir ?? issue;
   const built = buildFixture(dirIssue, {
     worktreeIssue: issue,
@@ -166,40 +142,31 @@ export function challengeFixture(
   // The tree the step will compute for itself, derived here rather than borrowed
   // from the fixture's bookkeeping: if the two ever disagreed, a case that
   // relies on two runs being apart would be judging one tree while believing it
-  // saw two. `runChallenge` asserts the same equality before it dispatches.
+  // saw two.
   const wt = specifyWorktreePath(repoRoot, issue);
   if (wt !== built.worktree)
     throw new Error(
       `fixture: issue ${issue} in repo ${repoRoot} — the step's worktree ${wt} is not the fixture's ${built.worktree}`,
     );
-  // NOTE: `extraFrozen` deliberately does NOT join the `tests` record below.
   // The builder's work, committed the way the build step commits it: a real
-  // commit ON the run's branch, above the frozen test commit. Written in the
-  // worktree because that is the tree the run's branch is checked out in.
+  // commit ON the run's branch, above the frozen test commit.
   mkdirSync(path.join(wt, "src"), { recursive: true });
-  // Bytes that keep the FROZEN test green (it greps its own path out of the
-  // source and fails when it finds it) while leaving an adversary free to write
-  // a file that still fails: the builder finished the obvious case, and the
+  // Bytes that keep the FROZEN test green while leaving an adversary free to
+  // write a file that still fails: the builder finished the obvious case, and the
   // round's question is whether it finished the one nobody thought of.
   writeFileSync(path.join(wt, "src/retry.ts"), "export const retry = () => retryTwice();\n");
   const extra: Record<string, string> = {};
   for (const [rel, text] of Object.entries(opts?.extraFrozen ?? {})) {
-    // Executable, because a frozen test the runner has to run is executable by
-    // definition — and a case that froze a non-executable file would have the
-    // step throw for the wrong reason (see `assertRan`).
+    // Executable: a frozen test the runner has to run is executable by definition.
     writeFileSync(path.join(wt, rel), text, { mode: 0o755 });
     extra[rel] = sha(text);
   }
   const frozen = { ...built.frozen, ...extra };
   // The run's per-criterion test record, which is what `challenge`'s boundary
-  // seeds its per-criterion file quota from (`testsFromLog`). A step writes
-  // `tests` and `frozen` from the same kept rows, so a real log does carry a
-  // frozen path here — but the fixture's `extraFrozen` files are written for
-  // rules about a PATH ("the adversary may not replace this file"), and the
-  // cases that use them name no criterion, so they join `frozen` above and not
-  // this record. A case that needs a second criterion's row builds its own
-  // `specify:ok` step via `extraSteps` rather than asking this fixture to
-  // invent one.
+  // seeds its per-criterion file quota from (`testsFromLog`). The fixture's
+  // `extraFrozen` files answer rules about a PATH and name no criterion, so they
+  // join `frozen` above and not this record; a case needing a second criterion's
+  // row builds its own `specify:ok` step via `extraSteps`.
   const tests: Record<string, string[]> = { AC1: ["tests/AC1-retry.test.sh"] };
 
   git(wt, "add", "-A");
@@ -210,10 +177,7 @@ export function challengeFixture(
   // it and this fixture builds the one the machine produces on the happy path —
   // the FIRST round, which is what a fresh cycle does: `build:ok` with
   // `challengeDone` unset routes to `challenge`, and the write-ahead entry sits
-  // on top. `foldLog` is asked to confirm the position rather than being told it
-  // (a fixture that hand-carries counters is a fixture that can drift from the
-  // table it claims to be standing in), so a log the machine could never write
-  // throws here instead of driving a step from an impossible position.
+  // on top. `foldLog` below confirms the position rather than being told it.
   const steps: Step[] = [
     { key: `${issue}:ready:0`, state: "ready", startedAt: 1, outcome: { kind: "ok" } },
     {
@@ -230,10 +194,8 @@ export function challengeFixture(
     { key: `${issue}:challenge:0`, state: "challenge", startedAt: 4 },
   ];
   // The counters are the table's answer, not the fixture's guess: `foldLog`
-  // replays the log through `next()`, so the position this run carries is the
-  // one a real drive reached by routing `build:ok` -> `challenge:none` ->
-  // `build:ok` -> here. A hand-carried counter is a fixture that can drift from
-  // the table it is supposed to be standing in.
+  // replays the log through `next()`, so a log the machine could never write
+  // throws here instead of driving a step from an impossible position.
   const counters = foldLog({ ...built.ctx.run, issue, branch: built.branch, steps }).pos.counters;
   const ctx: HandlerCtx = {
     repoRoot,
@@ -272,9 +234,9 @@ export interface RunResult {
   threw?: Error;
   dispatched: number;
   /**
-   * How many times the step read the issue. ONE is the contract: the body the
-   * spec was parsed from is the body the adversary is shown (#2171 threads it,
-   * it does not re-fetch it), so a second call is a silent regression.
+   * How many times the step read the issue. ONE is the contract: the body the spec
+   * was parsed from is the body the adversary is shown, so a second call is a
+   * silent regression.
    */
   fetched: number;
   prompts: string[];
@@ -298,40 +260,33 @@ export interface RunOpts {
   /** A config whose runner names an executable that cannot be started. */
   runner?: string;
   /**
-   * What `rev-parse HEAD` answers, overriding the real head. A case that poisons
-   * the tree itself would have `clean -fdx` erase the evidence before the step
-   * read it, and the claim under test is what the step does with a head that is
-   * not a commit id — not how it got there.
+   * What `rev-parse HEAD` answers, overriding the real head — for the claim under
+   * test is what the step does with a head that is not a commit id, not how it
+   * got there (`clean -fdx` would erase a hand-poisoned tree before the read).
    */
   overrideHead?: string;
   /** The issue body the step re-reads; defaults to `SPEC_BODY` (one test criterion). */
   specBody?: string;
   /**
    * Extra paths to add to the frozen contract this case is shown, so the step
-   * checks them and refuses a submission that names one. The file is committed
-   * into the fixture's build commit and its sha256 goes in the step log, so the
-   * frozen-intact precondition reads a real blob and agrees.
+   * checks them and refuses a submission that names one. Each is committed into
+   * the build commit and hashed into the step log, so the frozen-intact check reads
+   * a real blob.
    */
   extraFrozen?: Record<string, string>;
   /**
    * Commit one marked test file into the fixture's BASE commit, so the project's
-   * freeze check is red on the tree every arm of a case starts from. A gate the
-   * mainline already fails has no standing to condemn a candidate, and the only
-   * honest way to say so is bytes in the commit the check actually reads.
+   * freeze check is red on the tree every arm of a case starts from: a gate the
+   * mainline already fails has no standing to condemn a candidate.
    */
   baseMainlineMarker?: boolean;
   /** The bytes of that file when `baseMainlineMarker` is set; a case owns the text. */
   baseMainlineText?: string;
   /**
    * Run this case inside ANOTHER issue's repo, keeping its own step log keys,
-   * commit subject, branch AND worktree. Two runs against one repo fight over
-   * the same tree, so a pair of cases that differ only in what the child did
-   * splits on the tree — and the split has to reach the worktree PATH, which the
-   * step derives from `repoRoot` plus its own issue rather than sharing.
-   *
-   * It is a repo selector, not a worktree selector: a fixture whose log keys
-   * came from one issue while `run.issue` carried another is state `foldLog`
-   * refuses, and the step's tree path would not move either.
+   * commit subject, branch AND worktree: a pair of cases differing only in what
+   * the child did splits on the tree, which the step derives from `repoRoot`
+   * plus its own issue. It is a repo selector, not a worktree selector.
    */
   issueDir?: number;
   /** Per-run runner limits — a short timeout proves a hang is infra. */
@@ -339,13 +294,23 @@ export interface RunOpts {
   /** A child whose dispatch did not succeed (the infra case). */
   dispatchOk?: boolean;
   /**
-   * The challenge state's minutes ceiling, and a child the wall clock ended at
+   * The challenge state's minutes ceiling, with a child the wall clock ended at
    * it: the dispatch reports `child-bound`, which the armed budget reads as a
-   * minutes stop, the same path a real child takes.
+   * minutes stop — the same path a real child takes.
    */
   challengeMinutes?: number;
   /** A pre-built fixture, for a case that dismantles the tree first. */
   built?: ChallengeBuilt;
+  /** The run's resolved cycle deadline, which the pre-verify bound reads at entry. */
+  deadlineMs?: number;
+  /** The instant the round is offered, with `buildSeconds` giving the cell its build leg. */
+  challengeAt?: number;
+  /** The instant the run began — the other end of the cell the share is a fraction of. */
+  cellStartedAt?: number;
+  /** Charge the run's `specify` entry this many seconds of the cell. */
+  specifySeconds?: number;
+  /** Charge the run's `build` entry this many seconds, starting when specify ended. */
+  buildSeconds?: number;
   /** A step log to use instead of the one the fixture builds. */
   extraSteps?: Step[];
 }
@@ -362,10 +327,9 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
         ? {}
         : { baseMainlineText: opts.baseMainlineText }),
     });
-  // The tree this case runs in must be the one the STEP computes, from
-  // `repoRoot` plus its own issue: the whole split-two-runs-across-trees
-  // mechanism rests on that derivation, and a fixture that disagreed with the
-  // step would have every case below judge a tree nothing else looks at.
+  // The tree this case runs in must be the one the STEP computes, from `repoRoot`
+  // plus its own issue: the split-two-runs-across-trees mechanism rests on that
+  // derivation.
   if (built.worktree !== specifyWorktreePath(built.repoRoot, opts.issue))
     throw new Error(
       `fixture: ${built.worktree} is not the worktree the challenge step computes for issue ${opts.issue} in ${built.repoRoot}`,
@@ -376,6 +340,48 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
       ...built.ctx,
       run: { ...built.ctx.run, steps: opts.extraSteps },
       steps: opts.extraSteps,
+    };
+  }
+  if (opts.deadlineMs !== undefined) {
+    ctx = { ...ctx, run: { ...ctx.run, deadlineMs: opts.deadlineMs } };
+    // The round is OFFERED at the instant the case states — the fake clock's only reading, so
+    // "time left at challenge entry" is the row's number and not the fixture's accident.
+    if (opts.challengeAt !== undefined) ctx = { ...ctx, now: () => opts.challengeAt as number };
+  }
+  if (opts.cellStartedAt !== undefined)
+    ctx = {
+      ...ctx,
+      steps: ctx.steps.map((s, i) => (i === 0 ? { ...s, startedAt: opts.cellStartedAt as number } : s)),
+    };
+  if (opts.buildSeconds !== undefined) {
+    // `build` sits between the two steps the share bounds, so a case that states the panel's
+    // whole row charges all three entries and the challenge entry lands where the field had it.
+    const spec = ctx.steps.find((s) => s.state === "specify");
+    const at = spec?.endedAt ?? opts.cellStartedAt ?? 0;
+    const buildEnd = at + opts.buildSeconds * 1000;
+    ctx = {
+      ...ctx,
+      steps: ctx.steps.map((s) => {
+        if (s.state === "build") return { ...s, startedAt: at, endedAt: buildEnd };
+        if (s.state === "challenge") return { ...s, startedAt: opts.challengeAt ?? buildEnd };
+        return s;
+      }),
+    };
+  }
+  if (opts.specifySeconds !== undefined) {
+    // The panel's shape: the `specify` entry charged the seconds the case states, so the
+    // pre-verify share sees the spend the row had and nothing else about the fixture moves.
+    ctx = {
+      ...ctx,
+      steps: ctx.steps.map((s) =>
+        s.state === "specify"
+          ? {
+              ...s,
+              startedAt: opts.cellStartedAt ?? s.startedAt,
+              endedAt: (opts.cellStartedAt ?? s.startedAt) + (opts.specifySeconds ?? 0) * 1000,
+            }
+          : s,
+      ),
     };
   }
   const prompts: string[] = [];
@@ -430,6 +436,7 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
     },
     ...(opts.testLimits === undefined ? {} : { testLimits: opts.testLimits }),
     statReporter: async () => ({}),
+    ...(opts.cellStartedAt === undefined ? {} : { cellStartedAt: () => opts.cellStartedAt }),
   };
   try {
     const { challengeOutcome } = await import("../../src/lean/challenge.ts");

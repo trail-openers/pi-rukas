@@ -12,9 +12,8 @@
  * as markdown in the same document as the structure above them, so without the fence
  * a `\n### ` inside either becomes a section of the PR body.
  *
- * Every line is emitted unconditionally except where the brief says otherwise: a
- * reader must tell "not run" apart from "not applicable", and a run with no evidence
- * prints that rather than printing nothing.
+ * Every line is emitted unconditionally except where stated: a reader must tell "not
+ * run" apart from "not applicable".
  */
 
 import type { SpecSource } from "./spec-for.ts";
@@ -85,15 +84,10 @@ export interface PublishBodyInput {
    * base commit and which tests without parsing a sentence the gate composed.
    */
   preexistingFailures?: Record<string, PreexistingTierRecord>;
-  /**
-   * The challenge round's own ceiling, when the step log carries a `challenge`
-   * `budget` outcome. The optional adversary round that strengthens the frozen
-   * tests stopped at its limit and added nothing, and the run went on to verify
-   * anyway. The reader must be able to tell "the contract was never
-   * attacked" apart from "it was attacked and held", which is otherwise
-   * indistinguishable from a PR body.
-   */
+  /** The challenge round's own ceiling, when the log carries a `budget` outcome — so a reader tells "the contract was never attacked" from "it was attacked and held". */
   challengeBudget?: { limit: "minutes" | "turns" | "tokens"; value: number };
+  /** The pre-verify bound's reason, when the log carries a `skipped` outcome — nothing was paid for, so the line says the round was never bought, not that it stopped at a ceiling. */
+  challengeSkipped?: string;
   draft: boolean;
   version: string;
   models: Record<string, string>;
@@ -130,17 +124,13 @@ function resultCell(
   if (c.verify === "manual") return "manual — needs a human";
   if (c.verify === "command") {
     // The wording names the residual rather than implying isolation: the FILE was
-    // pinned to the base commit, but the code it loads is HEAD's, because a
-    // preservation criterion that ran the base's own source would say nothing
-    // about this run. A reader must not take `passed (command)` for a sandboxed
-    // replay of the base.
+    // pinned to the base commit, but the code it loads is HEAD's.
     if (passedCommands.has(c.id)) return "passed (command; test file unchanged since base)";
     const why = (notRunnable?.[c.id] ?? "").trim();
     // Two truths the reader must not confuse: the gate refused the command (the
     // spec's or the tree's own defect, and publish keeps a draft), versus a
-    // criterion nobody declined but that never reached the runner either. Both
-    // are "not executed"; only the reason differs, and the reason is what tells
-    // the operator whether to fix the issue or re-run the step.
+    // criterion nobody declined but that never reached the runner either. The
+    // reason is what says whether to fix the issue or re-run the step.
     return why === ""
       ? "not executed (command)"
       : `not executed (command): ${oneLine(why, COMMAND_NOT_RUNNABLE_MAX_CHARS)}`;
@@ -166,16 +156,18 @@ function modelsLine(models: Record<string, string>): string {
   return pairs.length === 0 ? "—" : pairs.join(", ");
 }
 
-/**
- * The challenge round's ceiling, read off the step log, or `undefined`.
- *
- * Lives beside the renderer rather than in `publish.ts` because it is the body's own
- * claim: it decides whether the "challenge stopped at its … budget" line prints, and the
- * test drives the renderer. Only the NEWEST decided challenge round decides — a later
- * round that found new tests means the round did not end on its ceiling, so an earlier
- * stop says nothing the body may state. A `budget` outcome missing its typed trio
- * ({@link budgetTrio}) prints nothing rather than a half-sentence.
- */
+/** The two challenge readers, both off the step log and both decided by the NEWEST decided
+ *  challenge round — a later round that ran means an earlier stop says nothing the body may state. */
+export function challengeSkipReasonFromLog(steps: Step[]): string | undefined {
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i];
+    if (step?.state !== "challenge" || step.outcome === undefined) continue;
+    const reason = step.outcome.reason;
+    return step.outcome.kind === "skipped" && typeof reason === "string" ? reason : undefined;
+  }
+  return undefined;
+}
+
 export function challengeBudgetFromLog(
   steps: Step[],
 ): { limit: "minutes" | "turns" | "tokens"; value: number } | undefined {
@@ -227,11 +219,9 @@ export function leanPreexistingFailuresSection(
 }
 
 /**
- * The full PR body.
- *
- * `verifyKind` is the newest DECIDED `verify` verdict and `verifiedHead` the
- * commit it was about; when the run never reached a verdict both are absent and
- * every row reads "not run" — the body never claims more than the log holds.
+ * The full PR body. When the run never reached a verdict both `verifyKind` and
+ * `verifiedHead` are absent and every row reads "not run": the body never claims
+ * more than the log holds.
  */
 export function publishBody(o: PublishBodyInput): string {
   const lines: string[] = [
@@ -282,6 +272,11 @@ export function publishBody(o: PublishBodyInput): string {
     lines.push(
       `- challenge stopped at its ${o.challengeBudget.limit} budget (${String(o.challengeBudget.value)}); no extra tests were added`,
     );
+  }
+  // The skip's own line: the bench counts skipped rounds per cell, so a stop that printed
+  // nothing would be counted as a round that ran.
+  if (o.challengeSkipped !== undefined) {
+    lines.push(`- challenge skipped: ${oneLine(o.challengeSkipped, 200)}`);
   }
   if (o.draft)
     lines.push(

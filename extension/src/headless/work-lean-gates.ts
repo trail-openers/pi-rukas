@@ -20,9 +20,9 @@
  *     explicit `null` — a host must tell "this run had no challenge" apart from "this
  *     build never looked", and an omitted key cannot make that distinction.
  *   - **re-check what you print.** The loader judges a state file, but the log this
- *     projection reads is a `Step[]` that a run which just finished never passed
- *     through the loader with. So heads go through `isFullCommitSha` and severities
- *     through the published list again, exactly as `prUrlOf` revalidates a URL.
+ *     projection reads is a `Step[]` a finished run never passed through the loader
+ *     with. So heads go through `isFullCommitSha` and severities through the
+ *     published list again, exactly as `prUrlOf` revalidates a URL.
  *   - **the heads cannot disagree with `prState`.** `handback.head` is the head the step
  *     says it shipped, and `handback.verified` is that head put back through the gate
  *     `prStateOf` asks — `gateClearedPublishedHead` — rather than the step's own
@@ -33,8 +33,7 @@
  *     wants the evidence reads these.
  *
  * The object is additive: the projection builds it separately and the caller attaches it
- * whole, rather than filling fields conditionally, so the document either carries the key
- * or does not.
+ * whole, so the document either carries the key or does not.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
@@ -48,11 +47,10 @@ import { gateClearedPublishedHead, publishedHeadOf } from "./work-lean-pr.ts";
 /** How many entries of one list a host may be handed. The record caps its own writes;
  * this is the print cap, and the smaller of the two governs what a host parses.
  *
- * Exported because the cap is a published fact and not an implementation detail: a list cut
- * at it prints exactly `LIST_MAX` entries, and the only thing that tells a host this
- * happened is the sibling count this module writes beside it. The truncation cases read the
- * cap from here rather than restating it, so moving it moves the cases with it instead of
- * quietly turning them into assertions about a number nobody chose. */
+ * Exported because the cap is a published fact: a list cut at it prints exactly `LIST_MAX`
+ * entries, and the only thing telling a host that happened is the sibling count written
+ * beside it. The truncation cases read the cap from here rather than restating it.
+ */
 export const LIST_MAX = 16;
 /** How long one published string may be. Same bound the projection applies to the
  * handback reason elsewhere: redact first, then clip, so a cut cannot strand a token. */
@@ -121,9 +119,8 @@ export interface GatesReview {
    * The top-level `issues[].reviewBound` keeps its own rule — ABSENT means no `review`
    * step in the log recorded a stop — and this is the one gate field that does not follow
    * the null rule, because here absence is the answer: `prState`/`reviewBound` are
-   * governed by the omission rule
-   * and everything else in `gates` by the null rule, which is what docs/headless.md
-   * states, and what this comment exists to stop a reader guessing.
+   * governed by the omission rule and everything else in `gates` by the null rule, as
+   * docs/headless.md states.
    */
   reviewBound: GatesReviewBound | null;
 }
@@ -131,10 +128,10 @@ export interface GatesReview {
 /** The `review` step's clock as the host sees it: the record's three fields, plus the lane
  * list's pre-cut count beside the list itself.
  *
- * It is `ReviewBoundRecord` and one extra key rather than that type, because the record is
- * the driver's durable shape — a lane list a writer produces and a loader validates — and
- * the print count belongs to neither of those. Widening the record's own type would tell a
- * reader the durable field carries a number no writer ever writes.
+ * It is `ReviewBoundRecord` and one extra key rather than that type: the record is the
+ * driver's durable shape — a lane list a writer produces and a loader validates — and the
+ * print count belongs to neither. Widening the record's own type would tell a reader the
+ * durable field carries a number no writer ever writes.
  */
 export type GatesReviewBound = ReviewBoundRecord & {
   /** The full `unreviewedLanes` count before the print cut; `null` exactly when it is. */
@@ -152,7 +149,13 @@ export interface GatesHandback {
 /** `issues[].gates`: the gate events of one lean run. */
 export interface GatesResult {
   specify: { frozen: Record<string, string> | null; tests: Record<string, string[]> | null };
-  challenge: { kind: string; limit?: string; value?: number; used?: number } | null;
+  challenge: {
+    kind: string;
+    limit?: string;
+    value?: number;
+    used?: number;
+    reason?: string;
+  } | null;
   verify: GatesRed[];
   review: GatesReview | null;
   handback: GatesHandback;
@@ -248,20 +251,24 @@ function specifyGates(steps: Step[]): GatesResult["specify"] {
 }
 
 /**
- * The challenge step's verdict — one of the three the registry gives it, read by
- * POSITION, with the ceiling's trio on its own arm.
- *
- * `null` for a run that has no challenge step and for one whose newest attempt was cut
- * off before it answered: in both cases the run has no verdict to report, and inventing
- * `"none"` would tell a host the adversary looked and found nothing.
+ * The challenge step's verdict — one of the four the registry gives it, read by
+ * POSITION, with the ceiling's trio on its own arm. `null` when there is no
+ * challenge step or its newest attempt died before answering: inventing `"none"`
+ * would tell a host the adversary looked and found nothing. `skipped` carries the
+ * bound's reason, so "nobody looked" reads apart from "nothing was bought".
  */
 function challengeGates(steps: Step[]): GatesResult["challenge"] {
   const step = newestStep(steps, "challenge");
   const kind = step?.outcome?.kind;
-  if (kind !== "new-tests" && kind !== "none" && kind !== "budget") return null;
+  if (kind !== "new-tests" && kind !== "none" && kind !== "budget" && kind !== "skipped")
+    return null;
+  if (kind === "skipped") {
+    const reason = step?.outcome?.reason;
+    return { kind, ...(typeof reason === "string" ? { reason } : {}) };
+  }
   if (kind !== "budget") return { kind };
-  // The ceiling arm's typed trio — what it ran out of, the ceiling, the spend. Data
-  // rather than prose precisely so "out of turns" reads apart from "out of minutes".
+  // The ceiling arm's typed trio, as data rather than prose so "out of turns" reads
+  // apart from "out of minutes".
   const { limit, value, used } = step?.outcome ?? {};
   return {
     kind,

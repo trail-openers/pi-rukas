@@ -53,6 +53,7 @@ import type { WriteFence } from "../write-fence-contract.ts";
 import { testsFromLog } from "./build.ts";
 import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { preVerifyShare } from "./pre-verify-share.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
 import { specFor } from "./spec-for.ts";
 import { type PiSpec, readiness } from "./spec.ts";
@@ -370,7 +371,9 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // without submitting at all: both are things the child can fix by being told,
   // so the adversary is dispatched again with the reasons (or the submit nudge)
   // in its prompt. The last attempt's outcome is the step's result whatever it
-  // is.
+  // is. The pre-verify share is asked at each dispatch seam and is never a kill, so the bytes the
+  // first attempt already paid for always stand.
+  const cellStartedAt = ctx.steps[0]?.startedAt;
   let attempt = await runSpecifyAttempt(attemptArgs);
   // What each attempt's dispatch cost, collected as they happen: the step's
   // outcome is ONE record, so the rows are kept outside it rather than read back
@@ -383,8 +386,13 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // The third re-prompt reason is the provider fault, and it is its OWN field —
   // never `silent`, which would let a provider death borrow a refusal the prompt
   // has nothing to say about. It costs no extra attempt: same bound.
+  // A step that has already spent the pair's share buys no retry: the attempt it paid for decides
+  // the verdict, and its cost is what the fold reads next.
+  const shareSpent = () =>
+    preVerifyShare(ctx.steps, ctx.run.deadlineMs, cellStartedAt, ctx.now()).stop === true;
   while (
     attempts < SPECIFY_MAX_ATTEMPTS &&
+    !shareSpent() &&
     (attempt.outcome.kind === "no-red-test" || attempt.outcome.kind === RED_TEST_GAP) &&
     (attempt.providerFault !== undefined ||
       attempt.refused.length > 0 ||
