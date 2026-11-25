@@ -45,10 +45,13 @@ const RUST_PANIC_HEAD_SRC = String.raw`thread\s+'`;
 const RUST_PANIC_NAME_BODY_SRC = String.raw`[^']+`;
 /** …and the same name as group 1, which is the form every reader extracts. */
 const RUST_PANIC_NAME_SRC = String.raw`(${RUST_PANIC_NAME_BODY_SRC})`;
-/** cargo's per-thread id, `(2271626)`, between the name and `panicked at ` —
- * with LINE-LOCAL whitespace only: the id sits inside one printed line, and a
- * `\s+` arm would let a `(\d+)` from a following line weld onto a header, so a
- * record whose raw bytes carry no header could still match (and strip) as one. */
+/** cargo's per-thread id, `(2271626)`, between the name and `panicked at `. The
+ * ID GAP is line-local (`[ \t]`, not `\s+`): the id sits inside one printed
+ * line, and a `\s+` here would let a `(\d+)` from a FOLLOWING line weld onto the
+ * name, so a record whose raw bytes carry no header could still match — and
+ * strip — as one. The open's other separators are `\s+` and do cross newlines;
+ * what the welded form then fails on is the stripper, whose gap is line-local,
+ * so it leaves the id in place and no key contains it (fail-closed). */
 const RUST_PANIC_ID_SRC = String.raw`(?:[ \t]+\(\d+\))?`;
 /** The verb that separates the header's subject from its location. */
 const RUST_PANIC_PANICKED_SRC = String.raw`panicked\s+at\s`;
@@ -103,10 +106,12 @@ const RUST_PANIC_HEADER_FORM = new RegExp(
  * "Does this merely OPEN like a header?" — the fail-closed question, asked of a
  * string whose identity could not be parsed. Deliberately looser than the
  * matchers above: it is the arm that decides a header-shaped string compares as
- * NOTHING rather than by falling back to substring containment, so it must fire
- * on every spelling a header can arrive in, including the pre-1.73 inline form
- * (`thread 'main' panicked at 'boom: oh', src/main.rs:5:5`), whose token run
- * does not end at a colon and whose identity is not what this dialect extracts.
+ * NOTHING rather than by falling back to substring containment, so it fires on
+ * every text that opens with the header's first two tokens — which is where a
+ * clipped or prefix-lifted quote lands. The pre-1.73 inline form (`thread
+ * 'main' panicked at 'boom: oh', src/main.rs:5:5`) is NOT decided here: its
+ * token run ends at the colon inside the quoted message, so it reaches
+ * {@link RUST_PANIC_HEADER_FORM} first — see {@link rustPanicSamenessKey}.
  */
 const PANIC_HEADER_LOOK_RE = /^thread\s+'/;
 
@@ -127,9 +132,12 @@ export function opensLikePanicHeader(line: string): boolean {
  * composed from the SAME sources as the matchers — so "which token run is a
  * header" has one answer and {@link stripRustPanicThreadIds} cannot recognise a
  * header the matchers would refuse (or miss one they would take). The
- * replacement re-joins the two kept groups with a single space, which is the
- * whitespace cargo prints, so a normalised id-bearing header is byte-identical
- * to the id-less spelling of the same failure.
+ * replacement re-joins the two kept groups with ONE space — the separator cargo
+ * prints — so a normalised id-bearing header equals the id-less spelling of the
+ * same failure whenever that spelling used the same single space. The gap it
+ * replaces is horizontal whitespace, so an exotic `name\t(12)\tpanicked` loses
+ * its padding to one space while an id-less `name  panicked` keeps its two:
+ * only single-space input (what cargo prints) keys identically both ways.
  */
 const RUST_PANIC_ID_FORM_RE = new RegExp(
   String.raw`(${RUST_PANIC_HEAD_SRC}${RUST_PANIC_NAME_BODY_SRC}')[ \t]+\(\d+\)[ \t]+(${RUST_PANIC_PANICKED_SRC})`,

@@ -59,7 +59,6 @@ import {
   RUST_GOLDEN_CAPTURED,
   RUST_GOLDEN_NOCAPTURE,
   rustGoldenStream,
-  type RustGoldenRun,
 } from "./lib/verify-rust-golden.ts";
 import {
   makeAssert,
@@ -364,17 +363,17 @@ const excuseCases: ExcuseCase[] = [
   // lib test fails in both, so its panic excuses, and the doctest `main` header
   // excuses nothing (no verdict names `main`).
   const both = [RUST_GOLDEN_CAPTURED, RUST_GOLDEN_NOCAPTURE] as const;
-  const goldenStream = (r: RustGoldenRun): string => rustGoldenStream(r);
   assert(
     changePanicsAreBaseFailures(
       rustPanicHeaderWithId("tests::failing_unit", "src/lib.rs:34:9", 41000),
-      goldenStream(both[1]),
-      goldenStream(both[0]),
+      rustGoldenStream(both[1]),
+      rustGoldenStream(both[0]),
     ) === false,
     "AC5: the captured pair — an id-bearing header naming a test the change run never reports FAILED excuses nothing",
   );
   assert(
-    panicCanExcuseChange(goldenStream(RUST_GOLDEN_CAPTURED), "\u2717 got 1, expected 2") === true,
+    panicCanExcuseChange(rustGoldenStream(RUST_GOLDEN_CAPTURED), "\u2717 got 1, expected 2") ===
+      true,
     "AC5: a non-panic assertion is still decided by the classic rule (the gate refuses to excuse only what it can read as a panic)",
   );
 }

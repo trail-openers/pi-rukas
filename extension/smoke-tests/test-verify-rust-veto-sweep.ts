@@ -221,15 +221,18 @@ assert(
 // The same non-vacuity guard for the fold arm, which has no `header` field to
 // check: if `withThreadIds`' anchor stopped matching, this arm would silently
 // re-measure the id-less pairs and still report the counts it always reported.
+// Counted per TEXT rather than "some header of it carries an id": the rewrite is
+// anchored on line start + trailing colon, so a corpus header that ever lost
+// either would stay id-less and this arm would quietly ask the id-less question.
+const headerOpens = (t: string): number =>
+  (t.match(/thread '[^']+'(?: \(\d+\))? panicked at /g) ?? []).length;
+const idHeaderOpens = (t: string): number =>
+  (t.match(/thread '[^']+' \(\d+\) panicked at /g) ?? []).length;
 assert(
   foldPairsIdBearing.every((p) =>
-    [p.base, p.change].every(
-      (t) =>
-        /^thread '[^']+' \(\d+\) panicked at /m.test(t) &&
-        !/^thread '[^']+' panicked at /m.test(t),
-    ),
+    [p.base, p.change].every((t) => headerOpens(t) > 0 && idHeaderOpens(t) === headerOpens(t)),
   ),
-  "id-bearing fold arm: both runs of every pair really carry their ids (no header left in the id-less spelling)",
+  "id-bearing fold arm: EVERY header of both runs of every pair carries its id (none left in the id-less spelling)",
 );
 assert(
   idArm.fidelityFailures === 0,
@@ -279,6 +282,36 @@ assert(
   assert(
     key !== null && !sharesAssertion(raw, header),
     "line-local id arm: bytes with no header on one line never contain a key (the normaliser may not weld two lines into one)",
+  );
+}
+
+// ── the pre-1.73 INLINE form: what the shipped key really answers ─────────
+//
+// `docs/troubleshooting.md` and the leaf's jsdoc both describe this spelling, and
+// a round of review found the doc claiming the opposite of the code. So the
+// behaviour is pinned here rather than narrated: the inline form's token run ends
+// at the colon INSIDE the quoted message, so its key is that truncated header and
+// two same-name inline failures whose messages agree up to that first colon
+// compare as the SAME assertion (the disclosed misparse, left unfixed because the
+// rule it reaches is the shipped one and no current cargo prints this spelling),
+// while a message with no colon before its first space falls to the fail-closed
+// half and answers `null`.
+{
+  const alpha = "thread 'main' panicked at 'boom: alpha oh', src/main.rs:5:5";
+  const beta = "thread 'main' panicked at 'boom: beta oh', src/main.rs:5:5";
+  const noColon = "thread 'main' panicked at 'boom oh', src/main.rs:5:5";
+  const key = rustPanicSamenessKey(alpha);
+  assert(
+    key === "thread 'main' panicked at 'boom:" && key === rustPanicSamenessKey(beta),
+    `inline form: the key truncates at the message's first colon and both messages share it (got ${JSON.stringify(key)})`,
+  );
+  assert(
+    key !== null && sharesAssertion(alpha, beta),
+    "inline form: the containment path agrees with the key — the disclosed misparse, asserted so the doc cannot drift from it",
+  );
+  assert(
+    rustPanicSamenessKey(noColon) === null,
+    "inline form: a message with no colon before its first space compares as nothing (the fail-closed half)",
   );
 }
 
