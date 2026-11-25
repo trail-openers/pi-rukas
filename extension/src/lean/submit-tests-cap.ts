@@ -90,8 +90,7 @@ export const NEWNESS_REASON =
  * `wt` is REQUIRED: a boundary whose rules switch themselves off on a missing argument is one a caller can
  * silently opt out of. `sizeRules: false` is the one exception and is test-only.
  *
- * The boundary and the capture judge a kept file through the SAME code (`readOneDescriptor`); the capture's
- * `fstat` catches a file swapped between the two reads.
+ * The boundary and the capture judge a kept file through the SAME code (`readOneDescriptor`).
  */
 export async function validateSubmitRows(
   rows: SubmitTestsRow[],
