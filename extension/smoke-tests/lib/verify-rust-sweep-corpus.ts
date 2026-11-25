@@ -25,7 +25,7 @@ export type Veto = (stream: string, name: string | undefined) => boolean;
 /** One generated stream, the panic header it carries, and the truth about it. */
 export type Case = { stream: string; header: string; kind: "capture" | "real" };
 
-const pad = (n: number, tag: string): string =>
+const pad = (n: number, tag: string): string[] =>
   n === 0
     ? []
     : Array.from({ length: n }, (_, k) => `   Compiling ${tag}_${k} v0.1.0 (registry)`);

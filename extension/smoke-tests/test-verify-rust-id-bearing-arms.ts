@@ -463,7 +463,7 @@ const excuseCases: ExcuseCase[] = [
   // one header-shaped literal the two-file scan let through lived in a third
   // file, and a property that scans only where it already looked is the blind
   // sweep this ticket names.
-  for (const file of readdirSync(src, { recursive: true })) {
+  for (const file of readdirSync(src, { recursive: true, encoding: "utf8" })) {
     if (!file.endsWith(".ts") || file === "work-driver-verify-header-leaf.ts") continue;
     const text = readFileSync(path.join(src, file), "utf8");
     assert(
