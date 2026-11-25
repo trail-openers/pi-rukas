@@ -354,7 +354,8 @@ Only these kinds are a host contract, versioned by `NDJSON_STABLE_VERSION` (1) a
 | `dispatch-started` | `step`, `role`, `jobId`, `at` |
 | `dispatch-completed` | `step`, `role`, `jobId`, `ok`, `ms`, `at`, `usage` |
 | `verify-started` | `step`, `command`, `at` — the develop gate's verify is about to run (#1415, added in this release); written before the command starts, so it arrives while the gate is still running |
-| `verify-completed` | `step`, `command`, `ok`, `status`, `ms`, `at` — how that gate ended and how long it took; `status` (`success` / `failure` / `skipped` / `timeout`) says why `ok` is false, and `ms` is absent for `skipped` |
+| `verify-heartbeat` | `step`, `command`, `elapsedSeconds`, `at` — the gate is still waiting on the command it started: one line per interval across the whole run, so the silence between the pair is bounded by `PI_ENSEMBLE_VERIFY_HEARTBEAT_MS` rather than by the project's suite. `elapsedSeconds` is a non-negative integer (the floor of the run's milliseconds over 1000) and each line's `at` is distinct. A beat is progress, not a verdict: no reader may infer a result, or the run's end, from one |
+| `verify-completed` | `step`, `command`, `ok`, `status`, `ms`, `at` — how that gate ended and how long it took; `status` (`success` / `failure` / `skipped` / `timeout`) says why `ok` is false, and `ms` is absent for `skipped`. It is the only end for a run: `verify-started` is followed by at most one of these, written on every path that returns to the gate including the command's own bound (`status: "timeout"`). A gate that never started a command writes neither line, and a runner killed by a signal leaves a `verify-started` with no end — that absence is the discriminator for a killed gate, and beats do not change it |
 | `cap-hit` | `cap`, `at`, `nextStep` |
 | `handoff-emitted` | `at`, `commentUrl`, `labelApplied` |
 | `ci-status` | `at`, `status`, `runUrl` |

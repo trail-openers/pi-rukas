@@ -60,7 +60,10 @@ import type {
 import type { VerifySelectEvent } from "./workflow-state-events-verify-select.ts";
 // #1415 — the verify-gate run pair lives in its own fragment: that one is chartered
 // for verify-TIER-OUTCOME events; these record that a run happened and what it cost.
-import type { VerifyRunEventFragment } from "./workflow-state-events-verify.ts";
+import type {
+  VerifyHeartbeatEvent,
+  VerifyRunEventFragment,
+} from "./workflow-state-events-verify.ts";
 import type { WideningScanEvent } from "./workflow-state-events-widening.ts";
 import type { WorkstreamCallsRefusedEvent } from "./workflow-state-events-workstream.ts";
 // #539 — single definition in the sibling fragment module.
@@ -435,6 +438,8 @@ export type WorkEvent =
   | ConsolidatedVerifySkippedEvent
   // #1415 — verify-started / verify-completed (`VerifyRunEventFragment`).
   | VerifyRunEventFragment
+  // The beat between them: the gate still waiting on a command it started.
+  | VerifyHeartbeatEvent
   // #2450 — what the #1647 selector decided for this develop round, and why.
   | VerifySelectEvent
   | ConsolidatedVerifyPreExistingEvent

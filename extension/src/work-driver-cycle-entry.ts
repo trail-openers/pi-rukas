@@ -18,6 +18,7 @@ import { traceResourceBudget } from "./resource-budget.ts";
 import { dropSlowEvents } from "./slow-events.ts";
 import { cycleChildOpts } from "./work-cycle-trust.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
+import { verifyHeartbeatMs } from "./work-driver-verify-events.ts";
 import { createEmitSink } from "./work-state-emit.ts";
 
 /**
@@ -68,5 +69,8 @@ export function enterCycle(
   // interactive /work cycle's. Set here, once, for every child of the cycle; no
   // caller can opt a child out, and the flag never reaches a non-cycle dispatch.
   const dispatchFn = cycleDispatch(ctx, core);
-  return { ...ctx, emitSink, dispatchFn };
+  // The verify gate's heartbeat interval, resolved ONCE for the invocation and
+  // carried on the cycle as an argument. Read at the leaf instead, it would be
+  // unreadable: a project command's environment has every driver knob scrubbed.
+  return { ...ctx, emitSink, dispatchFn, verifyHeartbeatMs: verifyHeartbeatMs() };
 }

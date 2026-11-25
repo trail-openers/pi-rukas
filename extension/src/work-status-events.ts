@@ -243,6 +243,11 @@ export function fmtEvent(e: WorkEvent, derivedRound?: number): string {
       // #1415 — the gate announcing itself BEFORE it runs: this is the line
       // that exists for the 22 minutes the operator used to watch empty.
       return `  verify-started · ${e.step} · ${verifyTargetText(e)} · ${e.command.slice(0, 60)}${e.tier ? ` · ${e.tier}` : ""}${e.retried ? " · re-run" : ""}`;
+    case "verify-heartbeat":
+      // The gate is still waiting on the command it started. The elapsed is the
+      // line's point: it says how long this run has been going, so a host or an
+      // operator reading a long stretch of these knows the gate is healthy.
+      return `  verify-heartbeat · ${e.step} · ${fmtElapsed(e.elapsedSeconds * 1000)} · ${e.command.slice(0, 60)}`;
     case "verify-completed":
       // The verdict + the cost + the command (the line must stand alone in a
       // trailing log whose start event scrolled off). `timeout` reads differently from `failure`

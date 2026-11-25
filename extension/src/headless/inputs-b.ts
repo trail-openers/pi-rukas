@@ -304,6 +304,13 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   // command, same bound → the whole develop pass runs nothing. Default on; `0`
   // restores the pre-#1415 "run it every round" behaviour.
   flag("VERIFY_GATE_REUSE", true),
+  // How long the develop / commit-pr verify gate may be silent on the runner's
+  // NDJSON progress stream before it writes a `verify-heartbeat` line. A host
+  // that stops a cycle when the stream and the transcript both go quiet needs
+  // the gate's long legs to say something; `0` turns the beat off and leaves
+  // the stream as it was written without it. Read once by the driver and passed
+  // down as an argument, never read inside a project command.
+  ms("VERIFY_HEARTBEAT_MS", 300_000),
   // #2283 — the develop gate's data-provenance check: an added JSON/NDJSON record whose
   // provenance key names a path absent from the workstream's pinned commit fails the step.
   // 0 skips it; tokens this gate cannot see are disclosed on both arms, never failed.

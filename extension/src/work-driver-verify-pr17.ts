@@ -21,7 +21,11 @@ import { mergeBaseHealthReport } from "./work-driver-verify-base-health-channels
 import { verifyCmdFor } from "./work-driver-verify-cmd.ts";
 import type { ProvenanceDisclosureSink } from "./work-driver-verify-develop-provenance.ts";
 import { verifyDevelopOutcome } from "./work-driver-verify-develop.ts";
-import { beginVerifyRun, finishVerifyRun } from "./work-driver-verify-events.ts";
+import {
+  armVerifyHeartbeat,
+  beginVerifyRun,
+  finishVerifyRun,
+} from "./work-driver-verify-events.ts";
 import type { DevelopGateRecord } from "./work-driver-verify-gate-reuse.ts";
 import type { VerifyStepOutcomeResult } from "./work-driver-verify-pr17-result.ts";
 import { type VerifyCommandRecord, newVerifyRecordSlot } from "./work-driver-verify-record.ts";
@@ -236,65 +240,95 @@ export async function verifyStepOutcome(
     // overwrites — #1809's bug lived in exactly that decision, made here as two
     // unconditional assignments, which erased whichever half arrived first.
     const baseHealthOut: { report?: BaseHealthReport } = {};
-    const verifyStarted = await beginVerifyRun(ctx, state);
-    await verifyDevelopOutcome(ctx, state, execFn, failures, notes, {
-      // #782 — the flake callback is wired at this layer: on recovery it
-      // returns a success verdict carrying the flag the caller routes.
-      onVerifyFlakeRecovered: (evidenceTail) => {
-        flakeEvidenceTail = evidenceTail;
-      },
-      fenceViolations,
-      fenceLifts,
-      // #1557 — the spec the develop scope gate reads PATTERN slots from, so a
-      // file the spec authorised (and the plan schema forbids declaring) counts
-      // as declared. Driver state only: the fence never reads issue prose.
-      spec: state.pipelineState.normalisedSpec,
-      onConsolidatedLogPath: (logPath) => {
-        consolidatedLogPath = logPath;
-      },
-      commentEvidence,
-      onBaselineRedOnly: () => {
-        baselineRedOnly = true;
-      },
-      // #1765 — the cap claim, weaker than the excuse claim above: an
-      // established red base, whatever the excuse question answered.
-      onBaselineRedEstablished: () => {
-        baselineRedEstablished = true;
-      },
-      // #1240 review r2 — without this callback the identity the probe
-      // recorded is DROPPED: `verifyDevelopOutcome` threads the out-parameter
-      // to the report layer, which calls it, and `consolidatedVerifySkipped`
-      // would stay undefined so no caller appended the event. The note still
-      // appeared, which is exactly how the gap hid: the note is rendered from
-      // `cons.skipped` independently of the callback.
-      onConsolidatedVerifySkipped: (skipped) => {
-        consolidatedVerifySkipped = skipped;
-      },
-      // #1421 fix round — the consolidated gate's structured "declined on
-      // nothing but build residue" signal, captured here and returned on the
-      // result so the cap router reads a boolean rather than a substring.
-      onBuildResidueOnly: () => {
-        buildResidueOnly = true;
-      },
-      // #1427 fix round — the walker is a test seam for the hang reports, and
-      // it has to reach BOTH legs of the gate (per-worktree and consolidated).
-      ...(ctx.walkProcessTree !== undefined ? { walkProcessTree: ctx.walkProcessTree } : {}),
-      // #1427 round 3 — this call's sink, threaded to every writer below.
-      hangSink,
-      verifyRecord,
-      provenanceDisclosures: provenanceSink,
-      // #1415 — captured and returned: the caller owns the state it lands on.
-      onGateRecorded: (pass, greens, refuted) => {
-        gateRecord = { pass, greens: [...greens], refuted: [...refuted] };
-      },
-      onSelectedVerify: (record) => {
-        selectedOut.record = record;
-      },
-      verifySelectSink,
-      onBaseHealth: (report) => {
-        baseHealthOut.report = mergeBaseHealthReport(baseHealthOut.report ?? {}, report);
-      },
-    });
+    const verifyStarted = await beginVerifyRun(ctx, state, step);
+    // The beat runs for the WHOLE awaited gate — the compiler canary, the
+    // gate-reuse reads, the per-worktree, consolidated and baseline legs —
+    // because every one of them is a span on which the host's stream otherwise
+    // hears nothing. Cleared in the `finally` below: `verifyDevelopOutcome` can
+    // throw, and a beat outliving the gate would beat for a run that ended.
+    // `verifyHeartbeat` is the injected pump (see DriverContext); production
+    // leaves it unset and arms the real one.
+    const stopHeartbeat =
+      verifyStarted === undefined
+        ? () => {}
+        : ctx.verifyHeartbeat
+          ? ctx.verifyHeartbeat({
+              ctx,
+              state,
+              step,
+              command: verifyStarted.command,
+              intervalMs: ctx.verifyHeartbeatMs,
+              startedAt: verifyStarted.at,
+            })
+          : armVerifyHeartbeat({
+              ctx,
+              state,
+              started: verifyStarted,
+              startedAt: verifyStarted.at,
+              intervalMs: ctx.verifyHeartbeatMs,
+            });
+    try {
+      await verifyDevelopOutcome(ctx, state, execFn, failures, notes, {
+        // #782 — the flake callback is wired at this layer: on recovery it
+        // returns a success verdict carrying the flag the caller routes.
+        onVerifyFlakeRecovered: (evidenceTail) => {
+          flakeEvidenceTail = evidenceTail;
+        },
+        fenceViolations,
+        fenceLifts,
+        // #1557 — the spec the develop scope gate reads PATTERN slots from, so a
+        // file the spec authorised (and the plan schema forbids declaring) counts
+        // as declared. Driver state only: the fence never reads issue prose.
+        spec: state.pipelineState.normalisedSpec,
+        onConsolidatedLogPath: (logPath) => {
+          consolidatedLogPath = logPath;
+        },
+        commentEvidence,
+        onBaselineRedOnly: () => {
+          baselineRedOnly = true;
+        },
+        // #1765 — the cap claim, weaker than the excuse claim above: an
+        // established red base, whatever the excuse question answered.
+        onBaselineRedEstablished: () => {
+          baselineRedEstablished = true;
+        },
+        // #1240 review r2 — without this callback the identity the probe
+        // recorded is DROPPED: `verifyDevelopOutcome` threads the out-parameter
+        // to the report layer, which calls it, and `consolidatedVerifySkipped`
+        // would stay undefined so no caller appended the event. The note still
+        // appeared, which is exactly how the gap hid: the note is rendered from
+        // `cons.skipped` independently of the callback.
+        onConsolidatedVerifySkipped: (skipped) => {
+          consolidatedVerifySkipped = skipped;
+        },
+        // #1421 fix round — the consolidated gate's structured "declined on
+        // nothing but build residue" signal, captured here and returned on the
+        // result so the cap router reads a boolean rather than a substring.
+        onBuildResidueOnly: () => {
+          buildResidueOnly = true;
+        },
+        // #1427 fix round — the walker is a test seam for the hang reports, and
+        // it has to reach BOTH legs of the gate (per-worktree and consolidated).
+        ...(ctx.walkProcessTree !== undefined ? { walkProcessTree: ctx.walkProcessTree } : {}),
+        // #1427 round 3 — this call's sink, threaded to every writer below.
+        hangSink,
+        verifyRecord,
+        provenanceDisclosures: provenanceSink,
+        // #1415 — captured and returned: the caller owns the state it lands on.
+        onGateRecorded: (pass, greens, refuted) => {
+          gateRecord = { pass, greens: [...greens], refuted: [...refuted] };
+        },
+        onSelectedVerify: (record) => {
+          selectedOut.record = record;
+        },
+        verifySelectSink,
+        onBaseHealth: (report) => {
+          baseHealthOut.report = mergeBaseHealthReport(baseHealthOut.report ?? {}, report);
+        },
+      });
+    } finally {
+      stopHeartbeat();
+    }
     const flakeRecovered = flakeEvidenceTail !== undefined;
     const verifyEvents = finishVerifyRun(verifyStarted, failures.length === 0);
     return {

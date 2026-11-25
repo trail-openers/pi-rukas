@@ -31,9 +31,204 @@ import { makeConsolidatedVerifySkippedEvent } from "./workflow-state-events-veri
 // #2450 — the selector's verdict, recorded beside the gate's other develop records.
 import { makeVerifySelectEvent } from "./workflow-state-events-verify-select.ts";
 import type { VerifySelectArgs } from "./workflow-state-events-verify-select.ts";
-import type { VerifyRunEventFragment, VerifyStartedEvent } from "./workflow-state-events-verify.ts";
+import type {
+  VerifyHeartbeatEvent,
+  VerifyRunEventFragment,
+  VerifyStartedEvent,
+} from "./workflow-state-events-verify.ts";
+import type { WorkStep } from "./workflow-state-events.ts";
 import type { BaseHealthVerdict } from "./workflow-state-schema-base-health.ts";
 import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
+
+/**
+ * The default beat interval — how long the gate may be silent on the host's
+ * progress stream before it says something. `PI_ENSEMBLE_VERIFY_HEARTBEAT_MS`
+ * overrides it and `0` turns the beat off, which leaves the stream exactly as
+ * it was written before the beat existed.
+ */
+export const VERIFY_HEARTBEAT_DEFAULT_MS = 300_000;
+
+/**
+ * `PI_ENSEMBLE_VERIFY_HEARTBEAT_MS` — the beat's interval in ms, read ONCE per
+ * /work invocation by the driver and passed down as an argument. It is never
+ * read from the environment inside a project command: `verifyChildEnv` scrubs
+ * every inventoried knob from those, so a read there could only ever answer
+ * this default. A `0` (or anything not a positive finite number) means no beat.
+ * A value above the interval is floored to whole ms, and a value that cannot be
+ * read as a number is the shipped default rather than an off switch: only an
+ * explicit `0` turns the beat off.
+ */
+export function verifyHeartbeatMs(): number {
+  const raw = process.env.PI_ENSEMBLE_VERIFY_HEARTBEAT_MS;
+  if (raw === undefined || raw.trim() === "") return VERIFY_HEARTBEAT_DEFAULT_MS;
+  const n = Number(raw.replace(/_/g, ""));
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : VERIFY_HEARTBEAT_DEFAULT_MS;
+}
+
+/**
+ * The pump's dependencies, every one of them injected. Nothing here reaches for
+ * a timer, a wall clock, the environment or the state file: the pump is a small
+ * deterministic loop a test drives by calling its registered callback by hand,
+ * which is the only way the beat count is the pump's output rather than the
+ * scheduler's timing. Production wires the real ones at {@link armVerifyHeartbeat}.
+ */
+export type VerifyHeartbeatDeps = {
+  /** The interval to beat on; anything but a positive finite number arms nothing. */
+  intervalMs: number | undefined;
+  /** The clock the beat is stamped with — also the clock `startedAt` came from. */
+  now: () => number;
+  /** Arm one beat. Returns its cancel; unref the timer when it supports unref. */
+  setInterval: (fn: () => void, ms: number) => (() => void) | undefined;
+  /** Tear the armed beat down. Optional because a fake scheduler may not return one. */
+  clearInterval?: (cancel: (() => void) | undefined) => void;
+  /** Make one beat durable — in production, `persistCycle`. */
+  persist: (state: WorkState) => Promise<unknown>;
+  /** Append a beat to this log and hand the result to `persist`. */
+  state: WorkState;
+  /** The step and command the beat names — taken from the run's own start event. */
+  step: WorkStep;
+  command: string;
+  /** When the run began, on the same clock as `now`. */
+  startedAt: number;
+  /** True once the cycle's signal has fired: a beat then persists nothing. */
+  aborted?: () => boolean;
+};
+
+/**
+ * The gate's beat: one `verify-heartbeat` per `intervalMs` while a verify command
+ * is in flight, until `stop()`. A pump and nothing else — it decides when to
+ * beat, what the beat carries, and when to stop beating; where the beat goes and
+ * when it fires are both injected.
+ *
+ * Persisting is the whole point. An event built and held in memory emits nothing,
+ * because the host's stream is written by the persist that makes an event durable
+ * (`work-state-emit.ts`), and a periodic watch here once awaited the span it was
+ * watching and never fired at all.
+ *
+ * The rules that keep the gate safe, each pinned by a pump test:
+ *
+ *   - one beat per tick, each carrying a whole-second `elapsedSeconds` and its own
+ *     `at`, so the emit watermark (`index|kind|at`) sees the distinct events they
+ *     are rather than one line repeated;
+ *   - nothing after `stop()`, and nothing once `aborted()` is true: `persistCycle`
+ *     rewrites a `running` snapshot as `interrupted` on an aborted signal and
+ *     appends the runner's own interrupt event, which is not the beat's to write;
+ *   - `intervalMs` 0 arms nothing and returns a no-op stop, which is the
+ *     byte-identical stream the off switch promises;
+ *   - a `persist` that throws is traced and never rethrown — the beat is progress
+ *     for the host, never a gate on the cycle — and the following ticks still beat.
+ *
+ * Beats append to the caller's own log, so they land after `verify-started` at
+ * fresh indices and the watermark never re-emits them.
+ */
+export function startVerifyHeartbeat(d: VerifyHeartbeatDeps): () => void {
+  const interval = d.intervalMs ?? VERIFY_HEARTBEAT_DEFAULT_MS;
+  if (!(interval > 0) || !Number.isFinite(interval)) return () => {};
+  let beating = true;
+  let cancel: (() => void) | undefined;
+  const beat = async (): Promise<void> => {
+    if (!beating) return;
+    if (d.aborted?.() === true) return;
+    const at = d.now();
+    const event: VerifyHeartbeatEvent = {
+      kind: "verify-heartbeat",
+      at,
+      step: d.step,
+      // Verbatim from the start event it accompanies: this codebase names the
+      // field `command`, as on `verify-started` / `verify-completed`.
+      command: d.command,
+      elapsedSeconds: Math.max(0, Math.floor((at - d.startedAt) / 1000)),
+    };
+    // Awaited, and never rethrown: the beat's write must settle before the gate's
+    // own awaits run on (an unawaited one is also an unhandled rejection), and a
+    // persist that throws or rejects is traced here so it costs the live line and
+    // never the gate. The next tick still beats whatever this one did.
+    try {
+      await d.persist(appendEvent(d.state, event));
+    } catch (err) {
+      trace(
+        `work-driver: verify-heartbeat not persisted — ${(err as Error)?.message?.slice(0, 160) ?? String(err)}`,
+      );
+    }
+  };
+  cancel = d.setInterval(() => {
+    // The pump owns the beat's failure: `beat` catches its own persist, and a
+    // rejection escaping it anyway is traced rather than left to surface as an
+    // unhandled rejection. The gate is never the thing that sees it.
+    void beat().catch((err: unknown) => {
+      trace(
+        `work-driver: verify-heartbeat beat failed — ${(err as Error)?.message ?? String(err)}`,
+      );
+    });
+  }, interval);
+  return () => {
+    if (!beating) return;
+    beating = false;
+    try {
+      if (d.clearInterval) d.clearInterval(cancel);
+      else cancel?.();
+    } catch (err) {
+      trace(`work-driver: verify-heartbeat cancel failed: ${(err as Error)?.message}`);
+    }
+    cancel = undefined;
+  };
+}
+
+/**
+ * Arm the gate's beat for the span of one verify run. The wiring seam for
+ * {@link startVerifyHeartbeat}: the real timers (unref'd, so a beat is never the
+ * reason a process stays alive), the real clock, and `persistCycle` as the sink.
+ *
+ * Absent `started` there is no run to beat for — no command was resolved, so the
+ * gate wrote no start and must write no beat. `state` is the snapshot the caller
+ * handed `beginVerifyRun`, and `startedAt` its `at`, so a beat's elapsed and a
+ * beat's `at` come from one clock and cannot disagree.
+ */
+export function armVerifyHeartbeat(a: {
+  ctx: CycleContext;
+  state: WorkState;
+  /** Absent when no command was resolved: there is no run to beat for. */
+  started: VerifyStartedEvent | undefined;
+  /** The interval to beat on. The driver resolves it once from the switch. */
+  intervalMs: number | undefined;
+  /**
+   * When the run began, on the same clock as `now` — the caller hands back the
+   * `at` of the run's `verify-started`, so a beat's number and the beat's own
+   * `at` come from one clock and cannot disagree.
+   */
+  startedAt: number;
+  /**
+   * The gate's OWN clock: the timer is armed against `schedule` and the beat is
+   * stamped with `now`. A test injects one pair so it can drive a five-minute
+   * interval without sleeping; production leaves it unset and the real
+   * `setTimeout` (unref'd) and `Date.now` are used. The pair is one seam, not
+   * two: a schedule that fired on fake time while the stamp read the real wall
+   * clock would emit beats whose `at` values collide, and the emit watermark
+   * fingerprints on `index|kind|at` — colliding beats are one line, not two.
+   */
+  clock?: { schedule: (fn: () => void, ms: number) => () => void; now: () => number };
+}): () => void {
+  if (a.started === undefined) return () => {};
+  const started = a.started;
+  return startVerifyHeartbeat({
+    intervalMs: a.intervalMs,
+    state: a.state,
+    step: started.step,
+    command: started.command,
+    startedAt: a.startedAt,
+    now: a.clock?.now ?? Date.now,
+    setInterval:
+      a.clock?.schedule ??
+      ((fn: () => void, ms: number) => {
+        const t = setTimeout(fn, ms);
+        // A beat must never be the reason a process stays alive.
+        t.unref?.();
+        return () => clearTimeout(t);
+      }),
+    persist: (state) => persistCycle(a.ctx, state),
+    aborted: () => a.ctx.signal?.aborted === true,
+  });
+}
 
 /**
  * #1415 — record that the develop gate's verify is starting, and PERSIST it
@@ -47,17 +242,25 @@ import { type WorkState, appendEvent, persistCycle } from "./workflow-state.ts";
  * A failed persist costs only the live line, never the gate: it is traced and
  * the verify runs. A crash mid-gate leaves `currentStep` at develop either
  * way, so re-entry re-runs the step exactly as it would without this write.
+ *
+ * `step` is the CALLER's step, not a fixed `develop`: the commit-pr gate runs
+ * the project's command too and its silence is as long as develop's.
+ *
+ * The returned `at` is the instant the caller hands to the heartbeat as the
+ * run's origin, so a beat's elapsed and the bracket it sits inside are stamped
+ * from the same moment.
  */
 export async function beginVerifyRun(
   ctx: CycleContext,
   state: WorkState,
+  step: WorkStep,
 ): Promise<VerifyStartedEvent | undefined> {
   const command = await verifyCmdFor(ctx.repoRoot);
   if (command === undefined) return undefined;
   const started: VerifyStartedEvent = {
     kind: "verify-started",
     at: Date.now(),
-    step: "develop",
+    step,
     command,
     target: { kind: "consolidated" },
   };
@@ -81,7 +284,7 @@ export function finishVerifyRun(
     {
       kind: "verify-completed",
       at,
-      step: "develop",
+      step: started.step,
       command: started.command,
       target: started.target,
       status: ok ? "success" : "failure",

@@ -120,6 +120,11 @@ export const KNOWN_EVENT_KINDS = [
   // #1415 — the develop gate's verify run, bracketed so its time is visible.
   "verify-started",
   "verify-completed",
+  // The beat between them, so a host watching the progress stream can tell a
+  // long gate from a dead cycle. Absent from the tuple, a cycle that logged a
+  // beat refuses to resume (#986's shape). Its `step` is a WorkStep so the
+  // validator's step check covers it.
+  "verify-heartbeat",
   // #2450 — what the #1647 test selector decided for a develop round. Absent
   // from the tuple, a resumed cycle halts on the one event that says whether the
   // gate ran a selection or the whole suite (#986's shape).

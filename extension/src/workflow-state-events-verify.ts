@@ -146,6 +146,35 @@ export type VerifyCompletedEvent = {
   evidenceTail?: string;
 };
 
+/**
+ * The gate is still waiting for a command it started.
+ *
+ * `verify-started` says the gate began and `verify-completed` says it ended;
+ * between them the stream is empty for the whole wall clock of the project's
+ * suite, which a host watching the progress stream reads as a stalled cycle.
+ * This is the line that fills that span: one per interval while the command
+ * runs, so the silence is bounded by the interval rather than by the suite.
+ *
+ * It carries only what `verify-started` already carried plus the elapsed
+ * seconds — a beat that reported more would be a second source for facts the
+ * bracket owns. Each beat is a separate event with its own `at`, so the emit
+ * watermark (`index|kind|at`) treats repeated beats as the distinct events
+ * they are. Beats are progress, not verdicts: no reader may infer a result,
+ * or the run's end, from one, and `pendingVerifyRun` deliberately does not
+ * know this kind — a beat does not close a run any more than its absence
+ * opens one.
+ */
+export type VerifyHeartbeatEvent = {
+  kind: "verify-heartbeat";
+  at: number;
+  /** The step whose gate is still running — matches its `verify-started`. */
+  step: WorkStep;
+  /** The command still in flight — matches its `verify-started`. */
+  command: string;
+  /** Whole seconds since the run began (the floor of its ms over 1000). */
+  elapsedSeconds: number;
+};
+
 /** The verify-run event kinds, referenced by name in the composed union's doc. */
 export type VerifyRunEventFragment = VerifyStartedEvent | VerifyCompletedEvent;
 
@@ -216,6 +245,9 @@ export function pendingVerifyRun(
 ): { step?: string } | undefined {
   let open: { step?: string } | undefined;
   for (const e of events) {
+    // `verify-heartbeat` is not a branch here on purpose: a beat says the run
+    // is still open, which is what `open` already means. Reading it as an end
+    // would make a long gate look like a closed one.
     if (e.kind === "verify-started") open = { step: e.step };
     else if (e.kind === "verify-completed") open = undefined;
   }
