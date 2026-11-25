@@ -16,8 +16,7 @@
  *   a review step that confuses the two approves code nobody looked at. "git could
  *   not run" and "git found no such ref" are answered DIFFERENTLY, via
  *   `resolveHeadShaOutcome` — the resolver the frozen driver's own review path
- *   uses — because "the review cannot approve a head it cannot resolve" and "there
- *   is nothing to review" are different facts for an operator.
+ *   uses — because they are different facts for an operator.
  * - **Nothing here is forced.** The fixer's tree is disposable and detached (see
  *   `review-tree.ts`); the run's own tree is only the vehicle for a ref update. A
  *   concurrent push is refused by git rather than overwritten by us.
