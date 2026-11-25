@@ -68,7 +68,7 @@ const SEGMENT_WILDCARD_CEILING = 4;
  *  because counts are blind to position. Two spellings pay: a wildcard in a segment BEFORE the first
  *  doublestar, and one BETWEEN two doublestar segments (where it carries a length term for each).
  *  A wildcard the doublestars cannot reach stays admitted, anchored after the LAST one; and a BARE
- *  `*`/`?` SEGMENT never pays, wherever it sits, being one `[^/]*` the doublestar swallows whole.
+ *  `*`/`?` SEGMENT never pays, wherever it sits.
  *
  *  Returns the first offending segment, which the refusal quotes back. */
 function wildcardBesideDoublestar(entry: string): string | undefined {
