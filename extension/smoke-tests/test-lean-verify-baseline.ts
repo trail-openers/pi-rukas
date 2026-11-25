@@ -168,8 +168,12 @@ function probeTreeLeftBehind(repoRoot: string, issue: number): string {
     "(c) the reason says the base commit is where it is red",
   );
   assert(
-    (r.outcome?.reason ?? "").includes("no build round can fix it"),
-    "(c) the reason says no build round can fix it",
+    (r.outcome?.reason ?? "").includes("whether this run adds a failure is not known"),
+    "(c) the reason says what is known and what is not, rather than ruling a build round out",
+  );
+  assert(
+    !(r.outcome?.reason ?? "").includes("no build round can fix it"),
+    "(c) and no longer claims a round could not fix what the machine then bills",
   );
   assert(r.outcome?.verifiedHead === undefined, "(c) a baseline-red run certifies nothing");
   const left303 = probeTreeLeftBehind(r.repoRoot ?? r.worktree, 303);

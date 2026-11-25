@@ -31,11 +31,24 @@ import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 export const BASELINE_RED_MARKER = "baseline red:";
 
 /**
- * Why `verify` hands a run back when its tier is red at the run's base commit. Reaches the handback
- * comment and the PR body, so it names the tier, the base sha, and that no build round can fix it.
+ * Why `verify` hands a run back when its tier is red at the run's base commit.
+ *
+ * Reaches the handback comment, the PR body and the next build child's prompt, so it states what
+ * is KNOWN (the base is red for this command), what is NOT (whether the head adds a failure the
+ * base lacks), and which of the head's own failing lines this step read. A round IS billed on
+ * this red, so nothing here may claim a round would be wasted; the names come from this step's
+ * parse, never from the project's raw text, which is what keeps the attribution rule in
+ * `verify-red-attribution.ts` true.
  */
-export function baselineRedReason(name: string, cmd: string, baseSha: string): string {
-  return `${BASELINE_RED_MARKER} tier ${name} is red at the base commit ${baseSha} — \`${cmd}\` fails at the base without this run's changes, so no build round can fix it`;
+export function baselineRedReason(
+  name: string,
+  cmd: string,
+  baseSha: string,
+  failing: readonly string[] = [],
+): string {
+  const known = `${BASELINE_RED_MARKER} tier ${name} is red at the base commit ${baseSha} — \`${cmd}\` fails there too, so whether this run adds a failure is not known`;
+  if (failing.length === 0) return `${known}; no failing test could be read from this output`;
+  return `${known}; failing tests: ${failing.join(", ")}`;
 }
 
 /**

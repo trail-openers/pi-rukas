@@ -66,8 +66,9 @@ export function composedBaselineRed(
   cmd: string,
   baseSha: string,
   timeoutWording: boolean,
+  failing: readonly string[] = [],
 ): string | undefined {
   if (!frozen.red) return undefined;
   if (!frozen.judgedBeforeTiers && !timeoutWording) return undefined;
-  return `${frozen.reason}${JOINER}${baselineRedReason(tierName, cmd, baseSha)}`;
+  return `${frozen.reason}${JOINER}${baselineRedReason(tierName, cmd, baseSha, failing)}`;
 }

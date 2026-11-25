@@ -83,6 +83,18 @@ export function buildPrompt(opts: BuildPromptOpts): string {
   // "build ON it".
   const judged = opts.reentry?.trim() ?? "";
   const stopped = opts.budgetStop?.trim() ?? "";
+  // A gate can hand back a red whose output held nothing readable as a failure. Tell the builder
+  // that plainly, so it reports the gap instead of searching a quoted log for a check that is not
+  // in it. Only for a gate's verdict: a budget stop is no gate's judgement, and a reason carrying
+  // a frozen or roster clause names something to fix even when its baseline clause cannot.
+  const nothingToFix =
+    stopped === "" &&
+    /^baseline red: /.test(judged) &&
+    judged.includes("no failing test could be read") &&
+    !judged.includes("frozen tests failing:") &&
+    !judged.includes("fail against the head code")
+      ? "\nThe gate read no failing test from its own output, so there is **nothing to fix from this text**: say so in your report rather than searching the log above for a check that is not in it.\n"
+      : "";
   const reentry =
     stopped === "" && judged === ""
       ? ""
@@ -97,6 +109,7 @@ export function buildPrompt(opts: BuildPromptOpts): string {
           stopped === "" ? judged : stopped,
           "```",
           "",
+          nothingToFix,
           stopped === ""
             ? "Fix THAT. Do not re-derive the feature from scratch and do not assume the previous attempt was right — the failure above is the thing you are answering."
             : "Finish THAT. Do not restart the feature from scratch.",

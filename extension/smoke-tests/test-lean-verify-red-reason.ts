@@ -54,7 +54,7 @@ const green = frozenClause({ kind: "pass" });
 {
   assert(
     composedBaselineRed(red, "full", "bun test", "abc", false) ===
-      `${FROZEN}${JOINED}baseline red: tier full is red at the base commit abc — \`bun test\` fails at the base without this run's changes, so no build round can fix it`,
+      `${FROZEN}${JOINED}baseline red: tier full is red at the base commit abc — \`bun test\` fails there too, so whether this run adds a failure is not known; no failing test could be read from this output`,
     "(b) a plain red contract composes the arm's own baseline sentence beside it",
   );
   assert(

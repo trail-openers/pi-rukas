@@ -14,7 +14,6 @@
 import { execp } from "../exec.ts";
 import { loadWorkConfig } from "./config.ts";
 import { fetchIssueBody } from "./io.ts";
-import type { Step } from "./state.ts";
 import type { VerifyExec, VerifyRosterConfig, VerifyTiers } from "./verify-types.ts";
 
 /**
@@ -49,11 +48,22 @@ export interface VerifyDeps {
 
 /** The step log's newest red reason is pasted into a prompt; that bounds it. */
 export const RED_REASON_CLIP = 4096;
+/**
+ * How much of the TAIL the clip keeps. The larger half because a runner prints what it is done
+ * with last — pytest's warnings summary fills the head, and the `FAILED` block and its
+ * `N failed` tally are what the builder has to read.
+ */
+export const RED_REASON_TAIL_CLIP = 3072;
 
-/** Clip a red reason so `build`'s re-entry prompt stays a sane size. */
+/**
+ * Clip a red reason to {@link RED_REASON_CLIP}, keeping its HEAD and its TAIL around an elision
+ * marker. `build`'s re-entry prompt re-clips through this same function, so the record and the
+ * prompt cannot disagree about what the gate said.
+ */
 export function clipReason(reason: string): string {
   if (reason.length <= RED_REASON_CLIP) return reason;
-  return `${reason.slice(0, RED_REASON_CLIP)}…`;
+  const head = RED_REASON_CLIP - RED_REASON_TAIL_CLIP - 1;
+  return `${reason.slice(0, head)}…${reason.slice(reason.length - RED_REASON_TAIL_CLIP)}`;
 }
 
 /** `verify`'s dependencies in production form: the real executor and config read. */
@@ -63,16 +73,4 @@ export function verifyDeps(): VerifyDeps {
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
     fetchIssueBody,
   };
-}
-
-/** The newest decided `verify:red` reason on the log, clipped, for a report. */
-export function newestRedVerifyReason(steps: Step[]): string | undefined {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i];
-    if (step?.state !== "verify" || step.outcome?.kind !== "red") continue;
-    const reason = step.outcome.reason ?? step.outcome.message;
-    if (typeof reason !== "string" || reason.trim() === "") continue;
-    return clipReason(reason);
-  }
-  return undefined;
 }

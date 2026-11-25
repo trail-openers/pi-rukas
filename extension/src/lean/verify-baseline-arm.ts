@@ -28,8 +28,9 @@
  * rather than re-argued.
  */
 
+import { PREEXISTING_NAME_MAX_CHARS } from "./state-outcome-maps.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
-import { baselineExcuse } from "./verify-baseline-excuse.ts";
+import { baselineExcuse, failureLinesOf } from "./verify-baseline-excuse.ts";
 import { baselineProbeWorktreePath } from "./verify-baseline.ts";
 import { type BaseProbe, baselineRedReason, tierObserved } from "./verify-baseline.ts";
 import { type FrozenClause, composedBaselineRed } from "./verify-red-reason.ts";
@@ -37,6 +38,12 @@ import type { RosterArbitration } from "./verify-roster.ts";
 import { FROZEN_TIMEOUT_HEAD, frozenTestFailure } from "./verify-steps.ts";
 import type { Executed } from "./verify-steps.ts";
 import type { VerifyExec } from "./verify-types.ts";
+
+/**
+ * How many of the head's failing lines one red reason names. Past it the reason says how many it
+ * left out rather than dropping them without a word.
+ */
+export const BASELINE_RED_NAMES_CAP = 20;
 
 /** What the arm decided; exactly one field is set. */
 export interface BaselineRedArm {
@@ -90,8 +97,11 @@ export async function baselineRedArm(opts: {
       cmd,
       baseSha,
       frozenRan.reason.startsWith(FROZEN_TIMEOUT_HEAD),
+      headFailureNames(opts.rerun.stream),
     );
-    return { red: reason ?? baselineRedReason(name, cmd, baseSha) };
+    return {
+      red: reason ?? baselineRedReason(name, cmd, baseSha, headFailureNames(opts.rerun.stream)),
+    };
   }
   if (frozenRan.kind === "infra") return { throwReason: frozenRan.reason };
   // The roster before the line excuse: where it saw a name passing at base now failing, no line
@@ -117,6 +127,24 @@ export async function baselineRedArm(opts: {
     headRoot: opts.wt,
     probeRoot: baselineProbeWorktreePath(opts.repoRoot, opts.issue),
   });
-  if (excuse.kind === "refused") return { red: baselineRedReason(name, cmd, baseSha) };
+  if (excuse.kind === "refused")
+    return { red: baselineRedReason(name, cmd, baseSha, headFailureNames(opts.rerun.stream)) };
   return { preexisting: excuse.record };
+}
+
+/**
+ * The head's failing lines this step READ, bounded, with the count it left off the list. Empty for
+ * an output whose lines the classifier could not read; a refusal still has to say something then.
+ */
+function headFailureNames(stream: string): string[] {
+  const all = failureLinesOf(stream).map((line) =>
+    line.length > PREEXISTING_NAME_MAX_CHARS ? line.slice(0, PREEXISTING_NAME_MAX_CHARS) : line,
+  );
+  if (all.length === 0) return [];
+  const kept = all.slice(0, BASELINE_RED_NAMES_CAP);
+  // The count of what was left out rides on the sentence rather than being silent: the reader of
+  // the reason sees `omitted 5 more` beside the names that ARE listed.
+  return all.length > kept.length
+    ? [...kept, `omitted ${String(all.length - kept.length)} more`]
+    : kept;
 }

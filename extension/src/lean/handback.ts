@@ -20,7 +20,6 @@ import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP, validPrUrl } from "./state-outcom
 import type { Outcome, Step } from "./state.ts";
 import { budgetSentence, budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
-import { newestRedVerifyReason } from "./verify-deps.ts";
 
 /** A reason line long enough to be a wall is not a comment a human reads. */
 const REASON_CLIP = 2000;
@@ -121,7 +120,7 @@ export function neededFromLog(steps: Step[]): string {
     gapCause(steps) ??
     budgetCause(steps) ??
     exhaustedCause(steps) ??
-    newestRedVerifyReason(steps) ??
+    newestReason(steps, "verify", "red") ??
     newestReason(steps, "ci", "red") ??
     newestReason(steps, "verify", "green") ??
     newestReason(steps, "ci", "green") ??
