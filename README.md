@@ -58,6 +58,7 @@ Required CLIs on `$PATH`. The role prompts assume all of these are installed —
 | `jq` | Used by `build.sh` to assemble the capability matrix into the PM prompt. |
 | [`parallel-cli`](https://docs.parallel.ai/cli/overview) | Web search / fetch / deep research for the `explore` role. (Homebrew tap.) |
 | [`ctx7`](https://context7.com) | Current third-party library documentation. `ctx7 library <name>` → `ctx7 docs <id> <query>`. Free tier works without login. |
+| [`noni`](https://github.com/randomm/noni) | **Optional.** Decision-ledger CLI that the project hook `.pi/extensions/noni.ts` and AGENTS.md §10 call. Install `uv tool install .` from a checkout of the tagged release `v0.2.3`; without it the hook prints one line and the session continues. |
 
 ### Supply-chain setup (recommended one-time before installing)
 
@@ -103,6 +104,9 @@ parallel-cli login
 
 # ctx7
 npm install -g --ignore-scripts ctx7
+
+# noni — optional; from the tagged release, with uv's own embargo respected
+git clone --branch v0.2.3 --depth 1 https://github.com/randomm/noni.git && (cd noni && uv tool install .)
 ```
 
 After install:
@@ -180,10 +184,8 @@ The 28 modules under `modules/` (vipune memory patterns, output standards, async
 - **Cost.** Six-pass review on a typical PR is roughly 6 × ~2K tokens output per child plus context — order of `$0.02–$0.10` per cycle on an economical provider tier, more on a premium one.
 - **Worktrees are git CLI calls.** Will be migrated to the safer [`pi-worktree`](https://github.com/randomm/pi-worktree) plugin when its programmatic API stabilises.
 - **Smoke tests** live in `extension/smoke-tests/`; `*-live.ts` files spawn real Pi children (a few cents per run), CI runs the offline ones.
-
-## Pi compatibility
-
-See [docs/pi-compatibility.md](docs/pi-compatibility.md) — the single maintained "last verified against" line, the non-normative dev pins in `extension/package.json`, and the bump procedure.
+- **Pi compatibility**: see [docs/pi-compatibility.md](docs/pi-compatibility.md) for the single maintained "last verified against" line, the non-normative dev pins in `extension/package.json`, and the bump procedure.
+- **Noni**: the optional decision-ledger CLI (see Prerequisites) is what holds this project's direction; a clone with no state root simply shows no brief.
 
 ## Security
 
@@ -191,9 +193,7 @@ How to report a vulnerability (GitHub's private vulnerability reporting), what's
 
 ## Acknowledgements
 
-- [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`) by Mario Zechner — the terminal coding agent this extends.
-- The modular prompt architecture, vipune doctrine, and six-lens code-review pattern originated in an [opencode](https://opencode.ai) configuration project.
-- Sibling Pi extensions [`pi-worktree`](https://github.com/randomm/pi-worktree) and [`pi-permissions`](https://github.com/randomm/pi-permissions) — planned integration points for safer worktrees and per-role tool allowlists.
+- [Pi](https://pi.dev) (`@earendil-works/pi-coding-agent`) by Mario Zechner — the terminal coding agent this extends. The modular prompt architecture, vipune doctrine, and six-lens code-review pattern originated in an [opencode](https://opencode.ai) configuration project. Sibling Pi extensions [`pi-worktree`](https://github.com/randomm/pi-worktree) and [`pi-permissions`](https://github.com/randomm/pi-permissions) are planned integration points for safer worktrees and per-role tool allowlists, and [`noni`](https://github.com/randomm/noni) is the decision-ledger CLI behind the project hook and AGENTS.md §10.
 
 ## License
 
