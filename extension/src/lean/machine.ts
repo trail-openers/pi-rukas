@@ -11,7 +11,7 @@
  * at most once; `ciFixUsed` gives a red CI one fix round.
  */
 
-import type { LeanRun, LeanState, Outcome } from "./state.ts";
+import { type LeanRun, type LeanState, type Outcome, newestDecided } from "./state.ts";
 import { type Transition, to, viaBuild } from "./transitions.ts";
 
 /** Outcome kinds per state. The handler for a state may return only these; the pair enumeration in
@@ -143,10 +143,14 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           // unsatisfiable is the one shape where an unsatisfied contract reaches `land`.
           return to(run, "handback");
         case "exhausted":
-          // `draft` set means `verify` said RED. No draft means the code was green and the run ran out
-          // of rounds. A run does not acquire a draft twice.
-          if (c.draft) return to(run, "handback");
-          return viaBuild(run, "publish", true);
+          // The publish arm is the GREEN arm and nothing else: the gate decides whether a head may ship, so
+          // an exhausted round reaches `publish` only when the newest DECIDED `verify` said green — the one
+          // reader `publish` itself consults, so the two cannot disagree about what was verified. Every other
+          // case (none, or one that is not green) hands back through the biller, so the round the builder was
+          // dispatched for is still spent and the draft marker still keeps the run out of `land`.
+          if (newestDecided(run.steps, "verify")?.outcome?.kind === "green")
+            return viaBuild(run, "publish", true);
+          return viaBuild(run, "handback", true);
       }
       break;
 

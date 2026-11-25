@@ -27,7 +27,12 @@ import {
   next,
   outcomeKindsFor,
 } from "../src/lean/machine.ts";
-import { INITIAL_COUNTERS, type LeanRun, type LeanState } from "../src/lean/state.ts";
+import {
+  INITIAL_COUNTERS,
+  type LeanRun,
+  type LeanState,
+  type Step,
+} from "../src/lean/state.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -109,22 +114,39 @@ assert(
   ).state === "handback",
   "a red verify at the cap after the fix round still hands back rather than publishing a draft",
 );
-// The cap is a budget, not a verdict: running out of build rounds degrades a
-// GREEN run to a draft, and does not change what a RED one does.
-const greenDraft = next(run("build", { counters: { ...INITIAL_COUNTERS, draft: false } }), {
-  kind: "exhausted",
+// The cap is a budget, not a verdict; the GATE is the verdict. Running out of build rounds degrades a run
+// its own gate called green to a draft, and hands back every other case — including the one this shape was
+// filed for, where no verify of the run had decided anything and the draft shipped bytes nobody certified.
+const greenOf = (kind: string, extra: Record<string, unknown> = {}) => ({
+  key: "1:verify:0",
+  state: "verify" as const,
+  startedAt: 1,
+  endedAt: 2,
+  outcome: { kind, ...extra },
 });
+const greenDraft = next(
+  run("build", {
+    counters: { ...INITIAL_COUNTERS, draft: false },
+    steps: [greenOf("green", { verifiedHead: "e".repeat(40) })],
+  }),
+  { kind: "exhausted" },
+);
 assert(
   greenDraft.state === "publish" && greenDraft.counters.draft === true,
-  "build exhausted on a non-red run publishes a draft",
+  "build exhausted on a run its verify called green publishes a draft",
 );
-const redThenExhausted = next(run("build", { counters: { ...INITIAL_COUNTERS, draft: true } }), {
-  kind: "exhausted",
-});
-assert(
-  redThenExhausted.state === "handback",
-  "build exhausted on a run its verify called red hands back instead of drafting",
-);
+for (const [name, steps] of [
+  ["no verify decided at all", []],
+  ["one verify that is not green", [greenOf("red")]],
+] as [string, Step[]][]) {
+  const handed = next(run("build", { counters: { ...INITIAL_COUNTERS, draft: false }, steps }), {
+    kind: "exhausted",
+  });
+  assert(
+    handed.state === "handback" && handed.counters.draft === true,
+    `build exhausted on a run whose gate ${name} hands back, drafted so it cannot reach land (got ${handed.state}/${String(handed.counters.draft)})`,
+  );
+}
 
 /**
  * The four pairs whose destination is `build`: the first entry from `specify`,
@@ -186,7 +208,6 @@ for (const [state, kind] of [
   // a challenge's tests, a red gate or a red pipeline buy.
   ["specify", "ok"],
   ["challenge", "new-tests"],
-  ["build", "exhausted"],
   ["verify", "red"],
   ["ci", "red"],
 ] as const) {

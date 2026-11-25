@@ -278,10 +278,22 @@ assert(
   }).counters.buildAttempts === MAX_BUILD_ATTEMPTS,
   "build + budget at the cap goes to verify and bills no round beyond it",
 );
-const exhausted = next(run("build"), { kind: "exhausted" });
+// The publish arm is the GREEN arm: with no `verify` of this run decided, an empty round hands back rather
+// than shipping bytes nobody certified. `test-lean-exhausted-unverified.ts` holds the full set of arms.
+const greenOf = (kind: string, extra: Record<string, unknown> = {}) => ({
+  key: "1:verify:0",
+  state: "verify" as const,
+  startedAt: 1,
+  endedAt: 2,
+  outcome: { kind, ...extra },
+});
+const exhausted = next(
+  run("build", { steps: [greenOf("green", { verifiedHead: "e".repeat(40) })] }),
+  { kind: "exhausted" },
+);
 assert(
   exhausted.state === "publish" && exhausted.counters.draft === true,
-  "build exhausted → publish as a draft",
+  "build exhausted on a run its verify called green → publish as a draft",
 );
 // The builder ran and produced nothing, so the round it was given is spent: this
 // edge bills one even though its destination is not `build`. Dropping the charge
@@ -290,7 +302,10 @@ assert(
 // no-change round leaves by.
 {
   const billed = next(
-    run("build", { counters: { ...INITIAL_COUNTERS, buildAttempts: 1 } }),
+    run("build", {
+      counters: { ...INITIAL_COUNTERS, buildAttempts: 1 },
+      steps: [greenOf("green", { verifiedHead: "e".repeat(40) })],
+    }),
     { kind: "exhausted" },
   );
   assert(

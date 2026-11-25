@@ -13,11 +13,11 @@ import { execp } from "../exec.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { handbackHeads } from "./handback-heads.ts";
+import { NO_GATE_VERDICT, handbackHeads, newestDecidedWorkStep } from "./handback-heads.ts";
 import { NO_HEAD, type Rewind, originBranchHead } from "./handback-rewind.ts";
 import { RED_TEST_GAP } from "./specify-gap-switch.ts";
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP, validPrUrl } from "./state-outcome.ts";
-import { type Outcome, REPORT_STATES, type Step } from "./state.ts";
+import type { Outcome, Step } from "./state.ts";
 import { budgetSentence, budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
 import { newestRedVerifyReason } from "./verify-deps.ts";
@@ -69,14 +69,8 @@ function terminalCause(steps: Step[]): string | undefined {
   return undefined;
 }
 
-/** The newest step that was WORK — a report state is how a run ended, not work. */
-function newestWorkStep(steps: Step[]): Step | undefined {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i];
-    if (step !== undefined && !REPORT_STATES.includes(step.state)) return step;
-  }
-  return undefined;
-}
+/** The newest step that was WORK — the rule's reader, shared rather than re-written beside it. */
+const newestWorkStep = newestDecidedWorkStep;
 
 /**
  * The newest WORK step's budget breach. The breach is why the run stopped, and it counts
@@ -93,11 +87,8 @@ function budgetCause(steps: Step[]): string | undefined {
     : `${budgetSentence(step.state, fired)} ${used}`;
 }
 
-/**
- * The build step's named unsatisfiable contract: the builder's `blocked` verdict is the one
- * cause that names the files and the contradiction. Like {@link budgetCause}, it counts only at
- * the newest WORK step.
- */
+/** The build step's named unsatisfiable contract — the one cause that names files; counts only at the newest
+ * WORK step, like {@link budgetCause}. */
 function blockedCause(steps: Step[]): string | undefined {
   const step = newestWorkStep(steps);
   if (step?.state !== "build" || step.outcome?.kind !== "blocked") return undefined;
@@ -118,11 +109,8 @@ function blockedCause(steps: Step[]): string | undefined {
 const GAP_READING =
   "A test that passes on the base may also mean the criterion already holds there.";
 
-/**
- * `specify`'s own child left a criterion with no red test. The rules name each criterion; the reason adds
- * the per-file evidence (`exited 0 on base`), and a rule it already spells is not printed again. The
- * second reading applies only when a test actually passed on the base.
- */
+/** `specify`'s child left a criterion with no red test: each rule once, the per-file evidence, and the
+ * second reading only where a test really passed on the base. */
 function gapCause(steps: Step[]): string | undefined {
   const oc = newestWorkStep(steps)?.outcome;
   if (oc?.kind !== RED_TEST_GAP) return undefined;
@@ -142,14 +130,29 @@ export function neededFromLog(steps: Step[]): string {
     blockedCause(steps) ??
     gapCause(steps) ??
     budgetCause(steps) ??
+    // The empty round the hand-back now answers for outranks the gate finding below it.
+    exhaustedCause(steps) ??
     newestRedVerifyReason(steps) ??
     newestReason(steps, "ci", "red") ??
     // Nothing ever went red: fall through to the last verdict of either gate.
     newestReason(steps, "verify", "green") ??
     newestReason(steps, "ci", "green") ??
+    // A gate that never decided leaves no verdict to quote; the rule's finding is all this can say.
+    (handbackHeads(steps).reason === NO_GATE_VERDICT ? NO_GATE_VERDICT : undefined) ??
     terminalCause(steps) ??
     "the run ended without recording why";
   return reason.length > REASON_CLIP ? `${reason.slice(0, REASON_CLIP)}…` : reason;
+}
+
+/**
+ * The exhausted builder's own account, at the newest WORK step only — the position rule {@link budgetCause}
+ * applies.
+ */
+function exhaustedCause(steps: Step[]): string | undefined {
+  const step = newestWorkStep(steps);
+  if (step?.state !== "build" || step.outcome?.kind !== "exhausted") return undefined;
+  const reason = step.outcome.reason ?? step.outcome.message;
+  return typeof reason === "string" && reason.trim() !== "" ? reason : undefined;
 }
 
 /**
@@ -277,21 +280,18 @@ interface Heads {
 }
 
 /**
- * The head facts one handback records, from the head origin holds and what the rewind settled on.
- * `render` is the renderer flag and travels to the body only. Called only where the rule applies.
+ * The head facts one handback records, from the head origin holds and what the rewind settled on. `render`
+ * is the renderer flag and travels to the body only. Called only where the rule applies.
  *
- * A rewind with no head to move records the head origin ACTUALLY holds — the rule fired, found no
- * certified head, and origin still carries what the fix wave pushed. `shippedVerified` includes
- * `alreadyAtVerified`: origin held the certified head already, which is where the rewind's own pre-move
- * `unshippedHead` is withheld rather than printed as a head this step displaced.
+ * A rewind with no head to move records the head origin ACTUALLY holds: the rule fired, found no certified
+ * head, and origin still carries what the fix wave pushed. `shippedVerified` includes `alreadyAtVerified`,
+ * where the rewind's own pre-move `unshippedHead` is withheld rather than printed as a head this step moved.
  */
 function headFacts(rewind: Rewind, originHead: string | undefined): Heads {
   const shippedHead = originHead ?? rewind.unshippedHead;
-  // The arm with nothing to move: the rule fired, the log named no green head, and origin keeps the
-  // head the fix wave pushed.
+  // The arm with nothing to move: origin keeps the head the fix wave pushed, uncertified.
   if (rewind.unshippedHead === undefined && !rewind.shipped) {
     if (originHead === undefined) return { render: false };
-    // The rule's words: the operator's question is why what shipped was never certified.
     const why = rewind.noHeadReason ?? rewind.reason;
     return {
       render: true,
@@ -335,20 +335,27 @@ export async function handbackOutcome(
     // This step never throws, so a body that failed to build is reported like a refused post.
     const prUrl = prUrlFromLog(ctx.steps);
     const heads = handbackHeads(ctx.steps);
-    // The rewind runs BEFORE the body is built, so the comment states where origin stands after it.
+    // The rewind runs BEFORE the body is built, so the comment states where origin stands after it. The
+    // draft-publish arm takes none: nothing moved, and origin is never asked.
     let moved: Rewind | undefined;
     let originHead: string | undefined;
-    if (heads.applies) {
+    if (heads.applies && heads.shippedHead === undefined) {
       moved =
         heads.verifiedHead === undefined
-          ? // `NO_HEAD`'s own `reason` describes a push that did not run; this answers why what
-            // shipped was never certified.
+          ? // `NO_HEAD`'s own `reason` describes a push that did not run; this answers why what shipped
+            // was never certified.
             { ...NO_HEAD, noHeadReason: heads.reason }
           : await rewind(heads.verifiedHead);
       // Read AFTER the rewind, so it is origin's post-move value.
       originHead = await readOrigin(ctx);
     }
-    const facts = moved === undefined ? { render: false } : headFacts(moved, originHead);
+    // The draft-publish arm's facts come from the run's own publish record, so an unreadable origin cannot
+    // swallow the line that says the head is unverified.
+    const facts: Heads = heads.shippedHead
+      ? { render: true, shippedHead: heads.shippedHead, shippedVerified: false }
+      : moved === undefined
+        ? { render: false }
+        : headFacts(moved, originHead);
     const { render, ...record } = facts;
     body = handbackBody(ctx.issue, {
       needed: neededFromLog(ctx.steps),
