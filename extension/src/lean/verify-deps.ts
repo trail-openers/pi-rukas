@@ -1,32 +1,26 @@
 /**
  * lean/verify-deps — what the verify gate reaches outside itself.
  *
- * `verifyOutcome` decides colours; this module is the seam through which it sees anything else.
- * Every one of these is a SEAM rather than a direct call because the production form reads
- * repository state at a particular commit, and a case that wants a tier to exit 1 must not have
- * to rewrite the commit its frozen records were hashed at in order to ask for one.
+ * `verifyOutcome` decides colours; this module is the seam through which it sees anything else. Each
+ * is a SEAM rather than a direct call because the production form reads repository state at a
+ * particular commit, and a case that wants a tier to exit 1 must not rewrite the commit its frozen
+ * records were hashed at to ask for one.
  *
- * It also holds the one bound a red reason carries out of the gate: the reason lands in the next
- * build child's prompt and in the PR body, so both the bound and the clip that applies it live
- * here, where the two readers can import one truth.
+ * It also holds the bound a red reason carries out of the gate and the clip that applies it, so the
+ * step record and the build prompt read one truth.
  */
 
 import { execp } from "../exec.ts";
 import { loadWorkConfig } from "./config.ts";
 import { fetchIssueBody } from "./io.ts";
-import type { Step } from "./state.ts";
 import type { VerifyExec, VerifyRosterConfig, VerifyTiers } from "./verify-types.ts";
 
 /**
  * What `verify` reaches outside itself.
  *
- * `loadConfig` reads `.pi/work.json` at the run's base sha, never the working tree: doctrine a
- * cycle is judged by is read at the commit it started from, so a run cannot rewrite the rules it
- * is measured against mid-cycle. Its return is widened beyond `verify`'s own tiers to the fields
- * the PROJECT-TEST ROSTER reads (`roster`, `testDir`, `testGlob`): the roster's inventory is a
- * fact about the base commit, and a roster that read the pair off the working tree would let the
- * run choose the suite that judges it. A seam that returns only `verify` still satisfies the
- * interface, so the cases written before the roster are unchanged.
+ * `loadConfig` reads `.pi/work.json` at the run's base sha, never the working tree: a run cannot rewrite
+ * the rules it is judged by mid-cycle. Its return is widened to the fields the PROJECT-TEST ROSTER reads
+ * (`roster`, `testDir`, `testGlob`), whose inventory is likewise a fact about the base commit.
  */
 export interface VerifyDeps {
   exec: VerifyExec;
@@ -49,11 +43,21 @@ export interface VerifyDeps {
 
 /** The step log's newest red reason is pasted into a prompt; that bounds it. */
 export const RED_REASON_CLIP = 4096;
+/**
+ * How much of the TAIL the clip keeps — the larger half, because a runner prints what it is done
+ * with last: pytest's warnings summary fills the head, and the `FAILED` block and its tally are
+ * what the builder has to read.
+ */
+export const RED_REASON_TAIL_CLIP = 3072;
 
-/** Clip a red reason so `build`'s re-entry prompt stays a sane size. */
+/**
+ * Clip a red reason to {@link RED_REASON_CLIP}, keeping HEAD and TAIL around an elision marker.
+ * `build`'s re-entry prompt re-clips through this function, so record and prompt agree.
+ */
 export function clipReason(reason: string): string {
   if (reason.length <= RED_REASON_CLIP) return reason;
-  return `${reason.slice(0, RED_REASON_CLIP)}…`;
+  const head = RED_REASON_CLIP - RED_REASON_TAIL_CLIP - 1;
+  return `${reason.slice(0, head)}…${reason.slice(reason.length - RED_REASON_TAIL_CLIP)}`;
 }
 
 /** `verify`'s dependencies in production form: the real executor and config read. */
@@ -63,16 +67,4 @@ export function verifyDeps(): VerifyDeps {
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
     fetchIssueBody,
   };
-}
-
-/** The newest decided `verify:red` reason on the log, clipped, for a report. */
-export function newestRedVerifyReason(steps: Step[]): string | undefined {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i];
-    if (step?.state !== "verify" || step.outcome?.kind !== "red") continue;
-    const reason = step.outcome.reason ?? step.outcome.message;
-    if (typeof reason !== "string" || reason.trim() === "") continue;
-    return clipReason(reason);
-  }
-  return undefined;
 }

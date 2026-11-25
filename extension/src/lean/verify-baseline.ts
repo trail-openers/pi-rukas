@@ -31,11 +31,41 @@ import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 export const BASELINE_RED_MARKER = "baseline red:";
 
 /**
- * Why `verify` hands a run back when its tier is red at the run's base commit. Reaches the handback
- * comment and the PR body, so it names the tier, the base sha, and that no build round can fix it.
+ * The clause a baseline red carries when THIS step read no failing line, written only where
+ * {@link baselineRedReason} was handed an empty list and matched only at the reason's END — never by
+ * searching the text, which embeds the project's own bytes.
  */
-export function baselineRedReason(name: string, cmd: string, baseSha: string): string {
-  return `${BASELINE_RED_MARKER} tier ${name} is red at the base commit ${baseSha} — \`${cmd}\` fails at the base without this run's changes, so no build round can fix it`;
+const NO_NAMES_CLAUSE = "; no failing test could be read from this output";
+
+/**
+ * Why `verify` hands a run back when its tier is red at the run's base commit.
+ *
+ * Reaches the handback comment, the PR body and the next build child's prompt. It states what is
+ * KNOWN (the base is red for this command) and what is NOT (whether the head adds a failure the base
+ * lacks) — a round IS billed on this red, so nothing here may call one wasted. The names come from
+ * THIS STEP's parse, never the project's raw bytes, which keeps `verify-red-attribution.ts` true.
+ * The unreadable clause states a fact THIS step measured — that its own parse read no line — and it
+ * sits at the end so the project's quoted bytes can neither bury it nor stand in for it.
+ *
+ * `failing` is the step's own bounded read: the names to list, plus the count sentence for what the
+ * cap left off — kept out of the list, so every list item is a failing line and the count is its own
+ * clause. Both halves sit after the quoted command, which is the only place the project's bytes appear.
+ */
+export function baselineRedReason(
+  name: string,
+  cmd: string,
+  baseSha: string,
+  failing: readonly [names: readonly string[], omitted?: string] = [[]],
+): string {
+  const known = `${BASELINE_RED_MARKER} tier ${name} is red at the base commit ${baseSha} — \`${cmd}\` fails there too, so whether this run adds a failure is not known`;
+  const [names = [], omitted] = failing;
+  if (names.length === 0) return `${known}${NO_NAMES_CLAUSE}`;
+  return `${known}; failing tests: ${names.join(", ")}${omitted === undefined ? "" : `; ${omitted}`}`;
+}
+
+/** Whether the reason's unreadable clause is the one {@link baselineRedReason} wrote — position, not content. */
+export function baselineRedReadNoNames(reason: string): boolean {
+  return reason.endsWith(NO_NAMES_CLAUSE);
 }
 
 /**

@@ -154,7 +154,7 @@ export function leanPrefixHeadEnabled(): boolean {
  * undefined. Keyed on the attempt's own step key: after a crash origin holds the fixer's push, so the
  * pre-fix head is recoverable from this record alone, and another attempt's wave is a different range.
  */
-export function preFixHeadFromLog(steps: Step[], key: string): string | undefined {
+function preFixHeadFromLog(steps: Step[], key: string): string | undefined {
   return steps.find((s) => s.key === key)?.progress?.preFixHead;
 }
 

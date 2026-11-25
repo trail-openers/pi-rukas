@@ -1,35 +1,31 @@
 /**
  * lean/verify-baseline-arm — what `verify` does with a tier the BASE commit already fails.
  *
- * The step has established that one project tier is red at HEAD twice and that a probe of the run's
- * `baseSha` answered `red` for the same command. Three outcomes are possible and only one of them is the
- * ordinary red:
+ * The step has established that one project tier is red at HEAD twice and a probe of the run's `baseSha`
+ * answered `red` for the same command. Three outcomes, only one the ordinary red:
  *
- *   - **the run is graded GREEN for that tier**, with its failures recorded, when every failure line the
- *     head run printed also appears among the base run's and the run's own frozen contract passes here — a
- *     gate the mainline authored, which no build round can fix (the rule itself is `baselineExcuse`);
+ *   - **GREEN for that tier**, its failures recorded, when every failure line the head printed also appears
+ *     among the base run's and the run's frozen contract passes here — a gate the mainline authored (the
+ *     rule is `baselineExcuse`);
  *   - **a RED that hands the run back**: any other answer from the excuse, or a re-run that observed
  *     nothing;
  *   - **a RED whose first clause is the frozen contract**, which is the case this module exists for.
  *
- * The frozen verdict is asked FIRST, on purpose: the ordinary `firstFailure` in the step never sees it once
- * this arm returns, so a run whose own acceptance tests are red must not be graded green on the strength of
- * a tier the base also fails. A RED the step already observed before the tiers ran is REUSED rather than
- * re-run — re-running the contract would pay the per-file wall clock a second time in one verify. A GREEN
- * `tests` is no evidence about the contract here, so that case re-runs it.
+ * The frozen verdict is asked FIRST, on purpose: the step's ordinary `firstFailure` never sees it once this
+ * arm returns, so a run whose own acceptance tests are red cannot be graded green on the strength of a tier
+ * the base also fails. A RED the step observed before the tiers ran is REUSED — a second contract run would
+ * pay the per-file wall clock twice in one verify. A GREEN `tests` proves nothing here, so that case re-runs
+ * it. `verify-red-reason.ts` composes the reason.
  *
- * The reason a red comes back with is composed by `verify-red-reason.ts`.
- *
- * The PROJECT ROSTER has precedence over the whole-line excuse, and `arbitrate` is how
- * the step hands that judgement in: it is asked BEFORE `baselineExcuse`, and a `red` from it ends
- * the arm. An `uninvolved` answer — the roster could not read this tier's report — leaves the line
- * rule in charge, which is what the arm did before the roster existed. The two judgements are
- * never combined: a roster red is never made green by a line match, and a roster excuse is recorded
- * rather than re-argued.
+ * The PROJECT ROSTER has precedence over the whole-line excuse: `arbitrate` is asked BEFORE
+ * `baselineExcuse` and a `red` from it ends the arm. `uninvolved` — the roster could not read this
+ * tier's report — leaves the line rule in charge. The two judgements are never combined: a roster
+ * red is never made green by a line match, and a roster excuse is recorded rather than re-argued.
  */
 
+import { PREEXISTING_NAME_MAX_CHARS } from "./state-outcome-maps.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
-import { baselineExcuse } from "./verify-baseline-excuse.ts";
+import { baselineExcuse, failureLinesOf } from "./verify-baseline-excuse.ts";
 import { baselineProbeWorktreePath } from "./verify-baseline.ts";
 import { type BaseProbe, baselineRedReason, tierObserved } from "./verify-baseline.ts";
 import { type FrozenClause, composedBaselineRed } from "./verify-red-reason.ts";
@@ -37,6 +33,9 @@ import type { RosterArbitration } from "./verify-roster.ts";
 import { FROZEN_TIMEOUT_HEAD, frozenTestFailure } from "./verify-steps.ts";
 import type { Executed } from "./verify-steps.ts";
 import type { VerifyExec } from "./verify-types.ts";
+
+/** How many of the head's failing lines one red reason names; past it it says how many it left out. */
+export const BASELINE_RED_NAMES_CAP = 20;
 
 /** What the arm decided; exactly one field is set. */
 export interface BaselineRedArm {
@@ -49,10 +48,8 @@ export interface BaselineRedArm {
 }
 
 /**
- * Settle a tier that is red at HEAD twice and red at the base.
- *
- * `tests` is the contract's verdict from the pass that ran BEFORE the tiers; when it was green the
- * contract is re-run here.
+ * Settle a tier red at HEAD twice and red at the base. `tests` is the contract's verdict from the pass
+ * that ran BEFORE the tiers; when it was green, the contract is re-run here.
  */
 export async function baselineRedArm(opts: {
   frozen: Record<string, string>;
@@ -71,10 +68,9 @@ export async function baselineRedArm(opts: {
   /** Identifies the probe's throwaway tree, which the excuse's two-tree test reads. */
   issue: number;
   /**
-   * The roster's answer about this tier, asked before the line excuse. Optional because the arm is
-   * also reached on the roster switch's off arm, where there is no roster to ask; the step passes a
-   * function that answers `uninvolved` in that case rather than making the hook optional at the call
-   * site, so no caller can forget it.
+   * The roster's answer about this tier, asked before the line excuse. Required even on the roster
+   * switch's off arm, where the step passes a function answering `uninvolved` — so no caller can
+   * forget it.
    */
   arbitrate: () => RosterArbitration;
 }): Promise<BaselineRedArm> {
@@ -90,14 +86,16 @@ export async function baselineRedArm(opts: {
       cmd,
       baseSha,
       frozenRan.reason.startsWith(FROZEN_TIMEOUT_HEAD),
+      headFailureNames(opts.rerun.stream),
     );
-    return { red: reason ?? baselineRedReason(name, cmd, baseSha) };
+    return {
+      red: reason ?? baselineRedReason(name, cmd, baseSha, headFailureNames(opts.rerun.stream)),
+    };
   }
   if (frozenRan.kind === "infra") return { throwReason: frozenRan.reason };
-  // The roster before the line excuse: where it saw a name passing at base now failing, no line
-  // match may excuse it. It comes AFTER the observation question because both its answers are read
-  // from the re-run's stream, and a killed or un-startable run still prints text that can name those
-  // tests — grading one would read bytes nobody saw produced.
+  // The roster before the line excuse: a name it saw passing at base and failing now admits no line
+  // match. It is asked only of an OBSERVED re-run — its answers come from that stream, and bytes
+  // nobody saw produced grade nothing.
   const arbitration = tierObserved(opts.rerun.ran)
     ? opts.arbitrate()
     : { kind: "uninvolved" as const };
@@ -117,6 +115,24 @@ export async function baselineRedArm(opts: {
     headRoot: opts.wt,
     probeRoot: baselineProbeWorktreePath(opts.repoRoot, opts.issue),
   });
-  if (excuse.kind === "refused") return { red: baselineRedReason(name, cmd, baseSha) };
+  if (excuse.kind === "refused")
+    return { red: baselineRedReason(name, cmd, baseSha, headFailureNames(opts.rerun.stream)) };
   return { preexisting: excuse.record };
+}
+
+/** A name past the disclosure's per-row bound is clipped so one row cannot crowd out the rest. */
+const clipName = (line: string) =>
+  line.length > PREEXISTING_NAME_MAX_CHARS ? line.slice(0, PREEXISTING_NAME_MAX_CHARS) : line;
+
+/**
+ * The head's failing lines this step READ: the bounded list, plus a separate count sentence for what
+ * the cap left off. The count is NOT a list item — every item is a failing line — and it is a sentence
+ * THIS step wrote, which is what tells it apart from project bytes saying the same words.
+ */
+function headFailureNames(stream: string): [names: readonly string[], omitted?: string] {
+  const all = failureLinesOf(stream);
+  const kept = all.slice(0, BASELINE_RED_NAMES_CAP).map(clipName);
+  const omitted =
+    all.length > kept.length ? `omitted ${String(all.length - kept.length)} more` : undefined;
+  return omitted === undefined ? [kept] : [kept, omitted];
 }

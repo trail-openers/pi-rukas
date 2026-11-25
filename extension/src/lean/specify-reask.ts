@@ -88,7 +88,7 @@ export function reaskPrompt(missing: string[]): string {
 }
 
 /** The step-log clause an attempt that re-asked carries on its reason. */
-export function reaskNote(missing: string[]): string {
+function reaskNote(missing: string[]): string {
   return `re-asked the child once for ${missing.join(", ")}: it had not called submit_tests for them`;
 }
 

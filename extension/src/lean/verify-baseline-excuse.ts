@@ -42,7 +42,7 @@ function hasOverWindowLine(stream: string): boolean {
 
 /**
  * The lines the classifier READS as failures: stream order, trimmed, deduplicated, non-empty — the names
- * the `## Pre-existing` disclosure records, not the comparison set ({@link allLinesOf}).
+ * the `## Pre-existing` disclosure records, not the comparison set (`allLinesOf`).
  */
 export function failureLinesOf(stream: string): string[] {
   const seen = new Set<string>();
@@ -59,9 +59,9 @@ export function failureLinesOf(stream: string): string[] {
 /**
  * The harness's OWN residue, discounted from the comparison.
  *
- * The executor prefixes its own `Command failed: <cmd>` echo to what the gate printed, so requiring the
- * executor's writing at the base is no requirement about the project's failures. It is the ONLY line
- * discounted, and by WHO WROTE it: admitted only when it quotes the command both runs were given.
+ * The executor prefixes its own `Command failed: <cmd>` echo to what the gate printed, so requiring
+ * that writing at the base states nothing about the project's failures. It is the ONLY line discounted,
+ * and by WHO WROTE it: admitted only when it quotes the command both runs were given.
  */
 function harnessResidue(line: string, cmd: string, headRoot: string, probeRoot: string): boolean {
   if (!/^Command failed:\s/.test(line)) return false;
@@ -111,11 +111,9 @@ export function stripRoot(line: string, root: string): string {
 }
 
 /**
- * A tree resolved to the spelling its own run would have printed it under.
- *
- * A tree reached through a symlink prints its names under the symlinked spelling while the caller holds the
- * resolved one, and the two never share a prefix. Only the longest existing prefix resolves — the probe's
- * tree is deleted before this comparison runs.
+ * A tree resolved to the spelling its own run would have printed it under: a tree reached through a
+ * symlink prints its names under the symlinked spelling while the caller holds the resolved one. Only
+ * the longest existing prefix resolves — the probe's tree is deleted before this comparison runs.
  */
 function treeRoot(dir: string): string {
   const parts = dir
@@ -229,8 +227,10 @@ function boundedLine(line: string): string {
 }
 
 /**
- * The tail a green carries when a tier was excused over the base commit.
+ * The tail a green carries when a tier was excused over the base commit: what is KNOWN (every failing line
+ * also fails at the base, which this run did not author) — not that a build round could not fix them,
+ * which no gate measured.
  */
 export function preexistingReason(names: readonly string[]): string {
-  return `pre-existing failures on the base commit: ${names.join(", ")} — every failing line also fails at the run's base commit, so no build round can fix them and this run did not author them`;
+  return `pre-existing failures on the base commit: ${names.join(", ")} — every failing line also fails at the run's base commit, which this run did not author`;
 }

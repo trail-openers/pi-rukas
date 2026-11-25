@@ -74,9 +74,7 @@ import {
   readDispatched,
 } from "./step-budget.ts";
 import { joinNotes } from "./text-fence.ts";
-
-/** The re-entry reason the child is given, clipped so a log dump cannot bloat a prompt. */
-const REENTRY_CLIP = 4096;
+import { RED_REASON_CLIP, clipReason } from "./verify-deps.ts";
 
 /** How many names one reason line lists, and how many the fold re-runs. */
 const LIST_CLIP = 20;
@@ -138,7 +136,7 @@ function reasonFromLog(
     if (oc?.kind !== kind) continue;
     const reason = oc.reason ?? oc.message;
     if (typeof reason !== "string" || reason.trim() === "") continue;
-    return reason.length > REENTRY_CLIP ? `${reason.slice(0, REENTRY_CLIP)}…` : reason;
+    return clipReason(reason);
   }
   return undefined;
 }
@@ -176,7 +174,7 @@ function addedByChallengeFromLog(steps: Step[]): string | undefined {
     const kept = paths.slice(0, LIST_CLIP).map((p) => `- \`${p}\``);
     const more = paths.length > LIST_CLIP ? `\n- …and ${paths.length - LIST_CLIP} more` : "";
     const line = `the adversary's challenge round added these frozen tests:\n${kept.join("\n")}${more}`;
-    return line.length > REENTRY_CLIP ? `${line.slice(0, REENTRY_CLIP)}…` : line;
+    return line.length > RED_REASON_CLIP ? `${line.slice(0, RED_REASON_CLIP)}…` : line;
   }
   return undefined;
 }

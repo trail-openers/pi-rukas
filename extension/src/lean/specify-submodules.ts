@@ -154,7 +154,7 @@ export interface WorktreeSubmoduleState {
  * The state of a tree whose read could not be answered, so a caller whose read died produces a distinguishable
  * value rather than the one meaning "nothing to report".
  */
-export function unreadableSubmoduleState(): WorktreeSubmoduleState {
+function unreadableSubmoduleState(): WorktreeSubmoduleState {
   return { registered: [], unpopulated: [], unreadable: true };
 }
 

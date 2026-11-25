@@ -1,23 +1,19 @@
 /**
  * lean/verify-red-reason — what a RED tells the builder when two gates broke.
  *
- * `verify` reports the FIRST failure among the frozen contract and the project tiers. That order is right for
- * a verdict, but a reason is also pasted into the next developer's prompt: a run whose frozen tests were red
- * AND whose `verify.full` was red at head names only the contract, the builder fixes the frozen files, the next
- * verify finds the tier, and a whole build round goes to learn one fact the first pass had already observed. So
- * every red at head is named.
- *
- * The composition rule has three arms:
+ * `verify` reports the FIRST failure among the frozen contract and the project tiers. That order is right
+ * for a verdict, but the reason is also pasted into the next developer's prompt: a run whose frozen tests
+ * were red AND whose `verify.full` was red at head names only the contract, the builder fixes the frozen
+ * files, the next verify finds the tier, and a build round is spent learning one fact the first pass already
+ * observed. So every red at head is named. The rule has three arms:
  *
  *   - **frozen green** — nothing changes; whatever `firstFailure` picked stands;
- *   - **frozen red, tier red at head** — the frozen clause first, then `" — and "` and the tier's own failure
- *     clause. The frozen clause leads because the contract is the run's own gate, and the one thing a builder
- *     may never edit to get a green;
- *   - **frozen red, tier red at the base too** — the frozen clause first, then `" — and "` and the arm's
- *     `baseline red:` sentence.
+ *   - **frozen red, tier red at head** — the frozen clause, `" — and "`, the tier's own failure clause: the
+ *     contract leads, being the run's own gate and the one thing a builder may never edit to get a green;
+ *   - **frozen red, tier red at the base too** — the same join, with the arm's `baseline red:` sentence.
  *
- * This does NOT compose a tier that went GREEN on its re-run (a flake is not evidence about the work), nor an
- * infra tier result — the caller throws before composing.
+ * A tier GREENed by its re-run composes nothing (a flake says nothing about the work), and nor does an
+ * infra result — the caller throws before composing.
  */
 
 import { baselineRedReason } from "./verify-baseline.ts";
@@ -66,8 +62,9 @@ export function composedBaselineRed(
   cmd: string,
   baseSha: string,
   timeoutWording: boolean,
+  failing: readonly [names: readonly string[], omitted?: string] = [[]],
 ): string | undefined {
   if (!frozen.red) return undefined;
   if (!frozen.judgedBeforeTiers && !timeoutWording) return undefined;
-  return `${frozen.reason}${JOINER}${baselineRedReason(tierName, cmd, baseSha)}`;
+  return `${frozen.reason}${JOINER}${baselineRedReason(tierName, cmd, baseSha, failing)}`;
 }

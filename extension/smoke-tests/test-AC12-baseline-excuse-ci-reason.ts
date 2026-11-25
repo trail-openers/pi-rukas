@@ -33,22 +33,43 @@ const FULL = "sh -c 'pnpm test'";
 {
   // Past the tail bound AND past the whole-reason bound: 400 short lines, plus one
   // 200 KB line the tail bound alone lets through whole.
+  //
+  // The oversized line sits in the MIDDLE, not last. The reason is the lead, the command and the
+  // 40-line tail, so a line that long only reaches the tail half of the clip by displacing the
+  // whole chatty tail into the elided middle — which is what an earlier shape of this case did,
+  // and then read its own assertion as a pass of the tail. Where the giant belongs is the middle:
+  // that is the position where ONLY a bound on the whole, and not one on the tail, stops it.
   const many = Array.from({ length: 400 }, (_, i) => `line ${String(i)} of a chatty suite`).join("\n");
   const longLine = "x".repeat(200_000);
-  const r = await run({ full: FULL, tierExit: 1, tierStdout: `${many}\n${longLine}` });
+  const r = await run({
+    full: FULL,
+    tierExit: 1,
+    tierStdout: `${many}\n${longLine}\nend of the chatty suite`,
+  });
   const reason = r.outcome?.reason ?? "";
   assert(r.outcome?.kind === "red", `(bounded) a red full tier stays red (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`);
   assert(
+    reason.includes("end of the chatty suite"),
+    `(bounded) the reason still carries the tier's own tail (${reason.slice(-90)})`,
+  );
+  assert(
     reason.includes("line 399 of a chatty suite"),
-    "(bounded) the reason still carries the tier's own tail",
+    "(bounded) and the line at the tail bound's edge, which the shared clip must not squeeze out",
   );
   assert(
     !reason.includes("line 10 of a chatty suite\n"),
     `(bounded) the tail is ${String(TIER_TAIL_LINES)} lines, not 400`,
   );
+  // Exactly the constant, not "constant plus a tolerated ellipsis": the shared clip marks its
+  // elision INSIDE the budget, so a reason that comes back with room to spare is a reason that
+  // skipped a character it was owed.
   assert(
-    reason.length <= RED_REASON_CLIP + 8,
-    `(bounded) the persisted reason is clipped to RED_REASON_CLIP (${String(reason.length)} chars)`,
+    reason.length === RED_REASON_CLIP,
+    `(bounded) the persisted reason is exactly RED_REASON_CLIP under the shared clip (${String(reason.length)} chars)`,
+  );
+  assert(
+    reason.includes("…"),
+    "(bounded) the elision sits inside that bound, which is what keeps the whole inside it",
   );
   assert(
     !reason.includes(longLine),

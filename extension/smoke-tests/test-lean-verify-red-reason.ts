@@ -54,7 +54,7 @@ const green = frozenClause({ kind: "pass" });
 {
   assert(
     composedBaselineRed(red, "full", "bun test", "abc", false) ===
-      `${FROZEN}${JOINED}baseline red: tier full is red at the base commit abc — \`bun test\` fails at the base without this run's changes, so no build round can fix it`,
+      `${FROZEN}${JOINED}baseline red: tier full is red at the base commit abc — \`bun test\` fails there too, so whether this run adds a failure is not known; no failing test could be read from this output`,
     "(b) a plain red contract composes the arm's own baseline sentence beside it",
   );
   assert(
@@ -68,6 +68,19 @@ const green = frozenClause({ kind: "pass" });
   assert(
     (composedBaselineRed({ ...redReRun, reason: HANG }, "full", "bun test", "abc", true) ?? "").startsWith(HANG),
     "(b) a hang the arm re-ran still composes, because its wording lives or dies on that line",
+  );
+  // The two clauses the arm's own parse produces: names, and a count past the cap. They sit after the
+  // quoted command and the unreadable clause sits at the END — position is what lets a reader tell the
+  // step's own sentence from a project line that happens to say the same words.
+  assert(
+    composedBaselineRed(red, "full", "bun test", "abc", false, [["FAILED tests/a.py::t - Assert"]]) ===
+      `${FROZEN}${JOINED}baseline red: tier full is red at the base commit abc — \`bun test\` fails there too, so whether this run adds a failure is not known; failing tests: FAILED tests/a.py::t - Assert`,
+    "(b) names the step read are listed after the quoted command",
+  );
+  assert(
+    composedBaselineRed(red, "full", "bun test", "abc", false, [["FAILED tests/a.py::t - Assert"], "omitted 5 more"]) ===
+      `${FROZEN}${JOINED}baseline red: tier full is red at the base commit abc — \`bun test\` fails there too, so whether this run adds a failure is not known; failing tests: FAILED tests/a.py::t - Assert; omitted 5 more`,
+    "(b) and the count the cap left off is its own clause, not another listed test",
   );
 }
 
