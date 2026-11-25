@@ -50,34 +50,10 @@ function assert(cond: boolean, msg: string) {
 // worktree-leftover-handled (#730 emitter, issue #735). Shared by the
 // all-kinds array (via spread) and the resume-shaped loop below.
 const incidentKindEvents: WorkEvent[] = [
-  {
-    kind: "worktree-provisioned",
-    at: 1,
-    worktreeId: "default",
-    worktreePath: "/wt",
-    outcome: "symlink",
-  },
-  {
-    kind: "safety-net-commit",
-    at: 1,
-    workstreamId: "default",
-    worktreePath: "/wt",
-    commitSha: "abc",
-    filesCommitted: 2,
-  },
-  {
-    kind: "handoff-consolidated",
-    at: 1,
-    branchName: "feature/x",
-    workstreams: ["default"],
-  },
-  {
-    kind: "worktree-leftover-handled",
-    at: 1,
-    path: "/wt",
-    action: "adopt",
-    refs: [],
-  },
+  { kind: "worktree-provisioned", at: 1, worktreeId: "default", worktreePath: "/wt", outcome: "symlink" },
+  { kind: "safety-net-commit", at: 1, workstreamId: "default", worktreePath: "/wt", commitSha: "abc", filesCommitted: 2 },
+  { kind: "handoff-consolidated", at: 1, branchName: "feature/x", workstreams: ["default"] },
+  { kind: "worktree-leftover-handled", at: 1, path: "/wt", action: "adopt", refs: [] },
 ];
 
 /** #1652 — the plan step's refused report_workstream calls (one fixture, used once below). */
@@ -289,9 +265,11 @@ const everyKindEvent: WorkEvent[] = [
     ok: true,
     ms: 1,
   },
+  // The beat between the pair, on one line: this file sits at the size cap.
+  { kind: "verify-heartbeat", at: 3, step: "develop", command: "bash scripts/verify.sh", elapsedSeconds: 300 },
   // #2450 — what the #1647 selector decided for a develop round. Both directions
-  // are carried: a selected run and a reasoned fallback are different verdicts, and
-  // the second is the one that was invisible while the selector was inert.
+  // are carried: a selected run and a reasoned fallback are different verdicts,
+  // and the second is the one invisible while the selector was inert.
   {
     kind: "verify-select",
     at: 1,

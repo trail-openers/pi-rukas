@@ -19,6 +19,10 @@ import type { OnSlowCallback } from "./slow-notice.ts";
 import type { DispatchResult, DispatchSpec, WriteFenceOpt } from "./types.ts";
 import { routeCiTier } from "./work-driver-context-ci-route.ts";
 import type { DriverPublishContextFields } from "./work-driver-context-publish.ts";
+import type {
+  VerifyHeartbeatMs,
+  VerifyHeartbeatPump,
+} from "./work-driver-context-verify-heartbeat.ts";
 import type { VerifyExecFn } from "./work-driver-git.ts";
 import type { DriverHost } from "./work-driver-host.ts";
 import type { EmitSink } from "./work-state-emit.ts";
@@ -260,6 +264,10 @@ export interface DriverContext extends DriverPublishContextFields {
    * this; the default is `execp`. Mirrors `issueBodyFetcherFn`.
    */
   verifyExecFn?: DriverExecFn;
+  /** The verify gate's beat interval — see `work-driver-context-verify-heartbeat.ts`. */
+  verifyHeartbeatMs?: VerifyHeartbeatMs;
+  /** The verify gate's heartbeat pump seam — see `work-driver-context-verify-heartbeat.ts`. */
+  verifyHeartbeat?: VerifyHeartbeatPump;
   /**
    * #1414 — optional test seam for the cap-kill checkpoint's TYPECHECK only
    * (`typecheckWorktree`). Default `execp`; like `verifyExecFn` but NARROWER:

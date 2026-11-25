@@ -486,6 +486,12 @@
     "smoke-tests/test-verify-timing-ceiling.ts",
     "smoke-tests/test-verify-timing-ceiling-channels.ts",
     "smoke-tests/test-verify-timing-listed.ts",
-    "smoke-tests/test-verify-timing-allowlist.ts"
+    "smoke-tests/test-verify-timing-allowlist.ts",
+    "smoke-tests/lib/verify-heartbeat-gate.ts",
+    "smoke-tests/lib/verify-heartbeat-arm.ts",
+    "smoke-tests/test-verify-heartbeat.ts",
+    "smoke-tests/test-verify-heartbeat-stream.ts",
+    "smoke-tests/test-verify-heartbeat-switch.ts",
+    "smoke-tests/test-verify-heartbeat-repeat.ts"
   ]
 }

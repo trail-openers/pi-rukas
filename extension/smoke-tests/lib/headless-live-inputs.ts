@@ -98,6 +98,7 @@ import { resumeEnabled, sessionReattachEnabled } from "../../src/work-driver-res
 import { stepNoticeThresholdMs } from "../../src/work-driver-step-notice.ts";
 import { timeoutFlagPrecedenceEnabled } from "../../src/work-driver-timeout-flag-precedence-switch.ts";
 import { verifyTimeoutMs } from "../../src/work-driver-verify-budget.ts";
+import { verifyHeartbeatMs } from "../../src/work-driver-verify-heartbeat.ts";
 import { verifyPytestDisabled } from "../../src/work-driver-verify-cmd.ts";
 import { verifyCommandCriteriaEnabled } from "../../src/work-driver-verify-develop-command-criteria.ts";
 import { testDeleteTolerance } from "../../src/work-driver-verify-develop-helpers.ts";
@@ -160,6 +161,10 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_TRANSCRIPT_RETENTION_DAYS", transcriptRetentionDays],
   ["PI_ENSEMBLE_TRANSIENT_RETRY_BACKOFF_MS", transientRetryBackoffMs],
   ["PI_ENSEMBLE_VERIFY_TIMEOUT_MS", verifyTimeoutMs],
+  // The verify gate's heartbeat interval: pinned against its own reader with the
+  // environment cleared, so a documented default that drifts from the resolver
+  // fails here rather than in a host whose stall rule stopped trusting the line.
+  ["PI_ENSEMBLE_VERIFY_HEARTBEAT_MS", verifyHeartbeatMs],
   // #1509 — each tier's documented default is checked against the live reader
   // with the environment cleared, so a default that drifts from
   // `work-driver-verify-budget.ts` fails here rather than in the handoff of

@@ -74,7 +74,7 @@ import { renameSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { type EmitSink, emitPersisted } from "./work-state-emit.ts";
-import type { InterruptReason, WorkStep } from "./workflow-state-events.ts";
+import type { InterruptReason, WorkEvent, WorkStep } from "./workflow-state-events.ts";
 import { WORK_STATE_SCHEMA_VERSION, type WorkState } from "./workflow-state-schema.ts";
 import { appendEvent, detectInconsistencies, initialState } from "./workflow-state-update.ts";
 
@@ -246,6 +246,47 @@ export async function persistCycle(
     signal?.aborted === true ? applyInterrupt(state, interruptReasonOf(signal), Date.now()) : state;
   await writeState(ctx.repoRoot, snapshot, ctx.emitSink);
   return snapshot;
+}
+
+/**
+ * Append events to the CURRENTLY PERSISTED log inside the file's write slot,
+ * the read-modify-write shape `markInterrupted` uses for the same reason: a
+ * caller's in-memory snapshot can predate writes that landed since it was
+ * taken, and `persistCycle` of that snapshot rewrites the whole file and rolls
+ * them back. The events are appended at write time, so whatever is on disk
+ * first always keeps its entries and the new ones land after them.
+ *
+ * The one caller is the verify gate's heartbeat: its beat fires on a timer while
+ * the driver keeps persisting between beats, so the beat is the writer in this
+ * codebase that most needs the append rather than the rewrite. It shares the
+ * file's `enqueue` slot with every other write, so no beat can interleave with a
+ * driver persist; an in-flight write that outlives the beat's stop() is still
+ * safe for the same reason.
+ *
+ * Returns undefined when no state file exists (a cycle that persisted nothing
+ * yet has no log to append to — a beat then writes nothing).
+ */
+export function appendBeat(
+  repoRoot: string,
+  issue: number,
+  sink: EmitSink,
+  signal: AbortSignal | undefined,
+  ...events: WorkEvent[]
+): Promise<WorkState | undefined> {
+  const file = workStateFile(repoRoot, issue);
+  return enqueue(file, async () => {
+    const state = await readState(repoRoot, issue);
+    if (!state) return undefined;
+    // The same abort rule `persistCycle` enforces: a snapshot that still reads
+    // `running` on a fired signal is written as `interrupted` with its interrupt
+    // event, so a late beat can never write a dead cycle back to `running`.
+    // `applyInterrupt` is a no-op on a log that already ends on that interrupt.
+    const snapshot =
+      signal?.aborted === true
+        ? applyInterrupt(state, interruptReasonOf(signal), Date.now())
+        : state;
+    return writeSnapshot(file, appendEvent(snapshot, ...events), sink);
+  });
 }
 
 /** The interrupt reason an aborted cycle signal carries (`timeout`, else `signal`). */
