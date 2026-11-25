@@ -13,9 +13,12 @@
  * This module is why they cannot drift. It sits OUTSIDE `extension/src/lean/`
  * because the transport (`spawn-collapse-events.ts`) reports on the lean steps and
  * must not import from the engine it only observes, and lean's own size cap covers
- * that directory. The two companions import it with a `../` relative specifier:
- * they run under Pi's jiti loader, so a `.ts` specifier resolves, and the module
- * imports nothing itself — the companion's graph gains a leaf, not driver code.
+ * that directory. So this file is imported by the transport and by the canary
+ * (`smoke-tests/test-lean-reporter-tool-names.ts`), and by NOTHING under
+ * `extension/src/lean/`: the two companions and the two extractors keep their own
+ * literals, and the canary is what pins those literals to the constants here — it
+ * reads each registered/matched name out of the engine's source and feeds a
+ * collapsed nested row to the real extractors, so a rename at either side reddens.
  */
 
 /** The specify/challenge child's acceptance-test declaration. */
