@@ -487,6 +487,29 @@ assert(
     contrast.length === 1 && contrast[0].includes('"not-a-real-kind"'),
     "an unknown kind still produces exactly one finding naming the value (canary intact)",
   );
+
+  // The same canary on a KNOWN kind's fields: a `verify-heartbeat` whose
+  // `elapsedSeconds` — the number a host's stall rule reads — is not a
+  // non-negative integer must be reported, not rendered as `· -5s`. The beat is
+  // the only event in this bracket whose payload a human acts on, so its shape is
+  // checked at read like the discriminants above.
+  const badBeat = {
+    ...initialState(986, 1000),
+    eventLog: [
+      {
+        kind: "verify-heartbeat",
+        at: 3,
+        step: "develop",
+        command: "bash scripts/verify.sh",
+        elapsedSeconds: -5,
+      },
+    ],
+  } as unknown as Record<string, unknown>;
+  const beatFindings = validateDiscriminants(badBeat);
+  assert(
+    beatFindings.length === 1 && beatFindings[0]?.includes("elapsedSeconds") === true,
+    `a beat with a negative elapsedSeconds produces exactly one finding naming the field (${JSON.stringify(beatFindings)})`,
+  );
 }
 
 console.log(`\nexit ${exit}`);

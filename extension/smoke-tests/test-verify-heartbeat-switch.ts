@@ -58,6 +58,35 @@ const DEFAULT_MS = 300_000;
       verifyHeartbeatMs() === 1500,
       `reader: a fractional value is floored, never left as a float (got ${verifyHeartbeatMs()})`,
     );
+    // Every beat rewrites the whole state file, so a sub-second interval is a
+    // write-storm on the file the driver's own persists share. The floor is the
+    // operator's guard against that, and `0` stays the ONLY off value — a floor
+    // that swallowed 0 would turn the off switch into a 1 Hz writer.
+    process.env[KNOB] = "1";
+    assert(
+      verifyHeartbeatMs() === 1_000,
+      `reader: a positive value under the floor reads as the floor, not as itself (got ${verifyHeartbeatMs()})`,
+    );
+    process.env[KNOB] = "999";
+    assert(
+      verifyHeartbeatMs() === 1_000,
+      `reader: the value just below the floor still reads as the floor (got ${verifyHeartbeatMs()})`,
+    );
+    process.env[KNOB] = "0.5";
+    assert(
+      verifyHeartbeatMs() === 1_000,
+      `reader: a positive value that floors to nothing is still the floor, never a sub-second writer (got ${verifyHeartbeatMs()})`,
+    );
+    process.env[KNOB] = "-0";
+    assert(
+      verifyHeartbeatMs() === 0,
+      `reader: a signed zero is the off switch like any other zero (got ${verifyHeartbeatMs()})`,
+    );
+    process.env[KNOB] = "1000";
+    assert(
+      verifyHeartbeatMs() === 1_000,
+      "reader: the floor itself is honoured exactly, not rounded up",
+    );
     process.env[KNOB] = "abc";
     assert(
       verifyHeartbeatMs() === DEFAULT_MS,
@@ -123,6 +152,8 @@ const DEFAULT_MS = 300_000;
     ["verify-completed", "points at the end event the beats sit inside"],
     ["verifyChildEnv", "says the knob is scrubbed from a project command, not read there"],
     ["unref", "says a beat cannot keep the process alive"],
+    ["develop", "names the gate that beats, so a host does not expect beats it never gets"],
+    ["1000", "names the floor a positive value below it reads as"],
   ] as const) {
     assert(row?.includes(needle) === true, `the configuration row ${why} (looks for ${needle})`);
   }

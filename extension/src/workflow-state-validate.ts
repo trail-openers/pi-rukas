@@ -401,6 +401,31 @@ export function validateDiscriminants(state: unknown): string[] {
       ) {
         out.push(`eventLog[${i}].origin has unknown value ${JSON.stringify(e.origin)}`);
       }
+      // The verify gate's beat carries the two fields a host's stall rule reads,
+      // so their shape is checked at read like every other field a reader keys on
+      // (#533: `readState`'s untyped cast is the only runtime gate). A beat whose
+      // `elapsedSeconds` is a float, a string or negative is a `verify-heartbeat ·
+      // develop · -5s` line, and a beat with no `step`/`command` names no gate —
+      // both would be reported rather than rendered to an operator deciding
+      // whether to kill a healthy cycle. The other two fields keep the shape the
+      // sibling events of this bracket already have.
+      if (e.kind === "verify-heartbeat") {
+        if (typeof e.elapsedSeconds !== "number" || !Number.isInteger(e.elapsedSeconds)) {
+          out.push(
+            `eventLog[${i}].elapsedSeconds is missing or not an integer (${JSON.stringify(e.elapsedSeconds)})`,
+          );
+        } else if (e.elapsedSeconds < 0) {
+          out.push(`eventLog[${i}].elapsedSeconds is negative (${String(e.elapsedSeconds)})`);
+        }
+        for (const field of ["step", "command"] as const) {
+          if (typeof e[field] !== "string") {
+            out.push(`eventLog[${i}].${field} is missing or not a string`);
+          }
+        }
+        if (typeof e.at !== "number" && typeof e.at !== "string") {
+          out.push(`eventLog[${i}].at is missing or not a string/number`);
+        }
+      }
     });
   }
   return out;
