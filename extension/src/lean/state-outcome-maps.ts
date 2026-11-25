@@ -2,9 +2,8 @@
  * lean/state-outcome-maps — the two-entry-per-field map records an outcome may carry, and the rules
  * that let one into a durable record.
  *
- * Split from `state-outcome.ts`, which passed the size cap when `build` gained its blocked report.
- * `state-outcome.ts` keeps `DISPATCH_STATES`, the ownership table and `outcomeProblem`; this file keeps
- * what a map of paths or criterion ids must look like.
+ * `state-outcome.ts` keeps `DISPATCH_STATES`, the ownership table and `outcomeProblem`; this file
+ * keeps what a map of paths or criterion ids must look like.
  *
  * Each map is BOTH judged (a `*Problem` for the loader) and rebuilt (a `validated*` for `buildOutcome`)
  * from the same bounds, so reader and builder cannot drift apart.

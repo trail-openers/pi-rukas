@@ -2,11 +2,10 @@
  * lean/state-outcome-gates — the three durable fields that make a run's gate events
  * publishable, and the rules that keep them honest.
  *
- * Split from `state-outcome-record.ts` for the size gate, along the seam the type
- * already drew: that file owns the verdict shape, this owns the compound fields whose
- * values are not plain scalars — the per-round review counts, each fix wave's head,
- * and a red gate's tier/criterion attribution. `state-outcome-record.ts` re-exports
- * the types so every importer keeps spelling them from one place.
+ * The compound fields of the outcome record whose values are not plain scalars — the per-round
+ * review counts, each fix wave's head, and a red gate's tier/criterion attribution.
+ * `state-outcome-record.ts` re-exports the types so every importer keeps spelling them from one
+ * place.
  *
  * Why these are RECORD data and not reads of prose. `pi-rukas-result.json` is the host
  * contract; `.pi/lean-state/<issue>.json` is the driver's private persistence. A field

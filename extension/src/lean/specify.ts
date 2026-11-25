@@ -18,12 +18,11 @@
  *   5. validate every submitted row at the boundary — criterion, path shape,
  *      existence, and that the path is an ordinary file of this worktree (not a
  *      symlink, not a hard link, not a path that resolves outside it);
- *   6. CAPTURE the bytes of every kept file into memory — the only thing that
- *      survives the child;
+ *   6. CAPTURE the bytes of every kept file into memory;
  *   7. RESET the worktree completely to the base — child commits, staged changes,
  *      untracked files and ignore tricks all go — and prove it;
  *   8. REWRITE the captured bytes to their paths, so what gets run, hashed and
- *      committed is exactly what was captured, whatever the child did next;
+ *      committed is exactly what was captured;
  *   9. prove red on exactly those bytes, per file, with the runner template. Every
  *      `verify: "test"` criterion must have at least one red file, or the step
  *      refuses the run;
@@ -140,7 +139,7 @@ export interface SpecifyDeps {
  * Re-exported from `specify-run.ts`, where the shared pipeline raises it, so that
  * module owns the throw without importing this step back: the class is
  * `instanceof`-tested by the specify and challenge smoke suites, and two copies
- * would make `err instanceof SpecifyInfraError` quietly false.
+ * would make that test quietly false.
  */
 export { SpecifyInfraError } from "./specify-run.ts";
 
