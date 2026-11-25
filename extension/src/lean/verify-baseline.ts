@@ -33,12 +33,10 @@ export const BASELINE_RED_MARKER = "baseline red:";
 /**
  * Why `verify` hands a run back when its tier is red at the run's base commit.
  *
- * Reaches the handback comment, the PR body and the next build child's prompt, so it states what
- * is KNOWN (the base is red for this command), what is NOT (whether the head adds a failure the
- * base lacks), and which of the head's own failing lines this step read. A round IS billed on
- * this red, so nothing here may claim a round would be wasted; the names come from this step's
- * parse, never from the project's raw text, which is what keeps the attribution rule in
- * `verify-red-attribution.ts` true.
+ * Reaches the handback comment, the PR body and the next build child's prompt. It states what is
+ * KNOWN (the base is red for this command) and what is NOT (whether the head adds a failure the base
+ * lacks) — a round IS billed on this red, so nothing here may call one wasted. The names come from
+ * THIS STEP's parse, never the project's raw bytes, which keeps `verify-red-attribution.ts` true.
  */
 export function baselineRedReason(
   name: string,

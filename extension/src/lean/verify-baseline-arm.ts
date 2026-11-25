@@ -1,31 +1,26 @@
 /**
  * lean/verify-baseline-arm — what `verify` does with a tier the BASE commit already fails.
  *
- * The step has established that one project tier is red at HEAD twice and that a probe of the run's
- * `baseSha` answered `red` for the same command. Three outcomes are possible and only one of them is the
- * ordinary red:
+ * The step has established that one project tier is red at HEAD twice and a probe of the run's `baseSha`
+ * answered `red` for the same command. Three outcomes, only one the ordinary red:
  *
- *   - **the run is graded GREEN for that tier**, with its failures recorded, when every failure line the
- *     head run printed also appears among the base run's and the run's own frozen contract passes here — a
- *     gate the mainline authored, which no build round can fix (the rule itself is `baselineExcuse`);
+ *   - **GREEN for that tier**, its failures recorded, when every failure line the head printed also appears
+ *     among the base run's and the run's frozen contract passes here — a gate the mainline authored (the
+ *     rule is `baselineExcuse`);
  *   - **a RED that hands the run back**: any other answer from the excuse, or a re-run that observed
  *     nothing;
  *   - **a RED whose first clause is the frozen contract**, which is the case this module exists for.
  *
- * The frozen verdict is asked FIRST, on purpose: the ordinary `firstFailure` in the step never sees it once
- * this arm returns, so a run whose own acceptance tests are red must not be graded green on the strength of
- * a tier the base also fails. A RED the step already observed before the tiers ran is REUSED rather than
- * re-run — re-running the contract would pay the per-file wall clock a second time in one verify. A GREEN
- * `tests` is no evidence about the contract here, so that case re-runs it.
+ * The frozen verdict is asked FIRST, on purpose: the step's ordinary `firstFailure` never sees it once this
+ * arm returns, so a run whose own acceptance tests are red cannot be graded green on the strength of a tier
+ * the base also fails. A RED the step observed before the tiers ran is REUSED — a second contract run would
+ * pay the per-file wall clock twice in one verify. A GREEN `tests` proves nothing here, so that case re-runs
+ * it. `verify-red-reason.ts` composes the reason.
  *
- * The reason a red comes back with is composed by `verify-red-reason.ts`.
- *
- * The PROJECT ROSTER has precedence over the whole-line excuse, and `arbitrate` is how
- * the step hands that judgement in: it is asked BEFORE `baselineExcuse`, and a `red` from it ends
- * the arm. An `uninvolved` answer — the roster could not read this tier's report — leaves the line
- * rule in charge, which is what the arm did before the roster existed. The two judgements are
- * never combined: a roster red is never made green by a line match, and a roster excuse is recorded
- * rather than re-argued.
+ * The PROJECT ROSTER has precedence over the whole-line excuse: `arbitrate` is asked BEFORE
+ * `baselineExcuse` and a `red` from it ends the arm. `uninvolved` — the roster could not read this
+ * tier's report — leaves the line rule in charge. The two judgements are never combined: a roster
+ * red is never made green by a line match, and a roster excuse is recorded rather than re-argued.
  */
 
 import { PREEXISTING_NAME_MAX_CHARS } from "./state-outcome-maps.ts";
@@ -39,10 +34,7 @@ import { FROZEN_TIMEOUT_HEAD, frozenTestFailure } from "./verify-steps.ts";
 import type { Executed } from "./verify-steps.ts";
 import type { VerifyExec } from "./verify-types.ts";
 
-/**
- * How many of the head's failing lines one red reason names. Past it the reason says how many it
- * left out rather than dropping them without a word.
- */
+/** How many of the head's failing lines one red reason names; past it it says how many it left out. */
 export const BASELINE_RED_NAMES_CAP = 20;
 
 /** What the arm decided; exactly one field is set. */
@@ -56,10 +48,8 @@ export interface BaselineRedArm {
 }
 
 /**
- * Settle a tier that is red at HEAD twice and red at the base.
- *
- * `tests` is the contract's verdict from the pass that ran BEFORE the tiers; when it was green the
- * contract is re-run here.
+ * Settle a tier red at HEAD twice and red at the base. `tests` is the contract's verdict from the pass
+ * that ran BEFORE the tiers; when it was green, the contract is re-run here.
  */
 export async function baselineRedArm(opts: {
   frozen: Record<string, string>;
@@ -104,10 +94,9 @@ export async function baselineRedArm(opts: {
     };
   }
   if (frozenRan.kind === "infra") return { throwReason: frozenRan.reason };
-  // The roster before the line excuse: where it saw a name passing at base now failing, no line
-  // match may excuse it. It comes AFTER the observation question because both its answers are read
-  // from the re-run's stream, and a killed or un-startable run still prints text that can name those
-  // tests — grading one would read bytes nobody saw produced.
+  // The roster before the line excuse: a name it saw passing at base and failing now admits no line
+  // match. It is asked only of an OBSERVED re-run — its answers come from that stream, and bytes
+  // nobody saw produced grade nothing.
   const arbitration = tierObserved(opts.rerun.ran)
     ? opts.arbitrate()
     : { kind: "uninvolved" as const };
@@ -132,18 +121,15 @@ export async function baselineRedArm(opts: {
   return { preexisting: excuse.record };
 }
 
-/**
- * The head's failing lines this step READ, bounded, with the count it left off the list. Empty for
- * an output whose lines the classifier could not read; a refusal still has to say something then.
- */
+/** A name past the disclosure's per-row bound is clipped so one row cannot crowd out the rest. */
+const clipName = (line: string) =>
+  line.length > PREEXISTING_NAME_MAX_CHARS ? line.slice(0, PREEXISTING_NAME_MAX_CHARS) : line;
+
+/** The head's failing lines this step READ, bounded; the count left off the list rides on the end. */
 function headFailureNames(stream: string): string[] {
-  const all = failureLinesOf(stream).map((line) =>
-    line.length > PREEXISTING_NAME_MAX_CHARS ? line.slice(0, PREEXISTING_NAME_MAX_CHARS) : line,
-  );
+  const all = failureLinesOf(stream);
   if (all.length === 0) return [];
-  const kept = all.slice(0, BASELINE_RED_NAMES_CAP);
-  // The count of what was left out rides on the sentence rather than being silent: the reader of
-  // the reason sees `omitted 5 more` beside the names that ARE listed.
+  const kept = all.slice(0, BASELINE_RED_NAMES_CAP).map(clipName);
   return all.length > kept.length
     ? [...kept, `omitted ${String(all.length - kept.length)} more`]
     : kept;

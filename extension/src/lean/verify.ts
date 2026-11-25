@@ -294,15 +294,13 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
         exec: deps.exec,
         timeoutMs,
         issue,
-        // The roster is asked FIRST: where it read both runs, a name it saw passing at base is this
-        // run's regression and no line match excuses it. An `uninvolved` answer leaves the arm's own
-        // whole-line rule in charge, exactly as before the roster existed.
+        // The roster is asked FIRST: a name it saw passing at base is this run's regression and no
+        // line match excuses it. `uninvolved` leaves the arm's own whole-line rule in charge.
         arbitrate: (): RosterArbitration =>
           arbitrateTierWithRoster({
             roster,
-            // The shared failure-line classifier, the same reader the whole-line excuse uses, so the
-            // roster and the excuse cannot disagree about what a stream said. A tier whose lines the
-            // classifier cannot read simply leaves the roster uninvolved.
+            // The same reader the whole-line excuse uses, so the two cannot disagree about what a
+            // stream said. Lines the classifier cannot read leave the roster uninvolved.
             headFailed: failureLines(rerun.stream),
             baseFailed: probe.stream === undefined ? [] : failureLines(probe.stream),
             baseSha: ctx.run.baseSha,

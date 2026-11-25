@@ -28,8 +28,6 @@ import {
 } from "./lib/lean-verify-fixture.ts";
 import { failLinesTier } from "./lib/lean-verify-tiers.ts";
 
-import { PROBE_WARNING_LINE as WARNING_LINE } from "./tmp-probe-2619.ts";
-
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
   if (cond) console.log(`✓ ${msg}`);
@@ -41,6 +39,8 @@ function assert(cond: boolean, msg: string): void {
 
 const NAME_A = "FAILED tests/a_test.py::test_alpha - Assert";
 const NAME_B = "FAILED tests/b_test.py::test_beta - Assert";
+/** A line only ever a warnings line: the tier prints it, the reason must never list it as a failure. */
+const WARNING_LINE = "tests/w_test.py::test_w PytestWarning: something stale";
 const warnings = (from: number, to: number): string[] =>
   Array.from({ length: to - from }, (_, i) => `${WARNING_LINE} ${String(from + i)}`);
 const flood = (names: string[]): string => [...warnings(0, 260), ...names].join("\n");
@@ -100,7 +100,7 @@ const why = (r: { outcome?: { kind?: string }; threw?: Error }): string =>
 // ------------------------------------------------------------- (names: bounded)
 {
   const many = Array.from(
-    { length: BASELINE_RED_NAMES_CAP + 5 },
+    { length: 25 },
     (_, i) => `FAILED tests/${String(i)}_test.py::t - Assert`,
   );
   // The head run printed only the first 20 names, the base printed all 25 and the tier really
