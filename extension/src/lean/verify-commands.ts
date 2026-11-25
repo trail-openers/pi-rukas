@@ -17,12 +17,10 @@
  *   2. **A `command` names an EXISTING test, unchanged since the base — in the commit AND on disk.**
  *      `git ls-tree` answers for both trees and `git hash-object` for the working file, since
  *      `--assume-unchanged` keeps `git status` quiet about a changed blob. Checking the working tree with
- *      `existsSync` FOLLOWS symlinks, which is why the on-disk check exists alongside the tree reads; and
- *      checking HEAD alone would let a developer author a destructive script, exit 0, and record it as
- *      preservation.
+ *      `existsSync` FOLLOWS symlinks, which is why the on-disk check exists alongside the tree reads.
  *   3. **Not-runnable is not a verdict.** A refused criterion is absent from the record — no throw, no red
  *      — with its reason in `notRunnable[id]`, treated like `manual`. As red it punishes the developer for
- *      the spec's defect; as passed it is the lie.
+ *      the spec's defect; as passed it is a lie.
  *   4. **An unrunnable runner is infrastructure.** A killed, timed-out or un-startable run THROWS, as
  *      `frozenTestFailure` does. So does a tier that cannot finish inside its budget.
  *   5. **The tier is bounded.** {@link COMMAND_CRITERION_MAX} criteria per gate, all sharing
