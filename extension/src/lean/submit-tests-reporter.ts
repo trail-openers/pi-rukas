@@ -21,6 +21,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { SUBMIT_TESTS_TOOL } from "../lean-reporter-tools.ts";
 
 /**
  * Where this file lives — the source directory of the extension — so `--extension` gets the real
@@ -41,7 +42,7 @@ interface SubmitTestsInput {
 
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
-    name: "submit_tests",
+    name: SUBMIT_TESTS_TOOL,
     label: "Submit Acceptance Tests",
     description:
       // The required set is spelled out with one complete call because Pi's schema validation

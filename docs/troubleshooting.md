@@ -166,6 +166,25 @@ criterion needs restating; otherwise remove the finished run's `.pi/lean-state/<
 finished record answers a second run with its stamped result) and re-run.
 `PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK=0` restores the exit-11 decline for a host that keys on it.
 
+### Symptom: a lean step says `the child never submitted a test` although its files are in the tree
+
+**Symptom:** a `specify` (or `challenge`) handback names `the child never submitted a test`, yet the
+run's worktree holds the red test files the child plainly wrote — and the step went on to dispatch a
+second author, whose attempt starts from a reset tree.
+
+**Cause:** the child declared its files from inside a codemode script. Pi records a call a tool made
+to another tool on the *parent* call's own tool result as `nestedCalls`, not as an assistant tool
+block, and a release before #2618 read submissions only from the child's own blocks. So every
+submission the script made went unread, and the step's silence rule — no row, no unreadable call,
+nothing dropped — fired exactly as designed on evidence it never saw.
+
+**Fix:** upgrade. The transport now credits the nested `submit_tests` and `report_blocked` calls, so
+the same child is credited on its first attempt. A host that cannot upgrade sets
+`PI_ENSEMBLE_CHILD_CODEMODE=0`, which takes codemode out of every child and leaves the direct channel
+as the only one — at the cost of the codemode tool itself. Source:
+`extension/src/spawn-collapse-events.ts` (the nested read), `extension/smoke-tests/test-spawn-collapse-nested-calls.ts`
+and `test-lean-nested-submit-steps.ts` (the pin).
+
 ### Symptom: a lean run hands back with `the test runner could not run a test file: <command>`
 
 **Symptom:** a lean run ends as an infrastructure hand-back (exit 10) whose message is

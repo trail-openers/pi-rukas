@@ -4,8 +4,37 @@
  * tool and the async-job reporter consumes. Split out of spawn.ts (#171) to
  * stay under the module-size guideline (AGENTS.md §12); spawnSpecialist is
  * the only caller.
+ *
+ * #2618 — the tool calls a child made THROUGH codemode. Pi records a call a tool
+ * made to another tool on the PARENT call's own `toolResult` message as
+ * `nestedCalls`, never as an assistant `toolCall` block, so a reader that walks
+ * assistant content cannot see them and the lean steps read a child that
+ * submitted from one script as silent. `creditNestedReporterCalls` adds the
+ * nested rows for the two lean companion tools (their names live in
+ * `lean-reporter-tools.ts`, the one place they are spelled) to `toolUses`, after
+ * the child's own blocks and in tool-result order — the transcript's own order,
+ * which keeps each nested run behind its parent call; no other name enters the
+ * array, so the lens and adversarial evidence consumers of `toolUses` are
+ * unaffected by construction.
+ *
+ * Two decisions that are not visible in the code and must not be rediscovered:
+ *   - a record whose `arguments` Pi dropped (past its size bound) is credited as
+ *     a PRESENT-BUT-UNUSABLE entry, not skipped here: the lean extractors own the
+ *     "unreadable call" count, and an entry that vanished would let the step say
+ *     `the child never submitted a test` about a child that did submit.
+ *   - `complete: false` credits the `ok` rows that survived and is traced, not
+ *     carried on the entry. The flag describes Pi's recording of the whole batch,
+ *     not the credited call: carrying it would put a transport-side caveat into
+ *     the shape the extractors match, for no rule the reader could act on — the
+ *     rows that survived really did run.
+ *
+ * Ordering is stated above; the `lastAssistantMessageEnd` fallback arm is NOT
+ * credited and that is disclosed, not fixed: that arm holds one assistant message
+ * and no tool result at all, so there is no `nestedCalls` to read. A child killed
+ * before its result arrived stays silent, exactly as it did before #2618.
  */
 
+import { CREDITED_NESTED_TOOLS } from "./lean-reporter-tools.ts";
 import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import { adapterFor } from "./model-adapters.ts";
 import type { PiContentBlock, PiJsonEvent, PiMessage } from "./pi-event-shapes.ts";
@@ -16,6 +45,7 @@ import {
   REPORT_WORKSTREAM_TOOL,
   recordedWorkstreamDetails,
 } from "./plan-workstream-schema.ts";
+import { trace, traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 
 /** The longest tool-result text kept on a DispatchResult (#1652). */
@@ -91,6 +121,69 @@ function boundedResultText(blocks: PiContentBlock[]): string {
   return out;
 }
 
+/**
+ * The `toolUses` entry for one nested record, in the shape the lean extractors
+ * already match (`{ name, arguments }`) — a nested call and a direct one are read
+ * by the same code, which is the point of normalising here rather than at each
+ * reader.
+ *
+ * `status` gates the credit: only `"ok"` is a call the child completed. `error`
+ * and `unfinished` are a refusal and a call still running when the script ended —
+ * neither is evidence of a submission, and neither is counted as unreadable either,
+ * because the child never finished making it.
+ *
+ * A `"ok"` record whose `arguments` Pi dropped becomes `{}`, the one shape both
+ * extractors read as "a call that named the tool and carried nothing readable":
+ * `extractSubmitTests` counts it in `skipped` and `extractBlockedReport` counts
+ * its yielded-nothing rule. It must NOT be omitted: an entry that vanished is the
+ * silence the step reports as `the child never submitted a test`.
+ */
+function nestedToolUse(
+  record: NonNullable<PiMessage["nestedCalls"]>["calls"][number],
+): PiContentBlock | undefined {
+  if (record.status !== "ok") return undefined;
+  if (!CREDITED_NESTED_TOOLS.includes(record.name)) return undefined;
+  // Pi's own `arguments` is a JSON object or absent; anything else at the
+  // transport is not a params object anybody recorded, and reads as the omitted
+  // case rather than being handed to the extractor as fact.
+  const args = isPlainObject(record.arguments) ? record.arguments : {};
+  return { type: "toolCall", id: record.id, name: record.name, arguments: args };
+}
+
+/**
+ * The nested (`codemode`) reporter calls of one `toolResult` message, appended in
+ * Pi's record order (#2618). One entry per record: each call is the unit of
+ * record, so a logical submission made both directly and nested, or on two
+ * codemode calls, is credited once per call — a dedupe keyed on id cannot work (a
+ * direct call carries the model's id, a nested one `<callerId>/<n>`).
+ *
+ * An incomplete record credits the `ok` rows that survived and is traced: the
+ * module header says why the flag is not carried. A record that credited nothing
+ * traces nothing, because an all-error batch is a child that did not submit — not
+ * a lost record.
+ */
+function creditNestedReporterCalls(msg: PiMessage, role: string, toolUses: PiContentBlock[]): void {
+  const nested = msg.nestedCalls;
+  if (nested === undefined || !Array.isArray(nested.calls)) return;
+  const credited: PiContentBlock[] = [];
+  for (const record of nested.calls) {
+    if (!record || typeof record !== "object" || typeof record.name !== "string") continue;
+    const entry = nestedToolUse(record);
+    if (entry !== undefined) credited.push(entry);
+  }
+  toolUses.push(...credited);
+  if (nested.complete === false)
+    traceWarn(
+      `spawn[${role}]: nested call record for ${msg.toolName ?? msg.toolCallId ?? "a tool"} ` +
+        `was incomplete; credited ${String(credited.length)} reported call(s) that finished ok`,
+    );
+  else if (credited.length > 0)
+    trace(
+      `spawn[${role}]: credited ${String(credited.length)} nested reported call(s) from ` +
+        `${msg.toolName ?? msg.toolCallId ?? "a tool"}`,
+    );
+}
+
 export function collapseEvents(
   lastAgentEnd: PiJsonEvent | null,
   lastAssistantMessageEnd: PiJsonEvent | null,
@@ -152,8 +245,21 @@ export function collapseEvents(
         }
       } else if (block.type === "toolCall") {
         toolUses.push(block);
+        // #2618 — the calls THIS block's tool made to other tools ride on the
+        // result message, so they are read in the result pass below, at the
+        // parent's position; nothing to do here but keep the parent's own entry.
       }
     }
+  }
+
+  // #2618 — the nested (`codemode`) reporter calls, appended per tool-result
+  // message in message order. Reading them in this pass rather than the assistant
+  // loop above is what places a nested run after its parent's block and keeps Pi's
+  // record order inside one result; results for the same turn arrive in the order
+  // the calls were made, so a second codemode call's rows follow the first's.
+  for (const msg of messages) {
+    if (msg.role !== "toolResult") continue;
+    creditNestedReporterCalls(msg, role, toolUses);
   }
 
   // #1652 — which tool calls Pi accepted. Refusal text is kept (bounded): it is

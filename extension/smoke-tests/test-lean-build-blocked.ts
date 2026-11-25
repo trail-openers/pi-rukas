@@ -276,7 +276,7 @@ const CONFLICT = "case 2 needs the array mutable while case 3 mutates it in plac
   );
   const src = existsSync(BLOCKED_REPORTER_PATH) ? readFileSync(BLOCKED_REPORTER_PATH, "utf8") : "";
   assert(
-    src.includes('name: "report_blocked"'),
+    /name:\s*REPORT_BLOCKED_TOOL/.test(src) || src.includes('name: "report_blocked"'),
     "(6) and registers exactly the tool the parent reads",
   );
 }

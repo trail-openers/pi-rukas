@@ -20,6 +20,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { REPORT_BLOCKED_TOOL } from "../lean-reporter-tools.ts";
 
 /**
  * Where this file lives: the extension's source directory, so `--extension` gets
@@ -38,7 +39,7 @@ interface BlockedInput {
 
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
-    name: "report_blocked",
+    name: REPORT_BLOCKED_TOOL,
     label: "Report Unsatisfiable Frozen Tests",
     description:
       // Both keys are spelled out with one complete call because Pi's schema
