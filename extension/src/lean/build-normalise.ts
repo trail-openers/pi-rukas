@@ -19,8 +19,7 @@
  *      ignore tricks and dependency links all go — and provisioning rebuilds the links.
  *   5. The captured bytes go back through `writeCaptured`, executable bits are restored, and
  *      deletions are applied.
- *   6. Nothing captured and nothing to delete is the honest answer to "did the developer change
- *      anything": `files: []`, and the caller routes `exhausted`.
+ *   6. Nothing captured and nothing to delete is `files: []`, and the caller routes `exhausted`.
  *   7. One commit with an EXPLICIT pathspec — `git add -- <paths>` and `git commit -- <paths>`, never
  *      `add -A`. Then four claims are proved about it: parent is `headBefore`; its diff names no
  *      frozen and no protected path; the tree is clean; every frozen blob at the new head hashes to

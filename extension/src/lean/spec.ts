@@ -5,8 +5,8 @@
  * `PiSpec`. The block is the whole contract: the driver infers no scope, criteria, or size from prose, so an
  * issue without one is not ready and says so.
  *
- * Every failure names itself — "no block", "two blocks", "invalid JSON" and "wrong type" are four distinct
- * reasons.
+ * Every failure names itself: "no block", "two blocks", "invalid JSON" and "wrong type" are four
+ * distinct reasons.
  */
 
 /** How a criterion is checked. `command` criteria additionally carry a command. */
@@ -109,8 +109,7 @@ export function fencedBlocks(body: string): { info: string; content: string }[] 
       open = { char: run[0] as string, len: run.length, info: rest, content: [] };
     }
   }
-  // An unterminated fence is not a block — a truncated body is "no block", not a block whose JSON happens to
-  // be broken.
+  // An unterminated fence is not a block — a truncated body is "no block", not a block whose JSON is broken.
   return blocks;
 }
 
@@ -119,9 +118,8 @@ export function fencedBlocks(body: string): { info: string; content: string }[] 
  * undefined when every fence closed. Separate from `fencedBlocks` so the parse
  * result stays "no block" and only the message gains the truncated line.
  *
- * Exported for `lean/spec-for.ts`: a body cut off inside a `pi-spec v1` fence reads
- * as "no block", and the one accessor that stands in for that reason must be able to
- * tell it from a body that never carried a contract.
+ * Exported for `lean/spec-for.ts`, which must tell a body cut off inside a
+ * `pi-spec v1` fence from one that never carried a contract.
  */
 export function unterminatedFenceLine(body: string): number | undefined {
   const lines = body.split(/\r?\n/);

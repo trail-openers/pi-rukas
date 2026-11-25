@@ -12,16 +12,15 @@
  *
  * Everything downstream of the dispatch is identical, so it lives here once: each stage answers a way a child
  * can lie about what it wrote (a symlink swapped in after validation, a commit of its own, a green file
- * reported as red). The copy that drifts is the one nobody tests. `noteClause` is exported so `challenge`'s
- * sweep shares the cap.
+ * reported as red). `noteClause` is exported so `challenge`'s sweep shares the cap.
  *
  * The ref is a parameter and nothing else may vary by step: `resetWorktreeToBase` verifies the tree got there
  * and is clean, whichever commit it was given.
  *
  * The COVERAGE RULE is an argument, not a branch: `specify` passes `"all-criteria"` (one criterion without a red
  * test refuses the run); `challenge` passes `"any-red"` — an adversary that found one red edge for AC1 and
- * nothing for AC2 has done its job, and refusing that run throws away the one genuine finding. The judgement
- * belongs to the caller, which is why this returns `committed` / `uncovered` / `empty`.
+ * nothing for AC2 has done its job. The judgement belongs to the caller, which is why this returns `committed` /
+ * `uncovered` / `empty`.
  */
 
 import { existsSync, rmSync } from "node:fs";

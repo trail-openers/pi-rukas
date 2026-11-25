@@ -350,9 +350,8 @@ export function projectRosterProblem(value: unknown): string | undefined {
   ] as const) {
     // Only `files` must be non-empty: the suite having tests of its own is what makes it a roster.
     // `passed` may legitimately be empty — a project whose suite was entirely red at the base ran
-    // every one of its tests and passed none of them, which is a roster the disclosure has to show
-    // rather than a hand-back. Requiring a name there would refuse the honest case and leave only the
-    // dishonest one (a report that claims a pass nobody observed).
+    // every one of its tests and passed none of them. Requiring a name there would refuse the honest
+    // case and leave only the dishonest one (a report that claims a pass nobody observed).
     const required = field === "files";
     const problem = required
       ? rosterRequiredListProblem(r[field], field, cap)
