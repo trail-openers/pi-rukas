@@ -196,6 +196,10 @@ const why = (r: { outcome?: { kind?: string }; threw?: Error }): string =>
     clipped.includes("1 failed, 0 passed"),
     `(tail) the run's final tally survives too (${clipped.slice(-80)})`,
   );
+  assert(
+    clipped.length >= RED_REASON_TAIL_CLIP,
+    `(tail) the clip keeps a tail's worth of bytes, not a token of one (${String(clipped.length)})`,
+  );
   assert(clipped.includes("…"), "(tail) an elision marker separates the two halves");
   assert(
     clipped.includes(warnings(0, 1)[0] ?? "") && !clipped.includes(warnings(150, 151)[0] ?? ""),
