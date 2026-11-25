@@ -12,9 +12,9 @@
  * `verifyStepOutcome`, with a command that returns immediately: the beat must be
  * armed with the caller's step and stopped in the `finally` on both the normal
  * and the throwing path, and the switch at `0` must leave the stream exactly as
- * it was written before the beat existed. The host-line assertion runs against
- * the REAL emit sink, because a beat held in memory emits zero lines — which is
- * how the earlier periodic watch here died.
+ * it was written before the beat existed. The host's own line stream is
+ * `test-verify-heartbeat-stream.ts`; the real-wiring cases run through
+ * `lib/verify-heartbeat-arm.ts`.
  *
  * Run: bun smoke-tests/test-verify-heartbeat.ts
  */
@@ -26,13 +26,13 @@ import { isStableKind, NDJSON_VERSION, formatLine } from "../src/headless/ndjson
 import type { CycleContext } from "../src/work-driver-context.ts";
 import {
   armVerifyHeartbeat,
+  beginVerifyRun,
+  finishVerifyRun,
   startVerifyHeartbeat,
   VERIFY_HEARTBEAT_DEFAULT_MS,
 } from "../src/work-driver-verify-events.ts";
-import { appendEvent, initialState, persistCycle, type WorkState } from "../src/workflow-state.ts";
+import { appendEvent, initialState, type WorkState } from "../src/workflow-state.ts";
 import type { WorkEvent } from "../src/workflow-state-events.ts";
-import { validateDiscriminants } from "../src/workflow-state-validate.ts";
-import { fmtEvent } from "../src/work-status-events.ts";
 import { createEmitSink } from "../src/work-state-emit.ts";
 import {
   ctxFor,
@@ -41,6 +41,7 @@ import {
   stateFor,
 } from "./lib/consolidated-verify-exec.ts";
 import { fixture } from "./lib/consolidated-verify-fixture.ts";
+import { armOnce, countTimerArms, withUnrefProbe } from "./lib/verify-heartbeat-arm.ts";
 import { runGate } from "./lib/verify-heartbeat-gate.ts";
 
 // The frontend-only classification and the consolidated-skip would let the gate
@@ -60,6 +61,8 @@ function assert(cond: boolean, msg: string) {
 
 const T0 = 1_700_000_000_000;
 const INTERVAL = 300_000;
+/** A fixed `Date.now` for the wiring case, so a beat's stamp is predictable. */
+const STAMP = T0 + 125_000;
 
 type Heartbeat = Extract<WorkEvent, { kind: "verify-heartbeat" }>;
 
@@ -184,6 +187,23 @@ const beatsOf = (states: WorkState[]): Heartbeat[] =>
 }
 
 {
+  // A clock that stepped backwards past the run's origin (an NTP correction, or
+  // a beat stamped by `Date.now` while `startedAt` was taken before an
+  // adjustment): the docs promise a host a NON-NEGATIVE integer, because this
+  // is the number a stall rule reads. Without the clamp the line renders
+  // `verify-heartbeat · develop · -5s`.
+  const p = await pump({ now: () => T0 - 5_000, stepMs: 0 });
+  await p.tick(2);
+  const beats = beatsOf(p.persisted);
+  assert(
+    beats.length === 2 &&
+      beats.every((b) => b.elapsedSeconds === 0 && Number.isInteger(b.elapsedSeconds)),
+    `pump: a clock behind the run's origin clamps elapsedSeconds to 0, never negative (${JSON.stringify(beats.map((b) => b.elapsedSeconds))})`,
+  );
+  p.stop();
+}
+
+{
   const p = await pump({ intervalMs: 0 });
   await p.tick(3);
   assert(p.timers.length === 0, "pump: intervalMs 0 arms no timer at all");
@@ -251,71 +271,86 @@ const beatsOf = (states: WorkState[]): Heartbeat[] =>
   );
 }
 
+// Everything from here on drives real fixtures, state files and emit sinks
+// under one temp dir.
+const root = mkdtempSync(path.join(tmpdir(), "pi-ens-2625-"));
 {
-  let unrefCalls = 0;
-  const timers: Array<{ fn: () => void; ms: number; cleared: boolean }> = [];
-  const stop = armVerifyHeartbeat({
-    ctx: { repoRoot: "/nonexistent", emitSink: createEmitSink(() => {}) } as unknown as CycleContext,
-    state: baseState(),
+  // The wiring seam: the only assertions that prove a beat reaches
+  // `persistCycle` and
+  // therefore the host's stream, that the abort guard is wired to the cycle's
+  // signal, and that a beat's elapsed is measured off the CALLER's `startedAt`.
+  // Replacing any of those wiring lines with a no-op or a constant must fail
+  // here, not only in the pump's own dependency-injected cases.
+  const live = await armOnce(root, "arm-live", 2631, {
     started: startedEvent(),
-    intervalMs: INTERVAL,
     startedAt: T0,
-    clock: {
-      now: () => T0,
-      schedule: (fn, ms) => {
-        const t = { fn, ms, cleared: false };
-        timers.push(t);
-        unrefCalls++;
-        return () => {
-          t.cleared = true;
-        };
-      },
-    },
-  });
-  assert(unrefCalls === 1 && timers.length === 1, "arm: the ctx seam arms the pump's timer once");
-  stop();
-  assert(timers.every((t) => t.cleared), "arm: the caller's stop clears it");
-  const noRun = armVerifyHeartbeat({
-    ctx: { repoRoot: "/nonexistent", emitSink: createEmitSink(() => {}) } as unknown as CycleContext,
-    state: baseState(),
-    started: undefined,
     intervalMs: INTERVAL,
-    startedAt: T0,
+    stamp: STAMP,
   });
-  noRun();
-  assert(timers.length === 1, "arm: no started event means no run to beat for, so nothing arms");
-}
+  assert(
+    live.emitted.filter((e) => e.kind === "verify-heartbeat").length === 1,
+    `arm: one fired tick puts exactly ONE beat on the real host stream through the real persistCycle (${JSON.stringify(live.emitted.map((e) => e.kind))})`,
+  );
+  {
+    const beat = live.emitted.find((e) => e.kind === "verify-heartbeat") as Heartbeat | undefined;
+    assert(
+      beat?.at === STAMP && beat?.elapsedSeconds === Math.floor((STAMP - T0) / 1000),
+      `arm: the beat is stamped with the wiring's clock and its elapsed is measured off the CALLER's startedAt, not a constant (at ${JSON.stringify(beat?.at)}, elapsed ${JSON.stringify(beat?.elapsedSeconds)}, expected ${Math.floor((STAMP - T0) / 1000)})`,
+    );
+    assert(
+      beat?.step === "develop" && beat?.command === startedEvent().command,
+      `arm: the beat carries the step and command of the start event it accompanies (${JSON.stringify([beat?.step, beat?.command])})`,
+    );
+  }
 
-{
-  let unrefed = 0;
-  const realSetTimeout = globalThis.setTimeout;
-  (globalThis as { setTimeout?: unknown }).setTimeout = ((fn: () => void, ms: number) => {
-    const t = realSetTimeout(fn, ms);
-    return Object.assign(t, {
-      unref: () => {
-        unrefed++;
-        return t;
-      },
-    });
-  }) as typeof setTimeout;
-  try {
-    const stop = armVerifyHeartbeat({
-      ctx: { repoRoot: "/nonexistent", emitSink: createEmitSink(() => {}) } as unknown as CycleContext,
+  const killed = await armOnce(root, "arm-abort", 2632, {
+    started: startedEvent(),
+    startedAt: T0,
+    intervalMs: INTERVAL,
+    stamp: STAMP,
+    aborted: true,
+  });
+  assert(
+    killed.emitted.filter((e) => e.kind === "verify-heartbeat").length === 0,
+    `arm: with the cycle's signal fired, the wired aborted guard persists no beat to the host stream (${JSON.stringify(killed.emitted.map((e) => e.kind))})`,
+  );
+
+  // No start event means no run to beat for: the gate wrote nothing, so a beat
+  // would be a line for a command that never existed.
+  const noRunArms = await countTimerArms(() =>
+    armVerifyHeartbeat({
+      ctx: {
+        repoRoot: "/nonexistent",
+        emitSink: createEmitSink(() => {}),
+      } as unknown as CycleContext,
+      state: baseState(),
+      started: undefined,
+      intervalMs: INTERVAL,
+      startedAt: T0,
+    })(),
+  );
+  assert(noRunArms === 0, "arm: no started event means no run to beat for, so nothing arms");
+
+  // A beat must never be the reason a process stays alive.
+  const unrefed = await withUnrefProbe(() =>
+    armVerifyHeartbeat({
+      ctx: {
+        repoRoot: "/nonexistent",
+        emitSink: createEmitSink(() => {}),
+      } as unknown as CycleContext,
       state: baseState(),
       started: startedEvent(),
       intervalMs: INTERVAL,
       startedAt: T0,
-    });
-    assert(unrefed === 1, `arm: the real timer is unref'd, so a beat cannot keep the process alive (unref calls: ${unrefed})`);
-    stop();
-  } finally {
-    (globalThis as { setTimeout?: unknown }).setTimeout = realSetTimeout;
-  }
+    })(),
+  );
+  assert(
+    unrefed === 1,
+    `arm: the real timer is unref'd, so a beat cannot keep the process alive (unref calls: ${unrefed})`,
+  );
 }
 
 // ───────────────────────── the gate, through verifyStepOutcome ────────────────
-
-const root = mkdtempSync(path.join(tmpdir(), "pi-ens-2625-"));
 
 // The gate cases drive a real fixture, state file and emit sink through the
 // shared harness in lib/verify-heartbeat-gate.ts.
@@ -369,6 +404,48 @@ try {
   }
 
   {
+    // `beginVerifyRun` used to hardcode `step: "develop"`. It is now the
+    // CALLER's step, and the two bracket kinds are a host contract that a reader
+    // matches started→completed on, so the parameter is pinned here at the
+    // function that owns it — on both arms. (The commit-pr GATE does not reach
+    // this function: `verifyStepOutcome`'s commit-pr arm runs no verify command,
+    // so it writes no bracket; the commit-pr beat is armed at the integrate
+    // verify step, which is where that gate's long span actually lives.)
+    const atSink = async (name: string, issue: number, step: "develop" | "commit-pr") => {
+      const f = await fixture(root, name, ["default"]);
+      installVerifyCmd(f.repo, "never-written.txt");
+      const emitted: WorkEvent[] = [];
+      const ctx = {
+        ...ctxFor(f.repo, issue, makeExec({ runs: [], repoRoot: f.repo })),
+        emitSink: createEmitSink((e) => emitted.push(e)),
+      } as unknown as CycleContext;
+      const started = await beginVerifyRun(ctx, stateFor(f, issue), step);
+      return { emitted, started };
+    };
+
+    const dev = await atSink("step-develop", 2633, "develop");
+    const cp = await atSink("step-commit-pr", 2634, "commit-pr");
+    assert(
+      dev.started?.step === "develop" && cp.started?.step === "commit-pr",
+      `beginVerifyRun: the bracket's step is the CALLER's, not a hardcoded develop (${JSON.stringify([dev.started?.step, cp.started?.step])})`,
+    );
+    assert(
+      cp.emitted[0]?.kind === "verify-started" &&
+        (cp.emitted[0] as Extract<WorkEvent, { kind: "verify-started" }>).step === "commit-pr",
+      `beginVerifyRun: the commit-pr start event reaches the host stream carrying commit-pr (${JSON.stringify(cp.emitted.map((e) => e.kind))})`,
+    );
+    // The end event inherits its start's step, so the pair cannot disagree.
+    const pair = finishVerifyRun(cp.started, true);
+    assert(
+      pair[0]?.kind === "verify-started" &&
+        pair[1]?.kind === "verify-completed" &&
+        pair[0].step === "commit-pr" &&
+        pair[1].step === "commit-pr",
+      `finishVerifyRun: the end agrees with its start's step (${JSON.stringify(pair.map((e) => [e.kind, e.step]))})`,
+    );
+  }
+
+  {
     // The off switch, against a real run rather than a spy: with the real pump on
     // the ctx seam, an interval of 0 must write no line and an interval on must
     // write its bracket — and the two streams must be the same lines once the
@@ -414,46 +491,8 @@ try {
     );
   }
 
-  // ── the host's line stream, through the real emit sink ───────────────────
-  {
-    const f = await fixture(root, "host-lines", ["default"]);
-    installVerifyCmd(f.repo, "never-written.txt");
-    const emitted: WorkEvent[] = [];
-    const ctx = {
-      ...ctxFor(f.repo, 2629, makeExec({ runs: [], repoRoot: f.repo })),
-      emitSink: createEmitSink((e) => emitted.push(e)),
-    } as unknown as { repoRoot: string; emitSink: ReturnType<typeof createEmitSink> };
-    let state = stateFor(f, 2629);
-    const started = startedEvent();
-    const completed = { ...started, kind: "verify-completed" as const, status: "success" as const, ok: true, ms: 900_000 };
-    const beat = (at: number, elapsedSeconds: number): Heartbeat => ({
-      kind: "verify-heartbeat",
-      at,
-      step: "develop",
-      command: started.command,
-      elapsedSeconds,
-    });
-    // One persist carrying the whole run: the log is what the sink replays.
-    state = appendEvent(state, started, beat(T0 + 300_000, 300), beat(T0 + 600_000, 600), {
-      ...completed,
-      at: T0 + 900_000,
-    });
-    await persistCycle(ctx, state);
-    const lines = emitted.map((e) => e.kind);
-    assert(
-      JSON.stringify(lines) ===
-        JSON.stringify(["verify-started", "verify-heartbeat", "verify-heartbeat", "verify-completed"]),
-      `host: the stream carries started, both beats and the end, in order, with no re-emission (got ${JSON.stringify(lines)})`,
-    );
-    const rendered = emitted.map((e) => fmtEvent(e));
-    assert(
-      rendered.filter((l) => l.includes("verify-heartbeat")).length === 2 &&
-        rendered[3]?.includes("15m00s") === true,
-      `host: /work-status renders each beat with its elapsed (${JSON.stringify(rendered)})`,
-    );
-    const findings = validateDiscriminants(state);
-    assert(findings.length === 0, `host: a log carrying beats validates (${JSON.stringify(findings)})`);
-  }
+  // The host's line stream — the emit sink's exactly-once watermark and the
+  // /work-status rendering — is test-verify-heartbeat-stream.ts.
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

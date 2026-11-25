@@ -499,7 +499,9 @@
     "smoke-tests/lib/lean-exhausted-fixture.ts",
     "smoke-tests/test-lean-exhausted-unverified.ts",
     "smoke-tests/lib/verify-heartbeat-gate.ts",
+    "smoke-tests/lib/verify-heartbeat-arm.ts",
     "smoke-tests/test-verify-heartbeat.ts",
+    "smoke-tests/test-verify-heartbeat-stream.ts",
     "smoke-tests/test-verify-heartbeat-switch.ts"
   ]
 }

@@ -146,6 +146,23 @@ const DEFAULT_MS = 300_000;
     endRow?.includes("at most one") === true && endRow?.includes("no end") === true,
     "the row names the single end event and keeps a missing end as the killed-gate discriminator",
   );
+  // A stable-subset row is a host contract: a status value listed there is one a
+  // host may key on. The driver's own writer (`finishVerifyRun`) emits only
+  // success / failure / skipped, and a run killed at its bound arrives as
+  // `failure` with the `verify-timeout:<step>` cap naming the reason. Documenting
+  // a `timeout` status would promise a line no driver path ever writes — the same
+  // class of contract error as a renamed field.
+  assert(
+    endRow?.includes("`success`") === true &&
+      endRow?.includes("`failure`") === true &&
+      endRow?.includes("`skipped`") === true &&
+      /status`? \(`[^)]*`timeout`?\)/.test(endRow ?? "") === false,
+    `the row lists only the statuses a host can actually receive — no timeout (${JSON.stringify(endRow?.slice(0, 200))})`,
+  );
+  assert(
+    endRow?.includes("verify-timeout:") === true,
+    "and the row tells a host where a bounded run is named instead (the verify-timeout:<step> cap)",
+  );
 
   const troubleshooting = read("troubleshooting.md");
   const heading = troubleshooting

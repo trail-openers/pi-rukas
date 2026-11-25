@@ -162,7 +162,10 @@ export function startVerifyHeartbeat(d: VerifyHeartbeatDeps): () => void {
     });
   }, interval);
   return () => {
-    if (!beating) return;
+    // No `beating` guard here on purpose: the fake scheduler in the pump tests
+    // fires every registered callback, the cancelled ones included, so the
+    // guard inside `beat` is the load-bearing stop — this line is its
+    // bookkeeping, not the thing that halts the beat.
     beating = false;
     try {
       if (d.clearInterval) d.clearInterval(cancel);
@@ -192,21 +195,11 @@ export function armVerifyHeartbeat(a: {
   /** The interval to beat on. The driver resolves it once from the switch. */
   intervalMs: number | undefined;
   /**
-   * When the run began, on the same clock as `now` — the caller hands back the
-   * `at` of the run's `verify-started`, so a beat's number and the beat's own
-   * `at` come from one clock and cannot disagree.
+   * When the run began, on the same clock as the beat's `now` — the caller hands
+   * back the `at` of the run's `verify-started`, so a beat's number and the beat's
+   * own `at` come from one clock and cannot disagree.
    */
   startedAt: number;
-  /**
-   * The gate's OWN clock: the timer is armed against `schedule` and the beat is
-   * stamped with `now`. A test injects one pair so it can drive a five-minute
-   * interval without sleeping; production leaves it unset and the real
-   * `setTimeout` (unref'd) and `Date.now` are used. The pair is one seam, not
-   * two: a schedule that fired on fake time while the stamp read the real wall
-   * clock would emit beats whose `at` values collide, and the emit watermark
-   * fingerprints on `index|kind|at` — colliding beats are one line, not two.
-   */
-  clock?: { schedule: (fn: () => void, ms: number) => () => void; now: () => number };
 }): () => void {
   if (a.started === undefined) return () => {};
   const started = a.started;
@@ -216,22 +209,20 @@ export function armVerifyHeartbeat(a: {
     step: started.step,
     command: started.command,
     startedAt: a.startedAt,
-    now: a.clock?.now ?? Date.now,
-    setInterval:
-      a.clock?.schedule ??
-      ((fn: () => void, ms: number) => {
-        const t = setTimeout(fn, ms);
-        // A beat must never be the reason a process stays alive.
-        t.unref?.();
-        return () => clearTimeout(t);
-      }),
+    now: Date.now,
+    setInterval: (fn: () => void, ms: number) => {
+      const t = setTimeout(fn, ms);
+      // A beat must never be the reason a process stays alive.
+      t.unref?.();
+      return () => clearTimeout(t);
+    },
     persist: (state) => persistCycle(a.ctx, state),
     aborted: () => a.ctx.signal?.aborted === true,
   });
 }
 
 /**
- * #1415 — record that the develop gate's verify is starting, and PERSIST it
+ * #1415 — record that the gate's verify is starting, and PERSIST it
  * before the command runs: the persist is what puts the event on the host's
  * stream (work-state-emit.ts), so an operator sees the gate start rather than
  * a silent gap the length of the project's suite. The caller's state is not
