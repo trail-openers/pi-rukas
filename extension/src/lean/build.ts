@@ -293,10 +293,8 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     // #2644 — the hung-request lever, beside the state's own ceilings: the window is
     // the review reserve clamped to what the deadline leaves, and an inert arm says so
     // on the same trace line the minutes lever's inertness uses.
-    const stallMs = requestStallWindowMs(ctx.run.deadlineMs, ctx.now());
     const budget = armBudget(budgetFor(config, "build"), {
-      windowMs: stallMs,
-      silence: () => ({ sinceMs: 0, toolInFlight: false }),
+      windowMs: requestStallWindowMs(ctx.run.deadlineMs, ctx.now()),
     });
     const inertStall = requestStallInert(ctx.run.deadlineMs, ctx.now());
     if (budget.warning !== undefined)

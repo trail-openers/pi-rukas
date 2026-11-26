@@ -156,7 +156,16 @@ export interface SpawnOptions extends WriteFenceOpt {
    * spawn cannot answer it on the caller's behalf because the caller is the one
    * that armed the abort. Set only by `lean`'s budget arm.
    */
-  stall?: { silence: () => { sinceMs: number; toolInFlight: boolean }; windowMinutes: number };
+  stall?: {
+    /** The window the caller armed, in minutes. */
+    windowMinutes: number;
+    /** The instant the arm was made; the fallback clock when `silence` is absent. */
+    startedAt: number;
+    /** Whether a tool call of this child sits in flight (a silent bash is work, #951). */
+    toolInFlight: () => boolean;
+    /** A case's stand-in for the child's own stream stamp; the spawn supplies none. */
+    silence?: () => { sinceMs: number; toolInFlight: boolean };
+  };
   /**
    * Stdin-handle callback (#153). Fires once after the child process has
    * been spawned and its stdio attached, BEFORE the initial prompt is

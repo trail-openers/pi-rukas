@@ -28,8 +28,7 @@
  * (d) the lever discloses itself as inert (a trace line) when caps are off.
  */
 
-import { emptyRunningState } from "../src/progress.ts";
-import { budgetTrio, type BudgetOpts } from "../src/lean/step-budget.ts";
+import { budgetTrio } from "../src/lean/step-budget.ts";
 import { neededFromLog } from "../src/lean/handback.ts";
 import { leanIssueResult } from "../src/headless/work-lean-result.ts";
 import { INITIAL_COUNTERS, type LeanRun, type Outcome, type Step } from "../src/lean/state.ts";
@@ -69,37 +68,38 @@ function stallOnlyConfig() {
   };
 }
 
-/** One quiet tick: the child emitted nothing more, `ms` after its last event. The
- *  same call `spawn.ts` makes at a turn boundary, with the elapsed clock it carries. */
-function quietBy(onProgress: BudgetOpts["onProgress"], ms: number): void {
-  onProgress?.({ ...emptyRunningState("developer"), elapsedMs: ms });
+/** The child's own stream stamp: how long the fake child has been quiet. The step's stall
+ *  lever measures THIS and fires its own abort — the fixture hands the step nothing. */
+function silent(ms: number): number {
+  return ms;
 }
 
 const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
 
 // ── (a) THE PANEL ROW ────────────────────────────────────────────────────────
 {
-  const hung = await withEnv(stallEnv(), () =>
-    runBuild({
+  let hung: Awaited<ReturnType<typeof runBuild>> | undefined;
+  await withEnv(stallEnv(), async () => {
+    hung = await runBuild({
       issue: 2644,
       config: stallOnlyConfig(),
       clock: { deadlineMs: PANEL_START_MS + PANEL_CELL_S * MINUTE_MS, now: () => PANEL_NOW },
       // The child wrote its implementation; then its request hung and the stream
       // never came back — the field's 1668 s of silence.
       child: (wt) => put(wt, "src/stall.ts", "export const stall = () => 1;\n"),
-      onProgressTick: (onProgress) => quietBy(onProgress, HUNG_REQUEST_MS),
-    }),
-  );
+      silentMs: silent(HUNG_REQUEST_MS),
+    });
+  });
 
   assert(
-    hung.threw === undefined,
+    hung?.threw === undefined,
     `(a) a stalled child is a verdict, not infrastructure: ${(hung.threw ?? { message: "clean" }).message}`,
   );
   assert(
-    hung.outcome?.kind === "budget",
-    `(a) the step ends as its budget verdict, the kind the table already routes (got ${String(hung.outcome?.kind)})`,
+    hung!.outcome?.kind === "budget",
+    `(a) the step ends as its budget verdict, the kind the table already routes (got ${String(hung!.outcome?.kind)})`,
   );
-  const fired = budgetTrio(hung.outcome as Outcome | undefined);
+  const fired = budgetTrio(hung!.outcome as Outcome | undefined);
   assert(
     fired?.limit === "stall",
     `(a) the trio names the stall as the ceiling that fired (got ${JSON.stringify(fired)})`,
@@ -109,7 +109,7 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
     `(a) the trio's \`used\` is the silence measured, not a guess (got ${String(fired?.used)} min, field measured ${String(Math.round(HUNG_REQUEST_MS / MINUTE_MS))} min)`,
   );
   assert(
-    hung.headAfter !== hung.headBefore,
+    hung!.headAfter !== hung!.headBefore,
     "(a) the hung child's work is folded into the attempt's commit — the cell keeps its patch",
   );
 
@@ -121,7 +121,7 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
       state: "build",
       startedAt: PANEL_NOW,
       endedAt: PANEL_NOW + HUNG_REQUEST_MS,
-      outcome: hung.outcome,
+      outcome: hung!.outcome,
     },
   ];
   const needed = neededFromLog(steps);
@@ -161,19 +161,22 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
 
 // ── (b) a tool call in flight is not a stall ─────────────────────────────────
 {
-  const ran = await withEnv(stallEnv(), () =>
-    runBuild({
+  let ran: Awaited<ReturnType<typeof runBuild>> | undefined;
+  await withEnv(stallEnv(), async () => {
+    ran = await runBuild({
       issue: 2645,
       config: stallOnlyConfig(),
       clock: { deadlineMs: PANEL_START_MS + PANEL_CELL_S * MINUTE_MS, now: () => PANEL_NOW },
       // A full offline suite is one silent bash for tens of minutes; the in-flight
-      // set is what tells that apart from a hung request (#951).
+      // set is what tells that apart from a hung request (#951). `child` is the same
+      // edit case (a) makes, so the ONLY variable between the two cells is the tool call.
+      child: (wt) => put(wt, "src/stall.ts", "export const stall = () => 1;\n"),
       toolUses: [{ name: "bash", arguments: { command: "bun run test" } }],
-      onProgressTick: (onProgress) => quietBy(onProgress, HUNG_REQUEST_MS),
-    }),
-  );
+      silentMs: silent(HUNG_REQUEST_MS),
+    });
+  });
   assert(
-    ran.outcome?.kind === "ok",
+    ran?.outcome?.kind === "ok",
     `(b) a silent child WITH a tool in flight finishes its work (got ${String(ran.outcome?.kind)})`,
   );
 }
@@ -210,13 +213,17 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
   const deadline = PANEL_START_MS + PANEL_CELL_S * MINUTE_MS;
   const warns: string[] = [];
   await captureWarns("stall", warns, async () => {
-    await withEnv({ PI_ENSEMBLE_DISPATCH_CAPS: "0" }, async () => {
-      const armed = requestStallWindowMs(deadline, PANEL_START_MS);
-      assert(
-        armed === undefined,
-        `(d) with dispatch caps off nothing is armed (got ${String(armed)})`,
-      );
-    });
+    // The step's own trace, not a helper call from the test: the disclosure is the
+    // step's, and an absent line would be silence mistaken for a pass.
+    await withEnv({ ...stallEnv(), PI_ENSEMBLE_DISPATCH_CAPS: "0" }, () =>
+      runBuild({
+        issue: 2647,
+        config: stallOnlyConfig(),
+        clock: { deadlineMs: deadline, now: () => PANEL_NOW },
+        child: (wt) => put(wt, "src/stall.ts", "export const stall = () => 1;\n"),
+        silentMs: silent(HUNG_REQUEST_MS),
+      }),
+    );
   });
   assert(
     warns.some((w) => /stall/i.test(w) && /PI_ENSEMBLE_DISPATCH_CAPS=0/.test(w)),

@@ -43,7 +43,16 @@ export interface BudgetOpts {
   signal?: AbortSignal;
   onProgress?: (s: RunningState) => void;
   budgetTurns?: number;
-  stall?: { silence: () => { sinceMs: number; toolInFlight: boolean }; windowMinutes: number };
+  stall?: {
+    /** The window the lever was armed with, in minutes — what a breach reports as `value`. */
+    windowMinutes: number;
+    /** The instant the arm was made; the fallback clock when `silence` is absent. */
+    startedAt: number;
+    /** Whether a tool call of this child sits in flight (a silent bash is work, #951). */
+    toolInFlight: () => boolean;
+    /** A case's stand-in for the child's own stream stamp; the spawn supplies none. */
+    silence?: () => { sinceMs: number; toolInFlight: boolean };
+  };
 }
 
 /**
@@ -154,7 +163,10 @@ export type BudgetArms = {
  */
 export function armBudget(
   b: Budget | undefined,
-  stall?: { windowMs: number | undefined; silence: () => { sinceMs: number; toolInFlight: boolean } },
+  stall?: {
+    windowMs: number | undefined;
+    silence?: () => { sinceMs: number; toolInFlight: boolean };
+  },
 ): BudgetArms {
   const minutes = b?.minutes ?? 0;
   const turns = b?.turns ?? 0;
@@ -166,7 +178,12 @@ export function armBudget(
   const stallOpts =
     stallMs === undefined || stall === undefined
       ? undefined
-      : { silence: stall.silence, windowMinutes: stallMinutes(stallMs) };
+      : {
+          silence: stall.silence,
+          windowMinutes: stallMinutes(stallMs),
+          startedAt: Date.now(),
+          toolInFlight: () => false,
+        };
   // Which limit ended the child, frozen at the FIRST breach: a later tick must not rewrite it.
   let hit: BudgetFired | undefined;
   let minutesTraced = false;
@@ -238,9 +255,17 @@ export function armBudget(
       else if (tokens > 0 && s.totalTokens > tokens)
         breach = { limit: "tokens", value: tokens, used: s.totalTokens };
       else if (stallOpts !== undefined && stallMs !== undefined) {
-        // The fourth lever, read on the SAME tick. A tool call in flight is a silent BASH — the whole
-        // offline gate — and is work rather than silence, so it is never a stall (#951).
-        const quiet = stallOpts.silence();
+        // The fourth lever, read on the SAME tick. The spawn's own stamp is the measure of
+        // stream life; `silence` is a case's stand-in for it. A tool call in flight is a silent
+        // BASH — the whole offline gate — and is work rather than silence, so it is never a
+        // stall (#951).
+        const quiet =
+          stallOpts.silence === undefined
+            ? {
+                sinceMs: Date.now() - stallOpts.startedAt,
+                toolInFlight: stallOpts.toolInFlight(),
+              }
+            : stallOpts.silence();
         if (!quiet.toolInFlight && quiet.sinceMs >= stallMs)
           breach = {
             limit: "stall",

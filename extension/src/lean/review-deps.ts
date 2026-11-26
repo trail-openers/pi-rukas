@@ -198,6 +198,9 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         extraArgs: o.extraArgs,
         ...(o.childBoundMs === undefined ? {} : { childBoundMs: o.childBoundMs }),
         budgetTurns: o.budgetTurns,
+        // #2644 — the stall lever's window, forwarded with the other arms: dropping it
+        // would leave a fixer's hung request to the wall clock alone.
+        ...(o.stall === undefined ? {} : { stall: o.stall }),
         ...(o.signal === undefined ? {} : { signal: o.signal }),
         ...(o.onProgress === undefined ? {} : { onProgress: o.onProgress }),
         ...leanChildOpts(headless),
