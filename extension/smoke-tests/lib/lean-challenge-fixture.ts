@@ -32,6 +32,7 @@ import type { Outcome, Step } from "../../src/lean/state.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { SPEC_BODY } from "./lean-build-asserts.ts";
 import { type Built, RUNNER, buildFixture, git, gitEnvFor, sha } from "./lean-build-fixture.ts";
+import { SpecifyInfraError } from "../../src/lean/specify-reset.ts";
 
 /**
  * `git show <ref>:<rel>` as RAW BYTES. `spawnSync` with an `encoding` would decode
@@ -56,7 +57,7 @@ export function blobSha(wt: string, ref: string, rel: string): string {
 }
 
 export { ROOTS, RUNNER, childCommit as childCommitOf, git, put, putOutside, sha } from "./lean-build-fixture.ts";
-export { SpecifyInfraError } from "../../src/lean/specify.ts";
+export { SpecifyInfraError };
 
 export interface ChallengeBuilt extends Built {
   /** The build commit `challenge` finds as HEAD — above the frozen test commit. */

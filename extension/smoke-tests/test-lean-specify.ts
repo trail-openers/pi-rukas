@@ -25,7 +25,6 @@ import { SUBMIT_TESTS_REPORTER_PATH } from "../src/lean/submit-tests-reporter.ts
 import {
   ROOTS,
   RUNNER,
-  SpecifyInfraError,
   TWO_AC_BODY,
   configWith,
   git,
@@ -36,6 +35,7 @@ import {
   sha,
   submit,
 } from "./lib/lean-specify-fixture.ts";
+import { SpecifyInfraError } from "../src/lean/specify-reset.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {

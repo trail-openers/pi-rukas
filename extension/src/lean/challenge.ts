@@ -60,8 +60,6 @@ import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
 import { SpecifyResetError, resetWorktreeToBase } from "./specify-reset.ts";
 import { noteClause, runTestPipeline } from "./specify-run.ts";
-// The infra errors the step's throws are instances of, re-exported for its tests.
-export { SpecifyInfraError } from "./specify-run.ts";
 import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 import { changedPaths } from "./specify-tree.ts";
 import {

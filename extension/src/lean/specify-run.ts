@@ -40,13 +40,11 @@ import {
   resetWorktreeToBase,
   writeCaptured,
 } from "./specify-reset.ts";
-import { MAX_TEST_BYTES, testBytesProblem } from "./test-size.ts";
-import type { VerifyExec } from "./verify-types.ts";
-
-export { SpecifyInfraError };
 import type { DeclaredPath, DroppedRow } from "./specify-tree.ts";
 import { declaredPaths } from "./specify-tree.ts";
 import type { SubmitTestsRow } from "./submit-tests-extract.ts";
+import { MAX_TEST_BYTES, testBytesProblem } from "./test-size.ts";
+import type { VerifyExec } from "./verify-types.ts";
 
 /** What the pipeline did, before its caller decides what the verdict means. */
 type PipelineVerdict =

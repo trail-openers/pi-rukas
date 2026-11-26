@@ -64,7 +64,8 @@ import { assertRunnerCanRunTests } from "./specify-preflight.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
 import { SpecifyResetError } from "./specify-reset.ts";
-import { SpecifyInfraError } from "./specify-run.ts";
+import { SpecifyInfraError } from "./specify-reset.ts";
+
 import {
   assertSpecifyWorktreeOwned,
   ensureSpecifyWorktreeWithProvision,
@@ -128,16 +129,6 @@ export interface SpecifyDeps {
    */
   observeVerdict?: (v: { refused: string[]; silent: boolean }) => void;
 }
-
-/**
- * A base, a tree or a child we cannot trust. The engine turns this into 10.
- *
- * Re-exported from `specify-run.ts`, where the shared pipeline raises it, so that
- * module owns the throw without importing this step back: the class is
- * `instanceof`-tested by the specify and challenge smoke suites, and two copies
- * would make that test quietly false.
- */
-export { SpecifyInfraError } from "./specify-run.ts";
 
 /** The rules a spec fails on re-read, or [] when it still holds. Read through the
  * accessor, so a derived run is re-read against the contract it is executing; a

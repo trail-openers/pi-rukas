@@ -24,7 +24,7 @@
  * real minute per poll.
  */
 
-import { CI_POLL_MS } from "../src/lean/ci.ts";
+import { CI_POLL_MS } from "../src/lean/ci-poll.ts";
 import { handoffAllowanceMs } from "../src/lean/deadline.ts";
 import { cleanUp, run, viewAt } from "./lib/lean-ci-recorder.ts";
 import { VerifyInfraError } from "../src/lean/verify-types.ts";

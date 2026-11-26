@@ -25,7 +25,8 @@
 
 import type { Step } from "../src/lean/state.ts";
 import type { DispatchUsageRow } from "../src/lean/step-budget.ts";
-import { type LeanUsageTotals, leanUsage } from "../src/lean/usage-sum.ts";
+import type { UsageTotals as LeanUsageTotals } from "../src/usage-fold.ts";
+import { leanUsage } from "../src/lean/usage-sum.ts";
 import { decided } from "./lib/lean-verify-fixture.ts";
 
 let exit = 0;

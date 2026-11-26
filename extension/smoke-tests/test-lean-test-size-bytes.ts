@@ -42,10 +42,11 @@
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { PiSpec } from "../src/lean/spec.ts";
-import { SpecifyInfraError, runTestPipeline } from "../src/lean/specify-run.ts";
+import { runTestPipeline } from "../src/lean/specify-run.ts";
 import { validateSubmitRows } from "../src/lean/submit-tests-cap.ts";
 import { MAX_TEST_BYTES, MAX_TEST_LINES, countTestLines } from "../src/lean/test-size.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { SpecifyInfraError } from "../src/lean/specify-reset.ts";
 
 /**
  * The over-both-bounds fixture, built from the two constants so it cannot drift

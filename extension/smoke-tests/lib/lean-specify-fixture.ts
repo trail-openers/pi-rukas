@@ -34,7 +34,7 @@ import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { type CaptureResult, captureTestBytes } from "../../src/lean/specify-capture.ts";
 import { parsePorcelainZ } from "../../src/lean/specify-tree.ts";
-import { type SpecifyDeps, SpecifyInfraError } from "../../src/lean/specify.ts";
+import { type SpecifyDeps } from "../../src/lean/specify-run.ts";
 import type { DerivedSpec } from "../../src/lean/state-derived-spec.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
@@ -45,6 +45,7 @@ import type { DispatchResultOverride } from "./lean-build-artifacts.ts";
 import { deadlineOf, resultOverride } from "./lean-build-artifacts.ts";
 import type { ClockOpts } from "./lean-build-artifacts.ts";
 import { put } from "./lean-build-fixture.ts";
+import { SpecifyInfraError } from "../../src/lean/specify-reset.ts";
 export { put };
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */

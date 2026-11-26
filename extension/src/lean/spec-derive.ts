@@ -33,8 +33,6 @@ import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import { type Budget, type WorkConfig, loadWorkConfig } from "./config.ts";
 import { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
-// Re-exported for the two import sites that spell the number through this module.
-export { DERIVE_DEFAULT_BUDGET };
 import { GUARDS_ONLY_RULE, GUARD_MAX, type Guard, isRegressionGuard } from "./derive-guards.ts";
 import type { PiSpec } from "./spec.ts";
 import { SPEC_INFO, fencedBlocks, parsePiSpec } from "./spec.ts";

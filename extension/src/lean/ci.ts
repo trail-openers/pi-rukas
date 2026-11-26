@@ -35,7 +35,7 @@ import { testsFromLog } from "./build.ts";
 import type { CiDeps } from "./ci-deps.ts";
 import { CI_FULL_TIER, fullTierExcuse } from "./ci-excuse.ts";
 import type { GlForge } from "./ci-forge-gl.ts";
-export { CI_POLL_MS } from "./ci-poll.ts";
+import { CI_POLL_MS } from "./ci-poll.ts";
 import { ciTierBudgetMs } from "./ci-tier-budget.ts";
 import { checksRedReason, ciConfig, tierFailure } from "./ci-tier.ts";
 import { DEFAULT_BUDGETS, type WorkConfig } from "./config.ts";

@@ -33,7 +33,8 @@ import {
   reaskMissing,
   withReaskNote,
 } from "./specify-reask.ts";
-import { SpecifyInfraError, droppedLabel, runTestPipeline } from "./specify-run.ts";
+import { SpecifyInfraError } from "./specify-reset.ts";
+import { droppedLabel, runTestPipeline } from "./specify-run.ts";
 import { ensureSpecifyWorktreeWithProvision, validateSubmitRows } from "./specify-tree.ts";
 import type { SpecifyDeps } from "./specify.ts";
 import type { Outcome } from "./state.ts";

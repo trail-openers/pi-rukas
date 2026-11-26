@@ -5,8 +5,6 @@
  */
 
 import { type StallArms, requestStallWindowMs } from "../request-stall-policy.ts";
-// The policy's other readers, re-exported so a step names one module for the lever.
-export { leanRequestStallEnabled, requestStallUnarmed } from "../request-stall-policy.ts";
 import { REVIEW_DEADLINE_RESERVE_MS } from "./review-bound.ts";
 import type { LeanRun } from "./state.ts";
 

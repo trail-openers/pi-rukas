@@ -16,7 +16,7 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { leanRequestStallEnabled } from "../src/lean/request-stall.ts";
+import { leanRequestStallEnabled } from "../src/request-stall-policy.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 

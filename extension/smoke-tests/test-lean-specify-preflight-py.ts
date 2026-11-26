@@ -45,13 +45,13 @@ import {
 } from "./lib/lean-preflight-probe-fixture.ts";
 import {
   ROOTS,
-  SpecifyInfraError,
   configWith,
   makeRepo,
   redScript,
   runSpecify,
   submit,
 } from "./lib/lean-specify-fixture.ts";
+import { SpecifyInfraError } from "../src/lean/specify-reset.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
