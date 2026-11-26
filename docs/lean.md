@@ -74,8 +74,16 @@ boundary. It reads the command a tool reports, so classes of bypass sit outside 
 by construction — a read issued inside a `codemode` script through `node:fs`, a read
 by a detached grandchild, a path the child assembles at run time from pieces no
 word spells, or a credential the child reaches through a descriptor it already
-holds. None of those is a tool call, so no hook sees them. An exposed token is
-therefore rotated by the operator, and that is the remedy, not the last resort.
+holds. None of those is a tool call, so no hook sees them. Four more sit inside a
+tool call but outside the judge: a relative read taken while the command's own
+directory was set by `cd` in an **earlier call** (the judge tracks a directory
+change within one command, not across calls), a `ls`/`find`/`du`/`stat`/`tree` or
+recursive `grep` of a protected root or its parent (names and structure are
+visible, file contents are not, and only `tar`/`cp`/`rsync`/`scp`/`ditto`/`pax` of
+an ancestor are refused), a path rooted at `$PWD` or built from another run-time
+variable (only `~` and `$HOME` are expanded against the published homes), and a
+`~user` form. An exposed token is therefore rotated by the operator, and that is
+the remedy, not the last resort.
 `PATH` is
 left alone, so a child that runs the shim directly gets the shim's own
 unauthenticated answer. No `PI_ENSEMBLE_*` switch governs the strip or the broker.

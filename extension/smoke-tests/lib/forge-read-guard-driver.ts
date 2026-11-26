@@ -35,6 +35,7 @@ import { dispatch, makeFakePi } from "./forge-read-guard-harness.ts";
  * and has never resolved the Pi packages from a `lib/` module, and the collector
  * next door (`forge-read-collector.ts`) has the same rule for the same reason — a
  * driver whose types depend on an unresolved package is a driver that cannot load.
+ */
 
 /** One row: a bash command, or a tool call as [toolName, input]. */
 export type Row = string | [string, Record<string, unknown>];

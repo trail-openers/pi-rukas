@@ -170,6 +170,3 @@ import {
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);
-
-console.log(`\nexit ${exit}`);
-process.exit(exit);
