@@ -43,9 +43,36 @@ const nodes = listNodes(extensionDir);
 assert(nodes.length > 1000, `the selector's own node set is non-trivial (${nodes.length} nodes)`);
 // The set is what the selector sees, not a hand-typed list: if NODE_RE ever stops
 // matching a directory the gate used to cover, this is where it shows.
+// #2649 widened the node set with `smoke-tests/lib/**/*.ts`: a runner helper is now
+// a node whose referrers are selected. The OFF arm must answer the OLD shape, so the
+// set is compared to each shape under the switch that produces it rather than to one
+// hand-typed pattern.
+const NODE_SHAPE_OLD = /^(?:src\/(?:[^/]+\/)*[^/]+\.ts|smoke-tests\/[^/]+\.ts)$/;
+// The ON shape is the pre-#2649 shape plus the lib helpers: the top-level smoke
+// directory contributes every `.ts` the old pattern allowed (including the fixture
+// modules a top-level test imports), and #2649 adds `smoke-tests/lib/`.
+const NODE_SHAPE_NEW = /^(?:src\/(?:[^/]+\/)*[^/]+\.ts|smoke-tests\/[^/]+\.ts|smoke-tests\/lib\/(?:[^/]+\/)*[^/]+\.ts)$/;
+const outside = (list: string[], shape: RegExp) => list.filter((n) => !shape.test(n));
+const priorSwitch = process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
+process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = "0";
+const nodesOff = listNodes(extensionDir);
+if (priorSwitch === undefined) delete process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
+else process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = priorSwitch;
 assert(
-  nodes.every((n) => /^(?:src\/(?:[^/]+\/)*[^/]+\.ts|smoke-tests\/[^/]+\.ts)$/.test(n)),
-  "every node is a src module or a top-level smoke file — the selector's own NODE_RE",
+  outside(nodesOff, NODE_SHAPE_OLD).length === 0,
+  `with the rules off every node is a src module or a top-level smoke file — the pre-#2649 NODE_RE (strays: ${outside(nodesOff, NODE_SHAPE_OLD).slice(0, 3).join(", ")})`,
+);
+assert(
+  outside(nodes, NODE_SHAPE_NEW).length === 0,
+  `every node is a src module, a top-level smoke test or a lib helper (strays: ${outside(nodes, NODE_SHAPE_NEW).slice(0, 3).join(", ")})`,
+);
+assert(
+  nodes.filter((n) => n.startsWith("smoke-tests/lib/")).length > 100,
+  `the #2649 arm made the runner helpers graph nodes (${nodes.filter((n) => n.startsWith("smoke-tests/lib/")).length} of them)`,
+);
+assert(
+  nodesOff.filter((n) => n.startsWith("smoke-tests/lib/")).length === 0,
+  "with the rules off no lib helper is a node — the pre-#2649 set exactly",
 );
 for (const named of [
   "src/worktree-loss.ts",

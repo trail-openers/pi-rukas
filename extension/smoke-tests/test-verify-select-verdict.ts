@@ -157,11 +157,13 @@ async function planAndRecord(repoRoot: string, touched: string[]): Promise<{
 {
   const { repoRoot } = makeRepo({});
   try {
-    // A changed file the graph cannot place: the whole-suite policy, recorded.
-    const r = await planAndRecord(repoRoot, ["README.md"]);
+    // A changed file the classification table sends to the full suite: configuration,
+    // recorded with the reason that names it (#2649 — before the ticket this path
+    // answered `outside-graph:README.md`, pinned in the off-arm block below).
+    const r = await planAndRecord(repoRoot, ["agents.json"]);
     const e = r.events[0];
     assert(
-      r.events.length === 1 && e?.mode === "full" && e.fallbackReason === "outside-graph:README.md",
+      r.events.length === 1 && e?.mode === "full" && e.fallbackReason === "config-file:agents.json",
       `a reasoned fallback records mode full with its reason (got ${JSON.stringify(e)})`,
     );
     assert(
@@ -170,11 +172,39 @@ async function planAndRecord(repoRoot: string, touched: string[]): Promise<{
     );
     assert(
       r.notes.some((n) =>
-        /^verify selection fell back to the full suite \(outside-graph:README\.md\)$/.test(n),
+        /^verify selection fell back to the full suite \(config-file:agents\.json\)$/.test(n),
       ),
       `the fallback note string is verbatim (got ${JSON.stringify(r.notes)})`,
     );
   } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+}
+
+// --- the pre-#2649 fallback reason, under the switch's off arm ---------------
+// `README.md` is a text file the classification places (its readers are selected)
+// since #2649, so the OLD answer — `outside-graph:README.md`, and the note that
+// quotes it — is pinned here rather than dropped.
+{
+  const { repoRoot } = makeRepo({});
+  const prior = process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
+  process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = "0";
+  try {
+    const r = await planAndRecord(repoRoot, ["README.md"]);
+    const e = r.events[0];
+    assert(
+      r.events.length === 1 && e?.mode === "full" && e.fallbackReason === "outside-graph:README.md",
+      `with the switch at 0 a README change records the pre-#2649 outside-graph fallback (got ${JSON.stringify(e)})`,
+    );
+    assert(
+      r.notes.some((n) =>
+        /^verify selection fell back to the full suite \(outside-graph:README\.md\)$/.test(n),
+      ),
+      `the off arm's note string is verbatim (got ${JSON.stringify(r.notes)})`,
+    );
+  } finally {
+    if (prior === undefined) delete process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
+    else process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = prior;
     rmSync(repoRoot, { recursive: true, force: true });
   }
 }

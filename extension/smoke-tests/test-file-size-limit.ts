@@ -81,6 +81,7 @@ const EXCLUDED_DIRS = new Set([
   "dist", // build output — generated
   ".worktrees", // driver scaffolding
   "tmp", // scratch
+  "tmp-probe", // a temporary probe directory: probes are diagnostics, not source
   "outputs", // research artefacts
   "parallel-research", // research artefacts
   "skill", // vendored skill content

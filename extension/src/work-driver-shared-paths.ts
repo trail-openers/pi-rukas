@@ -43,7 +43,8 @@ export const SHARED_NON_EXCLUSIVE_PATHS: readonly {
 }[] = [
   {
     path: "extension/src/work-driver-verify-always-run.ts",
-    because: "it is regenerated from the tree by the always-run detector, never hand-edited",
+    because:
+      "it is regenerated from the tree by the always-run detector; the one hand-editable region is the fenced EXTRA_TESTS list that names itself in the file",
   },
   {
     path: "docs/troubleshooting.md",

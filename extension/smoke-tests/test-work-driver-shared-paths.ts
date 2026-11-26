@@ -61,8 +61,16 @@ const claimsOf = (issue: number, paths: string[]) => [
     `the set holds the generated ALWAYS_RUN list and the operator runbook (got ${paths.join(", ")})`,
   );
   assert(
-    SHARED_NON_EXCLUSIVE_PATHS.every((e) => e.because.trim().length > 0),
-    "every entry states WHY it is non-exclusive (a bare list invites someone to add a source file to it)",
+    SHARED_NON_EXCLUSIVE_PATHS.every(
+      (e) =>
+        e.because.trim().length > 0 &&
+        // #2649: the always-run file is generated AND hand-edited (its EXTRA_TESTS
+        // fence), so an exemption that still read "never hand-edited" would be a
+        // false claim in the file whose whole job is to be honest about why a path is
+        // exempt. The claim a non-exclusive path makes has to hold.
+        !/never hand.?edit/i.test(e.because),
+    ),
+    "every entry states WHY it is non-exclusive, and no entry claims a path is never hand-edited (a generated file can still carry a hand-maintained fence)",
   );
   assert(
     !paths.some((p) => /^extension\/src\/[^/]+\.ts$/.test(p) && p !== ALWAYS_RUN),

@@ -106,6 +106,7 @@ import { verifyTimeoutMs } from "../../src/work-driver-verify-budget.ts";
 import { verifyHeartbeatMs } from "../../src/work-driver-verify-heartbeat.ts";
 import { verifyPytestDisabled } from "../../src/work-driver-verify-cmd.ts";
 import { verifyCommandCriteriaEnabled } from "../../src/work-driver-verify-develop-command-criteria.ts";
+import { changedPathRulesEnabled } from "../../src/verify-select-changed-paths-switch.ts";
 import { testDeleteTolerance } from "../../src/work-driver-verify-develop-helpers.ts";
 import {
   verifyProvenanceEnabled,
@@ -296,6 +297,10 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // loop (env deleted) pins "unset means on"; the truth table, the docs row and
   // the off-arm byte-identity are pinned by test-verify-pytest-switch.ts.
   ["PI_ENSEMBLE_VERIFY_PYTEST", () => !verifyPytestDisabled()],
+  // #2649 — the changed-path classification table. Same reader shape (`!== "0"`), so
+  // the LIVE loop's deleted env pins "unset means on"; the truth table and the off
+  // arm's byte-identity are pinned by test-verify-select-changed-paths-off-arm.ts.
+  ["PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS", () => changedPathRulesEnabled()],
 ];
 
 /** The switch that would override a dimension's own default is cleared too. */

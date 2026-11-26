@@ -360,6 +360,13 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   flag("VERIFY_PYTEST", true),
 
   flag("VERIFY_SELECT", true),
+  // #2649 — the closed classification table for changed non-node paths (docs, config,
+  // ignore-like files, `smoke-tests/lib/` helpers) plus the helpers' own graph nodes.
+  // Shipped ON; `"0"` is the only off value and restores the pre-#2649 selection
+  // exactly — the OFF arm is pinned row by row against a committed golden by
+  // `test-verify-select-changed-paths-off-arm.ts`. Read at call time by
+  // `changedPathRulesEnabled`.
+  flag("VERIFY_SELECT_CHANGED_PATHS", true),
   ms("VERIFY_SMOKE_TIMEOUT_MS", 600_000),
   ms("VERIFY_SUITE_TIMEOUT_MS", 1_800_000),
   ms("VERIFY_TIMEOUT_MS", 600_000),

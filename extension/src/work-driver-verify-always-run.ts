@@ -16,43 +16,19 @@
  * is a path argument. Live tests (`-live.ts`) never run offline, so they are not
  * readers here. `test-verify-select-computed-always-run.ts` gates membership.
  *
+ * #2649: the nameable-path whitelist moved to `work-driver-verify-repo-paths.ts`
+ * so the classifier of a changed non-node path asks the same question a reader is
+ * judged by, and the two cannot drift. This file is hand-edited; the exempt-path
+ * claim for it in `work-driver-shared-paths.ts` says so.
+ *
  * Paths are relative to `extension/`, the directory the smoke tests run from.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { isRepoPath, repoDirs, repoFiles } from "./work-driver-verify-repo-paths.ts";
 import { lexSource } from "./work-driver-verify-select-lex.ts";
 
-/** Repository directories a reader may name, as a leading path segment. */
-const REPO_DIRS = [
-  "src",
-  "smoke-tests/lib",
-  ".pi",
-  "modules",
-  "manifests",
-  "agents-base",
-  "pi-prompts",
-  "skill",
-  "docs",
-  "bin",
-  "dist",
-  ".github",
-  ".devcontainer",
-];
-/** Repository files a reader may name. `tsconfig*.json` is matched separately. */
-const REPO_FILES = [
-  "agents.json",
-  "package.json",
-  "bunfig.toml",
-  "release-please-config.json",
-  "Dockerfile",
-  "install.sh",
-  "build.sh",
-  "AGENTS.md",
-  "README.md",
-  "CONTRIBUTING.md",
-  "CHANGELOG.md",
-];
 const READ_CALL_RE =
   /\b(?:readFileSync|readdirSync|readFile|readdir|openSync|readSync|createReadStream|opendirSync)\s*\(|\bBun\.file\b/;
 /** A call to join or resolve on lexed code; the group is its argument list. */
@@ -63,14 +39,6 @@ const JOIN_CALL_RE = /\b(?:join|resolve)\s*\(([^()]*)\)/g;
 // file is a graph node — the whole selection would fall back to the full suite.
 // biome-ignore lint/complexity/useRegexLiterals: the escapes are the point, not an avoidance of escaping.
 const TOKEN_RE = new RegExp("[\\uE000\\uE001](\\d+)[\\uE000\\uE001]", "g");
-/** A leading interpolation or relative prefix that does not change which repository path a literal names. */
-const LEADING_RE = /^(?:\$\{[^}]*\}\/|\.{1,2}\/|extension\/)*/;
-
-function isRepoPath(value: string): boolean {
-  const rest = value.replace(LEADING_RE, "");
-  if (REPO_FILES.includes(rest) || /^tsconfig[\w.-]*\.json$/.test(rest)) return true;
-  return REPO_DIRS.some((d) => rest === d || rest.startsWith(`${d}/`));
-}
 
 /** True when the file reads and names a repository path. Unlexable text reads as a reader: it cannot be judged. */
 export function readsRepositoryText(raw: string): boolean {
@@ -82,7 +50,7 @@ export function readsRepositoryText(raw: string): boolean {
   for (const m of lexed.code.matchAll(JOIN_CALL_RE)) {
     for (const t of (m[1] ?? "").matchAll(TOKEN_RE)) {
       const value = lexed.strings[Number(t[1])] ?? lexed.templates[Number(t[1])];
-      if (value !== undefined && (REPO_DIRS.includes(value) || REPO_FILES.includes(value))) {
+      if (value !== undefined && (repoDirs().includes(value) || repoFiles().includes(value))) {
         return true;
       }
     }
@@ -95,7 +63,7 @@ export function readsRepositoryText(raw: string): boolean {
  * text, sorted — the always-run set of a develop round. The predicate is text
  * based on purpose: a reader whose path never reaches a literal it can judge
  * would be missed, so unlexable text reads as a reader, and a fixture that writes
- * and reads a `src/` path counts as one too.
+ * and reads a `src/` path counts as a reader too.
  */
 export function textReadingTests(extensionDir: string): string[] {
   const out: string[] = [];

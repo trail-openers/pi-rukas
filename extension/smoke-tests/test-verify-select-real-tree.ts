@@ -23,6 +23,7 @@ import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { lexSource } from "../src/work-driver-verify-select-lex.ts";
+import { readOfflineTests } from "../src/work-driver-verify-offline-tests.ts";
 import { selectVerifyTests } from "../src/work-driver-verify-select.ts";
 
 const extensionDir = path.resolve(import.meta.dirname, "..");
@@ -79,19 +80,103 @@ assert(
   `a second src-only change selects too (got ${sel2.mode}${sel2.fallbackReason ? `, ${sel2.fallbackReason}` : ""})`,
 );
 
-// --- and the policy that must NOT have moved ---------------------------------
-// These are the fallbacks #2424 item 5 owns. Selection going live must not turn a
-// doc change into a graph walk: an edit outside the graph still runs everything.
-for (const [changed, reason] of [
-  [["docs/troubleshooting.md"], "outside-graph:docs/troubleshooting.md"],
-  [["agents.json"], "outside-graph:agents.json"],
-  [[".github/workflows/ci.yml"], "outside-graph:.github/workflows/ci.yml"],
-  [["smoke-tests/lib/verify-loop.sh"], "smoke-test-helper:smoke-tests/lib/verify-loop.sh"],
-] as const) {
-  const r = selectVerifyTests(extensionDir, changed);
+// --- and the policy the ticket DID move, row by row -------------------------
+// These four rows are what #2649 exists to change. Before it, every one of them
+// answered `full` and the develop round ran the whole offline suite; the ticket's
+// binding decisions say a docs file, an ignore-like file and a helper each get the
+// sound subset, and configuration keeps the full suite under its own reason. The
+// PRE-#2649 answers are pinned too, under the switch's off arm, so the escape hatch
+// is an assertion rather than a claim.
+{
+  const OFF: readonly [readonly string[], string][] = [
+    [["docs/troubleshooting.md"], "outside-graph:docs/troubleshooting.md"],
+    [["agents.json"], "outside-graph:agents.json"],
+    [[".github/workflows/ci.yml"], "outside-graph:.github/workflows/ci.yml"],
+    [["smoke-tests/lib/verify-loop.sh"], "smoke-test-helper:smoke-tests/lib/verify-loop.sh"],
+  ];
+  const prior = process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
+  process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = "0";
+  try {
+    for (const [changed, reason] of OFF) {
+      const r = selectVerifyTests(extensionDir, changed);
+      assert(
+        r.mode === "full" && r.fallbackReason === reason,
+        `with the switch at 0 ${changed[0]} still falls back to the full suite with ${reason} (got ${r.mode}/${r.fallbackReason ?? "-"})`,
+      );
+    }
+  } finally {
+    if (prior === undefined) delete process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
+    else process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = prior;
+  }
+
+  // The ON arm: configuration still runs everything, with a reason that names it.
+  for (const p of ["agents.json", ".github/workflows/ci.yml", "tsconfig.smoke-tests.json"]) {
+    const r = selectVerifyTests(extensionDir, [p]);
+    assert(
+      r.mode === "full" && r.fallbackReason === `config-file:${p}` && r.alwaysRun.length > 0,
+      `${p} runs the full suite with config-file:${p} and carries the tree's always-run set (got ${r.mode}/${r.fallbackReason ?? "-"})`,
+    );
+  }
+  // A docs change selects, names at least one reader of THAT file, and runs no more
+  // than the always-run set plus its exact namers plus the dynamic-import floor.
+  const docs = selectVerifyTests(extensionDir, ["docs/troubleshooting.md"]);
   assert(
-    r.mode === "full" && r.fallbackReason === reason,
-    `${changed[0]} still falls back to the full suite with ${reason} (got ${r.mode}/${r.fallbackReason ?? "-"})`,
+    docs.mode === "selected" && docs.tests.length > 0,
+    `a docs-only change selects rather than falling back (${docs.mode}/${docs.fallbackReason ?? "-"}, ${docs.tests.length} selected)`,
+  );
+  {
+    // The namers are the tests that hold the exact path as a literal — a strict
+    // subset of the tests a directory-level membership rule would have pulled in.
+    const roster = readOfflineTests(extensionDir);
+    const namers = roster.names.filter((n) => {
+      const l = roster.lexed.get(n);
+      return l !== undefined && [...l.strings, ...l.templates].includes("docs/troubleshooting.md");
+    });
+    assert(
+      namers.length > 0 && namers.every((n) => docs.tests.includes(n)),
+      `every test that names docs/troubleshooting.md exactly is selected (${namers.length})`,
+    );
+    // The upper bound for any selection is the always-run set, the tests that name
+    // the changed file exactly, and the selector's standing floor (non-literal
+    // `import()` reachers plus tests that build a `src/` path themselves) — the last
+    // measured against a change to a module nothing imports, so it is the floor alone.
+    const baseline = selectVerifyTests(extensionDir, [
+      "src/work-driver-verify-literal-trust.ts",
+      ".gitignore",
+    ]);
+    assert(
+      docs.alwaysRun.length > 0 &&
+        docs.tests.every(
+          (t) => docs.alwaysRun.includes(t) || namers.includes(t) || baseline.tests.includes(t),
+        ),
+      "a docs selection is always-run + the exact namers + the selector's standing floor, nothing else",
+    );
+  }
+  // An ignore-like file cannot change what any test runs, so the selection it gets is
+  // the always-run set plus whatever the standing rules select for EVERY change: the
+  // tests that reach a module through a non-literal `import()` and the tests that
+  // build a `src/` path themselves. Those two are the selector's conservative floor,
+  // not a widening of this row, and the assertion is that nothing beyond them is
+  // pulled in — the row's whole point is that a file no test reads runs no new test.
+  const ign = selectVerifyTests(extensionDir, [".gitignore"]);
+  const baseline = selectVerifyTests(extensionDir, ["src/work-driver-verify-literal-trust.ts"]);
+  assert(
+    ign.mode === "selected" && ign.alwaysRun.length > 0,
+    `an ignore file selects rather than falling back (${ign.mode}/${ign.fallbackReason ?? "-"})`,
+  );
+  assert(
+    ign.tests.every((t) => ign.alwaysRun.includes(t) || baseline.tests.includes(t)),
+    `.gitignore selects no test outside the always-run set and the selector's standing floor (${ign.tests.length} selected, ${baseline.tests.length} in the floor)`,
+  );
+  assert(
+    baseline.alwaysRun.length === ign.alwaysRun.length,
+    "the always-run half of both selections is the same computed set",
+  );
+  // A shell helper selects the tests that quote its exact path.
+  const loop = selectVerifyTests(extensionDir, ["smoke-tests/lib/verify-loop.sh"]);
+  assert(
+    loop.mode === "selected" && loop.tests.includes("smoke-tests/test-verify-select-hardening.ts"),
+    `the verify-loop helper selects the tests that reference it (${loop.mode}/${loop.fallbackReason ?? "-"}, ${loop.tests.length} selected)`,
   );
 }
 {
