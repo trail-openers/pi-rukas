@@ -68,7 +68,13 @@ function scratch(): string {
     FORGE_READ_RULE === "forge access is not available to this role",
     "A: the rule sentence is the exported constant, spelled exactly once in src/",
   );
-  const src = readFileSync("src/forge-read-refusal.ts", "utf8");
+  // Resolved from this file, not the process cwd: the offline loop starts a test
+  // child from wherever the runner happens to sit, and a cwd-relative path is a
+  // verdict that depends on the caller rather than on the source.
+  const src = readFileSync(
+    path.resolve(import.meta.dirname, "..", "src", "forge-read-refusal.ts"),
+    "utf8",
+  );
   assert(
     (src.match(/forge access is not available to this role/g) ?? []).length === 1,
     "A: the sentence appears once in its owning module (a second spelling in a second file is the drift this constant exists to prevent)",
