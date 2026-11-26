@@ -3,7 +3,7 @@
  * `runner-preflight-switch.ts` because the two answer different questions and must move apart: that one
  * decides whether the probe is RUN AT ALL (and with it the reset's submodule init); this one decides what
  * the probe's parent directory is CHECKED against, so an operator who finds the containment wrong can
- * restore the old path rules without losing the preflight.
+ * keep the preflight and drop only the check.
  *
  * Before the probe is written, its parent directory is resolved with `realpath` and must lie inside
  * `realpath(worktree)`: the config cannot be trusted to name a directory that is really one of this

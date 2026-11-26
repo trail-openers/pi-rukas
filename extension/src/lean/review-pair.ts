@@ -4,7 +4,7 @@
  *
  * The step is the decision procedure (which verdict ends the wave, what a fixer is
  * told); this is the ONE place that buys the full review's two children, and the
- * overlap is what makes the step cheaper, so the ordering is stated here, once.
+ * overlap is what makes the step cheaper.
  *
  * Three rules the caller cannot see from the outside and cannot enforce itself:
  *
@@ -44,9 +44,8 @@ import type { BudgetArms, DispatchUsageRow } from "./step-budget.ts";
  * it infers from a `killCause: "child-bound"`. A child the shared abort ended, or one
  * that answered normally, carries no such cause, so the stand-in below can only ever
  * reach the turns/tokens branch that reads the frozen `hit` and ignores the argument.
- * A real wall-clock breach is reported by the gate's own `stop` (the armed bound ends
- * the child that holds it and the adapter reads it), which is why the arm is asked
- * for the pair rather than the child.
+ * A real wall-clock breach is reported by the gate's own `stop`, which is why the arm
+ * is asked for the pair rather than the child.
  */
 const BOTH_SETTLED: DispatchResult = {
   role: "review-pair",

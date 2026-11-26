@@ -99,7 +99,7 @@ export async function mainlineSha(repoRoot: string): Promise<MainlineSha> {
       causes.push(`${ref}: ${oneLine((err as Error)?.message ?? String(err), 60)}`);
     }
   }
-  // No local ref resolved: ask the same detector the old driver asks, whose `gh repo view` fallback covers a
+  // No local ref resolved: ask `resolveMainlineBranch`, whose `gh repo view` fallback covers a
   // clone whose origin/HEAD was never set. The name it returns is probed bare and as `origin/<name>`.
   const detected = await resolveMainlineBranch(repoRoot);
   if (!detected)

@@ -51,9 +51,8 @@ export function budgetStopped(fired: BudgetFired, rows: DispatchUsageRow[]): Rev
  *
  * The two kinds differ in one fact, and the whole routing difference hangs on it: a fix round's
  * `integrate` PUSHES, so the newest `verify` certifies a head that is no longer the branch tip
- * and `ci` refuses to look at it. The loop's own count answers the question for the attempt that
- * ran the round; `fixedFromLog` answers it of the durable log for the attempt that resumes after
- * a crash, which remembers nothing and still stands on a moved head.
+ * and `ci` refuses to look at it. `fixedFromLog` answers it of the durable log for the attempt
+ * that resumes after a crash, which remembers nothing and still stands on a moved head.
  *
  * The return type is the registry's own `review` entry, not a written-out pair: `machine.ts` is
  * the authority on which kinds `review` may end with, and a third kind reaching this step would

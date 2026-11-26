@@ -29,12 +29,10 @@
  *     The stem is dot-free and visible, and checked against the project's OWN `testGlob` with the
  *     boundary's matcher, so it can never be collected as one of the project's tests.
  *
- * The two shape switches sit apart from `runner-preflight-switch.ts`, which decides whether a probe runs.
- *
  * It costs one runner invocation, and the probe is removed on every path — including the throw. The retry
  * does NOT re-probe: a runner that broke between attempts is caught by the shared pipeline's per-file infra
- * throw (`assertRan`). `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` returns before any of it; the whole check lives
- * here so the switch has one gate to close. An empty git submodule is one shape this catches, fixed where
+ * throw (`assertRan`). The whole check lives here so `runner-preflight-switch.ts` has one gate to close.
+ * An empty git submodule is one shape this catches, fixed where
  * caused: `initSubmodules`, behind the same switch.
  */
 

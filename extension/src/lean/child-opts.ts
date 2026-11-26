@@ -8,8 +8,7 @@
  *
  * The answer is the same stamp the headless /work driver's children carry, decided by the same function —
  * `cycleChildOpts`. `leanChildOpts` is the lean run's call site of it, and the flag is **threaded, never
- * remembered**: an earlier shape set a module flag once from the headless verb, so a second lean run in the
- * same process inherited the first run's trust.
+ * remembered**, so a second lean run in one process cannot inherit the first run's trust.
  *
  * `PI_ENSEMBLE_STRICT_PERMISSIONS=1` is honoured by `workCycleTrustEnabled()`, which refuses the stamp when
  * the operator opted into strict.

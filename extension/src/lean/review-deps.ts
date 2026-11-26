@@ -3,11 +3,10 @@
  * its children are dispatched with.
  *
  * `review.ts` is the decision procedure and takes every outside world through
- * `ReviewDeps`; this file is what the command hands it. Split out for the same reason
- * `publish-deps.ts` exists: the judgement and the process-spawning glue change for
- * different reasons. The two prompt builders sit here because the facts they state —
- * which tree, which commit, which files are frozen, which budget — are the facts this
- * seam already holds.
+ * `ReviewDeps`; this file is what the command hands it. The judgement and the
+ * process-spawning glue change for different reasons. The two prompt builders sit here because
+ * the facts they state — which tree, which commit, which files are frozen, which budget — are
+ * the facts this seam already holds.
  *
  * Two choices here are load-bearing rather than mechanical:
  *
