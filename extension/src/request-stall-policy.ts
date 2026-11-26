@@ -96,9 +96,13 @@ export function stallMinutes(ms: number): number {
 }
 
 /** The arms one dispatch is handed when the lever armed: the window in the whole minutes the
- *  verdict prints, and the reader of THIS child's stream. */
+ *  verdict prints, the enforced threshold in ms, and the reader of THIS child's stream. */
 export interface StallOpts {
   windowMinutes: number;
+  /** The enforced threshold, ms: the derived window itself. `windowMinutes` is only ever what a
+   *  verdict PRINTS (rounded up), so a clamped sub-minute window is enforced as what it is and
+   *  not as a whole minute that can run past the time the deadline leaves. */
+  windowMs: number;
   silence: StreamSilence;
   /** The caller's progress hook, which is what aborts the child it armed. The spawn composes it from
    *  its own stream (`stallLever` in `spawn-inflight.ts`); the step arms none, and a caller that
@@ -109,10 +113,11 @@ export interface StallOpts {
 /**
  * Freeze the lever's arms, or arm nothing: no window, no reader, or a window of 0 or less,
  * which is the engine's own boundary stop rather than a timer that kills the child the instant it
- * starts — a lever with no reader measures nothing and must not claim a bound. The frozen whole
- * minutes are both what the verdict prints and what a sibling child's spawn is armed with, so the
- * two cannot disagree. `undefined` is the whole of "this step armed no stall lever", which is why
- * no caller needs a second field saying the same thing.
+ * starts — a lever with no reader measures nothing and must not claim a bound. The enforced
+ * threshold is the millisecond window; the frozen whole minutes are what a verdict prints and what
+ * a sibling child's spawn is armed with, so the two cannot disagree. `undefined` is the whole of
+ * "this step armed no stall lever", which is why no caller needs a second field saying the same
+ * thing.
  */
 export function stallLever(
   windowMs: number | undefined,
@@ -120,7 +125,7 @@ export function stallLever(
 ): StallOpts | undefined {
   return silence === undefined || windowMs === undefined || windowMs <= 0
     ? undefined
-    : { windowMinutes: stallMinutes(windowMs), silence };
+    : { windowMinutes: stallMinutes(windowMs), windowMs, silence };
 }
 
 /**
@@ -135,7 +140,7 @@ export function stallBreach(
 ): StallFired | undefined {
   if (stall === undefined || s.turns !== 0 || s.totalTokens !== 0) return undefined;
   const quiet = stall.silence();
-  return !quiet.toolInFlight && quiet.sinceMs >= stall.windowMinutes * 60_000
+  return !quiet.toolInFlight && quiet.sinceMs >= stall.windowMs
     ? { limit: "stall", value: stall.windowMinutes, used: stallMinutes(quiet.sinceMs) }
     : undefined;
 }

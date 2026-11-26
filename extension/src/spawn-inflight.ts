@@ -27,6 +27,7 @@ import type { BudgetProgressSteer } from "./budget-progress.ts";
 import { type ChildProgress, progressSilenceMs } from "./child-progress.ts";
 import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { type RunningState, ingestEvent, recordedDurationMs } from "./progress.ts";
+import type { StallOpts } from "./request-stall-policy.ts";
 import type { SkillReadGuard } from "./review-bounds.ts";
 import type { CapSession } from "./spawn-caps.ts";
 import { killProcessTree } from "./spawn-kill.ts";
@@ -154,6 +155,9 @@ export function isStdinEcho(kind: string): boolean {
   return kind === "response" || kind === "queue_update";
 }
 
+/** The cause the poll's own budgets name; `stall` is the caller's lever, fired on the same tick. */
+export type PollKillCause = "inactivity" | "tool-inactivity" | "no-progress" | "stall";
+
 /**
  * #951 — the dual-budget inactivity watchdog. ONE poll, two budgets: while
  * the in-flight set (above) is non-empty the silence belongs to a running
@@ -171,6 +175,12 @@ export function isStdinEcho(kind: string): boolean {
  * PI_ENSEMBLE_PROGRESS_SILENCE_MS): a child that still emits lines but makes
  * no progress. Silence is checked first, so a silent child keeps its silence
  * cause; with the knob unset the arm never fires and the poll is unchanged.
+ *
+ * #2644 — the same tick is ALSO the only place the caller's hung-request lever can be read: a
+ * request that hangs emits no line at all, so a check on the stream's own cadence is a check that
+ * never runs on exactly the shape the lever exists for. `stall` is the step's armed window and the
+ * caller's `check` (the abort); the poll fires it on a timer tick, after its own budgets, so a
+ * silence the poll itself ends keeps its own cause.
  */
 export function createInactivityPoll(opts: {
   /** Headless S4 (#1024): the child leads its own process group (spawn-kill.ts). */
@@ -179,12 +189,16 @@ export function createInactivityPoll(opts: {
   lastActivityAt: () => number;
   childProgress: ChildProgress;
   onKill: (
-    cause: "inactivity" | "tool-inactivity" | "no-progress",
+    cause: PollKillCause,
     budgetMs: number,
     toolNames: string[],
   ) => void;
+  /** #2644 — the caller's hung-request lever: the enforced window in ms, the reader of THIS
+   *  child's stream, and the hook that aborts the child. Absent means no stall arm, which is
+   *  every caller that bounds its child some other way. */
+  stall?: StallOpts;
 }): () => void {
-  const { child, inFlightTools, lastActivityAt, childProgress, onKill } = opts;
+  const { child, inFlightTools, lastActivityAt, childProgress, onKill, stall } = opts;
   const inactivityMs = inactivityTimeoutMs();
   const toolInactivityMs = toolInactivityTimeoutMs();
   const armedBudget = () =>
@@ -195,8 +209,10 @@ export function createInactivityPoll(opts: {
     inactivityMs > 0 ? inactivityMs : Number.POSITIVE_INFINITY,
     toolInactivityMs > 0 ? toolInactivityMs : Number.POSITIVE_INFINITY,
     progressSilenceMs(false) || Number.POSITIVE_INFINITY,
+    stall !== undefined && stall.windowMs > 0 ? stall.windowMs : Number.POSITIVE_INFINITY,
   );
   if (pollBudgetMs === Number.POSITIVE_INFINITY) return () => undefined;
+  const stopPoll = (): void => clearInterval(interval);
   const interval = setInterval(
     () => {
       const armed = armedBudget();
@@ -219,6 +235,20 @@ export function createInactivityPoll(opts: {
         } catch (err) {
           traceWarn(`inactivity killProcessTree failed: ${String(err)}`);
         }
+        return;
+      }
+      // #2644 — the caller's hung-request lever, on this tick and nowhere else: a hung request
+      // emits nothing, so nothing else ticks. A tool in flight is a running bash — work, not
+      // silence — and is never a stall (#951). The caller owns the abort, so the poll contributes
+      // only the reading and the cadence.
+      if (stall !== undefined && !inFlightTools.active) {
+        const quiet = stall.silence();
+        // The caller's abort is one-shot, so the arm stands itself down after it fires: the poll
+        // has no reason to keep reading a stream whose child is already being ended.
+        if (quiet.sinceMs >= stall.windowMs) {
+          stopPoll();
+          stall.check?.();
+        }
       }
     },
     Math.min(30_000, Math.max(250, Math.floor(pollBudgetMs / 2))),
@@ -234,8 +264,13 @@ export function stallLever(
   runningState: RunningState,
 ): SpawnOptions["stall"] {
   if (opts.stall === undefined) return undefined;
+  const windowMs = opts.stall.windowMs ?? opts.stall.windowMinutes * 60_000;
   return {
     windowMinutes: opts.stall.windowMinutes,
+    // The enforced threshold rides through the spawn so the poll measures the same window the
+    // step froze; a caller that forwards only the whole minutes (`runLensChild`, the adversarial
+    // phase) gets those minutes as the threshold, which is the coarser of the two.
+    windowMs,
     silence: () => ({
       sinceMs: Date.now() - childProgress.lastProgressAt,
       toolInFlight: inFlightTools.active,
@@ -268,21 +303,6 @@ export function createStdoutLineHandler(opts: {
    */
   budgetProgress: BudgetProgressSteer;
   onProgress?: (snapshot: RunningState) => void;
-  /**
-   * #2644 — the caller's stall lever, armed by `lean`'s budget arm and read on the tick
-   * that reports progress: the same tick as the turns/tokens levers. The caller owns the
-   * `AbortController`, so the pump contributes only the two facts this stream holds — the
-   * window and whether a tool call sits in flight — and calls `check` when the child is
-   * quiet past the window with nothing in flight. A tool in flight is a running bash, not
-   * a hung request, and is never a stall (#951). Absent means no stall check, which is
-   * every caller that bounds its child some other way.
-   */
-  stall?: {
-    windowMinutes: number;
-    silence: () => { sinceMs: number; toolInFlight: boolean };
-    /** The caller's progress hook — the one that aborts, owned by `armBudget`. */
-    check: () => void;
-  };
   onRawEvent?: (event: PiJsonEvent) => void;
   onAgentEnd: (parsed: PiJsonEvent) => void;
   /** Every `agent_settled`, for the child bound's cancel-vs-done bit. */
@@ -307,7 +327,6 @@ export function createStdoutLineHandler(opts: {
     caps,
     budgetProgress,
     onProgress,
-    stall,
     onRawEvent,
     onAgentEnd,
     onAgentSettled,
@@ -354,13 +373,6 @@ export function createStdoutLineHandler(opts: {
       // `turnNudge`), and the progress steer is inert when none is.
       caps.turnNudge?.(runningState.turns);
       budgetProgress.onAssistantTurn(runningState.turns, Date.now());
-      // #2644 — the caller's stall check, on the same tick as the other levers and BEFORE
-      // the progress callback so its abort lands first. A tool in flight is a running bash,
-      // work rather than silence, and never a stall (#951).
-      if (stall !== undefined && !inFlightTools.active) {
-        const quiet = stall.silence();
-        if (quiet.sinceMs >= stall.windowMinutes * 60_000) stall.check?.();
-      }
       onProgress?.({ ...runningState, usage: { ...runningState.usage } });
     }
     // #839 — raw-event observer for the dispatch deck's live view. Fires

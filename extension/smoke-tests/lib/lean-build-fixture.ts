@@ -420,7 +420,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     prompts.push(spec.prompt);
     extraArgs.push(o.extraArgs ?? []);
     opts.onProgressTick?.(o.onProgress);
-    deliverQuietTick(spec.role, o, opts); // #2644 — see `lean-quiet-child-tick.ts`
+    await deliverQuietTick(spec.role, o, opts); // #2644 — see `lean-quiet-child-tick.ts`
     if (!childActed) opts.child?.((childActed = true) && (spec.cwd as string));
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];

@@ -157,8 +157,13 @@ export interface SpawnOptions extends WriteFenceOpt {
    * that armed the abort. Set only by `lean`'s budget arm.
    */
   stall?: {
-    /** The window the caller armed, in minutes. */
+    /** The window the caller armed, in whole minutes — what a verdict prints, and the threshold a
+     *  caller that carries no `windowMs` is enforced at. */
     windowMinutes: number;
+    /** The enforced threshold, ms. The step freezes it from the derived window, so a clamped
+     *  sub-minute window is enforced as what it is and not as the whole minute above; a sibling
+     *  child handed only the minutes (a lens, the adversarial reviewer) leaves this unset. */
+    windowMs?: number;
     /** The reader of this child's stream — the spawn supplies the stream's own stamp. */
     silence: () => { sinceMs: number; toolInFlight: boolean };
     /** The caller's progress hook, which is what aborts the child it armed. The spawn
