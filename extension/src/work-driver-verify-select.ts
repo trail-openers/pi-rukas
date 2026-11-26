@@ -58,15 +58,11 @@ import {
   NODE_PATH_RE,
   classifyChangedPath,
 } from "./work-driver-verify-classify.ts";
-import {
-  listLibTsFiles,
-  type LiteralTrust,
-  literalTrustFromLexed,
-} from "./work-driver-verify-literal-trust.ts";
+import { type LiteralTrust, literalTrustFromLexed } from "./work-driver-verify-literal-trust.ts";
 import { type OfflineTests, readOfflineTests } from "./work-driver-verify-offline-tests.ts";
 import { type LexedSource, lexSource } from "./work-driver-verify-select-lex.ts";
+import { namersForPaths } from "./work-driver-verify-select-literals.ts";
 import { SMOKE_TEST_NAME_RE, isOfflineTest } from "./work-driver-verify-shared.ts";
-import { isRepoPath } from "./work-driver-verify-repo-paths.ts";
 import {
   type Graph,
   TEST_NODE_RE,
@@ -200,7 +196,7 @@ function resolveSpecifier(
  * re-derived by hand can silently be narrower than the graph it protects, so the
  * gate asks the selector what its graph is.
  */
-export function listNodes(extensionDir: string): string[] {
+export function listNodes(extensionDir: string, withLib = changedPathRulesEnabled()): string[] {
   const files: string[] = [];
   const walk = (rel: string) => {
     for (const entry of readdirSync(path.join(extensionDir, rel), { withFileTypes: true })) {
@@ -218,7 +214,7 @@ export function listNodes(extensionDir: string): string[] {
   // directory exists: a tree with no `smoke-tests/` at all must throw from the
   // top-level scan (the caller's try/catch turns that into a full-suite fallback),
   // not from here, and an absent lib directory is not a doubt about anything.
-  if (changedPathRulesEnabled() && existsSync(path.join(extensionDir, "smoke-tests", "lib"))) {
+  if (withLib && existsSync(path.join(extensionDir, "smoke-tests", "lib"))) {
     walk("smoke-tests/lib");
   }
   return files;
@@ -227,14 +223,17 @@ export function listNodes(extensionDir: string): string[] {
 /** The graph, or the first file the tokenizer could not read. */
 function buildGraph(
   extensionDir: string,
+  rules: boolean,
 ): (Graph & { lexed: Map<string, LexedSource>; libTs: string[] }) | { unreadable: string } {
-  // `libTsFiles` is the same subtree the node walk below covers when the rules are
-  // on; computed from the node set rather than by a second walk. When the rules are
-  // off the node set holds no lib file, so the subtree is listed separately — and a
-  // tree with no `smoke-tests/lib/` at all lists nothing rather than throwing.
-  const rules = changedPathRulesEnabled();
-  const libTs = rules ? [] : listLibTsFiles(extensionDir);
-  const files = listNodes(extensionDir);
+  // `rules` is the caller's verdict, passed in rather than read from the switch here:
+  // a selection reads the switch exactly once (see `selectVerifyTests`), so the node
+  // set, the lib subtree and every rule below are judged by the same answer even if
+  // an operator flips the variable while a selection is running. The tests that pin
+  // both arms in one bun process depend on that single read per call.
+  // `libTs` is the subtree the literal rules ask about, gathered from the same walk
+  // that lexes it — never a second walk of `smoke-tests/lib/`.
+  const libTs: string[] = [];
+  const files = listNodes(extensionDir, rules);
   const nodes = new Set(files);
   const importers = new Map<string, Set<string>>();
   const dynamic = new Set<string>();
@@ -299,11 +298,16 @@ const EMPTY_ROSTER: OfflineTests = { names: [], lexed: new Map(), unlexable: fal
 
 /**
  * The offline tests that quote `rel` as an exact literal — the users of a shell or
- * data helper, which no import edge can show. Kept as the single-path entry point
- * beside `quoteExact`, which is where the rule is spelled and where the mutation
- * gate points.
+ * data helper, which no import edge can show. `bash smoke-tests/lib/verify-loop.sh
+ * …` inside a test is the shape this catches.
+ *
+ * The inclusion test on the roster's own lexed arrays is the single spelling of the
+ * reference rule, and the line the mutation gate in
+ * `test-verify-select-classify.ts` edits to prove this rule is what selects a
+ * helper's users; the batch scan in `work-driver-verify-select-literals` is handed
+ * this function rather than spelling the test again.
  */
-function literalReferrers(roster: OfflineTests, rel: string): string[] {
+export function literalReferrers(roster: OfflineTests, rel: string): string[] {
   const out: string[] = [];
   for (const name of roster.names) {
     const lexed = roster.lexed.get(name);
@@ -311,60 +315,6 @@ function literalReferrers(roster: OfflineTests, rel: string): string[] {
     if ([...lexed.strings, ...lexed.templates].includes(rel)) out.push(name);
   }
   return out;
-}
-
-/** A leading interpolation or relative prefix that does not change which file a literal names — the classifier's own rule. */
-const NAMER_LEADING_RE = /^(?:\$\{[^}]*\}\/|\.{1,2}\/|extension\/)*/;
-
-/**
- * Does a literal spell `rel` as an exact repository path, once its leading
- * interpolation or relative prefix is ignored? The classifier's exact-namer rule
- * and the shared spelling rules of `work-driver-verify-repo-paths` are the contract.
- */
-function isExactNamerLiteral(literal: string, rel: string): boolean {
-  return isRepoPath(literal) && literal.replace(NAMER_LEADING_RE, "") === rel;
-}
-
-/**
- * The offline tests whose lexed literals name each of `targets`, indexed by the
- * target they name. Roster order is sorted, so each bucket is sorted too — the same
- * answer the per-path scans produced, from one pass over the roster's literals.
- *
- * `rawMatch` picks the helper rule's spelling — the users of a shell or data helper,
- * which no import edge can show (`bash smoke-tests/lib/verify-loop.sh …` inside a
- * test is that shape) — over the classifier's, which reads the exact path after the
- * leading prefix; a bucket is therefore meaningful under exactly one of the two, and
- * the caller keeps them apart.
- */
-function namersForPaths(
-  roster: OfflineTests,
-  targets: ReadonlySet<string>,
-  rawMatch: boolean,
-): Map<string, string[]> {
-  const index = new Map<string, string[]>();
-  const push = (key: string, name: string) => {
-    const bucket = index.get(key);
-    if (bucket === undefined) index.set(key, [name]);
-    else if (!bucket.includes(name)) bucket.push(name);
-  };
-  const targetList = [...targets];
-  for (const name of roster.names) {
-    const lexed = roster.lexed.get(name);
-    if (lexed === undefined) continue;
-    if (rawMatch) {
-      // One test per roster file: a helper is quoted wholly or not at all, so every
-      // target is asked with the same test — the one `literalReferrers` spells.
-      if (targetList.every((t) => !literalReferrers(roster, t).includes(name))) continue;
-      for (const target of targetList) push(target, name);
-      continue;
-    }
-    for (const s of [...lexed.strings, ...lexed.templates]) {
-      for (const target of targetList) {
-        if (isExactNamerLiteral(s, target)) push(target, name);
-      }
-    }
-  }
-  return index;
 }
 
 /** Does this classification select on what a test's code SAYS rather than imports? */
@@ -377,9 +327,9 @@ function isLiteralClass(kind: ChangedPathClass): boolean {
  * graph walk already did. A lib `.ts` file the walk never lexed (or could not
  * close) is the doubt; a tree with no lib directory lists no file and is no doubt.
  */
-function libDoubtOf(graph: { lexed: Map<string, LexedSource>; libTs: string[] }): string | undefined {
+function libDoubtOf(graph: { lexed: Map<string, LexedSource>; libTs: string[] }): string {
   const trust = literalTrustFromLexed(graph.libTs, graph.lexed);
-  return trust.trusted ? undefined : trust.reason;
+  return trust.trusted ? "" : trust.reason;
 }
 
 /**
@@ -406,6 +356,9 @@ export function selectVerifyTests(
   // cannot be read falls back at the graph walk instead — the same answer, one read
   // cheaper.
   const roster = changedPathRulesEnabled() ? readOfflineTests(extensionDir) : null;
+  // The single read of the switch for this call — see `buildGraph`. Every later
+  // branch tests `rules`, never the environment again.
+  const rules = roster !== null;
   // Computed from the tree being verified, so the set matches the tests the
   // command is about to run: `rosterReaders` is `textReadingTests` over this same
   // roster. A `smoke-tests/` directory that is not there at all is not a silent
@@ -419,7 +372,6 @@ export function selectVerifyTests(
     fallbackReason,
   });
   if (changed.length === 0) return full("no-changed-files");
-  const rules = roster !== null;
   if (!rules) {
     // The off arm, verbatim from before #2649: any lib path and any non-node falls
     // back before the graph is built, in the order the old loop used.
@@ -436,7 +388,7 @@ export function selectVerifyTests(
   // file — the decision it blocked — while a graph-level unreadable file is the
   // sharper claim and keeps the reason that names the file itself.
   const rosterDoubt = roster?.unlexable ? `unlexable-roster:${changed[0]}` : undefined;
-  const graph = buildGraph(extensionDir);
+  const graph = buildGraph(extensionDir, rules);
   // A roster the tokenizer could not finish suspends every literal rule, so it
   // answers before the graph's own unreadable node: both send the same rules to the
   // full suite, and the roster reason is the one that says which rules were suspended.
@@ -457,12 +409,10 @@ export function selectVerifyTests(
   // A tree with no lib directory lists no file and is no doubt, which is why the
   // walk is guarded by the same existence check `listNodes` applies to the node set
   // (a fixture tree that never created the directory is a normal case, not a doubt).
-  let libDoubt: string | undefined | null = null;
-  const libTrustDoubt = (): string | undefined => {
+  let libDoubt: string | null = null;
+  const libTrustDoubt = (): string => {
     if (libDoubt === null) {
-      libDoubt = existsSync(path.join(extensionDir, "smoke-tests", "lib"))
-        ? libDoubtOf(graph)
-        : undefined;
+      libDoubt = existsSync(path.join(extensionDir, "smoke-tests", "lib")) ? libDoubtOf(graph) : "";
     }
     return libDoubt;
   };
@@ -481,9 +431,13 @@ export function selectVerifyTests(
   // Only the classes that select on what a test SAYS consult the roster's literals,
   // and a lib-subtree doubt suspends exactly those rules — so the doubt is asked
   // only when one of these classes is in play, and it is answered from the walk.
-  if (roster !== null && rosterDoubt === undefined && classifiedList.some((c) => isLiteralClass(c.kind))) {
+  if (
+    roster !== null &&
+    rosterDoubt === undefined &&
+    classifiedList.some((c) => isLiteralClass(c.kind))
+  ) {
     const trust = libTrustDoubt();
-    if (trust !== undefined) return full(trust);
+    if (trust !== "") return full(trust);
     // The `named`/`text` rows match the leading prefix off (a test may spell
     // `./docs/x.md`), the `helper` rows match the exact path as quoted. A path is
     // one class or the other, so a bucket is never filled under both spellings.
@@ -496,12 +450,12 @@ export function selectVerifyTests(
       else if (isLiteralClass(classified.kind)) exactPaths.add(f);
     }
     if (exactPaths.size > 0) {
-      for (const [key, names] of namersForPaths(roster, exactPaths, false)) {
+      for (const [key, names] of namersForPaths(roster, exactPaths, literalReferrers)) {
         literalIndexes.exact.set(key, names);
       }
     }
     if (rawPaths.size > 0) {
-      for (const [key, names] of namersForPaths(roster, rawPaths, true)) {
+      for (const [key, names] of namersForPaths(roster, rawPaths, literalReferrers)) {
         literalIndexes.raw.set(key, names);
       }
     }

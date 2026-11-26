@@ -31,9 +31,9 @@
  * Paths are relative to `extension/`, the directory the smoke tests run from.
  */
 
+import { type OfflineTests, readOfflineTests } from "./work-driver-verify-offline-tests.ts";
 import { isRepoPath, repoDirs, repoFiles } from "./work-driver-verify-repo-paths.ts";
 import { type LexedSource, lexSource } from "./work-driver-verify-select-lex.ts";
-import { type OfflineTests, readOfflineTests } from "./work-driver-verify-offline-tests.ts";
 
 const READ_CALL_RE =
   /\b(?:readFileSync|readdirSync|readFile|readdir|openSync|readSync|createReadStream|opendirSync)\s*\(|\bBun\.file\b/;

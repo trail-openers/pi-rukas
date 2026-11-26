@@ -16,7 +16,7 @@
  * could not be judged so the fallback reason says what happened.
  */
 
-import { readFileSync, readdirSync } from "node:fs";
+import { type Dirent, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { type LexedSource, lexSource } from "./work-driver-verify-select-lex.ts";
 
@@ -39,7 +39,7 @@ export function listLibTsFiles(extensionDir: string): string[] {
   const queue = [""];
   const files: string[] = [];
   for (const rel of queue) {
-    let entries;
+    let entries: Dirent[];
     try {
       entries = readdirSync(path.join(dir, rel), { withFileTypes: true });
     } catch {
@@ -95,7 +95,7 @@ export function literalRulesTrustworthy(extensionDir: string): LiteralTrust {
   const dir = path.join(extensionDir, "smoke-tests", "lib");
   const queue = [""];
   for (const rel of queue) {
-    let entries;
+    let entries: Dirent[];
     try {
       entries = readdirSync(path.join(dir, rel), { withFileTypes: true });
     } catch {

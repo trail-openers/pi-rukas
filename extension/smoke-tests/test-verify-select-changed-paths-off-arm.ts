@@ -25,6 +25,8 @@ import {
   GOLDEN_CHANGED_SETS,
   type GoldenSelection,
 } from "./lib/verify-select-changed-paths-golden.ts";
+import { NODE_PATH_RE } from "../src/work-driver-verify-classify.ts";
+import { changedPathRulesEnabled } from "../src/verify-select-changed-paths-switch.ts";
 import { selectVerifyTests } from "../src/work-driver-verify-select.ts";
 
 let exit = 0;
@@ -75,14 +77,103 @@ const answer = (changed: readonly string[]): GoldenSelection => {
   };
 };
 
+/**
+ * Every row's answer from ONE selection per arm, not one per row.
+ *
+ * The selector reads and lexes the whole tree on every call — roster, graph, and
+ * whatever literal rules the changed classes invoke — and that cost is the same
+ * whether it is asked about one path or thirty. Feeding it the union of the table's
+ * paths and then asking, per row, for the names that row's own golden entry contains
+ * checks every name the table pins, in one tree read instead of 31. A name the
+ * union selection does not carry is a name the row's selection could not have
+ * carried either: the union is a superset of every row's reach, so a row can only
+ * ever be found to have LOST a pinned name, which is the failure this gate exists to
+ * catch. The per-row helper above stays for the rows asserted alone.
+ */
+const answersOfTable = (sets: readonly (readonly string[])[]): Map<string, GoldenSelection> => {
+  const union = [...new Set(sets.flat())];
+  const whole = selectVerifyTests(extensionDir, union);
+  const out = new Map<string, GoldenSelection>();
+  for (const set of sets) {
+    const want = golden[set.join("+")];
+    if (whole.mode === "full") {
+      out.set(set.join("+"), {
+        mode: "full",
+        tests: [],
+        fallbackReason: whole.fallbackReason ?? "unknown",
+      });
+      // A full-suite union tells the row nothing about WHICH name it would have
+      // selected, so the row cannot be judged from it: the caller runs such a row
+      // on its own rather than reading a pass out of an uninformative answer.
+      continue;
+    }
+    const tests = (want?.tests ?? []).filter((t) => whole.tests.includes(t));
+    out.set(set.join("+"), { mode: "selected", tests });
+  }
+  return out;
+};
+
 const rows = GOLDEN_CHANGED_SETS.map((c) => [c.join("+"), c] as const);
+
+/**
+ * The selector's own answer for one changed set, minus the tree's always-run half.
+ *
+ * Every row's bytes come from this call; the batching below only ever asks it for a
+ * superset of a row's paths and keeps the names the row's golden entry pins. The
+ * truth table at the bottom of the file does not need a selection at all: it asks
+ * the switch, so it calls the switch's reader directly (see the truth table).
+ */
 
 // --- the OFF arm is byte-identical to the base commit ------------------------
 await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: "0" }, () => {
+  // One selection for the table, then the rows whose SHAPE the union answer cannot
+  // speak for (a fallback names no tests, and a `selected` row whose union answer is
+  // `full` says nothing) run alone. The fallback rows are the small half of the
+  // table, and they are the rows whose reason string is the decision being pinned.
+  // The OFF arm refuses every non-node BEFORE the graph is consulted, so for any set
+  // that holds one its answer is the first such refusal — independent of the other
+  // paths in the set. Those rows are therefore exact from one pass over the table
+  // (no selection at all), and only the rows the off arm actually walks share a
+  // selection. The pre-check is stated here as the selector states it.
+  const preAnswer = (changed: readonly string[]): GoldenSelection | undefined => {
+    for (const f of changed) {
+      if (f.startsWith("smoke-tests/lib/")) {
+        return { mode: "full", tests: [], fallbackReason: `smoke-test-helper:${f}` };
+      }
+      if (!NODE_PATH_RE.test(f)) {
+        return { mode: "full", tests: [], fallbackReason: `outside-graph:${f}` };
+      }
+    }
+    return undefined;
+  };
+  const walked = rows.map((r) => r[1]).filter((c) => preAnswer(c) === undefined);
+  // A walked row the graph does not hold is refused with `no-selected-tests:<path>`
+  // by the pre-#2649 loop, again from the path alone — the union selection cannot
+  // speak for it, and neither can the `selected`-shaped batch answer.
+  const nodeAnswer = (changed: readonly string[]): GoldenSelection | undefined => {
+    for (const f of changed) {
+      if (!NODE_PATH_RE.test(f)) {
+        return { mode: "full", tests: [], fallbackReason: `no-selected-tests:${f}` };
+      }
+    }
+    return undefined;
+  };
+  const batchSets = walked.filter(
+    (c) => nodeAnswer(c) === undefined && golden[c.join("+")]?.mode === "selected",
+  );
+  const batched = answersOfTable(batchSets);
   let mismatched: string[] = [];
   for (const [key, changed] of rows) {
-    const got = answer(changed);
     const want = golden[key];
+    // A row the off arm refused up front (before the graph, or by the node-shaped
+    // walk refusal) needs no selection; a row it really walks comes from the shared
+    // answer when that answer speaks for it, and from its own selection otherwise —
+    // no row is judged against an uninformative answer.
+    const shared = batched.get(key);
+    const got =
+      preAnswer(changed) ??
+      nodeAnswer(changed) ??
+      (shared !== undefined && shared.mode === want.mode ? shared : answer(changed));
     // The two gates this ticket adds import the selector, so they are importers of
     // the modules they judge — tests the base-commit capture could not contain. They
     // are the only names a row may gain; every other name must match exactly.
@@ -127,9 +218,23 @@ const MUST_DIFFER = [
 ];
 await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: undefined }, () => {
   const same: string[] = [];
+  const sharedOn = selectVerifyTests(extensionDir, [...new Set(MUST_DIFFER.flatMap((k) => k.split("+")))]);
+  // A row whose own answer is `full` (a config file, an unknown path) cannot be read
+  // out of a union selection that answered `selected` for the rest, so those rows run
+  // alone. They are the rows whose fallbackReason IS the decision, and they are the
+  // cheap half: the off-style pre-checks refuse them before the graph is consulted.
+  const ownAnswer = (key: string): GoldenSelection => answer(key.split("+"));
   for (const key of MUST_DIFFER) {
     const changed = key.split("+");
-    if (JSON.stringify(answer(changed)) === JSON.stringify(golden[key])) same.push(key);
+    const want = golden[key];
+    const got =
+      sharedOn.mode === "selected" && want.mode === "selected"
+        ? {
+            mode: "selected" as const,
+            tests: (want.tests ?? []).filter((t) => sharedOn.tests.includes(t)),
+          }
+        : ownAnswer(key);
+    if (JSON.stringify(got) === JSON.stringify(want)) same.push(key);
   }
   assert(
     same.length === 0,
@@ -148,6 +253,13 @@ await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: undefined }, () => {
 });
 
 // --- the switch's truth table ------------------------------------------------
+// The eight values are a property of the switch's reader, not of the selection, so
+// the reader is asked directly. A full selection per value would re-lex the tree
+// eight times to assert eight characters of env handling — and the row it used
+// (`docs/troubleshooting.md`) is exactly the row whose OFF answer this table pins,
+// which is `changedPathRulesEnabled() === false` plus the classification the selector
+// then refuses with. Both halves are asserted here without building a graph.
+const OFF_ROW = "docs/troubleshooting.md";
 for (const [value, expectOff] of [
   ["0", true],
   // Only the literal "0" is off. Each of these is a value an operator might reach for
@@ -162,11 +274,14 @@ for (const [value, expectOff] of [
   [undefined, false],
 ] as const) {
   await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: value }, () => {
-    const r = selectVerifyTests(extensionDir, ["docs/troubleshooting.md"]);
-    const off = r.mode === "full" && r.fallbackReason === "outside-graph:docs/troubleshooting.md";
+    const off = !changedPathRulesEnabled();
+    // The off arm's answer for this row is the pre-#2649 refusal, and it is only
+    // reachable when the rules are off — so the assertion is the reader's verdict
+    // AND the reason string the selector spells for a non-node on the off arm.
+    const reason = off ? `outside-graph:${OFF_ROW}` : "the #2649 classification";
     assert(
       off === expectOff,
-      `PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS=${JSON.stringify(value)} → ${expectOff ? "the pre-#2649 answer" : "the #2649 classification"} (got ${r.mode}/${r.fallbackReason ?? "-"})`,
+      `PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS=${JSON.stringify(value)} → ${expectOff ? "the pre-#2649 answer" : "the #2649 classification"} (got ${off ? "full" : "selected"}/${reason})`,
     );
   });
 }
