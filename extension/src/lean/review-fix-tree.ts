@@ -12,8 +12,7 @@ import { provisionWorktree } from "../worktree-provision.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { ReviewWave } from "./review-args.ts";
 import { type FixArm, fixTreeName, removeWorktree } from "./review-tree.ts";
-import type { FixRunId } from "./review.ts";
-import { type ReviewDeps, ReviewInfraError } from "./review.ts";
+import { type FixRunId, type ReviewDeps, ReviewInfraError } from "./review.ts";
 import { gitQuiet } from "./specify-reset.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 

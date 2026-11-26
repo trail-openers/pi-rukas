@@ -16,8 +16,7 @@ import { traceWarn } from "../trace.ts";
 import { worktreePath } from "../worktree.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { ReviewWave } from "./review-args.ts";
-import type { FixRunId } from "./review.ts";
-import type { ReviewDeps } from "./review.ts";
+import type { FixRunId, ReviewDeps } from "./review.ts";
 import { gitQuiet } from "./specify-reset.ts";
 
 /**

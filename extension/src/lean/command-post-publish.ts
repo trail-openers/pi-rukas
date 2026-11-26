@@ -8,8 +8,7 @@
 
 import { ciDeps } from "./ci-deps.ts";
 import { ciOutcome } from "./ci.ts";
-import type { HandlerCtx } from "./engine.ts";
-import type { LeanHandlers } from "./engine.ts";
+import type { HandlerCtx, LeanHandlers } from "./engine.ts";
 import { landDeps } from "./land-deps.ts";
 import { primeMergeSubject } from "./land-deps.ts";
 import { landOutcome } from "./land.ts";

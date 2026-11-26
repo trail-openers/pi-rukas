@@ -23,8 +23,7 @@ import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { extractBlockedReport } from "./build-blocked-extract.ts";
 import { blobAt } from "./build-git.ts";
 import { normaliseBuild } from "./build-normalise.ts";
-import type { NormaliseReport } from "./build-types.ts";
-import type { BuildExec } from "./build-types.ts";
+import type { BuildExec, NormaliseReport } from "./build-types.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import {
   type Proof,

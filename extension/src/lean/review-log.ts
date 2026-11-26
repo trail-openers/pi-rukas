@@ -12,8 +12,7 @@ import type { HandlerCtx } from "./engine.ts";
 import { OUTCOME_KINDS } from "./machine.ts";
 import { isRunId } from "./state-dispatches.ts";
 import { validPrUrl } from "./state-outcome.ts";
-import type { Step } from "./state.ts";
-import { newestDecided } from "./state.ts";
+import { type Step, newestDecided } from "./state.ts";
 import type { FixRunId } from "./step-budget.ts";
 import { FIXER_ROLE } from "./step-budget.ts";
 

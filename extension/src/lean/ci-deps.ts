@@ -9,8 +9,7 @@
 import { execp } from "../exec.ts";
 import { mergeEvidenceViewCmd, prChecksCmd } from "../forge-commands.ts";
 import type { Forge } from "../forge-types.ts";
-import { loadWorkConfig } from "./config.ts";
-import type { WorkConfig } from "./config.ts";
+import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import { forgeFor } from "./io.ts";
 import type { VerifyExec } from "./verify-types.ts";
 
