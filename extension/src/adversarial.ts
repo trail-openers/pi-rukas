@@ -245,9 +245,12 @@ export async function runAdversarialLoop(
     ...(params.pi ? { pi: params.pi } : {}),
     processGroup: params.processGroup,
     workCycleTrust: params.workCycleTrust,
-    // #1978 — the caller's budget arms, forwarded verbatim. `budgetSignal` is
-    // named apart because the loop's own `signal` above is a different abort.
+    // #1978 — the caller's budget arms, forwarded verbatim (`budgetSignal` is named apart: the loop's
+    // own `signal` above is a different abort). #2644 — the window beside the bound is that lever.
     childBoundMs: params.childBoundMs,
+    ...(params.stallWindowMinutes === undefined
+      ? {}
+      : { stallWindowMinutes: params.stallWindowMinutes }),
     ...(params.signal === undefined ? {} : { budgetSignal: params.signal }),
     onProgress: params.onProgress,
   });

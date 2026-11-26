@@ -55,6 +55,30 @@ function productionSilence(
   return { sinceMs: toolInFlight ? 0 : silent, toolInFlight };
 }
 
+/**
+ * The tick the STDOUT PUMP would have run, reproduced on the arm (`spawn-inflight.ts`'s
+ * `createStdoutLineHandler`). The production pump checks the window itself and calls the arm's
+ * `check` — which is the caller's progress hook, the one that aborts — and only then reports
+ * progress. A case that called `onProgress` directly would pin the lever while leaving the pump's
+ * own branch unpinned, so this runs that branch: `silence` from the case, `check` wired to the arm's
+ * hook, and the pump's rule (`!inFlightTools.active`) honoured through the real tracker.
+ */
+export function deliverPumpTick(
+  o: { stall?: BudgetOpts["stall"] },
+  opts: QuietTickOpts,
+  events: PiJsonEvent[],
+  onCheck: () => void,
+): void {
+  if (o.stall === undefined) return;
+  const inFlight = new InFlightTools();
+  for (const event of events) inFlight.observe(event);
+  // The pump's guard, verbatim in shape: an in-flight call stands the check down, whatever the case's
+  // declared silence — that is the #951 arm.
+  if (inFlight.active || opts.toolInFlight === true) return;
+  const quiet = productionSilence(opts, events);
+  if (quiet.sinceMs >= o.stall.windowMinutes * 60_000) onCheck();
+}
+
 /** Whether this child's stream was quiet past the armed window, and the abort it produced. */
 export function deliverQuietTick(
   role: DispatchResult["role"],
@@ -83,13 +107,25 @@ export function deliverQuietTick(
   // The reader stands where the spawn's own stamp would, on the arm's live opts object — and it is
   // the production reader, not a literal the case asserts against.
   o.stall.silence = () => productionSilence(opts, events);
-  o.onProgress({
+  // The spawn's `stallLever` is what puts `check` on this option — it composes the arm's own progress
+  // hook into it (`spawn-inflight.ts`). The fixture has no spawn, so it installs the same field the
+  // same way and the pump's branch below reaches the arm's hook through it, not through a shortcut.
+  o.stall.check = () => o.onProgress?.(progressTick(role, silent));
+  // The pump's tick: the check runs on the quiet reading BEFORE progress is reported, which is the
+  // ordering `createStdoutLineHandler` uses so the abort lands first.
+  deliverPumpTick(o, opts, events, () => o.stall?.check?.());
+  o.onProgress(progressTick(role, silent));
+}
+
+/** The snapshot the spawn hands its progress hook on an assistant turn: zeros but for the clock. */
+function progressTick(role: DispatchResult["role"], elapsedMs: number) {
+  return {
     role,
     turns: 0,
     toolUses: 0,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
     totalTokens: 0,
-    elapsedMs: silent,
+    elapsedMs,
     done: false,
-  });
+  };
 }

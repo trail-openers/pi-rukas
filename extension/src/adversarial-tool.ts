@@ -95,6 +95,9 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
         // review step is the only writer, so a raw arg carrying them is
         // dropped here rather than forwarded.
         childBoundMs: _budgetBound,
+        // #2644 — the hung-request window is a budget arm of the same family and gets the same
+        // treatment: lean's review step is the only writer, so a raw arg carrying it is dropped.
+        stallWindowMinutes: _budgetStall,
         signal: _budgetSignal,
         onProgress: _budgetProgress,
         // The criteria section is the loop's, not the caller's: only lean's review
@@ -113,6 +116,7 @@ export function registerAdversarialTool(pi: ExtensionAPI) {
       } = params as typeof params & {
         toolPath?: unknown;
         childBoundMs?: unknown;
+        stallWindowMinutes?: unknown;
         signal?: unknown;
         onProgress?: unknown;
         reviewCriteria?: unknown;

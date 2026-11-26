@@ -79,9 +79,11 @@ export function requestStallUnarmed(
   return reason === undefined ? undefined : `request stall bound is inert: ${causes[reason]}`;
 }
 
-/** Minutes of a stream's silence — the whole minutes a stall verdict prints. */
+/** Minutes of a stream's silence — the whole minutes a stall verdict prints. Rounds UP like its
+ *  sibling `minutesUsed`: a verdict must never understate what the child waited, and rounding a
+ *  13.8-minute hang down to 13 would print a silence shorter than the one that happened. */
 export function stallMinutes(ms: number): number {
-  return Math.max(1, Math.round(ms / 60_000));
+  return Math.max(1, Math.ceil(ms / 60_000));
 }
 
 /** The arms one dispatch is handed when the lever armed: the window in the whole minutes the
@@ -89,6 +91,10 @@ export function stallMinutes(ms: number): number {
 export interface StallOpts {
   windowMinutes: number;
   silence: StreamSilence;
+  /** The caller's progress hook, which is what aborts the child it armed. The spawn composes it from
+   *  its own stream (`stallLever` in `spawn-inflight.ts`); the step arms none, and a caller that
+   *  forwards only the window needs nothing else. */
+  check?: () => void;
 }
 
 /** Freeze the lever's arms, or arm nothing: no window, no reader, or a window of 0 or less,

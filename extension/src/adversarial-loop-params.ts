@@ -136,6 +136,14 @@ export type AdversarialLoopParams = ReportPolicy & {
    */
   childBoundMs?: number;
   /**
+   * #2644 — the caller's armed hung-request window, in whole minutes. Set ONLY by lean's review
+   * step, beside {@link AdversarialLoopParams.childBoundMs}, and for the same reason: the phase
+   * builds the reviewer's spawn options itself, so an arm the caller armed has to arrive as data.
+   * Reviewer-only, like `childBoundMs`. Unlike the bound it does not clamp — there is no reviewer
+   * knob for a hung request, so the step's value is the child's value.
+   */
+  stallWindowMinutes?: number;
+  /**
    * An extra abort for the reviewer child. Set ONLY by lean's review step, so
    * `budgets.review.turns` / `tokens` can stop a runaway reviewer at a turn
    * boundary. Reviewer-only, like {@link AdversarialLoopParams.childBoundMs}:
