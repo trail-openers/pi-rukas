@@ -41,7 +41,6 @@ export interface BudgetOpts {
   /** #2644: quiet this long with nothing in flight is a hung request (#951). */
   stall?: StallOpts;
 }
-
 /**
  * The cost of one dispatch, as the dispatching steps record it. `usage` is the child's report;
  * `role`/`ms`/`ok` are what the step observed.
@@ -123,11 +122,9 @@ function traceBreach(fired: BudgetFired, phrase: string): void {
 /** The arms a step hands its dispatch seam: what the child gets, and the reader. */
 export type BudgetArms = {
   opts: BudgetOpts;
-  /**
-   * The verdict this arm saw: the turns/tokens the progress hook froze, else the minutes lever inferred
-   * from a `child-bound` kill cause. A `child-bound` cause names a wall clock, so it never names the
-   * stall lever — that one is only ever what `onProgress` froze in `hit`.
-   */
+  // The verdict this arm saw: the turns/tokens/stall the progress hook froze, else the minutes lever
+  // inferred from a `child-bound` kill cause — a cause that names a wall clock, so it never names the
+  // stall lever, which is only ever what `onProgress` froze in `hit`.
   fired: (result: DispatchResult) => BudgetFired | undefined;
   /** Set when a wall clock was armed that the runtime will not enforce (`PI_ENSEMBLE_DISPATCH_CAPS=0`). */
   warning?: string;
@@ -181,8 +178,8 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
     }
     return minutesBreach(result);
   };
-  // `armChildBound` returns early under `PI_ENSEMBLE_DISPATCH_CAPS=0` — arming it there buys nothing —
-  // and the stall lever's inertness rides the SAME warning instead of going quiet per step.
+  // `armChildBound` returns early under `PI_ENSEMBLE_DISPATCH_CAPS=0` — arming it there buys nothing
+  // — and the stall lever's inertness rides the SAME warning instead of going quiet per step.
   const inert =
     [
       ...(boundMs !== undefined && !capsEnabled()
@@ -202,9 +199,9 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
     };
   }
   const controller = new AbortController();
-  // The trace lines print once per ARM, not per tick: the hook runs once per child turn.
+  // The sink sits on BOTH arms of this hook, so every write goes through one catcher; each line
+  // prints once per ARM, not per tick (the hook below runs once per child turn).
   let hookFailureTraced = false;
-  // The sink sits on BOTH arms of this hook, so every write goes through one catcher.
   const traceOnce = (msg: string): void => {
     try {
       traceWarn(msg);
