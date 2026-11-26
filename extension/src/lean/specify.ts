@@ -63,9 +63,7 @@ import { RED_TEST_GAP } from "./specify-gap-switch.ts";
 import { assertRunnerCanRunTests } from "./specify-preflight.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
-import { SpecifyResetError } from "./specify-reset.ts";
-import { SpecifyInfraError } from "./specify-reset.ts";
-
+import { SpecifyInfraError, SpecifyResetError } from "./specify-reset.ts";
 import {
   assertSpecifyWorktreeOwned,
   ensureSpecifyWorktreeWithProvision,

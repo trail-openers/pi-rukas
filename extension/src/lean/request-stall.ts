@@ -1,7 +1,7 @@
 /**
  * lean/request-stall — the step's wiring for the #2644 lever: pins the lean reserve into the
- * window `src/request-stall-policy.ts` derives and adds the run's clock. The policy itself
- * (switch, window, inertness line, frozen arms) lives there: spawn policy, not engine state.
+ * window `src/request-stall-policy.ts` derives and adds the run's clock. The policy itself —
+ * switch, window, inertness line, frozen arms — lives there: spawn policy, not engine state.
  */
 
 import { type StallArms, requestStallWindowMs } from "../request-stall-policy.ts";

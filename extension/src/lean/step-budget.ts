@@ -2,8 +2,8 @@
  * lean/step-budget — make a `.pi/work.json` budget real.
  *
  * One per-state ceiling becomes four levers: **minutes** → `childBoundMs`, whose kill arrives as
- * `killCause: "child-bound"`; **turns / tokens / stall** → one `AbortController` off the progress stream,
- * the stall fired on the window `src/request-stall-policy.ts` derives. A breach is
+ * `killCause: "child-bound"`; **turns / tokens / stall** → one `AbortController` off the progress stream.
+ * A breach is
  * a VERDICT — the child worked and the ceiling stopped it — so the step returns `{kind: "budget"}` to be
  * routed by the table. Callers ask {@link readDispatched} BEFORE their infra throw: a stop read as an infra
  * failure never reaches the routing and the run loses the cause the ceiling produced.
@@ -11,7 +11,6 @@
 
 import type { LensRunResult } from "../lens-review-types.ts";
 import type { RunningState } from "../progress.ts";
-// The stall lever's policy — switch, derived window, inertness line, frozen arms, verdict minutes.
 import {
   type BudgetLimit,
   type StallArms,

@@ -14,8 +14,8 @@
 
 import { cycleChildOpts } from "../work-cycle-trust.ts";
 
-// Spread AFTER the caller's own options at the dispatch site, so no caller can opt a child out of the
-// stamp. `headless` is a REQUIRED argument so a dispatch site that drops its run's mode is a compile error.
+/** Spread AFTER the caller's own options, so no caller can opt a child out of the stamp; `headless` is
+ *  REQUIRED so a dispatch site that drops its run's mode is a compile error. */
 export function leanChildOpts(headless: boolean): { workCycleTrust: boolean } {
   return cycleChildOpts({ headless });
 }

@@ -4,23 +4,17 @@
  * The lean step log records one row per dispatch on the three dispatching steps (`Outcome.dispatches`, owned
  * by `specify`/`build`/`challenge`). This folds those rows: `total` and one row per `role`, the same shape the
  * headless `work` result reports as `usage`/`usage.byRole`, so a host comparing the two engines reads one shape
- * and one definition of "cost".
- *
- * The fold is not restated here: it is `foldUsage` in `../usage-fold.ts`. **A dispatch counts whether or not
- * the child succeeded** — a child the budget stopped or the provider killed spent its tokens before it died,
- * and a sum that skipped it would report a failed run as a cheap one.
+ * and one definition of "cost". The fold itself is `foldUsage` in `../usage-fold.ts`, and it counts a dispatch
+ * whether or not the child succeeded: a child the budget stopped spent its tokens before it died.
  */
 
 import type { DispatchUsage } from "../types.ts";
-import type { UsageFold } from "../usage-fold.ts";
-import { foldUsage } from "../usage-fold.ts";
+import { type UsageFold, foldUsage } from "../usage-fold.ts";
 import type { Step } from "./state.ts";
 
 /**
- * Fold every dispatch the step log records into totals, in total and per role.
- *
- * Failed dispatches are counted: a row is attached by the step whether the child finished, was stopped by its
- * budget, or died. That counting, the null-prototype `byRole` and the zero row all come from the shared fold.
+ * Fold every dispatch the step log records into totals, in total and per role. Failed dispatches are counted,
+ * and the null-prototype `byRole` and the zero row all come from the shared fold.
  *
  * The row's `usage` is COPIED out rather than handed over whole: `DispatchUsageRow` is not assignable to the
  * fold's `{role, usage}`. The numbers are read field by field so the copy is the record the loader validated.

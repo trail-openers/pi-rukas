@@ -175,6 +175,7 @@ export class SpecifyInfraError extends Error {
     if (dispatches !== undefined) this.dispatches = dispatches;
   }
 }
+
 /**
  * Write captured bytes back to their paths, creating parent directories.
  *

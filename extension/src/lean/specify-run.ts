@@ -33,8 +33,8 @@ import { commitTestFiles, committedBlob } from "./specify-commit.ts";
 import { formatSubmitted } from "./specify-format.ts";
 import type { Proof, TestRunLimits } from "./specify-proof.ts";
 import { runTestFile, sha256 } from "./specify-proof.ts";
-import { SpecifyCommitError } from "./specify-reset.ts";
 import {
+  SpecifyCommitError,
   SpecifyInfraError,
   SpecifyResetError,
   resetWorktreeToBase,
