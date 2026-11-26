@@ -22,6 +22,7 @@ const read = (rel: string): string => readFileSync(path.join(repo, rel), "utf8")
 
 const configuration = read("docs/configuration.md");
 const lean = read("docs/lean.md");
+const headless = read("docs/headless.md");
 
 /** The env table's row for one variable, so an assertion is about ITS row and not the file's. */
 function envRow(name: string): string {
@@ -86,6 +87,21 @@ assert(
 assert(
   lean.includes("only off value") && lean.includes("no step record gains a key"),
   "docs/lean.md states that 0 takes the whole change out rather than bounding the pair at zero",
+);
+
+/** The `features.leanGates` row, so the assertion is about the gates contract and not the file's. */
+function leanGatesRow(): string {
+  const line = headless.split("\n").find((l) => l.startsWith("| `features.leanGates` |"));
+  if (line === undefined) throw new Error("docs/headless.md has no row for features.leanGates");
+  return line;
+}
+
+const gatesRow = leanGatesRow();
+assert(
+  gatesRow.includes("`challenge`") &&
+    gatesRow.includes("`skipped`") &&
+    gatesRow.includes("`reason`"),
+  "docs/headless.md names the skipped challenge verdict and its reason",
 );
 
 process.exit(failures());
