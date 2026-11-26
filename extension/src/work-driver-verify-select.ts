@@ -57,14 +57,18 @@ import {
   type ClassifiedPath,
   NODE_PATH_RE,
   classifyChangedPath,
+  classifyChangedPathIndexed,
 } from "./work-driver-verify-classify.ts";
 import { type LiteralTrust, literalTrustFromLexed } from "./work-driver-verify-literal-trust.ts";
-import { type OfflineTests, readOfflineTests } from "./work-driver-verify-offline-tests.ts";
+import type { OfflineTests } from "./work-driver-verify-offline-tests.ts";
 import { isRepoPath } from "./work-driver-verify-repo-paths.ts";
-import { type BuiltGraph, buildGraph } from "./work-driver-verify-select-graph.ts";
+import {
+  type VerifySelectionContext,
+  prepareVerifySelection,
+} from "./work-driver-verify-select-context.ts";
+import type { BuiltGraph } from "./work-driver-verify-select-graph.ts";
 import {
   type LiteralIndex,
-  emptyLiteralIndex,
   literalIndex,
   namersOf,
   quotersOf,
@@ -85,6 +89,14 @@ import {
  */
 export { edgesOf, type FileEdges } from "./work-driver-verify-select-edges.ts";
 export { listNodes } from "./work-driver-verify-select-graph.ts";
+/**
+ * The prepared-context entry, re-exported so the selector stays the one module a caller
+ * imports to select — by tree, or by a context read once from that tree.
+ */
+export {
+  type VerifySelectionContext,
+  prepareVerifySelection,
+} from "./work-driver-verify-select-context.ts";
 
 export interface VerifySelection {
   /** `selected`: run `tests` (plus `alwaysRun`). `full`: run the whole suite. */
@@ -165,8 +177,7 @@ function importersClosure(graph: Graph, start: string): Set<string> {
   return reached;
 }
 
-/** An empty roster: the off arm never asks a literal rule anything. */
-const EMPTY_ROSTER: OfflineTests = { names: [], lexed: new Map(), unlexable: false };
+/** An empty roster is not a valid context field: the off arm holds null and asks nothing. */
 
 /**
  * The offline tests that quote `rel` as an exact literal — the users of a shell or
@@ -212,8 +223,8 @@ function isLiteralClass(kind: ChangedPathClass): boolean {
  * graph walk already did. A lib `.ts` file the walk never lexed (or could not
  * close) is the doubt; a tree with no lib directory lists no file and is no doubt.
  */
-function libDoubtOf(graph: BuiltGraph): string {
-  const trust = literalTrustFromLexed(graph.libTs, graph.lexed);
+function libDoubtOf(prepared: VerifySelectionContext): string {
+  const trust = literalTrustFromLexed(prepared.libTs, prepared.lexed);
   return trust.trusted ? "" : trust.reason;
 }
 
@@ -224,6 +235,11 @@ function libDoubtOf(graph: BuiltGraph): string {
  * classification table places as `config` or `unknown`, or anything the walk cannot
  * trust, sends the whole selection to the full suite.
  *
+ * The second form answers from a context the caller prepared (`prepareVerifySelection`),
+ * which holds the one read of the tree and the switch verdict it was read under: the
+ * answers are identical, and the per-selection cost is the walk over `changed` rather
+ * than a re-lex of the tree. The directory form reads the tree itself, per call.
+ *
  * Cost: one selection reads and lexes each top-level smoke test once (the roster,
  * which also answers the always-run question) and each graph node once (the walk,
  * which also answers the doubt over the lib subtree), whatever the size of `changed`.
@@ -232,24 +248,32 @@ export function selectVerifyTests(
   extensionDir: string,
   changed: readonly string[],
 ): VerifySelection {
-  // Read once per selection and shared by every rule that asks what a top-level
-  // test says — the always-run set, the classifier's exact namers and the
-  // helper-reference rule. A tree with no smoke-test directory at all is not a
-  // silent empty roster: the roster read throws, and the caller's try/catch turns
-  // that into a full-suite fallback, which is the safe direction. The off arm does
-  // not read it: it never asks a literal rule anything, and a tree whose roster
-  // cannot be read falls back at the graph walk instead — the same answer, one read
-  // cheaper.
-  const roster = changedPathRulesEnabled() ? readOfflineTests(extensionDir) : null;
-  // The single read of the switch for this call — see `buildGraph`. Every later
-  // branch tests `rules`, never the environment again.
-  const rules = roster !== null;
-  // Computed from the tree being verified, so the set matches the tests the
-  // command is about to run: `rosterReaders` is `textReadingTests` over this same
-  // roster. A `smoke-tests/` directory that is not there at all is not a silent
-  // empty set: the roster read above throws and the caller's try/catch turns that
-  // into a full-suite fallback, which is the safe direction.
-  const alwaysRun = rosterReaders(roster ?? readOfflineTests(extensionDir));
+  // Read the tree here and answer from it — one tree read per selection, and the switch
+  // read exactly once for the whole call (see `prepareVerifySelection`).
+  return selectFrom(prepareVerifySelection(extensionDir), changed);
+}
+
+/**
+ * Select from an already-read tree — the same answers as the directory form, from a tree
+ * someone read once (`prepareVerifySelection`). Exported for a caller that holds a
+ * context; production keeps the directory form above.
+ */
+export function selectVerifyTestsFromContext(
+  context: VerifySelectionContext,
+  changed: readonly string[],
+): VerifySelection {
+  return selectFrom(context, changed);
+}
+
+/** The selection, from a tree someone has already read. */
+function selectFrom(prepared: VerifySelectionContext, changed: readonly string[]): VerifySelection {
+  const { extensionDir, rules, alwaysRun } = prepared;
+  // The roster is the one this context read (null on the off arm, which asks it nothing),
+  // and the switch verdict is the one it was read under: no rule below consults the
+  // environment. A tree with no smoke-test directory at all is not a silent empty roster:
+  // the roster read throws during the prepare, and the caller's try/catch turns that into
+  // a full-suite fallback, which is the safe direction.
+  const roster = prepared.roster;
   const full = (fallbackReason: string): VerifySelection => ({
     mode: "full",
     tests: [],
@@ -273,19 +297,12 @@ export function selectVerifyTests(
   // file — the decision it blocked — while a graph-level unreadable file is the
   // sharper claim and keeps the reason that names the file itself.
   const rosterDoubt = roster?.unlexable ? `unlexable-roster:${changed[0]}` : undefined;
-  const graph = buildGraph(extensionDir, rules);
+  const graph = prepared.graph;
   // A roster the tokenizer could not finish suspends every literal rule, so it
   // answers before the graph's own unreadable node: both send the same rules to the
   // full suite, and the roster reason is the one that says which rules were suspended.
   if (rosterDoubt !== undefined) return full(rosterDoubt);
   if ("unreadable" in graph) return full(`unlexable:${graph.unreadable}`);
-  // The doubt over the lib subtree is the other half of the same suspension: the
-  // literal rules ask about files the graph walk alone never consults. It is
-  // derived from the lexing above rather than a second walk, and asked only by the
-  // two classes that select on a literal — so a src-only or node-only diff never
-  // pays for it. Captured eagerly on the first need, because a lazily recomputed
-  // verdict could disagree with the one an earlier row of the same selection acted
-  // on if the tree changed between the two.
   // The doubt over the `smoke-tests/lib/` subtree is the other half of the roster
   // suspension: the literal rules ask about files the graph walk alone never
   // consults. It is derived from the lexing the walk already did — one lex per lib
@@ -294,24 +311,16 @@ export function selectVerifyTests(
   // A tree with no lib directory lists no file and is no doubt, which is why the
   // walk is guarded by the same existence check `listNodes` applies to the node set
   // (a fixture tree that never created the directory is a normal case, not a doubt).
-  let libDoubt: string | null = null;
-  const libTrustDoubt = (): string => {
-    if (libDoubt === null) {
-      libDoubt = existsSync(path.join(extensionDir, "smoke-tests", "lib")) ? libDoubtOf(graph) : "";
-    }
-    return libDoubt;
-  };
-  // One pass over the roster's lexed literals indexes them for the whole selection, so
-  // every literal question afterwards is a lookup rather than a scan of the roster per
-  // changed path. The classifier reads it for a `named` path's namers and the helper rule
-  // for a `helper` path's quoterS, each through its own module's spelling of the rule.
-  let literals: LiteralIndex = emptyLiteralIndex();
+  const libTrustDoubt = (): string => (prepared.hasLibDir ? libDoubtOf(prepared) : "");
+  // The roster's literals are indexed once for the whole tree by the context, so every
+  // literal question here is a lookup rather than a scan of the roster per changed path.
+  const literals = prepared.literals;
   const literalIndexes = {
     exact: new Map<string, string[]>(),
     raw: new Map<string, string[]>(),
   };
   const classifiedList = rules
-    ? changed.map((f) => classifyChangedPath(roster ?? EMPTY_ROSTER, f))
+    ? changed.map((f) => classifyChangedPathIndexed(literals, f))
     : changed.map(() => ({ kind: "node", namers: [] }) as ClassifiedPath);
   // Only the classes that select on what a test SAYS consult the roster's literals,
   // and a lib-subtree doubt suspends exactly those rules — so the doubt is asked
@@ -323,7 +332,6 @@ export function selectVerifyTests(
   ) {
     const trust = libTrustDoubt();
     if (trust !== "") return full(trust);
-    literals = literalIndex(roster);
     // The `helper` rows match the exact path as quoted; the `named` rows match the
     // leading prefix off, through the classifier's own rule. A path is one class or the
     // other, so no bucket is filled under both spellings.
