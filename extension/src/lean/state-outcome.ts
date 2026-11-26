@@ -244,16 +244,18 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
   }
   // The budget trio is only ever written by a budget verdict: `handback` renders
   // `limit`/`value`/`used` into the operator's cause line, so the trio on any other kind is a
-  // ceiling this run never crossed, printed as the run's cause.
+  // ceiling this run never crossed, printed as the run's cause. `challenge` asks the question first
+  // and names its own sentence — it is the one state with a legitimate `budget` kind, so “which
+  // ceiling?” is one its operator actually has — and every other state keeps the generic wording.
+  if (
+    state === "challenge" &&
+    oc.kind !== "budget" &&
+    ["limit", "value", "used"].some((key) => oc[key] !== undefined)
+  )
+    return `outcome on a challenge ${String(oc.kind)} step carries the ceiling trio it never crossed`;
   if (oc.kind !== "budget") {
     for (const key of ["limit", "value", "used"] as const) {
       if (oc[key] !== undefined) return `outcome ${key} is only recorded by a budget verdict`;
-    }
-  }
-  if (state === "challenge" && oc.kind !== "budget") {
-    for (const key of ["limit", "value", "used"] as const) {
-      if (oc[key] !== undefined)
-        return `outcome ${key} on a challenge ${oc.kind} step is not a ceiling it crossed`;
     }
   }
   if (oc.kind === "budget") {

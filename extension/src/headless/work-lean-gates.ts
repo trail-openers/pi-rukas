@@ -255,16 +255,18 @@ function specifyGates(steps: Step[]): GatesResult["specify"] {
  * POSITION, with the ceiling's trio on its own arm. `null` when there is no
  * challenge step or its newest attempt died before answering: inventing `"none"`
  * would tell a host the adversary looked and found nothing. `skipped` carries the
- * bound's reason, so "nobody looked" reads apart from "nothing was bought".
+ * bound's reason, so "nobody looked" reads apart from "nothing was bought". That reason is
+ * record-authored text, so it goes through `textOf` like every other string here — a resumed or
+ * hand-edited state file is what puts arbitrary prose on this arm.
  */
-function challengeGates(steps: Step[]): GatesResult["challenge"] {
+function challengeGates(steps: Step[], redact: (s: string) => string): GatesResult["challenge"] {
   const step = newestStep(steps, "challenge");
   const kind = step?.outcome?.kind;
   if (kind !== "new-tests" && kind !== "none" && kind !== "budget" && kind !== "skipped")
     return null;
   if (kind === "skipped") {
-    const reason = step?.outcome?.reason;
-    return { kind, ...(typeof reason === "string" ? { reason } : {}) };
+    const reason = textOf(step?.outcome?.reason, redact);
+    return { kind, ...(reason === null ? {} : { reason }) };
   }
   if (kind !== "budget") return { kind };
   // The ceiling arm's typed trio, as data rather than prose so "out of turns" reads
@@ -492,7 +494,7 @@ function handbackGates(steps: Step[], redact: (s: string) => string): GatesResul
 export function leanGates(steps: Step[], redact: (s: string) => string): GatesResult {
   return {
     specify: specifyGates(steps),
-    challenge: challengeGates(steps),
+    challenge: challengeGates(steps, redact),
     verify: verifyGates(steps, redact),
     review: reviewGates(steps, redact),
     handback: handbackGates(steps, redact),

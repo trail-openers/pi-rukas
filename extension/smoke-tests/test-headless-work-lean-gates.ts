@@ -120,8 +120,7 @@ const { assert, failures } = makeAssert();
     JSON.stringify(gatesOf(skipped.issue).challenge) ===
       JSON.stringify({
         kind: "skipped",
-        reason:
-          "challenge SKIPPED: pre-verify share 40% of the 4200s cell used up (used 1690s)",
+        reason: "challenge SKIPPED: pre-verify share 40% of the 4200s cell used up (used 0s)",
       }),
     `challenge: the pre-verify skip is disclosed as its own kind with the reason the step recorded (${JSON.stringify(gatesOf(skipped.issue).challenge)})`,
   );

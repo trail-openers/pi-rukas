@@ -201,7 +201,7 @@ function one(opts: GatesLogOpts, state: Step["state"]): Step | undefined {
         : opts.challenge === "skipped"
           ? stepWith("challenge", {
               kind: "skipped",
-              reason: "challenge SKIPPED: pre-verify share 40% of the 4200s cell used up (used 1690s)",
+              reason: "challenge SKIPPED: pre-verify share 40% of the 4200s cell used up (used 0s)",
             })
           : stepWith("challenge", { kind: opts.challenge });
     case "verify":
@@ -403,7 +403,7 @@ export async function gatesRun(
                 {
                   kind: "skipped",
                   reason:
-                    "challenge SKIPPED: pre-verify share 40% of the 4200s cell used up (used 1690s)",
+                    "challenge SKIPPED: pre-verify share 40% of the 4200s cell used up (used 0s)",
                 },
               ]
             : [{ kind: "none" }],

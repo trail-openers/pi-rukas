@@ -202,24 +202,68 @@ assert(pinned === undefined, "(c) the pinned arm returns nothing to carry");
       capsOff.inert === true && capsOff.stop === undefined,
       `(d) with PI_ENSEMBLE_DISPATCH_CAPS=0 nothing is bounded, and the arm is disclosed (got ${JSON.stringify(capsOff)})`,
     );
-    // The share at `0` switches the whole change off, on both arms.
-    await withEnv({ PI_ENSEMBLE_LEAN_PRE_VERIFY_SHARE: "0" }, async () => {
-      const off = challengeSkip(steps, DEADLINE, START, now);
-      assert(
-        off.stop === undefined,
-        `(d) with the switch at 0 the round runs (got ${JSON.stringify(off)})`,
-      );
-    });
   });
+  // ── (d) the off value with caps ON and a resolved deadline — the arm that decides whether
+  // `0` means "off" or "bound everything to zero". Inside the caps-off block above it would be
+  // hidden: there `capsEnabled()` is already false and returns the inert arm whatever the share.
+  // The off value with caps ON and a resolved deadline — the arm that decides whether `0` means
+  // "off" or "bound everything to zero", which is the single thing the whole change turns on.
+  // Asserted here rather than inside the caps-off block above, where `capsEnabled()` is already
+  // false and would return the inert arm whatever the share. The ceiling value is paired with two
+  // spellings that must NOT be off — the empty string and a whitespace-only value, both of which
+  // the reader maps to the default — so a rule that reached "off" through some other spelling of
+  // "unset" fails the middle rows.
+  for (const [value, wantInert] of [
+    ["0", true],
+    ["", false],
+    ["   ", false],
+  ] as const) {
+    await withEnv({ PI_ENSEMBLE_LEAN_PRE_VERIFY_SHARE: value }, async () => {
+      // The row where the SHARE is the only arm that can stop the round: 1700s spent, past the
+      // 40% share, still above the clock floor. This is the row the pre-fix code bounded hardest
+      // at `0` (`usedSeconds < 0` is never true, so every share stopped).
+      const steps = [specifyTook(1700)];
+      const at = START + 1701 * SEC;
+      const share = preVerifyShare(steps, DEADLINE, START, at);
+      const skip = challengeSkip(steps, DEADLINE, START, at);
+      assert(
+        share.inert === wantInert &&
+          share.stop === (wantInert ? undefined : true) &&
+          skip.stop === share.stop,
+        `(d) at ${JSON.stringify(value)} the bound is ${wantInert ? "inert, and stops nothing on either seam" : "live, and stops both the round and specify's retry"} (got ${JSON.stringify(share)} / ${JSON.stringify(skip)})`,
+      );
+      assert(
+        wantInert
+          ? skip.reason === undefined && skip.inert === true
+          : (skip.reason ?? "").startsWith("challenge SKIPPED: pre-verify share"),
+        `(d) at ${JSON.stringify(value)} the record ${wantInert ? "gains no reason key" : "carries the skip's own line"} (got ${JSON.stringify(skip)})`,
+      );
+      // The mirror on the same row at the shipped default — the off value pinned as a DIFFERENCE,
+      // not a restated literal: the pre-fix reading (`0` as the tightest bound) breaks it, as does
+      // any percent that stopped making `0` inert. The non-off values are the default under another
+      // spelling, so their mirror is equality — both arms bound the row the same way.
+      await withEnv({ PI_ENSEMBLE_LEAN_PRE_VERIFY_SHARE: "40" }, async () => {
+        const at40 = challengeSkip(steps, DEADLINE, START, at);
+        assert(
+          at40.stop === true &&
+            at40.inert === false &&
+            (wantInert ? skip.stop === undefined : skip.stop === at40.stop),
+          `(d) the same row at 40 is skipped on its share, while ${JSON.stringify(value)} ${wantInert ? "is inert and runs it" : "— the default under another spelling — bounds it identically"} (got ${JSON.stringify(at40)} vs ${JSON.stringify(skip)})`,
+        );
+      });
+    });
+  }
 }
 
-/** A run sitting in `challenge`, for the routing and record cases. */
+/** A run sitting in `challenge`, for the routing and record cases. `baseSha` is a real-shaped oid so
+ * the durable loader accepts the record — (g) drives these steps through `loadRun`, and a run the
+ * loader refuses for its own fields would make every (g) assertion pass on the wrong message. */
 const panelRun: LeanRun = {
   schema: 1,
   issue: 7,
   version: "test",
   models: {},
-  baseSha: "sha",
+  baseSha: "0123456789abcdef0123456789abcdef01234567",
   branch: "b",
   state: "challenge",
   counters: { ...INITIAL_COUNTERS },
@@ -316,8 +360,6 @@ const panelRun: LeanRun = {
   );
 }
 
-process.exit(failures());
-
 /** The durable loader's answer for one log, or the reason it refused. */
 function loadRunOf(run: LeanRun): string | undefined {
   const dir = mkdtempSync(path.join(tmpdir(), "lean-share-"));
@@ -339,6 +381,10 @@ function loadRunOf(run: LeanRun): string | undefined {
     startedAt: START,
     outcome: outcome as unknown as Outcome,
   });
+  // (g) is the ONLY block that drives a record through `loadRun`, so it is the only one the loader
+  // can refuse on the record's own fields — a step whose `reason` ran past the published bound, or
+  // whose key did not name its state, would make every case below pass on the loader's own message
+  // about something else. These records are shaped for the loader as well as for the rule.
   const okRun = (steps: Step[]): LeanRun => ({ ...panelRun, steps });
   assert(
     loadRunOf(okRun([step({ kind: "skipped", reason: "challenge SKIPPED: x" })])) === undefined,
@@ -356,8 +402,27 @@ function loadRunOf(run: LeanRun): string | undefined {
     ]),
   );
   assert(
-    (trio ?? "").includes("is not a ceiling it crossed"),
-    `(g) and the loader refuses the budget trio on a kind that crossed no ceiling (got ${JSON.stringify(trio)})`,
+    (trio ?? "").includes("challenge skipped step carries the ceiling trio it never crossed"),
+    `(g) and the loader refuses the budget trio on a kind that crossed no ceiling, in the challenge's own words (got ${JSON.stringify(trio)})`,
+  );
+  // The generic sentence is the one the sibling suite pins (`test-lean-state-outcome.ts`), so a
+  // step in another state still gets it — the challenge-specific wording is not a rewrite of the
+  // rule, it is the extra precision for the one state that owns a `budget` kind of its own. `build`
+  // is that state: the trio is legitimately its `budget` verdict's, so only the kind separates this
+  // record from one the machine writes.
+  const generic = loadRunOf({
+    ...panelRun,
+    steps: [
+      {
+        ...step({ kind: "ok", limit: "turns", value: 1, used: 2 }),
+        state: "build",
+        key: "7:build:0",
+      },
+    ],
+  });
+  assert(
+    (generic ?? "").includes("is only recorded by a budget verdict"),
+    `(g) a build step gets the generic refusal, not the challenge's wording (${JSON.stringify(generic)})`,
   );
   const budget = loadRunOf(
     okRun([step({ kind: "budget", limit: "minutes", value: 15, used: 16 })]),
@@ -367,3 +432,5 @@ function loadRunOf(run: LeanRun): string | undefined {
     `(g) while the budget kind keeps its trio (got ${JSON.stringify(budget)})`,
   );
 }
+
+process.exit(failures());

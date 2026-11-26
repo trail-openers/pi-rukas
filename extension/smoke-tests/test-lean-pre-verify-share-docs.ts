@@ -52,6 +52,15 @@ assert(
   row.includes("inert") && row.includes("PI_ENSEMBLE_DISPATCH_CAPS"),
   "the row says the bound is inert with no resolved deadline and under the caps master switch",
 );
+// The one sentence the off arm's whole contract rests on, pinned as a needle: `0` must take the
+// change OUT, not bound the pair at zero. A row that dropped the claim (or reversed it to "bounds
+// everything") fails here rather than agreeing with a rule that had already drifted.
+assert(
+  row.includes("ONLY off value") &&
+    row.includes("takes the change out") &&
+    row.includes("no step record gains a key"),
+  `the row states what the off value restores, not just that it exists (${row.slice(0, 120)}…)`,
+);
 assert(
   row.includes("pre-verify-share-switch.ts") && row.includes("pre-verify-share.ts"),
   "the row names the reader's file and the module holding the rule",
@@ -73,6 +82,10 @@ assert(
 assert(
   lean.includes("inert") && lean.includes("PI_ENSEMBLE_DISPATCH_CAPS=0"),
   "docs/lean.md keeps the inert convention the review clock uses",
+);
+assert(
+  lean.includes("only off value") && lean.includes("no step record gains a key"),
+  "docs/lean.md states that 0 takes the whole change out rather than bounding the pair at zero",
 );
 
 process.exit(failures());

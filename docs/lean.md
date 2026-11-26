@@ -545,8 +545,8 @@ The host sees the verdict as `gates.challenge` = `{kind: "skipped", reason}` and
 as one `## Run` line in the PR body.
 
 The round is skipped on a second ground too, measured at `challenge` entry: when
-the time the resolved deadline still leaves is at or below the review reserve
-plus **one verify**: the floor is the review reserve plus one verify, spelled
+the time the resolved deadline still leaves is at or below the review reserve plus
+**one verify** — the floor is the reserve plus one verify, spelled
 `handoffAllowanceMs()` plus `REVIEW_DEADLINE_RESERVE_MS` plus a named 20-minute
 figure (`ONE_VERIFY_MS`) read only by this rule, so
 `verify` gains no `budgets` row and no verify child is ever armed from it. A
@@ -555,7 +555,8 @@ round that would eat the reserve or the gate buys nothing anyone can act on.
 With **no resolved deadline**, or with `PI_ENSEMBLE_DISPATCH_CAPS=0`, the bound is
 **inert** — it stops nothing and says so, the way the review step's clock does;
 an absent deadline is never a reason to shrink work. `PI_ENSEMBLE_LEAN_PRE_VERIFY_SHARE=0`
-is the only off value and takes the whole change out: the pair is bounded by its
+is the only off value and takes the whole change out — the rule short-circuits at `0`
+itself, rather than trusting the reader to have said so — so the pair is bounded by its
 per-child ceilings alone and no step record gains a key. The review step's own
 reserve rule, its two levers and its gates are unchanged. Sources:
 `extension/src/lean/pre-verify-share-switch.ts` (the reader),

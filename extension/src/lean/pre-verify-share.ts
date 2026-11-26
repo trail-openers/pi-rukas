@@ -60,8 +60,10 @@ function skipped(usedSeconds: number, cause: string): PreVerifyShare {
 /**
  * Where the pair stands against its share, right now — asked at each step entry and at each
  * dispatch point, since a bound read once would bound only the first child. `cellMs` is the
- * resolved cycle deadline less the instant the run began. With no deadline, or caps off, the
- * bound is inert and says so.
+ * resolved cycle deadline less the instant the run began. The bound is inert — and says so — with
+ * no deadline, with caps off, or at the switch's `0`, which short-circuits HERE rather than in the
+ * reader: a zero percent would otherwise make the share zero seconds and bound the pair at its
+ * TIGHTEST, the opposite of taking the change out.
  */
 export function preVerifyShare(
   steps: Step[],
@@ -70,15 +72,16 @@ export function preVerifyShare(
   now: number,
 ): PreVerifyShare {
   const usedSeconds = usedSecondsOf(steps, now);
-  if (deadlineMs === undefined || startedMs === undefined || !capsEnabled())
+  const percent = leanPreVerifySharePercent();
+  if (percent === 0 || deadlineMs === undefined || startedMs === undefined || !capsEnabled())
     return { inert: true, usedSeconds };
   const cellMs = deadlineMs - startedMs;
   // Whole SECONDS, the unit the record and the reason line both print.
-  const shareSeconds = Math.round((cellMs * leanPreVerifySharePercent()) / 100_000);
+  const shareSeconds = Math.round((cellMs * percent) / 100_000);
   if (usedSeconds < shareSeconds) return { inert: false, usedSeconds };
   return skipped(
     usedSeconds,
-    `pre-verify share ${String(leanPreVerifySharePercent())}% of the ${String(
+    `pre-verify share ${String(percent)}% of the ${String(
       Math.round(cellMs / 1000),
     )}s cell used up (used ${String(usedSeconds)}s)`,
   );

@@ -51,7 +51,8 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   flag("LEAN_HANDBACK_NET_GIT", true),
   // The share of the cell budget the steps BEFORE the first verify may spend together. The
   // number is a whole percent, 0 to 100, and the shipped default is 40; `0` is the ONLY off
-  // value and puts the pair back on its per-child ceilings alone. Anything that is not a whole
+  // value — the rule short-circuits there, so it puts the pair back on its per-child ceilings
+  // alone rather than bounding it at zero. Anything that is not a whole
   // percent in range (`40.5`, `101`, `abc`, empty) reads as the default, not as off. The reader
   // is `leanPreVerifySharePercent` in lean/pre-verify-share-switch.ts; the bound it feeds — the
   // no-dispatch stop on `specify`'s retry and the `challenge` skip with its recorded reason — is

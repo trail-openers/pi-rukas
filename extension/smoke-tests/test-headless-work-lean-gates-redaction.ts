@@ -200,5 +200,59 @@ function leakyBoundLog() {
   );
 }
 
+// ─── the fourth surface: `gates.challenge.reason` on the pre-verify skip ───────
+// The skip arm is the one challenge arm that publishes prose, and the record can reach the
+// projection carrying prose nobody wrote — `state-outcome` accepts `reason` on any step, and a
+// resumed or hand-edited state file is exactly how. The arm went through the seam like every
+// sibling, so this pins the pair the reviewBound cases above pin for their two fields.
+{
+  const leakySkip = gatesLog({ challenge: "skipped" }).map((s) =>
+    s.state === "challenge"
+      ? {
+          ...s,
+          outcome: {
+            kind: "skipped" as const,
+            reason: `challenge SKIPPED: a child printed ${SECRET} before the bound`,
+          } as never,
+        }
+      : s,
+  );
+  const leaky = await driveLean("handed-back", 10, leakySkip);
+  const node =
+    JSON.stringify(leaky.doc).match(/"challenge":\{.*?\}/)?.[0] ?? "no challenge gate published";
+  assert(
+    !node.includes(SECRET) && node.includes(REDACTED),
+    `challenge: a credential-shaped token in the skipped round's reason is redacted out of the document (${node})`,
+  );
+  // Not vacuously clean: the projection with an empty redaction seam publishes the token, so the
+  // document's silence above is the seam and not an arm that never got the bytes.
+  const raw = leanGates(leaky.run.steps, (s) => s).challenge as unknown as { reason?: string };
+  assert(
+    raw.reason?.includes(SECRET) === true,
+    `challenge: the record really carries the token, so the redaction above is the seam (${JSON.stringify(raw)})`,
+  );
+  // And the print clip, which the sibling strings all take: 500 characters of the record plus the
+  // ellipsis marking the cut, so a host never parses a string longer than this projection publishes
+  // anywhere else. A run's OWN reason line cannot be oversized here (`outcomeProblem` bounds it,
+  // and `test-lean-pre-verify-share.ts` pins that), so this arm is reached only by a record that
+  // arrived without going through the loader — which is precisely the state this arm owes the seam
+  // for.
+  const long = leanGates(
+    [
+      {
+        key: "7:challenge:0",
+        state: "challenge",
+        startedAt: 1,
+        outcome: { kind: "skipped", reason: "z".repeat(640) },
+      } as never,
+    ],
+    (s) => s,
+  ).challenge as unknown as { reason?: string };
+  assert(
+    long.reason === `${"z".repeat(500)}…`,
+    `challenge: an oversized skip reason is clipped at 500 characters plus the ellipsis, like every sibling (${String(long.reason?.length)})`,
+  );
+}
+
 console.log(`\nexit ${String(failures())}`);
 process.exit(failures());
