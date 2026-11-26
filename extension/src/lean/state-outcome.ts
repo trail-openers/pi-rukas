@@ -260,7 +260,7 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
   }
   if (oc.kind === "budget") {
     if (!isBudgetLimit(oc.limit))
-      return 'outcome kind "budget" needs a ceiling its step can arm (see LIMITS)';
+      return 'outcome kind "budget" needs limit "minutes" | "turns" | "tokens" | "stall"';
     for (const key of ["value", "used"] as const) {
       if (!isCount(oc[key]))
         return `outcome ${key} must be a non-negative safe integer for a budget verdict`;

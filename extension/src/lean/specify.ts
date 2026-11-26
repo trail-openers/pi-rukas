@@ -53,8 +53,8 @@ import { testsFromLog } from "./build.ts";
 import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { preVerifyShare } from "./pre-verify-share.ts";
-import { stallArms } from "./request-stall.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
+import { stallArms } from "./request-stall.ts";
 import { specFor } from "./spec-for.ts";
 import { type PiSpec, readiness } from "./spec.ts";
 import { runSpecifyAttempt } from "./specify-attempt.ts";
@@ -366,7 +366,6 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     ...(testLocation === undefined ? {} : { testLocation }),
     wanted,
     frozenByCriterion,
-    // #2644 — the hung-request lever, derived once from the run's deadline.
     stall: stallArms(ctx),
   };
   // The first attempt is final unless it dropped a submitted row or ended

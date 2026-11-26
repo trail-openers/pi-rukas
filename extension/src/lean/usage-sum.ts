@@ -9,8 +9,6 @@
  * The fold is not restated here: it is `foldUsage` in `../usage-fold.ts`. **A dispatch counts whether or not
  * the child succeeded** — a child the budget stopped or the provider killed spent its tokens before it died,
  * and a sum that skipped it would report a failed run as a cheap one.
- *
- * Leaf module: it imports types only, so anything can fold the log without pulling a step in.
  */
 
 import type { DispatchUsage } from "../types.ts";
@@ -21,9 +19,6 @@ import type { Step } from "./state.ts";
 /** One row of the fold: totals over dispatches, and the counts that produced them. */
 export type { UsageTotals as LeanUsageTotals } from "../usage-fold.ts";
 
-/** The fold's answer: the run's totals, and the same sums per dispatch role. */
-type LeanUsage = UsageFold;
-
 /**
  * Fold every dispatch the step log records into totals, in total and per role.
  *
@@ -33,7 +28,7 @@ type LeanUsage = UsageFold;
  * The row's `usage` is COPIED out rather than handed over whole: `DispatchUsageRow` is not assignable to the
  * fold's `{role, usage}`. The numbers are read field by field so the copy is the record the loader validated.
  */
-export function leanUsage(steps: Step[]): LeanUsage {
+export function leanUsage(steps: Step[]): UsageFold {
   const rows: { role: string; usage: DispatchUsage | undefined }[] = [];
   for (const step of steps) {
     for (const row of step.outcome?.dispatches ?? []) {

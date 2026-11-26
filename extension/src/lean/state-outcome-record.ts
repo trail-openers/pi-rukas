@@ -11,9 +11,7 @@ import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { RedRecord, ReviewRecord } from "./state-outcome-gates.ts";
 import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
-import type { BudgetLimit } from "../request-stall-policy.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
-
 /**
  * What a step's handler returned. The engine routes on `kind` and reads the rest
  * for a reason line or a report, so the fields are named rather than left to an
@@ -75,8 +73,8 @@ export interface Outcome {
   unshippedReason?: string;
   /** `specify`/`build`/`challenge` only: one row per dispatch the step paid for, dead or budget-stopped children included, so the totals a host reads cannot quietly omit the expensive failures. */
   dispatches?: DispatchUsageRow[];
-  /** `budget` only: ceiling crossed, its value, what the child used — data rather than prose, so "out of turns" reads apart from "out of minutes", and `stall` (silence, #2644) apart from either. */
-  limit?: BudgetLimit;
+  /** `budget` only: ceiling crossed, its value, what the child used — data rather than prose, so "out of turns" reads apart from "out of minutes". */
+  limit?: "minutes" | "turns" | "tokens" | "stall";
   value?: number;
   used?: number;
 }

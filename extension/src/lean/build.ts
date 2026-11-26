@@ -50,7 +50,7 @@ import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
 import { budgetFoldAccumulator, failingClause, foldClauses, keptClause } from "./build-reasons.ts";
-import type { BuildDispatch, BuildDispatchOpts, BuildExec } from "./build-types.ts";
+import type { BuildDispatch, BuildExec } from "./build-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig, protectedPathsOf } from "./config.ts";
@@ -290,12 +290,8 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   // Why the first no-work child died, kept for the throw the second one may make.
   let firstNoWorkWhy: string | undefined;
   for (let tries = 0; ; tries++) {
-    // #2644 — the hung-request lever, beside the state's own ceilings: the window is
-    // the review reserve clamped to what the deadline leaves, and an inert arm says so
-    // on the same trace line the minutes lever's inertness uses.
     const budget = armBudget(budgetFor(config, "build"), stallArms(ctx));
-    if (budget.warning !== undefined)
-      traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
+    if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
     const [dispatchedChild, row] = await dispatchBuilder(deps.dispatch, {
       issue,
       spec,
@@ -428,19 +424,20 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
 export function buildDeps(headless: boolean): BuildDeps {
   return {
     exec: (cmd: string, o?: Parameters<ExecFn>[1]) => execp(cmd, o ?? {}),
-    dispatch: (spec: DispatchSpec, o: BuildDispatchOpts) =>
+    dispatch: (
+      spec: DispatchSpec,
+      o: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
+    ) =>
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
-        // Forwarded key by key — a spread would let a future arm collide silently with
-        // `processGroup`/`leanChildOpts` — so the ceiling binds the child and the #2644
-        // lever reaches the spawn, which reads its stream and aborts through the arm's
-        // `onProgress`. Dropping any one leaves that lever decoration (the shape #2073 caught).
+        // Forwarded so the ceiling binds the child; `budgetTurns` is the same
+        // ceiling the budget-progress steer counts down from.
         childBoundMs: o.childBoundMs,
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,
-        stall: o.stall,
+        ...(o.stall === undefined ? {} : { stall: o.stall }),
         // The budget's kill goes through `killProcessTree`, which only reaches the
         // child's tool tree when the child leads its own group.
         processGroup: true,

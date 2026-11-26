@@ -32,7 +32,8 @@ import { budgetTrio } from "../src/lean/step-budget.ts";
 import { neededFromLog } from "../src/lean/handback.ts";
 import { leanIssueResult } from "../src/headless/work-lean-result.ts";
 import { INITIAL_COUNTERS, type LeanRun, type Outcome, type Step } from "../src/lean/state.ts";
-import { requestStallWindowMs } from "../src/lean/request-stall.ts";
+import { requestStallWindowMs } from "../src/request-stall-policy.ts";
+import { REVIEW_DEADLINE_RESERVE_MS } from "../src/lean/review-bound.ts";
 import { MINUTE_MS } from "../src/lean/deadline.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import {
@@ -185,24 +186,28 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
 {
   await withEnv(stallEnv(), async () => {
     const deadline = PANEL_START_MS + PANEL_CELL_S * MINUTE_MS;
-    const early = requestStallWindowMs(deadline, PANEL_START_MS + 60 * MINUTE_MS);
+    const early = requestStallWindowMs(deadline, PANEL_START_MS + 60 * MINUTE_MS, REVIEW_DEADLINE_RESERVE_MS);
     assert(
       early === reserveMs(),
       `(c) with room to spare the window is the review reserve read through the helpers (got ${String(early)}, reserve ${String(reserveMs())} = allowance + review reserve)`,
     );
     const late = PANEL_START_MS + (PANEL_CELL_S - 20) * MINUTE_MS;
-    const clamped = requestStallWindowMs(deadline, late);
+    const clamped = requestStallWindowMs(deadline, late, REVIEW_DEADLINE_RESERVE_MS);
     assert(
       clamped === deadline - late - PINNED_ALLOWANCE_MS,
       `(c) near the line the window is what the deadline leaves MINUS the allowance (got ${String(clamped)})`,
     );
-    const none = requestStallWindowMs(deadline, PANEL_START_MS + (PANEL_CELL_S - 5) * MINUTE_MS);
+    const none = requestStallWindowMs(
+      deadline,
+      PANEL_START_MS + (PANEL_CELL_S - 5) * MINUTE_MS,
+      REVIEW_DEADLINE_RESERVE_MS,
+    );
     assert(
       none === undefined,
       `(c) no room outside the allowance means NO window rather than a zero timer (got ${String(none)})`,
     );
     assert(
-      requestStallWindowMs(undefined, PANEL_START_MS) === undefined,
+      requestStallWindowMs(undefined, PANEL_START_MS, REVIEW_DEADLINE_RESERVE_MS) === undefined,
       "(c) with no resolved deadline the lever is not armed",
     );
   });

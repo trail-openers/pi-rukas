@@ -35,7 +35,7 @@ import { testsFromLog } from "./build.ts";
 import type { CiDeps } from "./ci-deps.ts";
 import { CI_FULL_TIER, fullTierExcuse } from "./ci-excuse.ts";
 import type { GlForge } from "./ci-forge-gl.ts";
-import { CI_POLL_MS } from "./ci-poll.ts";
+export { CI_POLL_MS } from "./ci-poll.ts";
 import { ciTierBudgetMs } from "./ci-tier-budget.ts";
 import { checksRedReason, ciConfig, tierFailure } from "./ci-tier.ts";
 import { DEFAULT_BUDGETS, type WorkConfig } from "./config.ts";
@@ -57,8 +57,6 @@ import { budgetFor } from "./step-budget.ts";
 import { preexistingReason } from "./verify-baseline-excuse.ts";
 import { assertTreeClean } from "./verify-recheck.ts";
 import { VerifyInfraError } from "./verify-types.ts";
-
-export { CI_POLL_MS };
 
 /**
  * The `ci` budget's minutes for one loaded config. One number feeds BOTH bounds of the

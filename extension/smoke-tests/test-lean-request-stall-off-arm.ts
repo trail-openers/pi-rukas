@@ -16,7 +16,8 @@
 
 import { budgetTrio } from "../src/lean/step-budget.ts";
 import type { Outcome } from "../src/lean/state.ts";
-import { requestStallWindowMs } from "../src/lean/request-stall.ts";
+import { requestStallWindowMs } from "../src/request-stall-policy.ts";
+import { REVIEW_DEADLINE_RESERVE_MS } from "../src/lean/review-bound.ts";
 import { MINUTE_MS } from "../src/lean/deadline.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import {
@@ -83,7 +84,11 @@ function hungCase(issue: number) {
   );
   // The window reader inside the same env: `0` means no number, not a zero timer.
   const offWindow = await withEnv(offEnv(), async () =>
-    requestStallWindowMs(PANEL_START_MS + PANEL_CELL_S * MINUTE_MS, cellAt(PANEL_CELL_S - 60)),
+    requestStallWindowMs(
+      PANEL_START_MS + PANEL_CELL_S * MINUTE_MS,
+      cellAt(PANEL_CELL_S - 60),
+      REVIEW_DEADLINE_RESERVE_MS,
+    ),
   );
   assert(
     offWindow === undefined,

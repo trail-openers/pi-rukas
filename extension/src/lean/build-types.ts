@@ -14,17 +14,12 @@ import type { BudgetOpts } from "./step-budget.ts";
 /**
  * The dispatch seam: one child, one result. `spawnSpecialist` in production.
  *
- * `BudgetOpts` carries the budget levers, which are spawn options — a seam
- * without them could only enforce a budget by refusing to dispatch.
+ * `BudgetOpts` carries the three budget levers, which are spawn options — a
+ * seam without them could only enforce a budget by refusing to dispatch.
  */
-export type BuildDispatchOpts = {
-  writeFence?: WriteFence;
-  extraArgs?: readonly string[];
-} & BudgetOpts;
-
 export type BuildDispatch = (
   spec: DispatchSpec,
-  opts: BuildDispatchOpts,
+  opts: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
 ) => Promise<DispatchResult>;
 
 /** The git executor, in the driver's argv-form shape. */

@@ -20,8 +20,19 @@ import { handoffDispatchTimeoutMs } from "./work-driver-handoff.ts";
 /** The four ceilings a budget verdict may name; `stall` measures silence, not spend. */
 export type BudgetLimit = "minutes" | "turns" | "tokens" | "stall";
 
+/** #2644: what a step hands `armBudget` — the window {@link requestStallWindowMs} derived, this
+ *  child's stream reader, and the clock the arm discloses its own inertness from. */
+export interface StallArms {
+  windowMs: number | undefined;
+  silence?: StreamSilence;
+  deadlineMs?: number;
+  now?: number;
+}
+
 /** Reads THIS child's stream: how long quiet, and whether a tool call is running. */
 export type StreamSilence = () => { sinceMs: number; toolInFlight: boolean };
+/** The type a caller's `silence` reader must return, spelled once for both sides of the seam. */
+export type SilenceReading = ReturnType<StreamSilence>;
 
 /**
  * The ONE reader of the switch. Default ON: only the literal `"0"` takes it out, read at CALL
@@ -45,10 +56,11 @@ export function requestStallWindowMs(
   now: number,
   reserveMs: number,
 ): number | undefined {
-  if (unarmed(deadlineMs, now) !== undefined) return undefined;
   const allowance = handoffDispatchTimeoutMs();
-  // `deadlineMs` is set here: `unarmed` refuses an unset deadline.
-  return Math.min(allowance + reserveMs, deadlineMs! - now - allowance);
+  // Inert unless the deadline leaves room OUTSIDE the allowance, which stays startable.
+  if (deadlineMs === undefined || !leanRequestStallEnabled() || !capsEnabled()) return undefined;
+  if (deadlineMs - now <= allowance) return undefined;
+  return Math.min(allowance + reserveMs, deadlineMs - now - allowance);
 }
 
 /**

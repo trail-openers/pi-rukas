@@ -59,7 +59,9 @@ import { existsInCommit, fileProblem, pathProblem } from "./specify-path.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
 import { SpecifyResetError, resetWorktreeToBase } from "./specify-reset.ts";
-import { SpecifyInfraError, noteClause, runTestPipeline } from "./specify-run.ts";
+import { noteClause, runTestPipeline } from "./specify-run.ts";
+// The infra errors the step's throws are instances of, re-exported for its tests.
+export { SpecifyInfraError } from "./specify-run.ts";
 import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 import { changedPaths } from "./specify-tree.ts";
 import {
@@ -289,11 +291,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
     );
 
   // 3. The adversary, under the state's budget.
-  // #2644 — the hung-request lever beside the state's ceilings; the window is the
-  // review reserve clamped to what the deadline leaves, read through the shared helpers.
   const budget = armBudget(budgetFor(config, "challenge"), stallArms(ctx));
-  if (budget.warning !== undefined)
-    traceWarn(`lean challenge #${String(issue)}: ${budget.warning}`);
   if (budget.warning !== undefined)
     traceWarn(`lean challenge #${String(issue)}: ${budget.warning}`);
   // The adversary's cost row rides on the throw and `settle` records it (see
@@ -438,9 +436,6 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
 
 export { ChallengeInfraError } from "./challenge-dispatch.ts";
 
-/** The infra errors the step's throws are instances of, re-exported for its tests. */
-export { SpecifyInfraError };
-
 /** The challenge step's dependencies: the outside world, injected. */
 export function challengeDeps(headless: boolean): ChallengeDeps {
   return {
@@ -460,9 +455,7 @@ export function challengeDeps(headless: boolean): ChallengeDeps {
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,
-        // #2644 — the stall lever's window; dropping it would leave the adversary's
-        // child unbounded on the one lever that ends a hung request.
-        stall: o.stall,
+        ...(o.stall === undefined ? {} : { stall: o.stall }),
         // The budget's kill goes through `killProcessTree`, which only reaches
         // the child's tool tree when the child leads its own group.
         processGroup: true,
