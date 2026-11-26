@@ -18,27 +18,85 @@
  * so an import inside a comment or a string creates no edge.
  *
  * Every doubt selects more. The selector returns `mode: "full"` (with the
- * reason recorded) for: a changed file outside the graph; any change under
- * `smoke-tests/lib/`; a changed module that selects no test; a file the
- * tokenizer cannot read; a non-literal dynamic import or an unresolvable
- * relative specifier on the walk path; and a name that is not safe to spell in
- * a shell argument. A test with a non-literal dynamic import, or one that
- * transitively imports such a module, is selected on every selection, because
- * it can load anything. The always-run set is the other half of the bargain:
- * a test that reads repository source or config AS TEXT depends on files no
- * import graph can show, so it runs on every develop round. It is computed from
+ * reason recorded) for: a changed file the classification table cannot place; a
+ * changed module that selects no test; a file the tokenizer cannot read; a
+ * non-literal dynamic import or an unresolvable relative specifier on the walk
+ * path; a changed helper whose users cannot be judged; and a name that is not
+ * safe to spell in a shell argument. A test with a non-literal dynamic import, or
+ * one that transitively imports such a module, is selected on every selection,
+ * because it can load anything. The always-run set is the other half of the
+ * bargain: a test that reads repository source or config AS TEXT depends on files
+ * no import graph can show, so it runs on every develop round. It is computed from
  * the worktree's own smoke tests (`work-driver-verify-always-run`), not read from
  * a committed list, so no cycle ever has to regenerate — or claim — such a file.
+ *
+ * #2649 widened what the selector answers without the full suite, and closed what
+ * it may answer at all. A changed path that is not a graph node goes through the
+ * classification table (`work-driver-verify-classify`): a docs or prompt file
+ * selects the tests that name its exact path, an ignore-like file selects the
+ * always-run set alone, configuration selects nothing short of the full suite. A
+ * TypeScript helper under `smoke-tests/lib/` is a graph node, so a helper change
+ * selects the tests that import it; a shell or data helper has no importer, so it
+ * selects the tests that quote its exact path, and falls back when that cannot be
+ * judged. A selection is therefore always exactly the always-run set, the exact
+ * namers, the transitive importers and the dynamic-import floor — and an empty
+ * selection is a fallback, never a run of zero tests. `PI_ENSEMBLE_VERIFY_SELECT_
+ * CHANGED_PATHS=0` puts every one of those rules back to the bytes that shipped
+ * before #2649 (see `verify-select-changed-paths-switch`).
  *
  * Paths here are relative to `extension/`, the directory the smoke tests run
  * from. Callers holding repo-relative paths strip the `extension/` prefix first.
  */
 
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { textReadingTests } from "./work-driver-verify-always-run.ts";
-import { type LexedSource, lexSource } from "./work-driver-verify-select-lex.ts";
+import { changedPathRulesEnabled } from "./verify-select-changed-paths-switch.ts";
+import { rosterReaders } from "./work-driver-verify-always-run.ts";
+import {
+  type ChangedPathClass,
+  type ClassifiedPath,
+  NODE_PATH_RE,
+  classifyChangedPath,
+  classifyChangedPathIndexed,
+} from "./work-driver-verify-classify.ts";
+import { type LiteralTrust, literalTrustFromLexed } from "./work-driver-verify-literal-trust.ts";
+import type { OfflineTests } from "./work-driver-verify-offline-tests.ts";
+import { isRepoPath } from "./work-driver-verify-repo-paths.ts";
+import {
+  type VerifySelectionContext,
+  prepareVerifySelection,
+} from "./work-driver-verify-select-context.ts";
+import type { BuiltGraph } from "./work-driver-verify-select-graph.ts";
+import {
+  type LiteralIndex,
+  literalIndex,
+  namersOf,
+  quotersOf,
+} from "./work-driver-verify-select-literals.ts";
 import { SMOKE_TEST_NAME_RE, isOfflineTest } from "./work-driver-verify-shared.ts";
+import {
+  type Graph,
+  TEST_NODE_RE,
+  TEST_SUPPORT_RE,
+  untrustedNode,
+} from "./work-driver-verify-trust.ts";
+
+/**
+ * The node set and the per-file edge reader are the graph's own vocabulary; they
+ * live in `work-driver-verify-select-graph` and `work-driver-verify-select-edges`
+ * and are re-exported here so the gates that ask the SELECTOR what its graph is keep
+ * asking the selector, and not a hand-derived copy of either.
+ */
+export { edgesOf, type FileEdges } from "./work-driver-verify-select-edges.ts";
+export { listNodes } from "./work-driver-verify-select-graph.ts";
+/**
+ * The prepared-context entry, re-exported so the selector stays the one module a caller
+ * imports to select — by tree, or by a context read once from that tree.
+ */
+export {
+  type VerifySelectionContext,
+  prepareVerifySelection,
+} from "./work-driver-verify-select-context.ts";
 
 export interface VerifySelection {
   /** `selected`: run `tests` (plus `alwaysRun`). `full`: run the whole suite. */
@@ -52,13 +110,16 @@ export interface VerifySelection {
 }
 
 /** Any smoke test, live or not: a node nothing imports, so it can end a walk. */
-const TEST_NODE_RE = /^smoke-tests\/test-[^/]+\.ts$/;
 /**
  * Files that may be graph nodes: source modules at any depth under `src/` (a
  * nested module imported only by another nested module must still reach the
- * tests above it) and top-level smoke files.
+ * tests above it), top-level smoke files, and — since #2649 — the TypeScript
+ * helpers under `smoke-tests/lib/`, so a helper change selects the tests that
+ * import it instead of the whole suite. The table lives in
+ * `work-driver-verify-classify.ts`: one place says what is a node and what is
+ * classified, so the two cannot drift.
  */
-const NODE_RE = /^(?:src\/(?:[^/]+\/)*[^/]+\.ts|smoke-tests\/[^/]+\.ts)$/;
+const NODE_RE = NODE_PATH_RE;
 /** A relative specifier: `./x`, `../x`, `.`, `..`. Bare package names are not edges. */
 const RELATIVE_SPEC_RE = /^\.\.?(?:\/|$)/;
 /** A static import or re-export on lexed code: the specifier is the string token that ends the statement head. */
@@ -81,61 +142,6 @@ const LITERAL_ARG_RE = new RegExp("^\\s*\\uE000(\\d+)\\uE000\\s*\\)");
 /** `src/x.ts` (optionally `extension/`- or `../`-prefixed) as a whole string value. */
 const PATH_LITERAL_RE = /^(?:\.{1,2}\/)*(?:extension\/)?(src\/[^\s]+?\.ts)$/;
 
-export interface FileEdges {
-  /** Relative specifiers this file imports (static, re-export, literal dynamic or literal require). */
-  specifiers: string[];
-  /** Extension-relative `src/…ts` targets named by a path string literal. */
-  paths: string[];
-  /** True when a dynamic import or require names its target through a non-literal. */
-  dynamic: boolean;
-  /**
-   * True when a smoke test spells a bare `"src"` string (`path.join(ext, "src", "x.ts")`):
-   * it reaches source modules through a path no specifier shows, so it depends on all of them.
-   */
-  touchesSrc: boolean;
-}
-
-/**
- * The edges of one file, from its text. Undefined when the tokenizer cannot
- * close a comment, string, template or regex: the file is then unreadable, and
- * the selector falls back rather than trust a graph built from it.
- */
-export function edgesOf(fileRel: string, raw: string): FileEdges | undefined {
-  const lexed = lexSource(raw);
-  if (lexed === undefined) return undefined;
-  return factsOf(fileRel, lexed);
-}
-
-function factsOf(fileRel: string, lexed: LexedSource): FileEdges {
-  const { code, strings } = lexed;
-  const specifiers: string[] = [];
-  const add = (spec: string | undefined) => {
-    if (spec !== undefined && RELATIVE_SPEC_RE.test(spec)) specifiers.push(spec);
-  };
-  for (const m of code.matchAll(STATIC_RE)) add(strings[Number(m[1])]);
-  let dynamic = false;
-  for (const m of code.matchAll(CALL_RE)) {
-    const from = (m.index ?? 0) + m[0].length;
-    const lit = LITERAL_ARG_RE.exec(code.slice(from, from + 64));
-    if (lit) add(strings[Number(lit[1])]);
-    else dynamic = true;
-  }
-  const isSmoke = fileRel.startsWith("smoke-tests/");
-  const paths: string[] = [];
-  if (isSmoke) {
-    for (const s of strings) {
-      const m = PATH_LITERAL_RE.exec(s);
-      if (m?.[1] !== undefined) paths.push(m[1]);
-    }
-  }
-  return {
-    specifiers,
-    paths,
-    dynamic,
-    touchesSrc: isSmoke && strings.includes("src"),
-  };
-}
-
 /**
  * Resolve a relative specifier to a graph node: the file as written (with a
  * `.js` spelling read as `.ts`), then the same name with `.ts`, then a directory
@@ -155,73 +161,6 @@ function resolveSpecifier(
   return undefined;
 }
 
-interface Graph {
-  nodes: Set<string>;
-  /** target → the files that reference it. */
-  importers: Map<string, Set<string>>;
-  /** Nodes with a non-literal dynamic import or require. */
-  dynamic: Set<string>;
-  /** Nodes with a relative specifier that names no graph node. */
-  unresolved: Set<string>;
-}
-
-/**
- * The graph's node set — every file `selectVerifyTests` will tokenize.
- *
- * Exported for the gate that asserts every one of them lexes
- * (test-verify-select-lex-tree.ts): a whole-tree precondition asserted on a set
- * re-derived by hand can silently be narrower than the graph it protects, so the
- * gate asks the selector what its graph is.
- */
-export function listNodes(extensionDir: string): string[] {
-  const files: string[] = [];
-  const walk = (rel: string) => {
-    for (const entry of readdirSync(path.join(extensionDir, rel), { withFileTypes: true })) {
-      const child = `${rel}/${entry.name}`;
-      if (entry.isDirectory()) walk(child);
-      else if (NODE_RE.test(child)) files.push(child);
-    }
-  };
-  walk("src");
-  for (const name of readdirSync(path.join(extensionDir, "smoke-tests"))) {
-    const rel = `smoke-tests/${name}`;
-    if (NODE_RE.test(rel)) files.push(rel);
-  }
-  return files;
-}
-
-/** The graph, or the first file the tokenizer could not read. */
-function buildGraph(extensionDir: string): Graph | { unreadable: string } {
-  const files = listNodes(extensionDir);
-  const nodes = new Set(files);
-  const importers = new Map<string, Set<string>>();
-  const dynamic = new Set<string>();
-  const unresolved = new Set<string>();
-  const addImporter = (target: string, from: string) => {
-    const set = importers.get(target) ?? new Set<string>();
-    set.add(from);
-    importers.set(target, set);
-  };
-  const srcTouchers: string[] = [];
-  for (const rel of files) {
-    const edges = edgesOf(rel, readFileSync(path.join(extensionDir, rel), "utf8"));
-    if (edges === undefined) return { unreadable: rel };
-    if (edges.dynamic) dynamic.add(rel);
-    if (edges.touchesSrc) srcTouchers.push(rel);
-    for (const spec of edges.specifiers) {
-      const target = resolveSpecifier(rel, spec, nodes);
-      if (target === undefined) unresolved.add(rel);
-      else addImporter(target, rel);
-    }
-    for (const p of edges.paths) if (nodes.has(p)) addImporter(p, rel);
-  }
-  // A test that builds a src path itself is an importer of every src module.
-  for (const toucher of srcTouchers) {
-    for (const src of files) if (src.startsWith("src/")) addImporter(src, toucher);
-  }
-  return { nodes, importers, dynamic, unresolved };
-}
-
 /** Every node that imports `start`, transitively, plus `start`. */
 function importersClosure(graph: Graph, start: string): Set<string> {
   const reached = new Set<string>([start]);
@@ -238,55 +177,103 @@ function importersClosure(graph: Graph, start: string): Set<string> {
   return reached;
 }
 
-/**
- * A test-support module: a top-level `smoke-tests/*.ts` that is not itself a test.
- *
- * These are the `helpers-*.ts` / `*-stub.ts` / `*-trace-*.ts` files a handful of
- * tests import. Like a test, nothing in the graph depends on them beyond the tests
- * that name them, and they reach fixture machinery through relative specifiers
- * into `smoke-tests/lib/` — which is deliberately NOT a graph node (a change there
- * falls back outright, as `smoke-test-helper`). So a specifier of theirs that
- * names no node carries no information about the selection: the test that imports
- * the helper is reached either way, and the fallback the old code produced was
- * whole-graph, silently disabling selection for every change in the repo.
- */
-const TEST_SUPPORT_RE = /^smoke-tests\/[^/]+\.ts$/;
+/** An empty roster is not a valid context field: the off arm holds null and asks nothing. */
 
 /**
- * The reason a walk over `reached` cannot be trusted, or undefined. A
- * non-literal dynamic import or an unresolved relative specifier on the walk
- * path may import something the graph cannot see. A test is exempt: nothing
- * imports it, so its own unseen edges cannot hide another test's dependency. A
- * test-support module is exempt from the UNRESOLVED half for the same reason, and
- * only that half — a non-literal dynamic import in one of them really can load a
- * test the graph never saw, so it still falls back.
+ * The offline tests that quote `rel` as an exact literal — the users of a shell or
+ * data helper, which no import edge can show. `bash smoke-tests/lib/verify-loop.sh
+ * …` inside a test is the shape this catches.
+ *
+ * The inclusion test on the roster's own lexed arrays is the single spelling of the
+ * reference rule, and the line the mutation gate in
+ * `test-verify-select-classify.ts` edits to prove this rule is what selects a
+ * helper's users; the batch scan in `work-driver-verify-select-literals` is handed
+ * this function rather than spelling the test again.
  */
-function untrustedNode(graph: Graph, reached: ReadonlySet<string>): string | undefined {
-  for (const node of reached) {
-    if (TEST_NODE_RE.test(node)) continue;
-    if (graph.dynamic.has(node)) return `non-literal-specifier:${node}`;
-    if (graph.unresolved.has(node) && !TEST_SUPPORT_RE.test(node)) {
-      return `unresolved-specifier:${node}`;
-    }
+export function literalReferrers(roster: OfflineTests, rel: string): string[] {
+  const out: string[] = [];
+  for (const name of roster.names) {
+    const lexed = roster.lexed.get(name);
+    if (lexed === undefined) continue;
+    if ([...lexed.strings, ...lexed.templates].includes(rel)) out.push(name);
   }
-  return undefined;
+  return out;
+}
+
+/**
+ * The classifier's exact-namer rule as the index asks it: does this literal, spelled as
+ * a test wrote it, name this changed path? `work-driver-verify-classify` holds the
+ * roster-wide form of the same test (`exactNamers`), so a selection's index answer and a
+ * roster scan cannot disagree about one question.
+ */
+function exactNamersFor(literal: string, rel: string): boolean {
+  return isRepoPath(literal) && literal.replace(NAMER_LEADING_RE, "") === rel;
+}
+
+/** A leading interpolation or relative prefix that does not change which file a literal names — the classifier's own rule. */
+const NAMER_LEADING_RE = /^(?:\$\{[^}]*\}\/|\.{1,2}\/|extension\/)*/;
+
+/** Does this classification select on what a test's code SAYS rather than imports? */
+function isLiteralClass(kind: ChangedPathClass): boolean {
+  return kind === "named" || kind === "text" || kind === "helper";
+}
+
+/**
+ * The trust verdict over the `smoke-tests/lib/` subtree, derived from the lexing the
+ * graph walk already did. A lib `.ts` file the walk never lexed (or could not
+ * close) is the doubt; a tree with no lib directory lists no file and is no doubt.
+ */
+function libDoubtOf(prepared: VerifySelectionContext): string {
+  const trust = literalTrustFromLexed(prepared.libTs, prepared.lexed);
+  return trust.trusted ? "" : trust.reason;
 }
 
 /**
  * Select the smoke tests for a set of changed files.
  *
- * `changed` is extension-relative (`src/x.ts`, `smoke-tests/test-y.ts`). Any
- * path that is not a graph node sends the whole selection to the full suite.
+ * `changed` is extension-relative (`src/x.ts`, `smoke-tests/test-y.ts`). A path the
+ * classification table places as `config` or `unknown`, or anything the walk cannot
+ * trust, sends the whole selection to the full suite.
+ *
+ * The second form answers from a context the caller prepared (`prepareVerifySelection`),
+ * which holds the one read of the tree and the switch verdict it was read under: the
+ * answers are identical, and the per-selection cost is the walk over `changed` rather
+ * than a re-lex of the tree. The directory form reads the tree itself, per call.
+ *
+ * Cost: one selection reads and lexes each top-level smoke test once (the roster,
+ * which also answers the always-run question) and each graph node once (the walk,
+ * which also answers the doubt over the lib subtree), whatever the size of `changed`.
  */
 export function selectVerifyTests(
   extensionDir: string,
   changed: readonly string[],
 ): VerifySelection {
-  // Computed from the tree being verified, so the set matches the tests the
-  // command is about to run. A `smoke-tests/` directory that is not there at all
-  // is not a silent empty set: `textReadingTests` throws and the caller's
-  // try/catch turns that into a full-suite fallback, which is the safe direction.
-  const alwaysRun = textReadingTests(extensionDir);
+  // Read the tree here and answer from it — one tree read per selection, and the switch
+  // read exactly once for the whole call (see `prepareVerifySelection`).
+  return selectFrom(prepareVerifySelection(extensionDir), changed);
+}
+
+/**
+ * Select from an already-read tree — the same answers as the directory form, from a tree
+ * someone read once (`prepareVerifySelection`). Exported for a caller that holds a
+ * context; production keeps the directory form above.
+ */
+export function selectVerifyTestsFromContext(
+  context: VerifySelectionContext,
+  changed: readonly string[],
+): VerifySelection {
+  return selectFrom(context, changed);
+}
+
+/** The selection, from a tree someone has already read. */
+function selectFrom(prepared: VerifySelectionContext, changed: readonly string[]): VerifySelection {
+  const { extensionDir, rules, alwaysRun } = prepared;
+  // The roster is the one this context read (null on the off arm, which asks it nothing),
+  // and the switch verdict is the one it was read under: no rule below consults the
+  // environment. A tree with no smoke-test directory at all is not a silent empty roster:
+  // the roster read throws during the prepare, and the caller's try/catch turns that into
+  // a full-suite fallback, which is the safe direction.
+  const roster = prepared.roster;
   const full = (fallbackReason: string): VerifySelection => ({
     mode: "full",
     tests: [],
@@ -294,16 +281,124 @@ export function selectVerifyTests(
     fallbackReason,
   });
   if (changed.length === 0) return full("no-changed-files");
-  for (const f of changed) {
-    if (f.startsWith("smoke-tests/lib/")) return full(`smoke-test-helper:${f}`);
-    if (!NODE_RE.test(f)) return full(`outside-graph:${f}`);
+  if (!rules) {
+    // The off arm, verbatim from before #2649: any lib path and any non-node falls
+    // back before the graph is built, in the order the old loop used.
+    for (const f of changed) {
+      if (f.startsWith("smoke-tests/lib/")) return full(`smoke-test-helper:${f}`);
+      if (!NODE_RE.test(f)) return full(`outside-graph:${f}`);
+    }
   }
-  const graph = buildGraph(extensionDir);
+  // A roster the tokenizer could not finish reading cannot answer who NAMES or
+  // REFERENCES a file, so no rule that selects on a literal may run on it. The graph
+  // walk still sees that file (`unreadable` below, whose reason names it directly),
+  // but the graph is the wider surface: a nameable docs path needs only the roster's
+  // literals, so the roster doubt is checked FIRST and its reason names the changed
+  // file — the decision it blocked — while a graph-level unreadable file is the
+  // sharper claim and keeps the reason that names the file itself.
+  const rosterDoubt = roster?.unlexable ? `unlexable-roster:${changed[0]}` : undefined;
+  const graph = prepared.graph;
+  // A roster the tokenizer could not finish suspends every literal rule, so it
+  // answers before the graph's own unreadable node: both send the same rules to the
+  // full suite, and the roster reason is the one that says which rules were suspended.
+  if (rosterDoubt !== undefined) return full(rosterDoubt);
   if ("unreadable" in graph) return full(`unlexable:${graph.unreadable}`);
+  // The doubt over the `smoke-tests/lib/` subtree is the other half of the roster
+  // suspension: the literal rules ask about files the graph walk alone never
+  // consults. It is derived from the lexing the walk already did — one lex per lib
+  // file per selection, not a second walk — and asked only when a `named`/`text`/
+  // `helper` row is in play, so a src-only or node-only diff never pays for it.
+  // A tree with no lib directory lists no file and is no doubt, which is why the
+  // walk is guarded by the same existence check `listNodes` applies to the node set
+  // (a fixture tree that never created the directory is a normal case, not a doubt).
+  const libTrustDoubt = (): string => (prepared.hasLibDir ? libDoubtOf(prepared) : "");
+  // The roster's literals are indexed once for the whole tree by the context, so every
+  // literal question here is a lookup rather than a scan of the roster per changed path.
+  const literals = prepared.literals;
+  const literalIndexes = {
+    exact: new Map<string, string[]>(),
+    raw: new Map<string, string[]>(),
+  };
+  const classifiedList = rules
+    ? changed.map((f) => classifyChangedPathIndexed(literals, f))
+    : changed.map(() => ({ kind: "node", namers: [] }) as ClassifiedPath);
+  // Only the classes that select on what a test SAYS consult the roster's literals,
+  // and a lib-subtree doubt suspends exactly those rules — so the doubt is asked
+  // only when one of these classes is in play, and it is answered from the walk.
+  if (
+    roster !== null &&
+    rosterDoubt === undefined &&
+    classifiedList.some((c) => isLiteralClass(c.kind))
+  ) {
+    const trust = libTrustDoubt();
+    if (trust !== "") return full(trust);
+    // The `helper` rows match the exact path as quoted; the `named` rows match the
+    // leading prefix off, through the classifier's own rule. A path is one class or the
+    // other, so no bucket is filled under both spellings.
+    const rawPaths: string[] = [];
+    const exactPaths: string[] = [];
+    for (const [i, classified] of classifiedList.entries()) {
+      const f = changed[i];
+      if (f === undefined) continue;
+      if (classified.kind === "helper") rawPaths.push(f);
+      else if (isLiteralClass(classified.kind)) exactPaths.push(f);
+    }
+    for (const [key, names] of quotersOf(roster, literals, rawPaths, literalReferrers)) {
+      literalIndexes.raw.set(key, names);
+    }
+    for (const target of exactPaths) {
+      const names = namersOf(literals, target, exactNamersFor);
+      if (names.length > 0) literalIndexes.exact.set(target, names);
+    }
+  }
+  // The pre-check order is part of the off arm's bytes: the pre-#2649 code refused
+  // every non-node BEFORE the graph was consulted, so a changed path that is not a
+  // node answered `outside-graph:<path>` where the graph walk would have said
+  // `no-selected-tests:<path>`. With the rules on, that same path is answered by the
+  // classification table (or by the helper-reference rule), which is the point of
+  // the ticket — so this pre-check is the off arm's alone.
+  if (!rules) {
+    for (const f of changed) {
+      if (graph.nodes.has(f)) continue;
+      // A path that looks like a test or a module but is not in the graph is the
+      // pre-#2649 `no-selected-tests` shape — a deleted test is a node-shaped name
+      // the walk finds nothing for. Anything else never looked like a node.
+      return full(`${NODE_RE.test(f) ? "no-selected-tests" : "outside-graph"}:${f}`);
+    }
+  }
   const selected = new Set<string>();
-  for (const start of changed) {
+  const walkStarts: string[] = [];
+  for (const [i, start] of changed.entries()) {
+    const classified = classifiedList[i] ?? ({ kind: "unknown", namers: [] } as ClassifiedPath);
+    if (classified.kind === "config") return full(`config-file:${start}`);
+    if (classified.kind === "unknown") return full(`outside-graph:${start}`);
+    if (classified.kind === "named") {
+      // The classifier found namers, so the literal rules were consulted for this
+      // path and their doubt (roster or lib subtree) is already answered above.
+      for (const n of literalIndexes.exact.get(start) ?? []) selected.add(n);
+      continue;
+    }
+    if (classified.kind === "text") {
+      // The always-run set is the sound answer: a test that could read this file
+      // reads repository text and is already in it. Nothing else runs.
+      continue;
+    }
+    if (classified.kind === "helper") {
+      // A shell or data helper under `smoke-tests/lib/` has no importer, so its
+      // users are the tests that quote its exact path; a reference no test makes
+      // falls back rather than selecting nothing.
+      const refs = literalIndexes.raw.get(start) ?? [];
+      if (refs.length === 0) return full(`helper-unreferenced:${start}`);
+      for (const r of refs) selected.add(r);
+      continue;
+    }
+    if (classified.kind === "non-code") continue;
+    if (!graph.nodes.has(start)) return full(`outside-graph:${start}`);
+    walkStarts.push(start);
+  }
+  for (const start of walkStarts) {
     const reached = importersClosure(graph, start);
-    const untrusted = untrustedNode(graph, reached);
+    const untrusted = untrustedNode(graph, reached, start);
     if (untrusted !== undefined) return full(untrusted);
     // A deleted test is not a node, so it is never selected: running a missing file
     // is not a verdict on the diff. Its importers still are, so a broken import blocks.
