@@ -59,6 +59,10 @@ const DEADLINE = START + CELL_S * SEC;
 /** The shipped share, spelled here so a case can say what fraction of the cell it expects. */
 const SHARE_MS = Math.floor((CELL_S * SEC * 40) / 100);
 
+// The figure `verify` is planned around, stated as a literal so a retune of the constant is
+// a red test here rather than a shifted expectation everywhere it is used.
+assert(ONE_VERIFY_MS === 1_200_000, `one verify is 20 minutes (${String(ONE_VERIFY_MS)})`);
+
 /** A decided `specify` step that spent `seconds` of the cell. */
 function specifyTook(seconds: number): Step {
   return {
