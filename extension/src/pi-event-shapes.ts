@@ -149,6 +149,15 @@ export interface SpawnOptions extends WriteFenceOpt {
    */
   onProgress?: (snapshot: RunningState) => void;
   /**
+   * #2644 — the caller's stall lever: how long THIS child's stream may go quiet
+   * before the caller aborts it (it owns the `AbortController`), and the reader of
+   * whether a tool call of the child is in flight. A tool in flight is a silent
+   * bash, not a hung request, and the reader is what keeps the two apart — the
+   * spawn cannot answer it on the caller's behalf because the caller is the one
+   * that armed the abort. Set only by `lean`'s budget arm.
+   */
+  stall?: { silence: () => { sinceMs: number; toolInFlight: boolean }; windowMinutes: number };
+  /**
    * Stdin-handle callback (#153). Fires once after the child process has
    * been spawned and its stdio attached, BEFORE the initial prompt is
    * written. Callers use this to register the stdin handle in a registry

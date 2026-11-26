@@ -58,6 +58,7 @@ import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { MAX_BUILD_ATTEMPTS } from "./machine.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
+import { requestStallInert, requestStallWindowMs } from "./request-stall.ts";
 import { rereadSpec } from "./spec-for.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
@@ -289,8 +290,18 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   // Why the first no-work child died, kept for the throw the second one may make.
   let firstNoWorkWhy: string | undefined;
   for (let tries = 0; ; tries++) {
-    const budget = armBudget(budgetFor(config, "build"));
-    if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
+    // #2644 — the hung-request lever, beside the state's own ceilings: the window is
+    // the review reserve clamped to what the deadline leaves, and an inert arm says so
+    // on the same trace line the minutes lever's inertness uses.
+    const stallMs = requestStallWindowMs(ctx.run.deadlineMs, ctx.now());
+    const budget = armBudget(budgetFor(config, "build"), {
+      windowMs: stallMs,
+      silence: () => ({ sinceMs: 0, toolInFlight: false }),
+    });
+    const inertStall = requestStallInert(ctx.run.deadlineMs, ctx.now());
+    if (budget.warning !== undefined)
+      traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
+    if (inertStall !== undefined) traceWarn(`lean build #${String(issue)}: ${inertStall}`);
     const [dispatchedChild, row] = await dispatchBuilder(deps.dispatch, {
       issue,
       spec,
@@ -436,6 +447,10 @@ export function buildDeps(headless: boolean): BuildDeps {
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,
+        // #2644 — the stall lever's window; the spawn weighs it against the child's own
+        // stream stamp and hands the breach back through `onProgress`, which is what
+        // aborts. Without this line the lever is decoration (the shape #2073 caught).
+        stall: o.stall,
         // The budget's kill goes through `killProcessTree`, which only reaches the
         // child's tool tree when the child leads its own group.
         processGroup: true,

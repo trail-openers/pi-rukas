@@ -206,7 +206,7 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
 };
 
 /** The ceilings a budget verdict may name; the only reader of the field's type. */
-const LIMITS = ["minutes", "turns", "tokens"] as const;
+const LIMITS = ["minutes", "turns", "tokens", "stall"] as const;
 
 /** Is this value one of the ceilings {@link LIMITS} names? No cast involved. */
 function isBudgetLimit(value: unknown): value is LeanLimit {
@@ -260,7 +260,7 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
   }
   if (oc.kind === "budget") {
     if (!isBudgetLimit(oc.limit))
-      return 'outcome kind "budget" needs limit "minutes" | "turns" | "tokens"';
+      return 'outcome kind "budget" needs a ceiling its step can arm (see LIMITS)';
     for (const key of ["value", "used"] as const) {
       if (!isCount(oc[key]))
         return `outcome ${key} must be a non-negative safe integer for a budget verdict`;
