@@ -110,16 +110,37 @@ assert(
   }
 
   // The ON arm: configuration still runs everything, with a reason that names it.
-  for (const p of ["agents.json", ".github/workflows/ci.yml", "tsconfig.smoke-tests.json"]) {
-    const r = selectVerifyTests(extensionDir, [p]);
-    assert(
-      r.mode === "full" && r.fallbackReason === `config-file:${p}` && r.alwaysRun.length > 0,
-      `${p} runs the full suite with config-file:${p} and carries the tree's always-run set (got ${r.mode}/${r.fallbackReason ?? "-"})`,
-    );
+  // The three config paths fall back BEFORE the graph is consulted (the classifier
+  // places them and the selector returns), so their answer does not depend on the
+  // other paths in the set — one selection over all three answers all three rows.
+  {
+    const CONFIG_ROWS = ["agents.json", ".github/workflows/ci.yml", "tsconfig.smoke-tests.json"];
+    const cfg = selectVerifyTests(extensionDir, CONFIG_ROWS);
+    for (const p of CONFIG_ROWS) {
+      // Each row's reason is the first refusal the batch walk reaches, and the
+      // classifier's config answer is a table over the path, so a batch that fell
+      // back at an earlier row still says nothing about the later ones: those rows
+      // ask for their own selection rather than be passed on a borrowed verdict.
+      const r = cfg.fallbackReason === `config-file:${p}` ? cfg : selectVerifyTests(extensionDir, [p]);
+      assert(
+        r.mode === "full" && r.fallbackReason === `config-file:${p}` && r.alwaysRun.length > 0,
+        `${p} runs the full suite with config-file:${p} and carries the tree's always-run set (got ${r.mode}/${r.fallbackReason ?? "-"})`,
+      );
+    }
   }
-  // A docs change selects, names at least one reader of THAT file, and runs no more
-  // than the always-run set plus its exact namers plus the dynamic-import floor.
+  // The three ON-arm rows this file pins (a docs file, the selector's standing
+  // floor, an ignore-like file) are computed HERE, once, and read by every assertion
+  // over them. Each of these selections reads and lexes the whole tree — roster and
+  // graph — so re-running one per assertion buys no new observation: the answer for a
+  // given changed set is fixed for a fixed tree. The floor pair is shared by the docs
+  // row and the `.gitignore` row because both compare against the same standing floor.
   const docs = selectVerifyTests(extensionDir, ["docs/troubleshooting.md"]);
+  const baseline = selectVerifyTests(extensionDir, [
+    "src/work-driver-verify-literal-trust.ts",
+    ".gitignore",
+  ]);
+  const ign = selectVerifyTests(extensionDir, [".gitignore"]);
+  const floor = selectVerifyTests(extensionDir, ["src/work-driver-verify-literal-trust.ts"]);
   assert(
     docs.mode === "selected" && docs.tests.length > 0,
     `a docs-only change selects rather than falling back (${docs.mode}/${docs.fallbackReason ?? "-"}, ${docs.tests.length} selected)`,
@@ -136,14 +157,6 @@ assert(
       namers.length > 0 && namers.every((n) => docs.tests.includes(n)),
       `every test that names docs/troubleshooting.md exactly is selected (${namers.length})`,
     );
-    // The upper bound for any selection is the always-run set, the tests that name
-    // the changed file exactly, and the selector's standing floor (non-literal
-    // `import()` reachers plus tests that build a `src/` path themselves) — the last
-    // measured against a change to a module nothing imports, so it is the floor alone.
-    const baseline = selectVerifyTests(extensionDir, [
-      "src/work-driver-verify-literal-trust.ts",
-      ".gitignore",
-    ]);
     assert(
       docs.alwaysRun.length > 0 &&
         docs.tests.every(
@@ -158,18 +171,16 @@ assert(
   // build a `src/` path themselves. Those two are the selector's conservative floor,
   // not a widening of this row, and the assertion is that nothing beyond them is
   // pulled in — the row's whole point is that a file no test reads runs no new test.
-  const ign = selectVerifyTests(extensionDir, [".gitignore"]);
-  const baseline = selectVerifyTests(extensionDir, ["src/work-driver-verify-literal-trust.ts"]);
   assert(
     ign.mode === "selected" && ign.alwaysRun.length > 0,
     `an ignore file selects rather than falling back (${ign.mode}/${ign.fallbackReason ?? "-"})`,
   );
   assert(
-    ign.tests.every((t) => ign.alwaysRun.includes(t) || baseline.tests.includes(t)),
-    `.gitignore selects no test outside the always-run set and the selector's standing floor (${ign.tests.length} selected, ${baseline.tests.length} in the floor)`,
+    ign.tests.every((t) => ign.alwaysRun.includes(t) || floor.tests.includes(t)),
+    `.gitignore selects no test outside the always-run set and the selector's standing floor (${ign.tests.length} selected, ${floor.tests.length} in the floor)`,
   );
   assert(
-    baseline.alwaysRun.length === ign.alwaysRun.length,
+    floor.alwaysRun.length === ign.alwaysRun.length,
     "the always-run half of both selections is the same computed set",
   );
   // A shell helper selects the tests that quote its exact path.

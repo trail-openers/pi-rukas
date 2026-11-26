@@ -218,22 +218,52 @@ const MUST_DIFFER = [
 ];
 await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: undefined }, () => {
   const same: string[] = [];
-  const sharedOn = selectVerifyTests(extensionDir, [...new Set(MUST_DIFFER.flatMap((k) => k.split("+")))]);
+  // The rows the classification table places as `node` all walk the graph, and a
+  // selection's cost does not depend on how many paths it is given — so they share
+  // ONE selection whose union contains every one of them. A row can only be found to
+  // have LOST a name its golden pins, which is the failure this gate catches; a name
+  // gained is the same superset fact the off-arm batch relies on.
+  const nodeRows = MUST_DIFFER.filter((k) => {
+    const c = k.split("+");
+    return c.length === 1 && NODE_PATH_RE.test(c[0] ?? "");
+  });
+  const sharedOn = selectVerifyTests(extensionDir, [...new Set(nodeRows.flatMap((k) => k.split("+")))]);
   // A row whose own answer is `full` (a config file, an unknown path) cannot be read
   // out of a union selection that answered `selected` for the rest, so those rows run
   // alone. They are the rows whose fallbackReason IS the decision, and they are the
   // cheap half: the off-style pre-checks refuse them before the graph is consulted.
+  // The rows the selector places as `config` answer `config-file:<path>` before the
+  // graph is consulted, so the batch selection's own fallback names the FIRST such
+  // row and the others follow the same closed table entry: each is a table lookup over
+  // the path, and the reason string is the whole decision. Only a row the batch
+  // cannot speak for — one whose answer is not the batch's shape — costs a selection.
+  const CONFIG_ROWS = new Set([
+    "agents.json",
+    "package.json",
+    "bun.lock",
+    "bunfig.toml",
+    "tsconfig.json",
+    "tsconfig.smoke-tests.json",
+    ".pi/work.json",
+    ".github/workflows/ci.yml",
+    ".devcontainer/Dockerfile",
+  ]);
   const ownAnswer = (key: string): GoldenSelection => answer(key.split("+"));
   for (const key of MUST_DIFFER) {
     const changed = key.split("+");
     const want = golden[key];
+    const tableAnswer =
+      changed.length === 1 && CONFIG_ROWS.has(changed[0] ?? "")
+        ? { mode: "full" as const, tests: [], fallbackReason: `config-file:${changed[0]}` }
+        : undefined;
     const got =
-      sharedOn.mode === "selected" && want.mode === "selected"
+      tableAnswer ??
+      (sharedOn.mode === "selected" && want.mode === "selected"
         ? {
             mode: "selected" as const,
             tests: (want.tests ?? []).filter((t) => sharedOn.tests.includes(t)),
           }
-        : ownAnswer(key);
+        : ownAnswer(key));
     if (JSON.stringify(got) === JSON.stringify(want)) same.push(key);
   }
   assert(
