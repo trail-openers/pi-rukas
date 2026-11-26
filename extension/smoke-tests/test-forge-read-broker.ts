@@ -25,6 +25,7 @@ import {
   FORGE_READ_SECRET_ENV,
   FORGE_READ_SOCKET_ENV,
 } from "../src/child-forge-read-activation.ts";
+import { FORGE_CLI_GUARD_DIR } from "../src/forge-cli-guard-wrapper.ts";
 import {
   type ChildPermissionPlan,
   applyChildPermissionEnv,
@@ -101,7 +102,21 @@ async function main(): Promise<void> {
     const env = childBaseEnv("explore", plan.forge);
     assert(env.PI_ENSEMBLE_KEEP_ME === "keep-me", "an unrelated var is copied verbatim");
     assert(env.PI_ENSEMBLE_ROLE !== undefined || true, "the strip is not a wholesale env reset");
-    assert(env.PATH === process.env.PATH, "PATH is the parent's PATH");
+    // The strip does not rewrite `PATH` behind the stub directory's back: the child
+    // still carries everything the parent had (#2638 adds one prefix, and nothing
+    // else), so comparing the tails is the honest form of "unrelated vars survive".
+    const prefix = `${env.PATH.slice(0, Math.max(0, env.PATH.length - (process.env.PATH ?? "").length))}`;
+    assert(
+      env.PATH.endsWith(process.env.PATH ?? "") &&
+        (prefix === "" || prefix.endsWith(path.delimiter)),
+      `PATH still carries the parent's PATH${prefix === "" ? " verbatim" : ` behind the stub dir ${prefix}`}`,
+    );
+    assert(
+      env[FORGE_CLI_GUARD_DIR] === undefined &&
+        env.GH_CONFIG_DIR !== undefined &&
+        env.GLAB_CONFIG_DIR !== undefined,
+      "the strip still redirects both config roots",
+    );
     plan.stopForgeBroker();
     delete process.env.PI_ENSEMBLE_KEEP_ME;
   });

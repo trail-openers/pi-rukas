@@ -55,7 +55,36 @@ and `ci_run_log` answers empty when no job failed (`forge-ci-log.ts`). What the
 child cannot do is call the CLI itself as a credentialed client: the five token
 variables are deleted and both config roots point at a per-child empty directory,
 or at nothing at all — both roots are deleted rather than inherited — when no such
-directory could be made (`stripForgeCredentials`, `child-forge-env.ts`). `PATH` is
+directory could be made (`stripForgeCredentials`, `child-forge-env.ts`). The strip
+also hands the child the harness-owned protected set — the two config roots the
+parent resolved, plus both parent homes — in `PI_ENSEMBLE_FORGE_PROTECTED_PATHS`
+and `PI_ENSEMBLE_FORGE_PROTECTED_HOMES`; the child judges only what it was given,
+so unsetting or re-pointing its own `GH_CONFIG_DIR`/`GLAB_CONFIG_DIR` restores
+nothing (`child-forge-read-roots.ts`). Reading those trees is refused a step later
+than the env: a mode-independent `tool_call` guard blocks a `bash` command or a
+`read` call that names a protected root, whichever spelling it uses — a heredoc
+body, an interpreter's program, an option value (`--file=`, `if=`), a `<`
+redirect, a `file://` URL, a case-shifted root, an ancestor directory handed to
+`tar`/`cp`/`rsync`, or a `~` under a redirected scratch `HOME` — and refuses an
+unjudged call rather than guessing (`child-forge-read-guard.ts`,
+`child-forge-read-judge.ts`). Its refusal is one exported constant, shared with
+the CLI stub so the two cannot drift (`FORGE_READ_RULE`, `forge-read-refusal.ts`).
+What the guard is: a guardrail against a child's own bad judgement, not a security
+boundary. It reads the command a tool reports, so classes of bypass sit outside it
+by construction — a read issued inside a `codemode` script through `node:fs`, a read
+by a detached grandchild, a path the child assembles at run time from pieces no
+word spells, or a credential the child reaches through a descriptor it already
+holds. None of those is a tool call, so no hook sees them. Four more sit inside a
+tool call but outside the judge: a relative read taken while the command's own
+directory was set by `cd` in an **earlier call** (the judge tracks a directory
+change within one command, not across calls), a `ls`/`find`/`du`/`stat`/`tree` or
+recursive `grep` of a protected root or its parent (names and structure are
+visible, file contents are not, and only `tar`/`cp`/`rsync`/`scp`/`ditto`/`pax` of
+an ancestor are refused), a path rooted at `$PWD` or built from another run-time
+variable (only `~` and `$HOME` are expanded against the published homes), and a
+`~user` form. An exposed token is therefore rotated by the operator, and that is
+the remedy, not the last resort.
+`PATH` is
 left alone, so a child that runs the shim directly gets the shim's own
 unauthenticated answer. No `PI_ENSEMBLE_*` switch governs the strip or the broker.
 `PI_ENSEMBLE_FORGE=none` turns the forge off for **both** readers of it: the

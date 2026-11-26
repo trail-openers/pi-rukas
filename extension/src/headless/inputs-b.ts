@@ -73,7 +73,28 @@ export const HEADLESS_INPUTS_B: readonly HostInput[] = [
   flag("FORBID_LIVE_SPAWN", false, "test"),
   input("FORGE", "enum", null, "cycle", { values: ["github", "gitlab"] }),
   // Unset: probe an unknown forge host unless CI is set.
+  // #2638 — the two channels of the forge CLI stub, both minted by the spawn layer.
+  // `FORGE_CLI_GUARD` is the operator-facing half: `0` hands one dispatch the real
+  // `gh`/`glab` instead of the stubs, which is the escape hatch for diagnosing an
+  // install from a helper — it lifts the stubs, not the read guard. The refusal the
+  // stubs print travels by env (`_REASON`) so the script holds no prose of its own
+  // and cannot spell the rule a second time.
+  flag("FORGE_CLI_GUARD", true),
+  str("FORGE_CLI_GUARD_REASON", null, "internal"),
   flag("FORGE_PROBE", null),
+  // #2638 — the two homes the parent published beside the set above: its `HOME`
+  // and its passwd entry, colon-joined. A helper's own `HOME` may be a scratch tree
+  // the harness redirected, so a `~` in a path it typed expands against each home
+  // the PARENT named — the only way `~/.config/gh/hosts.yml` is recognised from a
+  // child whose home points elsewhere. Absent leaves the child's own `HOME` as the
+  // only thing `~` can mean; every absolute spelling is still judged.
+  list("FORGE_PROTECTED_HOMES", ":", null, "internal"),
+  // #2638 — the protected forge config directories, as the PARENT resolved them from
+  // its own env and its own passwd entry, colon-joined. `internal`: the spawn layer
+  // writes it and a host has nothing to set. An absent or malformed value is the
+  // fail-closed arm — a child call that names a config directory is refused, because
+  // nothing judged it — and the child never resolves any of these itself.
+  list("FORGE_PROTECTED_PATHS", ":", null, "internal"),
   // #2284 — the parent's `forge_read` broker honours `PI_ENSEMBLE_FORGE=none`: a
   // proved read comes back `the forge is off: PI_ENSEMBLE_FORGE=none` and the
   // parent runs no `gh`/`glab` and no remote read for a child. `0` puts the
