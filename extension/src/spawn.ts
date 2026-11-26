@@ -334,15 +334,19 @@ async function spawnSpecialistInner(
       caps,
       budgetProgress,
       onProgress: opts.onProgress,
-      // #2644 — the caller's stall lever, weighed on the tick that reports progress.
-      // `childProgress` is the only measure of stream life and `inFlightTools` the only
-      // discriminator between a silent bash and a hung request, so the pump — which owns
-      // both — decides when the caller's check runs, and the caller owns the abort.
+      // #2644 — the caller armed the window; THIS spawn supplies its reading of the
+      // stream. `childProgress` is the only measure of stream life and `inFlightTools` the
+      // only discriminator between a silent bash and a hung request (#951), so the two
+      // facts the lever needs are read here, on the tick, and the caller owns the abort.
       ...(opts.stall === undefined
         ? {}
         : {
             stall: {
               windowMinutes: opts.stall.windowMinutes,
+              silence: () => ({
+                sinceMs: Date.now() - childProgress.lastProgressAt,
+                toolInFlight: inFlightTools.active,
+              }),
               check: () => opts.onProgress?.({ ...runningState, usage: { ...runningState.usage } }),
             },
           }),

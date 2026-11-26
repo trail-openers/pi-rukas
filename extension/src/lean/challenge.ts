@@ -52,7 +52,7 @@ import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { challengeSkip } from "./pre-verify-share.ts";
-import { requestStallInert, requestStallWindowMs } from "./request-stall.ts";
+import { stallArms } from "./request-stall.ts";
 import { rereadSpec } from "./spec-for.ts";
 import { type PiSpec, readiness } from "./spec.ts";
 import { existsInCommit, fileProblem, pathProblem } from "./specify-path.ts";
@@ -291,11 +291,9 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
   // 3. The adversary, under the state's budget.
   // #2644 — the hung-request lever beside the state's ceilings; the window is the
   // review reserve clamped to what the deadline leaves, read through the shared helpers.
-  const budget = armBudget(budgetFor(config, "challenge"), {
-    windowMs: requestStallWindowMs(ctx.run.deadlineMs, ctx.now()),
-  });
-  const inertStall = requestStallInert(ctx.run.deadlineMs, ctx.now());
-  if (inertStall !== undefined) traceWarn(`lean challenge #${String(issue)}: ${inertStall}`);
+  const budget = armBudget(budgetFor(config, "challenge"), stallArms(ctx));
+  if (budget.warning !== undefined)
+    traceWarn(`lean challenge #${String(issue)}: ${budget.warning}`);
   if (budget.warning !== undefined)
     traceWarn(`lean challenge #${String(issue)}: ${budget.warning}`);
   // The adversary's cost row rides on the throw and `settle` records it (see

@@ -1,65 +1,86 @@
 /**
  * The ONE reader of the silence a lean model request is allowed.
  *
- * The engine checks the cycle deadline only BETWEEN steps, so a request that hangs
- * INSIDE a step outlives it: an outer wall takes the cell, no handback is written and the
- * work is lost. The lever this file sizes is the child's own — a progress stream quiet for
- * this long, with no tool call in flight, is aborted through the same `AbortController`
- * the turns/tokens levers use, and the step reads it as the budget verdict those levers
- * already produce (`limit: "stall"` — see `step-budget.ts`).
+ * The engine checks the cycle deadline only BETWEEN steps, so a request hung INSIDE a step
+ * outlives it. The lever this file sizes is the child's own: a stream quiet this long with
+ * no tool call in flight is aborted through the `AbortController` the turns/tokens levers
+ * use and reads back as their `budget` verdict (`limit: "stall"`).
  *
- * The window is derived, never written: the review reserve — what the handoff needs plus
- * what publish, ci and land need ({@link handoffAllowanceMs} +
- * {@link REVIEW_DEADLINE_RESERVE_MS}) — clamped to what the deadline still leaves outside
- * the handoff allowance. It does NOT read `ChildProgress.stall`'s 30/60-minute floors:
- * those size the shared silence watchdogs for a child with no deadline of its own, and a
- * lean cell is bounded by its own clock.
- *
- * Three arms leave it unarmed, and {@link requestStallInert} says which: no resolved
- * deadline (an absent deadline is never a reason to shrink work), dispatch caps off (the
- * master switch), or no room left outside the allowance — where the engine's own boundary
- * stop decides, so this lever must not arm a zero timer that kills instantly.
+ * The window is derived, never written — {@link handoffAllowanceMs} +
+ * {@link REVIEW_DEADLINE_RESERVE_MS}, clamped to what the deadline leaves outside the
+ * allowance. It does NOT read `ChildProgress.stall`'s 30/60-minute floors, which size the
+ * shared watchdogs for a child with no deadline of its own. Three arms leave it unarmed and
+ * {@link requestStallUnarmed} says which — no resolved deadline, dispatch caps off, or no
+ * room outside the allowance, where the between-steps stop already decides and a zero timer
+ * would kill the child the instant it started.
  */
 
 import { capsEnabled } from "../spawn-child-bound.ts";
-import { MINUTE_MS, handoffAllowanceMs } from "./deadline.ts";
+import type { LeanRun } from "./state.ts";
+import { handoffAllowanceMs } from "./deadline.ts";
 import { REVIEW_DEADLINE_RESERVE_MS } from "./review-bound.ts";
 import { leanRequestStallEnabled } from "./request-stall-switch.ts";
 
-/** The whole reserve the window is derived from: handoff plus what the later steps need. */
-function reserveMs(): number {
-  return handoffAllowanceMs() + REVIEW_DEADLINE_RESERVE_MS;
+/** Why the lever armed nothing, or `undefined` when it did arm. */
+function unarmed(
+  deadlineMs: number | undefined,
+  now: number,
+): "switch" | "deadline" | "caps" | "room" | undefined {
+  if (!leanRequestStallEnabled()) return "switch";
+  if (deadlineMs === undefined) return "deadline";
+  if (!capsEnabled()) return "caps";
+  return deadlineMs - now - handoffAllowanceMs() > 0 ? undefined : "room";
 }
 
 /**
  * The silence a model request may sit out, in ms, or `undefined` when the lever is not
- * armed. `undefined` is inert, and the caller's trace says which arm it is on.
+ * armed — inert, never a zero window that would kill the child the instant it started.
  */
 export function requestStallWindowMs(
   deadlineMs: number | undefined,
   now: number,
 ): number | undefined {
-  if (!leanRequestStallEnabled() || deadlineMs === undefined || !capsEnabled()) return undefined;
-  const left = deadlineMs - now - handoffAllowanceMs();
-  return left > 0 ? Math.min(reserveMs(), left) : undefined;
+  if (unarmed(deadlineMs, now) !== undefined) return undefined;
+  const left = deadlineMs! - now - handoffAllowanceMs();
+  return Math.min(handoffAllowanceMs() + REVIEW_DEADLINE_RESERVE_MS, left);
 }
 
 /**
- * What the arm says when it did NOT arm, or `undefined` when it did — the disclosure the
- * dispatching step traces, in `review-bound.ts`'s shape: a lever that bounded nothing
- * says so rather than reporting a bound that held.
+ * The arm's disclosure when it armed nothing, in `review-bound.ts`'s shape: a lever that
+ * bounded nothing says so rather than reporting a bound that held. `undefined` when it armed.
  */
-export function requestStallInert(
+export function requestStallUnarmed(
   deadlineMs: number | undefined,
   now: number,
 ): string | undefined {
-  if (!leanRequestStallEnabled()) return undefined;
-  if (requestStallWindowMs(deadlineMs, now) !== undefined) return undefined;
-  const why =
-    deadlineMs === undefined
-      ? "no cycle deadline"
-      : !capsEnabled()
-        ? "PI_ENSEMBLE_DISPATCH_CAPS=0"
-        : "no room outside the handoff allowance";
-  return `request stall bound is inert: ${why}`;
+  const why = unarmed(deadlineMs, now);
+  if (why === undefined) return undefined;
+  return `request stall bound is inert: ${
+    why === "caps"
+      ? "PI_ENSEMBLE_DISPATCH_CAPS=0"
+      : why === "deadline"
+        ? "no cycle deadline"
+        : why === "room"
+          ? "no room outside the handoff allowance"
+          : "PI_ENSEMBLE_LEAN_REQUEST_STALL=0"
+  }`;
+}
+
+/** The arms one step passes `armBudget`, derived from the run's own clock. A step has no
+ *  stream to read — the child's spawn supplies its stamp and hands the breach back through
+ *  the arm's `onProgress` — so the reader here measures nothing and the lever stays armed
+ *  only by the window and the clock the arm discloses its inertness from. */
+export function stallArms(ctx: { run: LeanRun; now: () => number }): {
+  windowMs: number | undefined;
+  silence: () => { sinceMs: number; toolInFlight: boolean };
+  deadlineMs?: number;
+  now: number;
+} {
+  const now = ctx.now();
+  return {
+    windowMs: requestStallWindowMs(ctx.run.deadlineMs, now),
+    silence: () => ({ sinceMs: 0, toolInFlight: false }),
+    ...(ctx.run.deadlineMs === undefined ? {} : { deadlineMs: ctx.run.deadlineMs }),
+    now,
+  };
 }

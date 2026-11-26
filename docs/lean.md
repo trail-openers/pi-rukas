@@ -593,24 +593,23 @@ reserve rule, its two levers and its gates are unchanged. Sources:
 
 **The bound on one model request.** Every ceiling in the table above is read between
 turns, so a child whose model request never answers spends no turns and emits no tokens: it
-sits inside its own `minutes` bound while the cell's deadline passes under it. The engine's
-deadline is checked only **between** steps, so the harness's outer wall takes the cell —
-no result document, no PR branch, the patch lost. The fourth lever of the same budget arm
-watches the child's own progress stream: quiet for the derived window with **no tool call in
-flight** is a hung request, and the child is aborted through the same `AbortController` the
-turns and tokens levers use. The step then ends as the `budget` verdict those levers already
-produce, with `limit: `"stall"` — the step record, the handback cause line and the host's
-`issues[].failure` all name it, so a stall reads apart from a wall-clock timeout.
+sits inside its own `minutes` bound while the cell's deadline passes under it, and the
+deadline is checked only **between** steps — so the harness's outer wall takes the cell, with
+no result document and the patch lost. The fourth lever of the same budget arm watches the
+child's own progress stream: quiet for the derived window with **no tool call in flight** is
+a hung request, and the child is aborted through the same `AbortController` the turns and
+tokens levers use. The step ends as the `budget` verdict those levers already produce, with
+`limit: `"stall"`, so the step record, the handback cause line and the host's
+`issues[].failure` all name it rather than a wall-clock timeout.
 
 | | |
 |---|---|
 | the window | **derived, never configured**: `PI_ENSEMBLE_HANDOFF_TIMEOUT_MS` + `REVIEW_DEADLINE_RESERVE_MS`, clamped to what the resolved deadline still leaves outside the handoff allowance. |
 | not armed | no resolved deadline, `PI_ENSEMBLE_DISPATCH_CAPS=0`, or no room left outside the allowance — where the between-steps stop already decides. Each inert arm says which on the trace; silence is never a pass. |
-| never a stall | a tool call in flight. A whole offline suite is one silent `bash` for tens of minutes, and #951 exists for exactly that. |
+| never a stall | a tool call in flight: a whole offline suite is one silent `bash` for tens of minutes (#951). |
 
 `PI_ENSEMBLE_LEAN_REQUEST_STALL=0` is the only off value; it returns a hung request to being
-bounded by the outer wall alone, which is the behaviour before the lever existed. Sources:
-`extension/src/lean/request-stall.ts` (the window),
+bounded by the outer wall alone. Sources: `extension/src/lean/request-stall.ts` (the window),
 `extension/src/lean/request-stall-switch.ts` (the switch),
 `extension/src/lean/step-budget.ts` (the arm and the verdict).
 

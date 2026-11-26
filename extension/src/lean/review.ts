@@ -74,7 +74,7 @@ import { protectedPathsOf } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { acceptanceSection, assertHeadIsVerified } from "./review-acceptance.ts";
 import { type StepStop, reviewBoundRecord, stepBound, unjudgedLenses } from "./review-bound.ts";
-import { requestStallInert, requestStallWindowMs } from "./request-stall.ts";
+import { stallArms } from "./request-stall.ts";
 import { assertReviewEntry } from "./review-entry.ts";
 import { adversarialGate, lensGate } from "./review-gates.ts";
 import { derivedArg, noteFixDisclosure, reviewedHead } from "./review-git.ts";
@@ -189,14 +189,8 @@ async function reviewPass(
   // The step's budget, armed the way `build`, `challenge` and `specify` arm theirs. A
   // child that spends it is NOT a routed verdict — this step has no `budget` arrow, so the
   // stop throws with the rows it paid for.
-  const budget = armBudget(budgetFor(config, "review"), {
-    windowMs: requestStallWindowMs(ctx.run.deadlineMs, ctx.now()),
-  });
+  const budget = armBudget(budgetFor(config, "review"), stallArms(ctx));
   if (budget.warning !== undefined) traceWarn(`lean review #${String(issue)}: ${budget.warning}`);
-  {
-    const inertStall = requestStallInert(ctx.run.deadlineMs, ctx.now());
-    if (inertStall !== undefined) traceWarn(`lean review #${String(issue)}: ${inertStall}`);
-  }
   // **The step's OWN clock, beside the per-child arms and for a different job** — it
   // bounds the whole wave, and its spend comes off the durable review entry so a resumed
   // attempt counts what its crashed self spent. On a returned pass a stop is absent.

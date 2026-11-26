@@ -58,7 +58,7 @@ import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { MAX_BUILD_ATTEMPTS } from "./machine.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
-import { requestStallInert, requestStallWindowMs } from "./request-stall.ts";
+import { stallArms } from "./request-stall.ts";
 import { rereadSpec } from "./spec-for.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
@@ -293,13 +293,9 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     // #2644 — the hung-request lever, beside the state's own ceilings: the window is
     // the review reserve clamped to what the deadline leaves, and an inert arm says so
     // on the same trace line the minutes lever's inertness uses.
-    const budget = armBudget(budgetFor(config, "build"), {
-      windowMs: requestStallWindowMs(ctx.run.deadlineMs, ctx.now()),
-    });
-    const inertStall = requestStallInert(ctx.run.deadlineMs, ctx.now());
+    const budget = armBudget(budgetFor(config, "build"), stallArms(ctx));
     if (budget.warning !== undefined)
       traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
-    if (inertStall !== undefined) traceWarn(`lean build #${String(issue)}: ${inertStall}`);
     const [dispatchedChild, row] = await dispatchBuilder(deps.dispatch, {
       issue,
       spec,
@@ -445,9 +441,8 @@ export function buildDeps(headless: boolean): BuildDeps {
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,
-        // #2644 — the stall lever's window; the spawn weighs it against the child's own
-        // stream stamp and hands the breach back through `onProgress`, which is what
-        // aborts. Without this line the lever is decoration (the shape #2073 caught).
+        // #2644 — the stall lever, forwarded with the other arms: dropping it would leave
+        // a hung request to the wall clock alone (the shape #2073 caught).
         stall: o.stall,
         // The budget's kill goes through `killProcessTree`, which only reaches the
         // child's tool tree when the child leads its own group.

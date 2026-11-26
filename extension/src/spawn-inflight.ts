@@ -252,18 +252,20 @@ export function createStdoutLineHandler(opts: {
   budgetProgress: BudgetProgressSteer;
   onProgress?: (snapshot: RunningState) => void;
   /**
-   * #2644 — the caller's stall lever, read on the tick that reports progress. The
-   * caller owns the `AbortController` this decides (`lean`'s budget arm), so the pump
-   * only answers the one question it can answer from this stream: is the child quiet
-   * past the window WITH no tool call in flight. A tool in flight is a running bash,
-   * not a hung request, and is never a stall (#951).
+   * #2644 — the caller's stall lever, armed by `lean`'s budget arm and read on the tick
+   * that reports progress: the same tick as the turns/tokens levers. The caller owns the
+   * `AbortController`, so the pump contributes only the two facts this stream holds — the
+   * window and whether a tool call sits in flight — and calls `check` when the child is
+   * quiet past the window with nothing in flight. A tool in flight is a running bash, not
+   * a hung request, and is never a stall (#951). Absent means no stall check, which is
+   * every caller that bounds its child some other way.
    */
-  /**
-   * #2644 — the caller's stall lever, armed by `lean`'s budget arm. Absent means no
-   * stall check on this child, which is every caller that bounds its child some other
-   * way.
-   */
-  stall?: { windowMinutes: number; check: () => void };
+  stall?: {
+    windowMinutes: number;
+    silence: () => { sinceMs: number; toolInFlight: boolean };
+    /** The caller's progress hook — the one that aborts, owned by `armBudget`. */
+    check: () => void;
+  };
   onRawEvent?: (event: PiJsonEvent) => void;
   onAgentEnd: (parsed: PiJsonEvent) => void;
   /** Every `agent_settled`, for the child bound's cancel-vs-done bit. */
@@ -335,16 +337,13 @@ export function createStdoutLineHandler(opts: {
       // `turnNudge`), and the progress steer is inert when none is.
       caps.turnNudge?.(runningState.turns);
       budgetProgress.onAssistantTurn(runningState.turns, Date.now());
-      // #2644 — the caller's stall check, on the same tick as the other levers and
-      // BEFORE the progress callback so a breach's abort lands first. Quiet past the
-      // window with NO tool in flight is a hung request; a tool in flight is a running
-      // bash, work rather than silence, and never a stall (#951).
-      if (
-        stall !== undefined &&
-        !inFlightTools.active &&
-        Date.now() - childProgress.lastProgressAt >= stall.windowMinutes * 60_000
-      )
-        stall.check();
+      // #2644 — the caller's stall check, on the same tick as the other levers and BEFORE
+      // the progress callback so its abort lands first. A tool in flight is a running bash,
+      // work rather than silence, and never a stall (#951).
+      if (stall !== undefined && !inFlightTools.active) {
+        const quiet = stall.silence();
+        if (quiet.sinceMs >= stall.windowMinutes * 60_000) stall.check();
+      }
       onProgress?.({ ...runningState, usage: { ...runningState.usage } });
     }
     // #839 — raw-event observer for the dispatch deck's live view. Fires

@@ -85,12 +85,8 @@ interface SpecifyAttemptArgs {
   /** See {@link SpecifyPromptOpts.resubmit}: retry with the fixed "you never
    * submitted" note instead of the drop reasons. */
   resubmit?: boolean;
-  /**
-   * #2644 — the hung-request window the caller derived from the run's deadline
-   * (`requestStallWindowMs`). `undefined` leaves the lever unarmed; the trace says which
-   * arm left it so.
-   */
-  stallWindowMs?: number;
+  /** #2644 — the hung-request lever the caller derived from the run's deadline. */
+  stall?: Parameters<typeof armBudget>[1];
 }
 
 interface SpecifyAttemptResult {
@@ -200,7 +196,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   // The body the step already fetched to parse `spec` — threaded, never re-read.
   const { issueBody } = args;
   // Each dispatch gets its own budget, armed the way the first was.
-  const budget = armBudget(budgetFor(config, "specify"), { windowMs: args.stallWindowMs });
+  const budget = armBudget(budgetFor(config, "specify"), args.stall);
   if (budget.warning !== undefined) traceWarn(`lean specify #${String(issue)}: ${budget.warning}`);
   // Minted here, before the child exists, so its re-ask can open the same session. A retry attempt
   // gets none: the step's ceiling is one child, one follow-up and one fresh retry.

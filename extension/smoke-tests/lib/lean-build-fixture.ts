@@ -35,6 +35,7 @@ import type { Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
 import type { BudgetOpts } from "../../src/lean/step-budget.ts";
+import { deliverQuietTick } from "./lean-quiet-child-tick.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import {
@@ -363,12 +364,9 @@ export interface RunOpts {
    */
   dispatchResults?: DispatchResultOverride;
   /**
-   * Drives the child's progress feed, the way `spawn.ts` does at `message_end`.
-   *
-   * A case that arms the #2644 stall lever says how long its fake child has been quiet
-   * with no tool call in flight: `silentMs` is what the fake child's stream stamp reports,
-   * so the step's own arm measures the silence and fires its own abort — the fixture never
-   * hands a verdict to the step it is testing.
+   * How long the fake child's stream has been quiet, ms, which the step's #2644 stall lever
+   * measures and acts on itself (see `lean-quiet-child-tick.ts`). The fixture supplies the
+   * child's clock and never a verdict.
    */
   silentMs?: number | (() => number);
   /** THE config the step reads; spread {@link configWithRunner} to keep the rest. */
@@ -424,27 +422,8 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     specs.push(spec);
     prompts.push(spec.prompt);
     extraArgs.push(o.extraArgs ?? []);
-    // The fake child's stream. The case says only how long it has been quiet, and the
-    // step's OWN lever measures that and fires its OWN abort — the fixture supplies the
-    // child's clock and nothing else, so no case hands the step a verdict.
-    if (o.stall !== undefined && o.onProgress !== undefined) {
-      const declared =
-        typeof opts.toolUses === "function" ? opts.toolUses() : (opts.toolUses ?? []);
-      const silent = typeof opts.silentMs === "function" ? opts.silentMs() : opts.silentMs ?? 0;
-      o.stall.silence = () => ({ sinceMs: silent, toolInFlight: declared.length > 0 });
-      const progress = o.onProgress;
-      const quiet = {
-        role: spec.role,
-        turns: 0,
-        toolUses: 0,
-        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-        totalTokens: 0,
-        elapsedMs: silent,
-        done: false,
-      } as unknown as Parameters<typeof progress>[0];
-      // The pump's call: quiet past the window with nothing in flight.
-      progress(quiet);
-    }
+    // The fake child's quiet tick, if this case declared one (see `lean-quiet-child-tick.ts`).
+    deliverQuietTick(spec.role, o, opts);
     if (!childActed) opts.child?.((childActed = true) && (spec.cwd as string));
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
@@ -496,10 +475,11 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
           },
         }),
   };
-  // Everything a run observed, from the fixture it ran on — the one shape both
-  // the returned result and the thrown one carry.
+  // Everything a run observed, from the fixture it ran on. `threw` is declared here so both
+  // returns below carry the SAME shape: a case that read `r.threw` off a clean run would
+  // otherwise throw `TypeError` on the result object itself and read as broken harness.
   const finish = () => ({
-    threw: undefined,
+    threw: undefined as Error | undefined,
     dispatched,
     fetched,
     prompts,

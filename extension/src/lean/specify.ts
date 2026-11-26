@@ -53,7 +53,7 @@ import { testsFromLog } from "./build.ts";
 import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { preVerifyShare } from "./pre-verify-share.ts";
-import { requestStallInert, requestStallWindowMs } from "./request-stall.ts";
+import { stallArms } from "./request-stall.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
 import { specFor } from "./spec-for.ts";
 import { type PiSpec, readiness } from "./spec.ts";
@@ -366,9 +366,8 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     ...(testLocation === undefined ? {} : { testLocation }),
     wanted,
     frozenByCriterion,
-    // #2644 — the hung-request lever, derived once from the run's deadline and read
-    // through the shared helpers so the window is the same number every step prints.
-    stallWindowMs: requestStallWindowMs(ctx.run.deadlineMs, ctx.now()),
+    // #2644 — the hung-request lever, derived once from the run's deadline.
+    stall: stallArms(ctx),
   };
   // The first attempt is final unless it dropped a submitted row or ended
   // without submitting at all: both are things the child can fix by being told,
@@ -377,12 +376,6 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
   // is. The pre-verify share is asked at each dispatch seam and is never a kill, so the bytes the
   // first attempt already paid for always stand.
   const cellStartedAt = ctx.steps[0]?.startedAt;
-  // The lever's inertness is the step's to disclose, not a helper's silence: which arm left
-  // it unarmed is what an operator needs in the log.
-  {
-    const inertStall = requestStallInert(ctx.run.deadlineMs, ctx.now());
-    if (inertStall !== undefined) traceWarn(`lean specify #${String(issue)}: ${inertStall}`);
-  }
   let attempt = await runSpecifyAttempt(attemptArgs);
   // What each attempt's dispatch cost, collected as they happen: the step's
   // outcome is ONE record, so the rows are kept outside it rather than read back
