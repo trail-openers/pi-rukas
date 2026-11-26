@@ -40,13 +40,9 @@ export interface BudgetOpts {
   signal?: AbortSignal;
   onProgress?: (s: RunningState) => void;
   budgetTurns?: number;
-  stall?: {
-    /** The window the lever was armed with, in minutes — what a breach reports as `value`. */
-    windowMinutes: number;
-    /** Quiet this long with nothing in flight is a hung request; a tool in flight is work,
-     *  not silence, and is never a stall (#951). */
-    silence: () => { sinceMs: number; toolInFlight: boolean };
-  };
+  /** The #2644 lever: the armed window in minutes, and the reader of THIS child's stream
+   *  (quiet this long with nothing in flight is a hung request; #951). */
+  stall?: { windowMinutes: number; silence: () => { sinceMs: number; toolInFlight: boolean } };
 }
 
 /**
@@ -220,34 +216,20 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
       : [requestStallUnarmed(stall.deadlineMs, stall.now) ?? ""]),
   ].filter((line) => line !== "");
   const inert = inertLines.length === 0 ? undefined : inertLines.join("; ");
-  if (turns <= 0 && tokens <= 0 && stallOpts === undefined) {
+  // The three levers that need the hook: two ceilings and the hung request. With none of them
+  // there is no tick to watch, so the arm ships no controller, no hook and no denominator.
+  if (turns <= 0 && tokens <= 0 && stallOpts === undefined)
     return {
-      opts: {
-        ...(boundMs === undefined ? {} : { childBoundMs: boundMs }),
-        ...(stallOpts === undefined ? {} : { stall: stallOpts }),
-      },
+      opts: { ...(boundMs === undefined ? {} : { childBoundMs: boundMs }) },
       fired,
       ...(inert === undefined ? {} : { warning: inert }),
     };
-  }
   const controller = new AbortController();
   // The trace lines print once per ARM, not per tick: the hook runs once per child turn.
   let hookFailureTraced = false;
-  // The sink sits on BOTH arms of this hook, so every write goes through one catcher.
-  const traceOnce = (msg: string): void => {
-    try {
-      traceWarn(msg);
-    } catch {
-      // A sink we cannot write to cannot be written to; nothing to say about it.
-    }
-  };
-  const traceHookFailureOnce = (err: unknown): void => {
-    if (hookFailureTraced) return;
-    hookFailureTraced = true;
-    traceOnce(`lean budget: progress hook failed: ${(err as Error).message}`);
-  };
   // `spawn.ts` calls this from its stdout handler on the same tick it parses a child line: an exception
-  // here costs the dispatch. Nothing may escape, and the ABORT comes BEFORE the trace.
+  // here costs the dispatch. Nothing may escape, and the ABORT comes BEFORE the trace — the sink is not
+  // ours to trust, so every write to it is caught.
   const onProgress = (s: RunningState): void => {
     let breach: BudgetFired | undefined;
     try {
@@ -271,7 +253,14 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
         }
       }
     } catch (err) {
-      traceHookFailureOnce(err);
+      if (!hookFailureTraced) {
+        hookFailureTraced = true;
+        try {
+          traceWarn(`lean budget: progress hook failed: ${(err as Error).message}`);
+        } catch {
+          // A sink we cannot write to cannot be written to; nothing to say about it.
+        }
+      }
       return;
     }
     if (breach === undefined) return;

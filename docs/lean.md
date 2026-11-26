@@ -609,8 +609,7 @@ tokens levers use. The step ends as the `budget` verdict those levers already pr
 | never a stall | a tool call in flight: a whole offline suite is one silent `bash` for tens of minutes (#951). |
 
 `PI_ENSEMBLE_LEAN_REQUEST_STALL=0` is the only off value; it returns a hung request to being
-bounded by the outer wall alone. Sources: `extension/src/lean/request-stall.ts` (the window),
-`extension/src/lean/request-stall-switch.ts` (the switch),
+bounded by the outer wall alone. Sources: `extension/src/lean/request-stall.ts` (the switch and the window),
 `extension/src/lean/step-budget.ts` (the arm and the verdict).
 
 **The review step's own clock.** Every lever above bounds ONE CHILD; the `review`

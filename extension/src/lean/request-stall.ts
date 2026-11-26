@@ -2,24 +2,30 @@
  * The ONE reader of the silence a lean model request is allowed.
  *
  * The engine checks the cycle deadline only BETWEEN steps, so a request hung INSIDE a step
- * outlives it. The lever this file sizes is the child's own: a stream quiet this long with
- * no tool call in flight is aborted through the `AbortController` the turns/tokens levers
- * use and reads back as their `budget` verdict (`limit: "stall"`).
- *
- * The window is derived, never written — {@link handoffAllowanceMs} +
- * {@link REVIEW_DEADLINE_RESERVE_MS}, clamped to what the deadline leaves outside the
- * allowance. It does NOT read `ChildProgress.stall`'s 30/60-minute floors, which size the
- * shared watchdogs for a child with no deadline of its own. Three arms leave it unarmed and
- * {@link requestStallUnarmed} says which — no resolved deadline, dispatch caps off, or no
- * room outside the allowance, where the between-steps stop already decides and a zero timer
- * would kill the child the instant it started.
+ * outlives it. The lever is the child's own: a stream quiet this long with no tool call in
+ * flight is aborted through the `AbortController` the turns/tokens levers use and reads back
+ * as their `budget` verdict (`limit: "stall"`). The window is derived, never written —
+ * {@link handoffAllowanceMs} + {@link REVIEW_DEADLINE_RESERVE_MS}, clamped to what the
+ * deadline leaves outside the allowance; it does NOT read `ChildProgress.stall`'s 30/60-minute
+ * floors, which size watchdogs for a child with no deadline of its own. {@link
+ * requestStallUnarmed} names the arm that left it unarmed: no resolved deadline, dispatch caps
+ * off, or no room outside the allowance — where the between-steps stop already decides, so a
+ * zero timer that would kill the child instantly must never arm.
  */
 
 import { capsEnabled } from "../spawn-child-bound.ts";
 import type { LeanRun } from "./state.ts";
 import { handoffAllowanceMs } from "./deadline.ts";
 import { REVIEW_DEADLINE_RESERVE_MS } from "./review-bound.ts";
-import { leanRequestStallEnabled } from "./request-stall-switch.ts";
+import type { StallArms } from "./step-budget.ts";
+
+/**
+ * The ONE reader of the switch. Default ON: only the literal `"0"` takes it out, read at CALL
+ * time — every other value (`""`, `"false"`, `"NO"`, a mangled `" 0 "`) keeps the shipped
+ * behaviour, because a switch a shell accident could flip is a lost cell waiting to happen.
+ */
+export const leanRequestStallEnabled = (): boolean =>
+  process.env.PI_ENSEMBLE_LEAN_REQUEST_STALL !== "0";
 
 /** Why the lever armed nothing, or `undefined` when it did arm. */
 function unarmed(
@@ -32,10 +38,7 @@ function unarmed(
   return deadlineMs - now - handoffAllowanceMs() > 0 ? undefined : "room";
 }
 
-/**
- * The silence a model request may sit out, in ms, or `undefined` when the lever is not
- * armed — inert, never a zero window that would kill the child the instant it started.
- */
+/** The silence a model request may sit out, ms; `undefined` = inert, never a zero window. */
 export function requestStallWindowMs(
   deadlineMs: number | undefined,
   now: number,
@@ -53,29 +56,24 @@ export function requestStallUnarmed(
   deadlineMs: number | undefined,
   now: number,
 ): string | undefined {
-  const why = unarmed(deadlineMs, now);
-  if (why === undefined) return undefined;
-  return `request stall bound is inert: ${
-    why === "caps"
-      ? "PI_ENSEMBLE_DISPATCH_CAPS=0"
-      : why === "deadline"
-        ? "no cycle deadline"
-        : why === "room"
-          ? "no room outside the handoff allowance"
-          : "PI_ENSEMBLE_LEAN_REQUEST_STALL=0"
-  }`;
+  switch (unarmed(deadlineMs, now)) {
+    case undefined:
+      return undefined;
+    case "caps":
+      return "request stall bound is inert: PI_ENSEMBLE_DISPATCH_CAPS=0";
+    case "deadline":
+      return "request stall bound is inert: no cycle deadline";
+    case "room":
+      return "request stall bound is inert: no room outside the handoff allowance";
+    default:
+      return "request stall bound is inert: PI_ENSEMBLE_LEAN_REQUEST_STALL=0";
+  }
 }
 
 /** The arms one step passes `armBudget`, derived from the run's own clock. A step has no
- *  stream to read — the child's spawn supplies its stamp and hands the breach back through
- *  the arm's `onProgress` — so the reader here measures nothing and the lever stays armed
- *  only by the window and the clock the arm discloses its inertness from. */
-export function stallArms(ctx: { run: LeanRun; now: () => number }): {
-  windowMs: number | undefined;
-  silence: () => { sinceMs: number; toolInFlight: boolean };
-  deadlineMs?: number;
-  now: number;
-} {
+ *  stream to read — the child's spawn supplies its stamp and hands the breach back through the
+ *  arm's `onProgress` — so the reader here measures nothing. */
+export function stallArms(ctx: { run: LeanRun; now: () => number }): StallArms {
   const now = ctx.now();
   return {
     windowMs: requestStallWindowMs(ctx.run.deadlineMs, now),
