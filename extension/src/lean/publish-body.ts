@@ -21,7 +21,8 @@ import type { PiSpec } from "./spec.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import { PREEXISTING_NAMES_CAP } from "./state-outcome-maps.ts";
 import type { Step } from "./state.ts";
-import { type BudgetLimit, budgetTrio } from "./step-budget.ts";
+import type { BudgetLimit } from "../request-stall-policy.ts";
+import { budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
 
 /** The marker that says which renderer produced this body, for a later reader. */

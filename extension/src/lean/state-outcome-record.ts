@@ -11,7 +11,8 @@ import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { RedRecord, ReviewRecord } from "./state-outcome-gates.ts";
 import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
-import type { BudgetLimit, DispatchUsageRow } from "./step-budget.ts";
+import type { BudgetLimit } from "../request-stall-policy.ts";
+import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
  * What a step's handler returned. The engine routes on `kind` and reads the rest

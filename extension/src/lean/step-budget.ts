@@ -4,7 +4,7 @@
  * One per-state ceiling becomes four levers: **minutes** → `childBoundMs`, whose kill arrives as
  * `killCause: "child-bound"`; **turns / tokens** → an `AbortController` off the progress stream; and the
  * **stall** → that same `AbortController`, fired when the stream has gone quiet for the window
- * `lean/request-stall.ts` derives while NO tool call is in flight. A breach is
+ * `src/request-stall-policy.ts` derives while NO tool call is in flight. A breach is
  * a VERDICT — the child worked and the ceiling stopped it — so the step returns `{kind: "budget"}` to be
  * routed by the table. Callers ask {@link readDispatched} BEFORE their infra throw: a stop read as an infra
  * failure never reaches the routing and the run loses the cause the ceiling produced.
@@ -16,12 +16,16 @@ import { capsEnabled } from "../spawn-child-bound.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
-import { requestStallUnarmed } from "./request-stall.ts";
+import {
+  type BudgetLimit,
+  requestStallUnarmed,
+  stallLever,
+  stallMinutes,
+  type StallOpts,
+  type StreamSilence,
+} from "../request-stall-policy.ts";
 import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
 import type { LeanState, Outcome } from "./state.ts";
-
-/** The four ceilings a budget verdict may name. `stall` measures silence, not spend. */
-export type BudgetLimit = "minutes" | "turns" | "tokens" | "stall";
 
 /** Which ceiling was crossed, with what it was and what the child used. */
 export interface BudgetFired {
@@ -33,16 +37,15 @@ export interface BudgetFired {
 /**
  * The arms a dispatch accepts, a subset of `SpawnOptions`. `budgetTurns` is the turns ceiling in its own
  * field: `armChildBounds` reads it as the denominator of the budget-progress steer. `stall` is the #2644
- * lever: the window, its reader of THIS child's stream, and the run clock the arm discloses inertness from.
+ * lever, frozen by `stallLever` in `src/request-stall-policy.ts`.
  */
 export interface BudgetOpts {
   childBoundMs?: number;
   signal?: AbortSignal;
   onProgress?: (s: RunningState) => void;
   budgetTurns?: number;
-  /** The #2644 lever: the armed window in minutes, and the reader of THIS child's stream
-   *  (quiet this long with nothing in flight is a hung request; #951). */
-  stall?: { windowMinutes: number; silence: () => { sinceMs: number; toolInFlight: boolean } };
+  /** The #2644 lever: quiet this long with nothing in flight is a hung request (#951). */
+  stall?: StallOpts;
 }
 
 /**
@@ -103,11 +106,6 @@ function minutesUsed(ms: number): number {
   return Math.max(1, Math.ceil(ms / 60_000));
 }
 
-/** Minutes of a stream's silence — the whole minutes a stall verdict prints. */
-function stallMinutes(ms: number): number {
-  return Math.max(1, Math.round(ms / 60_000));
-}
-
 /** The typed trio a budget outcome must carry before any caller states it. */
 export function budgetTrio(oc: Outcome | undefined): BudgetFired | undefined {
   if (oc?.kind !== "budget") return undefined;
@@ -147,14 +145,13 @@ export type BudgetArms = {
  * grace period and the reported `ms` overshoots, so {@link minutesUsed} rounds up.
  *
  * `stall` arms the fourth lever, the hung model request. Like turns and tokens it aborts through this
- * arm's controller and reads back as a `budget` verdict, so a stall is never a user cancel.
+ * arm's controller and reads back as a `budget` verdict, so a stall is never a user cancel. The
+ * lever's arms are frozen by `stallLever`; the inertness line by `requestStallUnarmed`.
  */
-/** The #2644 lever's input: the window `request-stall.ts` derived, the reader of THIS child's stream
- *  (the spawn's stamp in production, a fixture's number offline — no reader, no fire), and the run
- *  clock the arm discloses its own inertness from. */
+/** The #2644 lever's input, derived by `lean/request-stall.ts`. */
 export interface StallArms {
   windowMs: number | undefined;
-  silence?: () => { sinceMs: number; toolInFlight: boolean };
+  silence?: StreamSilence;
   deadlineMs?: number;
   now?: number;
 }
@@ -165,15 +162,7 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
   const tokens = b?.tokens ?? 0;
   const boundMs = minutes > 0 ? minutes * 60_000 : undefined;
   // Frozen HERE: a child already running must not have its bound moved by a later clock read.
-  // Both halves or neither — a lever with no reader can measure nothing and must not claim a
-  // bound — and a window of 0 or less arms nothing, because no room outside the allowance is
-  // the engine's own boundary stop, not a timer that kills the instant the child starts.
-  const stallOpts =
-    stall === undefined || stall.silence === undefined || stall.windowMs === undefined
-      ? undefined
-      : stall.windowMs <= 0
-        ? undefined
-        : { windowMinutes: stallMinutes(stall.windowMs), silence: stall.silence };
+  const stallOpts = stallLever(stall?.windowMs, stall?.silence);
   // Which limit ended the child, frozen at the FIRST breach: a later tick must not rewrite it.
   let hit: BudgetFired | undefined;
   let minutesTraced = false;
@@ -205,8 +194,8 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
     return minutesBreach(result);
   };
   // `armChildBound` returns early under `PI_ENSEMBLE_DISPATCH_CAPS=0` — arming it there buys nothing.
-  // The stall lever's inertness rides the SAME warning: a lever that armed nothing says which
-  // arm left it so, in one line, instead of going quiet or repeating itself per step.
+  // Both levers' inertness rides ONE warning: a lever that armed nothing says which arm left
+  // it so, instead of going quiet or repeating itself per step.
   const inertLines = [
     ...(boundMs !== undefined && !capsEnabled()
       ? [`${String(minutes)}-minute budget is inert: PI_ENSEMBLE_DISPATCH_CAPS=0`]
@@ -238,11 +227,9 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
       else if (tokens > 0 && s.totalTokens > tokens)
         breach = { limit: "tokens", value: tokens, used: s.totalTokens };
       else if (stallOpts !== undefined) {
-        // The fourth lever, read on the SAME tick as turns and tokens. A tool call in
-        // flight is a silent BASH — the whole offline gate — and is work rather than
-        // silence, so it is never a stall (#951). A window printed in whole minutes is
-        // measured in whole minutes, so the bound and its verdict cannot disagree by
-        // rounding: the child is stopped at the minute the verdict would print.
+        // A tool call in flight is a silent BASH — the whole offline gate — and is work
+        // rather than silence, so it is never a stall (#951). The window is measured in the
+        // same whole minutes the verdict prints, so bound and verdict cannot disagree.
         const quiet = stallOpts.silence();
         if (!quiet.toolInFlight && quiet.sinceMs >= stallOpts.windowMinutes * 60_000) {
           breach = {
