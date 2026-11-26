@@ -63,80 +63,80 @@ const WT = "/var/tmp/lean-wt";
 
   for (const [label, rendered] of SHAPES) {
     assert(
-      fullTierSatisfiedBy("pytest -q", rendered, GREEN),
+      fullTierSatisfiedBy("pytest -q", rendered, GREEN, WT),
       `(${label}) the roster's command with its own report flag AND tree taken back is satisfied by its accepted head run`,
     );
     assert(
-      !fullTierSatisfiedBy(verbatim(rendered), rendered, GREEN),
+      !fullTierSatisfiedBy(verbatim(rendered), rendered, GREEN, WT),
       `(${label}) the roster's whole command is NOT satisfied — a tier that still carries a word the roster added runs`,
     );
     assert(
-      !fullTierSatisfiedBy(`pytest -q ${WT}`, rendered, GREEN),
+      !fullTierSatisfiedBy(`pytest -q ${WT}`, rendered, GREEN, WT),
       `(${label}) a tier missing only the report flag is a different command`,
     );
     assert(
-      !fullTierSatisfiedBy(`pytest -q --junitxml=${REPORT}`, rendered, GREEN),
+      !fullTierSatisfiedBy(`pytest -q --junitxml=${REPORT}`, rendered, GREEN, WT),
       `(${label}) a tier missing only the tree the roster ran is a different command`,
     );
     assert(
-      !fullTierSatisfiedBy(`pytest --junitxml=${REPORT} -q ${WT}`, rendered, GREEN),
+      !fullTierSatisfiedBy(`pytest --junitxml=${REPORT} -q ${WT}`, rendered, GREEN, WT),
       `(${label}) the same words in a different order is a different command`,
     );
     assert(
-      !fullTierSatisfiedBy("pytest", rendered, GREEN),
+      !fullTierSatisfiedBy("pytest", rendered, GREEN, WT),
       `(${label}) the binary alone, with the roster's flags gone, is a different command`,
     );
     assert(
-      !fullTierSatisfiedBy("pytest -q --x", rendered, GREEN),
+      !fullTierSatisfiedBy("pytest -q --x", rendered, GREEN, WT),
       `(${label}) the stripped command with one extra flag is a different command`,
     );
     assert(
-      !fullTierSatisfiedBy(`sh -q --junitxml=${REPORT} ${WT}`, rendered, GREEN),
+      !fullTierSatisfiedBy(`sh -q --junitxml=${REPORT} ${WT}`, rendered, GREEN, WT),
       `(${label}) a different binary is a different command`,
     );
     assert(
-      !fullTierSatisfiedBy("sh -q", rendered, GREEN),
+      !fullTierSatisfiedBy("sh -q", rendered, GREEN, WT),
       `(${label}) a stripped command spelled with the wrong binary is a different command`,
     );
     assert(
-      !fullTierSatisfiedBy(`'pytest' -q`, rendered, GREEN),
+      !fullTierSatisfiedBy(`'pytest' -q`, rendered, GREEN, WT),
       `(${label}) a quoted binary is a different command, quotes and all`,
     );
     assert(
-      !fullTierSatisfiedBy("FOO=1 pytest -q", rendered, GREEN),
+      !fullTierSatisfiedBy("FOO=1 pytest -q", rendered, GREEN, WT),
       `(${label}) an env prefix is a different command`,
     );
     assert(
-      !fullTierSatisfiedBy(`cd ${WT} && pytest -q`, rendered, GREEN),
+      !fullTierSatisfiedBy(`cd ${WT} && pytest -q`, rendered, GREEN, WT),
       `(${label}) a shell chain is a different command`,
     );
     assert(
-      !fullTierSatisfiedBy("pytest -q && pytest -q", rendered, GREEN),
+      !fullTierSatisfiedBy("pytest -q && pytest -q", rendered, GREEN, WT),
       `(${label}) the same command twice in one tier is a different command`,
     );
     assert(
-      fullTierSatisfiedBy("pytest  -q", rendered, GREEN),
+      fullTierSatisfiedBy("pytest  -q", rendered, GREEN, WT),
       `(${label}) blanks BETWEEN words are the tier author's typing, not another command`,
     );
     assert(
-      !fullTierSatisfiedBy(`pytest -q --junitxml=$(mk) ${WT}`, rendered, GREEN),
+      !fullTierSatisfiedBy(`pytest -q --junitxml=$(mk) ${WT}`, rendered, GREEN, WT),
       `(${label}) a substituted report path is a different command`,
     );
     assert(
-      !fullTierSatisfiedBy(verbatim(rendered), rendered, RED),
+      !fullTierSatisfiedBy(verbatim(rendered), rendered, RED, WT),
       `(${label}) a roster whose head failed a test satisfies nothing`,
     );
     assert(
-      !fullTierSatisfiedBy(undefined, rendered, GREEN),
+      !fullTierSatisfiedBy(undefined, rendered, GREEN, WT),
       `(${label}) no configured tier is never satisfied`,
     );
     assert(
-      !fullTierSatisfiedBy("   ", rendered, GREEN),
+      !fullTierSatisfiedBy("   ", rendered, GREEN, WT),
       `(${label}) a blank tier is never satisfied`,
     );
     // Leading/trailing blanks are the tier author's typing, not another command.
     assert(
-      fullTierSatisfiedBy("  pytest -q  ", rendered, GREEN),
+      fullTierSatisfiedBy("  pytest -q  ", rendered, GREEN, WT),
       `(${label}) and the surrounding blanks of the same words are the same command`,
     );
   }
@@ -148,15 +148,15 @@ const WT = "/var/tmp/lean-wt";
   // same words in another order, still runs.
   const MID = argv({ roster: "pytest --junitxml={report} -q {dir}" });
   assert(
-    fullTierSatisfiedBy(`pytest --junitxml=${REPORT} -q ${WT}`, MID, GREEN),
+    fullTierSatisfiedBy(`pytest --junitxml=${REPORT} -q ${WT}`, MID, GREEN, WT),
     "(flag not at the tail) with nothing taken back, the command the head ran word for word is the one tier that may be skipped",
   );
   assert(
-    !fullTierSatisfiedBy("pytest -q", MID, GREEN),
+    !fullTierSatisfiedBy("pytest -q", MID, GREEN, WT),
     "(flag not at the tail) and a tier missing the roster's own flag and tree runs — those words were never the roster's to take back",
   );
   assert(
-    !fullTierSatisfiedBy(`pytest -q --junitxml=${REPORT} ${WT}`, MID, GREEN),
+    !fullTierSatisfiedBy(`pytest -q --junitxml=${REPORT} ${WT}`, MID, GREEN, WT),
     "(flag not at the tail) and the same words in another order are a different command",
   );
 
@@ -164,11 +164,11 @@ const WT = "/var/tmp/lean-wt";
   // the same rule holds for it: only the verbatim command is covered.
   const TWOWORD = argv({ roster: "pytest -q --junitxml {report} {dir}" });
   assert(
-    fullTierSatisfiedBy(`pytest -q --junitxml ${REPORT} ${WT}`, TWOWORD, GREEN),
+    fullTierSatisfiedBy(`pytest -q --junitxml ${REPORT} ${WT}`, TWOWORD, GREEN, WT),
     "(two-word flag) the verbatim command is the one tier that may be skipped",
   );
   assert(
-    !fullTierSatisfiedBy(`pytest -q ${REPORT} ${WT}`, TWOWORD, GREEN),
+    !fullTierSatisfiedBy(`pytest -q ${REPORT} ${WT}`, TWOWORD, GREEN, WT),
     "(two-word flag) and a tier that drops the flag itself runs",
   );
   // This repo's own config is the shape the feature was written for: the roster is a wrapper script spelled
@@ -177,7 +177,7 @@ const WT = "/var/tmp/lean-wt";
   // run, and only a tier that keeps those two words and differs in none other may be skipped.
   const OWN = argv({ roster: "bash extension/smoke-tests/lib/lean-roster.sh {dir} {report}" });
   assert(
-    !fullTierSatisfiedBy("bash extension/smoke-tests/lib/lean-roster.sh", OWN, GREEN),
+    !fullTierSatisfiedBy("bash extension/smoke-tests/lib/lean-roster.sh", OWN, GREEN, WT),
     "(this repo's recipe) the bare wrapper is not satisfied — the head ran it WITH the tree and the report",
   );
   assert(
@@ -185,6 +185,7 @@ const WT = "/var/tmp/lean-wt";
       "bash extension/smoke-tests/lib/lean-roster.sh /some/other/tree",
       OWN,
       GREEN,
+      WT,
     ),
     "(this repo's recipe) and a wrapper pointed at another tree is a different command",
   );

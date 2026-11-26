@@ -35,6 +35,9 @@ import {
 import { fullTierSatisfiedBy } from "../src/lean/verify-suite-command.ts";
 import { withEnv } from "./lib/env-scope.ts";
 
+/** A tree the roster scanned that is NOT the directory the tier runs in — containment cannot hold by accident. */
+const ELSEWHERE = "/home/dev/checkout";
+
 const SELF = "test-2633-full-tier-relative-operand.ts";
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -94,7 +97,7 @@ const SATISFIED = new Set<string>([
   let mismatches = 0;
   const offAnswers: boolean[] = [];
   await withEnv({ PI_ENSEMBLE_LEAN_FULL_TIER_OPERAND: "0" }, async () => {
-    for (const row of table) offAnswers.push(fullTierSatisfiedBy(row.tier, row.roster, row.head));
+    for (const row of table) offAnswers.push(fullTierSatisfiedBy(row.tier, row.roster, row.head, WT));
   });
   for (const [i, row] of table.entries()) {
     const g = golden.rows[i];
@@ -119,7 +122,7 @@ const SATISFIED = new Set<string>([
   const table = rows();
   const onAnswers: boolean[] = [];
   await withEnv({ PI_ENSEMBLE_LEAN_FULL_TIER_OPERAND: "1" }, async () => {
-    for (const row of table) onAnswers.push(fullTierSatisfiedBy(row.tier, row.roster, row.head));
+    for (const row of table) onAnswers.push(fullTierSatisfiedBy(row.tier, row.roster, row.head, WT));
   });
   const differs = table
     .filter((row, i) => golden.rows[i]?.satisfied === false && onAnswers[i] === true)
@@ -166,7 +169,7 @@ const SATISFIED = new Set<string>([
   const RED = { failed: ["tests/test-suite.sh::passes"] };
   const two = argv({ roster: TWO_WORD });
   const glue = argv({ roster: GLUED });
-  const run = (tier: string, r: typeof two): boolean => fullTierSatisfiedBy(tier, r, GREEN);
+  const run = (tier: string, r: typeof two): boolean => fullTierSatisfiedBy(tier, r, GREEN, WT);
 
   for (const dir of ["tests", "test", "server"]) {
     assert(
@@ -174,8 +177,8 @@ const SATISFIED = new Set<string>([
       `(bench ${dir}) the panel's tier is satisfied by either spelling of the report flag`,
     );
     assert(
-      !fullTierSatisfiedBy(tierFor(dir), two, RED) &&
-        !fullTierSatisfiedBy(tierFor(dir), glue, RED),
+      !fullTierSatisfiedBy(tierFor(dir), two, RED, WT) &&
+        !fullTierSatisfiedBy(tierFor(dir), glue, RED, WT),
       `(red head ${dir}) a head run that failed a test satisfies nothing`,
     );
   }
@@ -184,6 +187,25 @@ const SATISFIED = new Set<string>([
       (operand) => !run(`${RUNNER} ${operand}`, two),
     ),
     "(operands) an absolute path, a parent segment, a dot segment or a trailing slash never skips",
+  );
+  // A relative operand must name something INSIDE the tree the roster scanned and the tier runs in: a word
+  // that only passes the directory-shape rule is not a directory of that tree. Asked of a roster scanned
+  // outside the tier's own tree, where "inside it" cannot be true by accident of where the runner sits.
+  assert(
+    ["nonsense", "~", "~/tests", "../tests", "../../outside/tests"].every(
+      (operand) =>
+        !fullTierSatisfiedBy(`${RUNNER} ${operand}`, two, GREEN, ELSEWHERE) &&
+        !fullTierSatisfiedBy(`${RUNNER} ${operand}`, glue, GREEN, ELSEWHERE),
+    ),
+    "(operand containment) a bare word unrelated to the tree, a tilde path or a path outside it never skips",
+  );
+  assert(
+    ["tests", "test", "server"].every(
+      (operand) =>
+        fullTierSatisfiedBy(`${RUNNER} ${operand}`, two, GREEN, WT) &&
+        fullTierSatisfiedBy(`${RUNNER} ${operand}`, glue, GREEN, WT),
+    ),
+    "(operand containment) and the same words over the tier's own tree are the run the roster made",
   );
   assert(
     !run(`${RUNNER} ${WT}/tests ${WT}/tests`, two) &&
@@ -231,7 +253,7 @@ const SATISFIED = new Set<string>([
   for (const value of ["0"]) {
     await withEnv({ PI_ENSEMBLE_LEAN_FULL_TIER_OPERAND: value }, async () => {
       assert(
-        !fullTierSatisfiedBy(tierFor("tests"), two, { failed: [] }),
+        !fullTierSatisfiedBy(tierFor("tests"), two, { failed: [] }, WT),
         `(switch) "${value}" takes the wider rule out`,
       );
     });
@@ -239,7 +261,7 @@ const SATISFIED = new Set<string>([
   for (const value of [undefined, "1", "true", "false", "off", "", "0 ", "00"]) {
     await withEnv({ PI_ENSEMBLE_LEAN_FULL_TIER_OPERAND: value }, async () => {
       assert(
-        fullTierSatisfiedBy(tierFor("tests"), two, { failed: [] }),
+        fullTierSatisfiedBy(tierFor("tests"), two, { failed: [] }, WT),
         `(switch) ${JSON.stringify(value)} is not the one value that turns the rule off`,
       );
     });

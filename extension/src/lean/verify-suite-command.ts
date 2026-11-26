@@ -1,12 +1,13 @@
 /**
  * lean/verify-suite-command — is a project's `verify.full` tier the suite the roster already ran?
  *
- * The roster is the project's own runner with the step's report pair at its tail — the flag over its
- * report, then the tree — and the head run of THAT command is the verdict a duplicate tier would only
- * repeat. Both sides are put back to the placeholders the config wrote through `put`, then asked word for
- * word: quotes included, no case fold, no path normalisation, no reordering. `lean/full-tier-operand-switch.ts`
- * owns the switch and its off arm.
+ * The roster is the project's own runner with the step's report pair at its tail — the flag over its report,
+ * then the tree — and the head run of THAT command is the verdict a duplicate tier would only repeat. Both
+ * sides are put back to the placeholders the config wrote through `put`, then asked word for word: quotes
+ * included, no case fold, no path normalisation, no reordering. `lean/full-tier-operand-switch.ts` owns the
+ * switch and its off arm.
  */
+import path from "node:path";
 import { validateTestDir } from "./config-test-location.ts";
 import { leanFullTierOperandEnabled } from "./full-tier-operand-switch.ts";
 
@@ -36,20 +37,36 @@ const put = (w: string, report: string, tree: string): string =>
         : w.startsWith(`${tree}/`)
           ? UNDER + w.slice(tree.length + 1)
           : w;
-/** May the one word past the runner stand where the step's pair stood? It must name one directory the
- * whole-tree run covered — under the tree, or the project's relative name for it, the shape
- * `validateTestDir` admits for `verify.testDir`. The tree's own word is the head run, not a subset, and a
- * flag or a nested path names no directory. */
-const covers = (extra: string, named: readonly string[], tail: number): boolean =>
-  extra !== "" &&
-  extra !== TREE &&
-  tail > 0 &&
-  (extra.startsWith(UNDER) ||
-    (!extra.startsWith("/") &&
-      !extra.startsWith("-") &&
-      named.includes(TREE) &&
-      !extra.includes("/"))) &&
-  validateTestDir(extra.startsWith(UNDER) ? extra.slice(UNDER.length) : extra) === undefined;
+/** May the one word past the runner stand where the step's pair stood? It must name a directory of the tree the
+ * whole-tree run scanned. `tree` (the roster's own directory) and `tierRunsIn` (where the tier runs) are one
+ * worktree for a roster and a tier of the same run, and two different suites otherwise — what a bare name turns
+ * on. The tree's own word is the head run, not a subset; the step's report pair names no directory; a tail the
+ * project wrote itself is the command verbatim or nothing. */
+const covers = (
+  raw: string,
+  extra: string,
+  named: readonly string[],
+  tree: string,
+  tierRunsIn: string,
+): boolean => {
+  if (raw === "" || raw === TREE || extra === TREE) return false;
+  if (named[named.length - 1] !== TREE) return false;
+  // What the renderer spelled under the tree is a directory of it by its own shape, so it is judged as a path and
+  // not as a `verify.testDir` value — `extension/smoke-tests` is a directory a real project names. A `..` or `.`
+  // segment survives in the word as written, so it refuses here rather than after the segments are cut.
+  if (extra.startsWith(UNDER)) {
+    const parts = raw.split("/");
+    return !raw.endsWith("/") && !parts.includes("..") && !parts.includes(".");
+  }
+  // The step's own report path and its own glued flag are the pair the roster added — no project word is.
+  if (raw === REPORT || raw === GLUED) return false;
+  // A bare name is admitted only when the roster scanned the tree the name would resolve to, and only in the
+  // single-segment shape `verify.testDir` admits: it refuses an absolute path, a `..` segment, a non-canonical
+  // spelling and a hidden directory; a separator, a leading `-` or a `~` is refused on the line below.
+  if (path.resolve(tierRunsIn) !== path.resolve(tree)) return false;
+  if (raw.startsWith("-") || raw.startsWith("~") || raw.includes("/")) return false;
+  return validateTestDir(raw) === undefined;
+};
 /** The report held beside its flag — the step's three-word tail, `flag path tree`. */
 const twoWordPair = (named: readonly string[], n: number): boolean =>
   named[n - 2] === REPORT && named[n - 3] === FLAG;
@@ -59,6 +76,8 @@ export function fullTierSatisfiedBy(
   fullTier: string | undefined,
   rendered: { bin: string; args: string[]; report?: string },
   head: { failed: string[] },
+  /** The tree the tier runs in — what an operand is resolved against. */
+  worktree: string,
 ): boolean {
   const report = rendered.report;
   if (head.failed.length > 0 || fullTier === undefined || report === undefined) return false;
@@ -70,7 +89,8 @@ export function fullTierSatisfiedBy(
     const tier = words(fullTier);
     return tier.length === cut && tier.every((w, i) => w === (command[i] ?? ""));
   }
-  // The roster scanned the report's own directory, the report being the only file the step built there.
+  // The roster scanned its report's own directory — the report is the only file the step built there — and the
+  // tier runs in `worktree`, the tree the operand is resolved against.
   const tree = report.slice(0, report.lastIndexOf("/"));
   const named = command.map((w) => put(w, report, tree));
   const tail =
@@ -78,17 +98,19 @@ export function fullTierSatisfiedBy(
   const runner = named.slice(0, n - tail);
   const tier = words(fullTier).map((w) => put(w, report, tree));
   const ran = words(fullTier);
-  // Three ways a tier is the run the roster already made. It is the runner's words — the step's pair taken
-  // back — with at most one operand standing in that pair; or it is the run's own words with the step's pair
-  // put back, asked through the placeholders the config wrote that pair with, which is what makes a glued
-  // pair and a two-word pair the same tail; or it is the command verbatim, the only thing that can stand for
-  // a run whose tail the project wrote itself. That last ask reads the run's own argv, not the placeholders:
-  // put back, a glued pair reads as the bare runner and would claim the whole tree as its own operand.
+  // Three ways a tier is the run the roster already made: the runner's words, the step's pair taken back, with at
+  // most one operand standing in that pair; the run's own words with that pair put back through the placeholders
+  // the config wrote it with, which makes a glued pair and a two-word pair one tail; or the command verbatim, the
+  // only thing standing for a run whose tail the project wrote — that ask reads the run's argv, since put back a
+  // glued pair reads as the bare runner.
   const verbatim =
     ran.length === n &&
     (ran.every((w, i) => w === command[i]) || (tail > 0 && tier.every((w, i) => w === named[i])));
   const extra = tier.length === runner.length + 1 ? (tier[runner.length] ?? "") : "";
-  const kept = tail > 0 && covers(extra, named, tail) ? 1 : 0;
+  // The operand as the tier typed it, not as `put` rewrote it: a `..` or `.` segment reads as a plain name once
+  // the step's own tree spellings are sent home, and containment is a question about the typed path.
+  const raw = ran.length === runner.length + 1 ? (ran[runner.length] ?? "") : "";
+  const kept = raw !== "" && covers(raw, extra, named, tree, worktree) ? 1 : 0;
   return (
     verbatim ||
     (tier.length - kept === runner.length &&

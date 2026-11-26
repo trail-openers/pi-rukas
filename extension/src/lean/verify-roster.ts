@@ -208,7 +208,7 @@ export async function buildProjectRoster(opts: {
     ...(preexisting.length > recordedFiles.length ? { fileCount: preexisting.length } : {}),
     ...(skipBase ? { baseSkipped: true } : {}),
     // The whole-tree head run covered the project's `verify.full` tier, so the step skipped its suite.
-    ...(fullTierSatisfiedBy(opts.fullTier, rendered, head) ? { fullSatisfied: true } : {}),
+    ...(fullTierSatisfiedBy(opts.fullTier, rendered, head, wt) ? { fullSatisfied: true } : {}),
   };
   const redWith = (reason: string): ProjectRosterOutcome => ({
     status: "red",

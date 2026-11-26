@@ -20,7 +20,6 @@ import { FAILURE_LINE_SCAN_MAX, failureLines } from "../work-driver-verify-failu
 import { splitLines } from "../work-driver-verify-support.ts";
 import {
   PREEXISTING_NAMES_CAP,
-  PREEXISTING_NAME_MAX_CHARS,
   type PreexistingTierRecord,
   preexistingFailuresProblem,
 } from "./state-outcome-maps.ts";
@@ -33,8 +32,8 @@ export type BaselineExcuse =
   | { kind: "refused" };
 
 /**
- * Does this stream hold a line past the classifier's scan window? Such a line is judged on its first 8 KiB,
- * so two differing only past the window fold onto one key — refuse on EITHER side.
+ * Does this stream hold a line past the classifier's scan window? Such a line is judged on its first 8 KiB, so
+ * two differing only past the window fold onto one key — refuse on EITHER side.
  */
 function hasOverWindowLine(stream: string): boolean {
   return splitLines(stream).some((line) => line.trim().length > FAILURE_LINE_SCAN_MAX);

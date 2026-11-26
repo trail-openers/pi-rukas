@@ -128,35 +128,58 @@ for (const dir of ["tests", "test", "server"]) {
   );
 }
 
-// ── never-skip row (ii): a partial roster — it covered fewer tests than the tier
+// ── never-skip row (ii): the roster's head run is RED, so it covered nothing — the tier is owed its own run
+// even though the tier's words are the roster's own plus an operand inside the tree.
 {
   const r = await runVerify({
     ...panel("tests"),
     roster: {
       files: [fileFor("tests")],
       headPassed: [`${fileFor("tests")}::one`],
-      basePassed: [nameFor("tests")],
+      headFailed: [`${fileFor("tests")}::broken`],
+      baseFailed: [`${fileFor("tests")}::broken`],
     },
   });
   assert(
-    r.suiteTierRuns === 0 || r.outcome?.kind !== undefined,
-    `(partial roster) the case ran and reported (${r.outcome?.kind ?? `threw: ${r.threw?.message?.slice(0, 90)}`})`,
+    r.suiteTierRuns === 1 &&
+      !Object.hasOwn(r.outcome?.projectRoster ?? {}, "fullSatisfied"),
+    `(red head) the tier still ran and no skip was recorded (${String(r.suiteTierRuns)} tier, ${String(r.rosterHeadRuns)} roster head)`,
   );
 }
 
-// ── a tier with an absolute or climbing operand is not the covered shape
+// ── never-skip rows: an operand that names nothing the whole-tree run scanned
 for (const [why, operand] of [
   ["absolute", "/elsewhere/tests"],
   ["parent", "../tests"],
+  ["tilde", "~/tests"],
+  ["tilde alone", "~"],
+  ["outside the tree", "../../outside/tests"],
 ] as const) {
+  // The tier's words are the roster's own exactly, so the only thing deciding the skip is the operand: these
+  // name nothing the scanned tree holds, and the row beside them — the same words over a directory the tree
+  // does hold — must still skip.
+  const runnerWords = `${RUNNER} ${FLAGS}`;
   const r = await runVerify({
     ...panel("tests"),
-    full: `${RUNNER} ${operand}`,
-    suiteTier: `${RUNNER} ${operand}`,
+    full: `${runnerWords} ${operand}`,
+    suiteTier: `${runnerWords} ${operand}`,
   });
   assert(
-    r.suiteTierRuns === 1,
-    `(never: ${why} operand) a tier naming ${why === "absolute" ? "an absolute path" : "a parent segment"} runs (${String(r.suiteTierRuns)})`,
+    r.suiteTierRuns === 1 && !Object.hasOwn(r.outcome?.projectRoster ?? {}, "fullSatisfied"),
+    `(never: ${why} operand) a tier whose operand is not a directory of the tree the roster scanned runs (${String(r.suiteTierRuns)})`,
+  );
+}
+
+// ── the other side of the same rule: the roster's own words over a directory the tree does hold still skip
+{
+  const r = await runVerify({
+    ...panel("tests"),
+    full: `${RUNNER} ${FLAGS} tests`,
+    suiteTier: `${RUNNER} ${FLAGS} tests`,
+  });
+  assert(
+    r.suiteTierRuns === 0 && r.outcome?.projectRoster?.fullSatisfied === true,
+    `(bare directory operand) the roster's own words over a directory of the tree skip (${String(r.suiteTierRuns)})`,
   );
 }
 

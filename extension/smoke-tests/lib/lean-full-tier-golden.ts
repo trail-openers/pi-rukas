@@ -63,10 +63,14 @@ export interface FullTierRow {
   tier: string;
   roster: { bin: string; args: string[]; report: string };
   head: { failed: string[] };
+  /** The directory the tier runs in — the worktree, which is where a relative operand means something. */
+  worktree: string;
 }
 
 const GREEN = { failed: [] as string[] };
 const RED = { failed: ["tests/test-suite.sh::passes"] };
+/** The tree a row's tier runs in: the same worktree the roster's report names, unless a row says otherwise. */
+const AT = { worktree: WT };
 
 /** The rows the golden is asked about — the union of both roster-skip files and the panel. */
 export function rows(): FullTierRow[] {
@@ -80,12 +84,13 @@ export function rows(): FullTierRow[] {
   const flagIsTree = argv({ roster: `${RUNNER} --junitxml {dir}` });
   const otherReport = argv({ roster: `${RUNNER} --junitxml /opt/other.xml {dir}` });
   const midFlag = argv({ roster: `${PREFIX} python -m pytest --junitxml {report} ${FLAGS} {dir}` });
-  const r = (why: string, tier: string, roster: typeof derived, head = GREEN): FullTierRow => ({
-    why,
-    tier,
-    roster,
-    head,
-  });
+  const r = (
+    why: string,
+    tier: string,
+    roster: typeof derived,
+    head = GREEN,
+    at = AT,
+  ): FullTierRow => ({ why, tier, roster, head, worktree: at.worktree });
   return [
     // ── the shapes the predicate file pins
     r("(derived) the roster's words with its own pair taken back", "pytest -q", derived),
@@ -169,6 +174,8 @@ export function rows(): FullTierRow[] {
     r("(never) this repo's wrapper, verbatim", verbatim(own), own),
     r("(never) an absolute path under the tree", `${RUNNER} ${WT}/tests`, glue),
     r("(never) a parent segment under the tree", `${RUNNER} ${WT}/tests/..`, glue),
+    // A tier whose own words spell the whole tree as an absolute path names exactly what the head run
+    // covered, wherever the tier runs; only an absolute path OUTSIDE the tree is a tier nobody ran.
     r("(never) an absolute path outside the tree", `${RUNNER} /etc/tests`, glue),
     r("(never) a climbing operand", `${RUNNER} ${WT}/../tests`, glue),
     r("(never) a dotted operand", `${RUNNER} ${WT}/./tests`, glue),
@@ -181,7 +188,8 @@ export function rows(): FullTierRow[] {
 
 /** What the predicate answers for one row, in the tree this module's `src/` import lives in. */
 export function answers(row: FullTierRow): boolean {
-  return fullTierSatisfiedBy(row.tier, row.roster, row.head);
+  // The worktree is both trees at once — the one the roster scanned and the one the tier runs in.
+  return fullTierSatisfiedBy(row.tier, row.roster, row.head, row.worktree);
 }
 
 /** The committed shape of the golden. */
