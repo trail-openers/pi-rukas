@@ -37,8 +37,8 @@ import type { DispatchResult } from "../src/types.ts";
 import { buildCompletionEvent } from "../src/work-driver-completion-event.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
 import { explainCap } from "../src/work-driver-explain.ts";
+import { FAILURE_REASON_CHARS } from "../src/work-driver-failure-text.ts";
 import {
-  FAILURE_REASON_CHARS,
   classifyFailureCause,
   failureCauseReason,
   providerRetryFloorMs,

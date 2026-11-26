@@ -18,7 +18,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type LifecycleDetails, attach, detach } from "../src/lifecycle-events.ts";
 import type { DispatchResult } from "../src/types.ts";
 import type { DriverContext } from "../src/work-driver-context.ts";
-import { FAILURE_REASON_CHARS, failureCauseReason } from "../src/work-driver-failure-taxonomy.ts";
+import { failureCauseReason } from "../src/work-driver-failure-taxonomy.ts";
+import { FAILURE_REASON_CHARS } from "../src/work-driver-failure-text.ts";
 import {
   interruptedDevelopNote,
   interruptedLensFixNote,
