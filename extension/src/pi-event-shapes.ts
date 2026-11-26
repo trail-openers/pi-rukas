@@ -159,9 +159,11 @@ export interface SpawnOptions extends WriteFenceOpt {
   stall?: {
     /** The window the caller armed, in minutes. */
     windowMinutes: number;
-    /** The reader of this child's stream, supplied by the caller — the spawn's stamp in
-     *  production, the fixture's number offline. */
+    /** The reader of this child's stream — the spawn supplies the stream's own stamp. */
     silence: () => { sinceMs: number; toolInFlight: boolean };
+    /** The caller's progress hook, which is what aborts the child it armed. The spawn
+     *  supplies it from `stallLever`; a caller forwarding only the arm needs nothing else. */
+    check?: () => void;
   };
   /**
    * Stdin-handle callback (#153). Fires once after the child process has

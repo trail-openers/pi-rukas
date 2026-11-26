@@ -17,9 +17,12 @@ import type { BudgetOpts } from "./step-budget.ts";
  * `BudgetOpts` carries the three budget levers, which are spawn options — a
  * seam without them could only enforce a budget by refusing to dispatch.
  */
+/** The dispatch seam's options: the fence and args, plus the budget's spawn arms. */
+export type BuildDispatchOpts = { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts;
+
 export type BuildDispatch = (
   spec: DispatchSpec,
-  opts: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
+  opts: BuildDispatchOpts,
 ) => Promise<DispatchResult>;
 
 /** The git executor, in the driver's argv-form shape. */

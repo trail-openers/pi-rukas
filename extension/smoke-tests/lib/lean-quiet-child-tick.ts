@@ -1,9 +1,7 @@
 /**
- * The fake child's quiet tick, for the build fixture's dispatch (#2644). A case says only
- * HOW LONG its child has been quiet; this stands where the spawn's stream stamp would, then
- * calls the arm's OWN progress hook, so the step's lever measures the silence, decides
- * against the window it derived and fires its own abort. A tool call in flight is work
- * rather than silence and is never a stall (#951).
+ * The build fixture's fake-child quiet tick (#2644): a case says only HOW LONG its child was
+ * quiet, this stands where the spawn's stream stamp would and calls the arm's OWN hook, so the
+ * step measures the silence and fires its own abort. A tool in flight is work, never a stall (#951).
  */
 
 import type { BudgetOpts } from "../../src/lean/step-budget.ts";

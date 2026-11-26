@@ -25,7 +25,7 @@ import type { ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { BudgetProgressSteer } from "./budget-progress.ts";
 import { type ChildProgress, progressSilenceMs } from "./child-progress.ts";
-import type { PiJsonEvent } from "./pi-event-shapes.ts";
+import type { PiJsonEvent, SpawnOptions } from "./pi-event-shapes.ts";
 import { type RunningState, ingestEvent, recordedDurationMs } from "./progress.ts";
 import type { SkillReadGuard } from "./review-bounds.ts";
 import type { CapSession } from "./spawn-caps.ts";
@@ -227,6 +227,23 @@ export function createInactivityPoll(opts: {
   return () => clearInterval(interval);
 }
 
+export function stallLever(
+  opts: SpawnOptions,
+  childProgress: ChildProgress,
+  inFlightTools: InFlightTools,
+  runningState: RunningState,
+): SpawnOptions["stall"] {
+  if (opts.stall === undefined) return undefined;
+  return {
+    windowMinutes: opts.stall.windowMinutes,
+    silence: () => ({
+      sinceMs: Date.now() - childProgress.lastProgressAt,
+      toolInFlight: inFlightTools.active,
+    }),
+    check: () => opts.onProgress?.({ ...runningState, usage: { ...runningState.usage } }),
+  };
+}
+
 /**
  * The stdout line handler, moved verbatim from spawn.ts (AGENTS.md §12
  * file-size limit; the comment-retention gate #948 enforces verbatim
@@ -342,7 +359,7 @@ export function createStdoutLineHandler(opts: {
       // work rather than silence, and never a stall (#951).
       if (stall !== undefined && !inFlightTools.active) {
         const quiet = stall.silence();
-        if (quiet.sinceMs >= stall.windowMinutes * 60_000) stall.check();
+        if (quiet.sinceMs >= stall.windowMinutes * 60_000) stall.check?.();
       }
       onProgress?.({ ...runningState, usage: { ...runningState.usage } });
     }

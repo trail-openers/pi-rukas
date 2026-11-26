@@ -33,9 +33,8 @@ import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
-import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
-import type { BudgetOpts } from "../../src/lean/step-budget.ts";
-import { deliverQuietTick } from "./lean-quiet-child-tick.ts";
+import type { BudgetOpts, DispatchUsageRow } from "../../src/lean/step-budget.ts";
+import { type QuietTickOpts, deliverQuietTick } from "./lean-quiet-child-tick.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import {
@@ -363,11 +362,9 @@ export interface RunOpts {
    * child real `usage.turns` / `toolUses` / `killCause` fields.
    */
   dispatchResults?: DispatchResultOverride;
-  /**
-   * How long the fake child's stream has been quiet, ms, which the step's #2644 stall lever
-   * measures and acts on itself (see `lean-quiet-child-tick.ts`). The fixture supplies the
-   * child's clock and never a verdict.
-   */
+  /** Drives the child's progress feed, the way `spawn.ts` does at `message_end`. */
+  onProgressTick?: (onProgress: BudgetOpts["onProgress"]) => void;
+  /** See {@link QuietTickOpts} (#2644): the step's own lever measures it and fires. */
   silentMs?: number | (() => number);
   /** THE config the step reads; spread {@link configWithRunner} to keep the rest. */
   config?: WorkConfig;
@@ -422,8 +419,8 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     specs.push(spec);
     prompts.push(spec.prompt);
     extraArgs.push(o.extraArgs ?? []);
-    // The fake child's quiet tick, if this case declared one (see `lean-quiet-child-tick.ts`).
-    deliverQuietTick(spec.role, o, opts);
+    opts.onProgressTick?.(o.onProgress);
+    deliverQuietTick(spec.role, o, opts); // #2644 — see `lean-quiet-child-tick.ts`
     if (!childActed) opts.child?.((childActed = true) && (spec.cwd as string));
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
@@ -475,11 +472,8 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
           },
         }),
   };
-  // Everything a run observed, from the fixture it ran on. `threw` is declared here so both
-  // returns below carry the SAME shape: a case that read `r.threw` off a clean run would
-  // otherwise throw `TypeError` on the result object itself and read as broken harness.
+  // Everything a run observed; `threw` is NOT here — see the two returns below.
   const finish = () => ({
-    threw: undefined as Error | undefined,
     dispatched,
     fetched,
     prompts,
@@ -494,10 +488,8 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   try {
     const { buildOutcome } = await import("../../src/lean/build.ts");
     const outcome = await buildOutcome(built.ctx, deps);
-    return {
-      outcome,
-      ...finish(),
-    };
+    // `threw` is added per return, AFTER the `finish()` spread, so it is never shadowed.
+    return { outcome, ...finish(), threw: undefined };
   } catch (err) {
     return {
       threw: err as Error,

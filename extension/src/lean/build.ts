@@ -50,7 +50,7 @@ import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
 import { budgetFoldAccumulator, failingClause, foldClauses, keptClause } from "./build-reasons.ts";
-import type { BuildDispatch, BuildExec } from "./build-types.ts";
+import type { BuildDispatch, BuildDispatchOpts, BuildExec } from "./build-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig, protectedPathsOf } from "./config.ts";
@@ -428,21 +428,18 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
 export function buildDeps(headless: boolean): BuildDeps {
   return {
     exec: (cmd: string, o?: Parameters<ExecFn>[1]) => execp(cmd, o ?? {}),
-    dispatch: (
-      spec: DispatchSpec,
-      o: { writeFence?: WriteFence; extraArgs?: readonly string[] } & BudgetOpts,
-    ) =>
+    dispatch: (spec: DispatchSpec, o: BuildDispatchOpts) =>
       spawnSpecialist(spec, {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
-        // Forwarded so the ceiling binds the child; `budgetTurns` is the same
-        // ceiling the budget-progress steer counts down from.
+        // Forwarded key by key — a spread would let a future arm collide silently with
+        // `processGroup`/`leanChildOpts` — so the ceiling binds the child and the #2644
+        // lever reaches the spawn, which reads its stream and aborts through the arm's
+        // `onProgress`. Dropping any one leaves that lever decoration (the shape #2073 caught).
         childBoundMs: o.childBoundMs,
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,
-        // #2644 — the stall lever, forwarded with the other arms: dropping it would leave
-        // a hung request to the wall clock alone (the shape #2073 caught).
         stall: o.stall,
         // The budget's kill goes through `killProcessTree`, which only reaches the
         // child's tool tree when the child leads its own group.

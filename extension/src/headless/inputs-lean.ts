@@ -83,6 +83,16 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // The reader is `leanProjectRosterEnabled` in lean/project-roster-switch.ts; the enumeration,
   // both runs and the comparison are lean/verify-roster.ts.
   flag("LEAN_PROJECT_ROSTER", true),
+  // The bound on ONE model request inside a lean step. The engine checks the cycle deadline only
+  // BETWEEN steps, so a request hung INSIDE one outlives it and the harness's outer wall takes the
+  // cell. Quiet for the window with no tool call in flight is aborted through the same
+  // `AbortController` the turns/tokens levers use, and reads back as their `budget` verdict
+  // (`limit: "stall"`). The window is derived — the handoff allowance plus the review reserve,
+  // clamped to what the deadline leaves — and never configured. `0` is the ONLY off value, which
+  // returns a hung request to the outer wall alone. The reader is `leanRequestStallEnabled` in
+  // lean/request-stall-switch.ts; the window is lean/request-stall.ts and the arm is
+  // lean/step-budget.ts.
+  flag("LEAN_REQUEST_STALL", true),
   // The executed acceptance table in front of the lean review seats and on the run's
   // PR: each criterion, the frozen test the run recorded for it, and what the
   // newest green `verify` reported for it at the certified head. The table is READ,

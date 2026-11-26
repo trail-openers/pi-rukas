@@ -150,13 +150,12 @@ export type BudgetArms = {
  * The `minutes` lever is `childBoundMs`, enforced by `spawn-child-bound.ts` — the kill lands AFTER its
  * grace period and the reported `ms` overshoots, so {@link minutesUsed} rounds up.
  *
- * `stall` arms the fourth lever, the hung model request: the window `request-stall.ts` derived plus
- * the reader of THIS child's stream. Like turns and tokens it aborts through this arm's controller and
- * reads back as a `budget` verdict, so a stall is never a user cancel.
+ * `stall` arms the fourth lever, the hung model request. Like turns and tokens it aborts through this
+ * arm's controller and reads back as a `budget` verdict, so a stall is never a user cancel.
  */
-/** The #2644 lever's input: the derived window, the reader of THIS child's stream (the spawn's
- *  stamp in production, a fixture's number offline — no reader, no measurement, no fire), and
- *  the run clock the arm discloses its own inertness from. */
+/** The #2644 lever's input: the window `request-stall.ts` derived, the reader of THIS child's stream
+ *  (the spawn's stamp in production, a fixture's number offline — no reader, no fire), and the run
+ *  clock the arm discloses its own inertness from. */
 export interface StallArms {
   windowMs: number | undefined;
   silence?: () => { sinceMs: number; toolInFlight: boolean };
