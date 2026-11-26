@@ -17,7 +17,7 @@ import type { HandlerCtx } from "./engine.ts";
 import { type ReviewFixArgs, fixPrompt, fixWriteFence } from "./review-deps.ts";
 import { FIX_BOUND_MS, type FixRunId, type ReviewDeps, ReviewInfraError } from "./review.ts";
 import { gitQuiet } from "./specify-reset.ts";
-import type { BudgetArms, BudgetFired, BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
+import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 import { FIXER_ROLE, dispatchUsageRow } from "./step-budget.ts";
 
 /** One fixer, and the row it cost. The result comes back for the one reader that can still use it —
@@ -27,17 +27,9 @@ export async function runFixer(
   opts: ReviewFixArgs & { rows: DispatchUsageRow[]; worktreeRunId: FixRunId },
 ): Promise<DispatchResult> {
   let result: DispatchResult;
-  // `arms` is `opts.budget.opts` with `childBoundMs` out of the object AND its type,
-  // so no spread re-supplies it and wins over `FIX_BOUND_MS` (as in `review-deps.ts`).
-  // `stallWindowMinutes` comes out beside it: that field reports what THIS step armed, it is not a
-  // spawn option, and a fixer whose own wall clock ended it must not have its kill read back as a
-  // stall this lever never measured (`stallWindowMinutes` on `BudgetArms`). The `stall` arm itself
-  // stays in `arms`: the fixer is a model request too, and its abort rides `arms.signal`.
-  const {
-    childBoundMs: budgetBoundMs,
-    stallWindowMinutes: _stepArmedStall,
-    ...arms
-  } = opts.budget.opts as BudgetOpts & Pick<BudgetArms, "stallWindowMinutes">;
+  // `arms` is `opts.budget.opts` with `childBoundMs` out of the object AND its type, so no spread
+  // re-supplies it and wins over `FIX_BOUND_MS` (as in `review-deps.ts`). The `stall` arm stays in.
+  const { childBoundMs: budgetBoundMs, ...arms } = opts.budget.opts;
   try {
     result = await deps.dispatch(
       { role: FIXER_ROLE, prompt: fixPrompt(opts), cwd: opts.worktree },

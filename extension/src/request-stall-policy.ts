@@ -14,11 +14,20 @@
  * abort, and takes the reserve it needs as a parameter so it never imports the lean tree.
  */
 
+import type { RunningState } from "./progress.ts";
 import { capsEnabled } from "./spawn-child-bound.ts";
 import { handoffDispatchTimeoutMs } from "./work-driver-handoff.ts";
 
 /** The four ceilings a budget verdict may name; `stall` measures silence, not spend. */
 export type BudgetLimit = "minutes" | "turns" | "tokens" | "stall";
+
+/** The shape of the trio `lean/step-budget.ts` freezes for a breached ceiling; declared here so
+ *  this module names the verdict it builds without importing the lean tree. */
+export interface StallFired {
+  limit: BudgetLimit;
+  value: number;
+  used: number;
+}
 
 /** #2644: what a step hands `armBudget` — the window {@link requestStallWindowMs} derived, this
  *  child's stream reader, and the clock the arm discloses its own inertness from. */
@@ -97,9 +106,14 @@ export interface StallOpts {
   check?: () => void;
 }
 
-/** Freeze the lever's arms, or arm nothing: no window, no reader, or a window of 0 or less,
- *  which is the engine's own boundary stop rather than a timer that kills the child the
- *  instant it starts. A lever with no reader measures nothing and must not claim a bound. */
+/**
+ * Freeze the lever's arms, or arm nothing: no window, no reader, or a window of 0 or less,
+ * which is the engine's own boundary stop rather than a timer that kills the child the instant it
+ * starts — a lever with no reader measures nothing and must not claim a bound. The frozen whole
+ * minutes are both what the verdict prints and what a sibling child's spawn is armed with, so the
+ * two cannot disagree. `undefined` is the whole of "this step armed no stall lever", which is why
+ * no caller needs a second field saying the same thing.
+ */
 export function stallLever(
   windowMs: number | undefined,
   silence: StreamSilence | undefined,
@@ -107,4 +121,21 @@ export function stallLever(
   return silence === undefined || windowMs === undefined || windowMs <= 0
     ? undefined
     : { windowMinutes: stallMinutes(windowMs), silence };
+}
+
+/**
+ * The stall arm of the progress hook, on the SAME tick the turns / tokens levers are checked:
+ * a tool in flight is work, not silence, so it is never a stall (#951); a window of 0 or less is
+ * the engine's boundary stop, never a timer that ends the child the instant it starts. The breach
+ * is returned, never raised: the caller freezes it and fires the one abort.
+ */
+export function stallBreach(
+  stall: StallOpts | undefined,
+  s: Pick<RunningState, "turns" | "totalTokens">,
+): StallFired | undefined {
+  if (stall === undefined || s.turns !== 0 || s.totalTokens !== 0) return undefined;
+  const quiet = stall.silence();
+  return !quiet.toolInFlight && quiet.sinceMs >= stall.windowMinutes * 60_000
+    ? { limit: "stall", value: stall.windowMinutes, used: stallMinutes(quiet.sinceMs) }
+    : undefined;
 }
