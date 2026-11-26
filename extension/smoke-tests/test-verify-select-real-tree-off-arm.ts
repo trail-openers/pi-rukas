@@ -25,6 +25,7 @@ import {
   prepareVerifySelection,
 } from "../src/work-driver-verify-select.ts";
 import { assert, exit } from "./lib/assert-rig.ts";
+import { withEnv } from "./lib/env-scope.ts";
 
 const extensionDir = path.resolve(import.meta.dirname, "..");
 
@@ -35,9 +36,7 @@ const extensionDir = path.resolve(import.meta.dirname, "..");
     [[".github/workflows/ci.yml"], "outside-graph:.github/workflows/ci.yml"],
     [["smoke-tests/lib/verify-loop.sh"], "smoke-test-helper:smoke-tests/lib/verify-loop.sh"],
   ];
-  const prior = process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
-  process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = "0";
-  try {
+  await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: "0" }, async () => {
     // The off arm's own read: a context records the switch verdict it was built under,
     // so this one is built inside the pin and answers with the pre-#2649 rules.
     const offCtx = prepareVerifySelection(extensionDir);
@@ -48,10 +47,7 @@ const extensionDir = path.resolve(import.meta.dirname, "..");
         `with the switch at 0 ${changed[0]} still falls back to the full suite with ${reason} (got ${r.mode}/${r.fallbackReason ?? "-"})`,
       );
     }
-  } finally {
-    if (prior === undefined) delete process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
-    else process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = prior;
-  }
+  });
 }
 
 console.log(exit === 0 ? "\nAll real-tree off-arm checks passed." : "\nFAILED");

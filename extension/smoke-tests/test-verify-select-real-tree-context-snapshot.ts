@@ -20,33 +20,39 @@ import {
   prepareVerifySelection,
   selectVerifyTests,
   selectVerifyTestsFromContext,
+  type VerifySelection,
 } from "../src/work-driver-verify-select.ts";
+import type { VerifySelectionContext } from "../src/work-driver-verify-select-context.ts";
 import { extensionDir } from "./lib/verify-select-agreement.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import { assert, exit } from "./lib/assert-rig.ts";
 
 {
-  const prior = process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
-  process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = "0";
-  const offCtx = prepareVerifySelection(extensionDir);
-  // Back to the ON value while the off context is still held: the point of the row is
-  // that the context answers by the verdict it recorded, not the one the environment
-  // carries now.
-  process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = undefined;
-  try {
-    const r = selectVerifyTestsFromContext(offCtx, ["docs/troubleshooting.md"]);
-    assert(
-      r.mode === "full" && r.fallbackReason === "outside-graph:docs/troubleshooting.md",
-      `a context built under the OFF switch keeps answering with the OFF rules after the environment changed (got ${r.mode}/${r.fallbackReason ?? "-"})`,
-    );
-    const on = selectVerifyTests(extensionDir, ["docs/troubleshooting.md"]);
-    assert(
-      on.mode === "selected",
-      `and the same path selects on a context built under the ON value (got ${on.mode}/${on.fallbackReason ?? "-"}) — the difference is the recorded verdict, not the tree`,
-    );
-  } finally {
-    if (prior === undefined) delete process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
-    else process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = prior;
-  }
+  // An OFF context built while the switch is pinned to 0, then read while the pin is
+  // still held: the point of the row is that the context answers by the verdict it
+  // recorded, not the one the environment carries now.
+  let offCtx: VerifySelectionContext | undefined;
+  let off: VerifySelection | undefined;
+  await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: "0" }, async () => {
+    offCtx = prepareVerifySelection(extensionDir);
+    off = selectVerifyTestsFromContext(offCtx, ["docs/troubleshooting.md"]);
+  });
+  assert(
+    off !== undefined &&
+      off.mode === "full" &&
+      off.fallbackReason === "outside-graph:docs/troubleshooting.md",
+    `a context built under the OFF switch keeps answering with the OFF rules after the environment changed (got ${off?.mode}/${off?.fallbackReason ?? "-"})`,
+  );
+  // The directory form under the shipped value — the variable is absent here, which is
+  // the ON arm (`withEnv` deletes an `undefined` override rather than assigning it).
+  let on: VerifySelection | undefined;
+  await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: undefined }, async () => {
+    on = selectVerifyTests(extensionDir, ["docs/troubleshooting.md"]);
+  });
+  assert(
+    on !== undefined && on.mode === "selected",
+    `and the same path selects on a context built under the ON value (got ${on?.mode}/${on?.fallbackReason ?? "-"}) — the difference is the recorded verdict, not the tree`,
+  );
 }
 
 console.log(exit === 0 ? "\nAll select-form agreement checks passed." : "\nFAILED");
