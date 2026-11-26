@@ -16,6 +16,13 @@
  * is a path argument. Live tests (`-live.ts`) never run offline, so they are not
  * readers here. `test-verify-select-computed-always-run.ts` gates membership.
  *
+ * The roster of offline tests (`work-driver-verify-offline-tests`) is the single
+ * read of that tree: `rosterReaders` judges the files the roster already lexed, so
+ * one selection reads and tokenizes each top-level test once and the always-run
+ * rule and the exact-namer rule see the same answer for the same file. A test the
+ * tokenizer could not close has no lexed form to judge, so it reads as a reader —
+ * a file whose text cannot be read cannot be shown NOT to read repository paths.
+ *
  * #2649: the nameable-path whitelist moved to `work-driver-verify-repo-paths.ts`
  * so the classifier of a changed non-node path asks the same question a reader is
  * judged by, and the two cannot drift. This file is hand-edited; the exempt-path
@@ -24,10 +31,9 @@
  * Paths are relative to `extension/`, the directory the smoke tests run from.
  */
 
-import { readFileSync, readdirSync } from "node:fs";
-import path from "node:path";
 import { isRepoPath, repoDirs, repoFiles } from "./work-driver-verify-repo-paths.ts";
-import { lexSource } from "./work-driver-verify-select-lex.ts";
+import { type LexedSource, lexSource } from "./work-driver-verify-select-lex.ts";
+import { type OfflineTests, readOfflineTests } from "./work-driver-verify-offline-tests.ts";
 
 const READ_CALL_RE =
   /\b(?:readFileSync|readdirSync|readFile|readdir|openSync|readSync|createReadStream|opendirSync)\s*\(|\bBun\.file\b/;
@@ -40,10 +46,8 @@ const JOIN_CALL_RE = /\b(?:join|resolve)\s*\(([^()]*)\)/g;
 // biome-ignore lint/complexity/useRegexLiterals: the escapes are the point, not an avoidance of escaping.
 const TOKEN_RE = new RegExp("[\\uE000\\uE001](\\d+)[\\uE000\\uE001]", "g");
 
-/** True when the file reads and names a repository path. Unlexable text reads as a reader: it cannot be judged. */
-export function readsRepositoryText(raw: string): boolean {
-  const lexed = lexSource(raw);
-  if (lexed === undefined) return READ_CALL_RE.test(raw);
+/** True when the lexed code of a test reads and names a repository path. */
+function codeReadsRepositoryText(lexed: LexedSource): boolean {
   if (!READ_CALL_RE.test(lexed.code)) return false;
   if (lexed.strings.some(isRepoPath) || lexed.templates.some(isRepoPath)) return true;
   // `path.join(ext, "src", "x.ts")`: a bare directory segment passed to join or resolve.
@@ -59,18 +63,42 @@ export function readsRepositoryText(raw: string): boolean {
 }
 
 /**
- * The offline smoke tests (top level, extension-relative) that read repository
- * text, sorted — the always-run set of a develop round. The predicate is text
- * based on purpose: a reader whose path never reaches a literal it can judge
- * would be missed, so unlexable text reads as a reader, and a fixture that writes
- * and reads a `src/` path counts as a reader too.
+ * True when the file reads and names a repository path. Unlexable text reads as a
+ * reader: it cannot be judged.
  */
-export function textReadingTests(extensionDir: string): string[] {
+export function readsRepositoryText(raw: string): boolean {
+  const lexed = lexSource(raw);
+  if (lexed === undefined) return READ_CALL_RE.test(raw);
+  return codeReadsRepositoryText(lexed);
+}
+
+/**
+ * The always-run set of a develop round, from the roster the caller already read:
+ * the offline smoke tests that read repository text, sorted.
+ *
+ * A roster file with no lexed entry is the unlexable case and counts as a reader,
+ * which is the same verdict `readsRepositoryText` gives for the same file. Taking
+ * the roster instead of scanning `smoke-tests/` here is what lets a selection read
+ * and lex each top-level test ONCE; the roster is the same top-level scan under the
+ * same name contract (`isOfflineTest`), so the reader rule and the exact-namer rule
+ * cannot disagree about which files they judged.
+ *
+ * A tree with no `smoke-tests/` directory is not a silent empty set: the roster
+ * read throws, and the caller's try/catch turns that into a full-suite fallback.
+ */
+export function rosterReaders(roster: OfflineTests): string[] {
   const out: string[] = [];
-  for (const name of readdirSync(path.join(extensionDir, "smoke-tests"))) {
-    if (!/^test-[^/]+\.ts$/.test(name) || /-live\.ts$/.test(name)) continue;
-    const text = readFileSync(path.join(extensionDir, "smoke-tests", name), "utf8");
-    if (readsRepositoryText(text)) out.push(`smoke-tests/${name}`);
+  for (const name of roster.names) {
+    const lexed = roster.lexed.get(name);
+    if (lexed === undefined || codeReadsRepositoryText(lexed)) out.push(name);
   }
   return out.sort();
+}
+
+/**
+ * The offline smoke tests (top level, extension-relative) that read repository
+ * text, sorted — the always-run set for a caller that holds no roster of its own.
+ */
+export function textReadingTests(extensionDir: string): string[] {
+  return rosterReaders(readOfflineTests(extensionDir));
 }
