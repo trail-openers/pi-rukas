@@ -12,7 +12,9 @@
  * key, the cargo target-summary and location-less code-diagnostic tests) is
  * window-scanning
  * logic, not table data, and lives in `work-driver-verify-rust.ts` — this
- * module imports only its dialect regexes for the entries below.
+ * module imports its dialect predicates from there, and the line-anchored panic
+ * header (`RUST_PANIC_RE`) from that dialect's own leaf,
+ * `work-driver-verify-header-leaf.ts`, which is where a header is spelled.
  *
  * THE ONE RULE THIS MODULE OWNS, and the one that was a real defect: a line that
  * reports SUCCESS is never a failure line. `pack_release_test.sh: 36 cases, 0
@@ -38,11 +40,11 @@
  */
 
 import type { FailureLine, FailureShape } from "./work-driver-verify-failures.ts";
+import { RUST_PANIC_RE } from "./work-driver-verify-header-leaf.ts";
 import { FAILED_MARKER_RE, payloadDetail } from "./work-driver-verify-marker.ts";
 import {
   CARGO_TARGET_SUMMARY_RE,
   DIAGNOSTIC_IDENTITY_SRC,
-  RUST_PANIC_RE,
   isLocationlessCodeDiagnostic,
 } from "./work-driver-verify-rust.ts";
 
@@ -92,7 +94,8 @@ const ASSERTION_MARK_SHAPE: ShapeEntry = reEntry("assertion-mark", true, /^\s*�
 
 /**
  * #2341 — the Rust panic header (the dialect regex itself lives in
- * `work-driver-verify-rust.ts`), a `preVeto` entry: a panic message routinely
+ * `work-driver-verify-header-leaf.ts`, imported rather than restated), a
+ * `preVeto` entry: a panic message routinely
  * quotes the counts it compared (`expected 0 failures, got 3`), and
  * `isSuccessLine`'s `0 failures` arm would veto the one line that names the
  * defect — the #1762 symptom arriving through the Rust dialect. The trade

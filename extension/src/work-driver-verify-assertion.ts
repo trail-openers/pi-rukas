@@ -39,10 +39,12 @@ import {
   isHarnessWrapper,
   isLibtestVerdictLine,
   isLocationlessCodeDiagnostic,
+  opensLikePanicHeader,
   panicIsCapturedPrint,
   rustPanicHeaderIn,
   rustPanicSamenessKey,
   rustPanicTestName,
+  stripRustPanicThreadIds,
 } from "./work-driver-verify-failures.ts";
 
 /**
@@ -227,8 +229,12 @@ function joinedRustPanic(header: string, next: string | undefined): string {
   // and the test-name line printed beneath it. The caller hands lines in
   // trimmed, so the list item is matched in its bare `path::to::test` form —
   // the `\s*` prefix keeps the indented form refused too, wherever a caller
-  // stops trimming.
-  if (/^(note:|----|thread\s+'|failures:|\s*\S+::)/.test(next)) return header;
+  // stops trimming. The thread arm asks the leaf's ONE header-open look — a
+  // second header under the first is not the first one's message, and the
+  // spelling of "opens like a header" stays in the leaf that owns it.
+  if (opensLikePanicHeader(next) || /^(note:|----|failures:|\s*\S+::)/.test(next)) {
+    return header;
+  }
   if (isLibtestVerdictLine(next) || RUNNER_COMPLETION_TOKEN_RE.test(next)) return header;
   // The join is the ONE place this reader publishes a line it never judged on
   // its own, so the continuation passes every screen the header itself passed —
@@ -387,9 +393,22 @@ export function extractSpecificAssertion(failureTail: string, stream: string): s
  * sameness anchored on a clipped prose prefix folds). The key FAILS CLOSED
  * (#2341 fix wave M1): a string that starts like a panic header but whose
  * identity could not be extracted answers `null`, and `null` is no "SAME
- * assertion" — it never reaches the containment test. Every other shape
- * keeps the classic rule: exact containment, no normalisation — this gate
- * got tighter for #2341, and tightening it is the whole point of the fix.
+ * assertion" — it never reaches the containment test. Every other shape keeps
+ * the classic rule of exact containment — the id normalisation below is the
+ * ONE normalisation this comparison knows, and it edits only the panic
+ * header's volatile id — this gate got tighter for #2341, and tightening it
+ * is the whole point of the fix.
+ *
+ * BOTH operands of the containment are normalised, and that is the rule, not
+ * a nicety: a current cargo prints `thread '<test>' (2271626) panicked at …`,
+ * an OS thread id per THREAD, so it differs between two runs of the same
+ * failure. A key with the id stripped against raw haystack text that still
+ * carries it never contains each other — every base-excuse would miss while a
+ * key-only unit test stayed green. So `stripRustPanicThreadIds` is asked of
+ * the haystack exactly as the key asks it of the header, and the published
+ * quote (which the operator reads, and which names the thread the log is
+ * searched by) keeps the id: normalisation lives in this comparison and
+ * nowhere else.
  *
  * #2341 fix wave (H2) — and the location-less identity-code dialect is refused
  * the same way the cargo target summaries are: two compile failures in
@@ -407,5 +426,5 @@ export function sharesAssertion(consolidated: string, per: string): boolean {
     return false;
   }
   const key = rustPanicSamenessKey(per);
-  return key !== null && consolidated.includes(key);
+  return key !== null && stripRustPanicThreadIds(consolidated).includes(key);
 }
