@@ -27,7 +27,11 @@ import {
 } from "./lib/verify-select-changed-paths-golden.ts";
 import { NODE_PATH_RE } from "../src/work-driver-verify-classify.ts";
 import { changedPathRulesEnabled } from "../src/verify-select-changed-paths-switch.ts";
-import { selectVerifyTests } from "../src/work-driver-verify-select.ts";
+import {
+  selectVerifyTestsFromContext,
+  prepareVerifySelection,
+  type VerifySelectionContext,
+} from "../src/work-driver-verify-select.ts";
 
 let exit = 0;
 const assert = (c: boolean, m: string) => {
@@ -68,8 +72,8 @@ const GATE_OWN_NAMES = new Set([
 ]);
 
 /** The selector's answer, without the tree's always-run set (see the header). */
-const answer = (changed: readonly string[]): GoldenSelection => {
-  const sel = selectVerifyTests(extensionDir, changed);
+const answer = (changed: readonly string[], context: VerifySelectionContext): GoldenSelection => {
+  const sel = selectVerifyTestsFromContext(context, changed);
   return {
     mode: sel.mode,
     tests: sel.tests,
@@ -90,9 +94,12 @@ const answer = (changed: readonly string[]): GoldenSelection => {
  * ever be found to have LOST a pinned name, which is the failure this gate exists to
  * catch. The per-row helper above stays for the rows asserted alone.
  */
-const answersOfTable = (sets: readonly (readonly string[])[]): Map<string, GoldenSelection> => {
+const answersOfTable = (
+  sets: readonly (readonly string[])[],
+  context: VerifySelectionContext,
+): Map<string, GoldenSelection> => {
   const union = [...new Set(sets.flat())];
-  const whole = selectVerifyTests(extensionDir, union);
+  const whole = selectVerifyTestsFromContext(context, union);
   const out = new Map<string, GoldenSelection>();
   for (const set of sets) {
     const want = golden[set.join("+")];
@@ -126,6 +133,9 @@ const rows = GOLDEN_CHANGED_SETS.map((c) => [c.join("+"), c] as const);
 
 // --- the OFF arm is byte-identical to the base commit ------------------------
 await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: "0" }, () => {
+  // One read of the tree for the whole OFF arm, taken inside the pin so the context records the
+  // OFF verdict: every selection below is judged by it, whatever the environment says later.
+  const off = prepareVerifySelection(extensionDir);
   // One selection for the table, then the rows whose SHAPE the union answer cannot
   // speak for (a fallback names no tests, and a `selected` row whose union answer is
   // `full` says nothing) run alone. The fallback rows are the small half of the
@@ -161,7 +171,7 @@ await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: "0" }, () => {
   const batchSets = walked.filter(
     (c) => nodeAnswer(c) === undefined && golden[c.join("+")]?.mode === "selected",
   );
-  const batched = answersOfTable(batchSets);
+  const batched = answersOfTable(batchSets, off);
   let mismatched: string[] = [];
   for (const [key, changed] of rows) {
     const want = golden[key];
@@ -173,7 +183,7 @@ await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: "0" }, () => {
     const got =
       preAnswer(changed) ??
       nodeAnswer(changed) ??
-      (shared !== undefined && shared.mode === want.mode ? shared : answer(changed));
+      (shared !== undefined && shared.mode === want.mode ? shared : answer(changed, off));
     // The two gates this ticket adds import the selector, so they are importers of
     // the modules they judge — tests the base-commit capture could not contain. They
     // are the only names a row may gain; every other name must match exactly.
@@ -217,6 +227,9 @@ const MUST_DIFFER = [
   "src/work-driver-verify-select.ts+docs/troubleshooting.md",
 ];
 await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: undefined }, () => {
+  // Likewise the ON arm reads the tree once, inside its own pin, and every row runs
+  // against that one context.
+  const on = prepareVerifySelection(extensionDir);
   const same: string[] = [];
   // The rows the classification table places as `node` all walk the graph, and a
   // selection's cost does not depend on how many paths it is given — so they share
@@ -227,7 +240,9 @@ await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: undefined }, () => {
     const c = k.split("+");
     return c.length === 1 && NODE_PATH_RE.test(c[0] ?? "");
   });
-  const sharedOn = selectVerifyTests(extensionDir, [...new Set(nodeRows.flatMap((k) => k.split("+")))]);
+  const sharedOn = selectVerifyTestsFromContext(on, [
+    ...new Set(nodeRows.flatMap((k) => k.split("+"))),
+  ]);
   // A row whose own answer is `full` (a config file, an unknown path) cannot be read
   // out of a union selection that answered `selected` for the rest, so those rows run
   // alone. They are the rows whose fallbackReason IS the decision, and they are the
@@ -248,7 +263,7 @@ await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: undefined }, () => {
     ".github/workflows/ci.yml",
     ".devcontainer/Dockerfile",
   ]);
-  const ownAnswer = (key: string): GoldenSelection => answer(key.split("+"));
+  const ownAnswer = (key: string): GoldenSelection => answer(key.split("+"), on);
   for (const key of MUST_DIFFER) {
     const changed = key.split("+");
     const want = golden[key];
@@ -275,10 +290,10 @@ await withEnv({ PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS: undefined }, () => {
   // A row the ticket does NOT touch keeps its answer, so the switch is not a
   // blanket change of behaviour: a plain src change selects as it did.
   const src = "src/work-driver-verify-select.ts";
-  const on = answer([src]);
+  const srcSel = answer([src], on);
   assert(
-    on.mode === "selected" && on.tests.length > 0,
-    `the ON arm still selects tests for a src change (${on.tests.length})`,
+    srcSel.mode === "selected" && srcSel.tests.length > 0,
+    `the ON arm still selects tests for a src change (${srcSel.tests.length})`,
   );
 });
 

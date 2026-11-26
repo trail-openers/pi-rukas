@@ -23,8 +23,12 @@ import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { lexSource } from "../src/work-driver-verify-select-lex.ts";
-import { readOfflineTests } from "../src/work-driver-verify-offline-tests.ts";
-import { selectVerifyTests } from "../src/work-driver-verify-select.ts";
+import {
+  type VerifySelection,
+  selectVerifyTests,
+  selectVerifyTestsFromContext,
+  prepareVerifySelection,
+} from "../src/work-driver-verify-select.ts";
 
 const extensionDir = path.resolve(import.meta.dirname, "..");
 
@@ -37,44 +41,59 @@ const assert = (c: boolean, m: string) => {
   }
 };
 
+/**
+ * The whole real tree, read ONCE for every selection this file makes on it.
+ *
+ * Each `selectVerifyTests(dir, …)` re-reads and re-lexes the tree — ~1,650 test files
+ * and ~300 lib files — and this file asks the same question about a dozen changed sets.
+ * The tree does not change between those questions (the fixture below is a separate
+ * temporary tree, which the file selects on by directory as before), so the answers are
+ * the same answers and the reads are the cost worth removing. The OFF-arm rows build
+ * their own context inside the switch pin, since a context records the verdict it was
+ * read under.
+ */
+const ctx = prepareVerifySelection(extensionDir);
+/** A selection on the real tree, from the one read. */
+const sel = (changed: readonly string[]) => selectVerifyTestsFromContext(ctx, changed);
+
 // --- the real tree: a src-only change selects --------------------------------
-const sel = selectVerifyTests(extensionDir, ["src/lean/config.ts"]);
+const sel0 = sel(["src/lean/config.ts"]);
 assert(
-  sel.mode === "selected",
-  `a real src-only change selects rather than falling back (got ${sel.mode}${
-    sel.fallbackReason ? `, ${sel.fallbackReason}` : ""
+  sel0.mode === "selected",
+  `a real src-only change selects rather than falling back (got ${sel0.mode}${
+    sel0.fallbackReason ? `, ${sel0.fallbackReason}` : ""
   }) — on main this answered full/unlexable:src/worktree-loss.ts`,
 );
 assert(
-  sel.mode === "selected" && sel.tests.length > 0,
-  `the selection names at least one test (${sel.tests.length})`,
+  sel0.mode === "selected" && sel0.tests.length > 0,
+  `the selection names at least one test (${sel0.tests.length})`,
 );
 assert(
-  sel.alwaysRun.length > 0,
-  `the computed always-run set rides along (${sel.alwaysRun.length})`,
+  sel0.alwaysRun.length > 0,
+  `the computed always-run set rides along (${sel0.alwaysRun.length})`,
 );
 assert(
-  sel.mode === "selected" && sel.fallbackReason === undefined,
+  sel0.mode === "selected" && sel0.fallbackReason === undefined,
   "a `selected` verdict carries no fallbackReason",
 );
 assert(
-  sel.mode === "selected" && sel.tests.every((t) => /^smoke-tests\/test-[^/]+\.ts$/.test(t)),
+  sel0.mode === "selected" && sel0.tests.every((t) => /^smoke-tests\/test-[^/]+\.ts$/.test(t)),
   "every selected name is a top-level offline smoke test",
 );
 assert(
-  sel.mode === "selected" && sel.tests.every((t) => !/-live\.ts$/.test(t)),
+  sel0.mode === "selected" && sel0.tests.every((t) => !/-live\.ts$/.test(t)),
   "a real-tree selection never carries a -live.ts test",
 );
 // The selection must be a subset of what the full command would have run: a name
 // the tree does not have would make the selected command fail on a missing file.
 assert(
-  sel.mode === "selected" &&
-    [...sel.tests, ...sel.alwaysRun].every((t) => Bun.file(path.join(extensionDir, t)).size > 0),
+  sel0.mode === "selected" &&
+    [...sel0.tests, ...sel0.alwaysRun].every((t) => Bun.file(path.join(extensionDir, t)).size > 0),
   "every name a real-tree selection emits exists in that tree",
 );
 
 // A second, unrelated src file, so the assertion is not one lucky path.
-const sel2 = selectVerifyTests(extensionDir, ["src/forge.ts"]);
+const sel2 = sel(["src/forge.ts"]);
 assert(
   sel2.mode === "selected",
   `a second src-only change selects too (got ${sel2.mode}${sel2.fallbackReason ? `, ${sel2.fallbackReason}` : ""})`,
@@ -97,8 +116,11 @@ assert(
   const prior = process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
   process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = "0";
   try {
+    // The off arm's own read: a context records the switch verdict it was built under,
+    // so this one is built inside the pin and answers with the pre-#2649 rules.
+    const offCtx = prepareVerifySelection(extensionDir);
     for (const [changed, reason] of OFF) {
-      const r = selectVerifyTests(extensionDir, changed);
+      const r = selectVerifyTestsFromContext(offCtx, changed);
       assert(
         r.mode === "full" && r.fallbackReason === reason,
         `with the switch at 0 ${changed[0]} still falls back to the full suite with ${reason} (got ${r.mode}/${r.fallbackReason ?? "-"})`,
@@ -115,13 +137,13 @@ assert(
   // other paths in the set — one selection over all three answers all three rows.
   {
     const CONFIG_ROWS = ["agents.json", ".github/workflows/ci.yml", "tsconfig.smoke-tests.json"];
-    const cfg = selectVerifyTests(extensionDir, CONFIG_ROWS);
+    const cfg = sel(CONFIG_ROWS);
     for (const p of CONFIG_ROWS) {
       // Each row's reason is the first refusal the batch walk reaches, and the
       // classifier's config answer is a table over the path, so a batch that fell
       // back at an earlier row still says nothing about the later ones: those rows
       // ask for their own selection rather than be passed on a borrowed verdict.
-      const r = cfg.fallbackReason === `config-file:${p}` ? cfg : selectVerifyTests(extensionDir, [p]);
+      const r = cfg.fallbackReason === `config-file:${p}` ? cfg : sel([p]);
       assert(
         r.mode === "full" && r.fallbackReason === `config-file:${p}` && r.alwaysRun.length > 0,
         `${p} runs the full suite with config-file:${p} and carries the tree's always-run set (got ${r.mode}/${r.fallbackReason ?? "-"})`,
@@ -134,13 +156,13 @@ assert(
   // graph — so re-running one per assertion buys no new observation: the answer for a
   // given changed set is fixed for a fixed tree. The floor pair is shared by the docs
   // row and the `.gitignore` row because both compare against the same standing floor.
-  const docs = selectVerifyTests(extensionDir, ["docs/troubleshooting.md"]);
-  const baseline = selectVerifyTests(extensionDir, [
+  const docs = sel(["docs/troubleshooting.md"]);
+  const baseline = sel([
     "src/work-driver-verify-literal-trust.ts",
     ".gitignore",
   ]);
-  const ign = selectVerifyTests(extensionDir, [".gitignore"]);
-  const floor = selectVerifyTests(extensionDir, ["src/work-driver-verify-literal-trust.ts"]);
+  const ign = sel([".gitignore"]);
+  const floor = sel(["src/work-driver-verify-literal-trust.ts"]);
   assert(
     docs.mode === "selected" && docs.tests.length > 0,
     `a docs-only change selects rather than falling back (${docs.mode}/${docs.fallbackReason ?? "-"}, ${docs.tests.length} selected)`,
@@ -148,7 +170,7 @@ assert(
   {
     // The namers are the tests that hold the exact path as a literal — a strict
     // subset of the tests a directory-level membership rule would have pulled in.
-    const roster = readOfflineTests(extensionDir);
+    const roster = ctx.roster;
     const namers = roster.names.filter((n) => {
       const l = roster.lexed.get(n);
       return l !== undefined && [...l.strings, ...l.templates].includes("docs/troubleshooting.md");
@@ -184,14 +206,14 @@ assert(
     "the always-run half of both selections is the same computed set",
   );
   // A shell helper selects the tests that quote its exact path.
-  const loop = selectVerifyTests(extensionDir, ["smoke-tests/lib/verify-loop.sh"]);
+  const loop = sel(["smoke-tests/lib/verify-loop.sh"]);
   assert(
     loop.mode === "selected" && loop.tests.includes("smoke-tests/test-verify-select-hardening.ts"),
     `the verify-loop helper selects the tests that reference it (${loop.mode}/${loop.fallbackReason ?? "-"}, ${loop.tests.length} selected)`,
   );
 }
 {
-  const r = selectVerifyTests(extensionDir, []);
+  const r = sel([]);
   assert(
     r.mode === "full" && r.fallbackReason === "no-changed-files",
     `an empty change set falls back with no-changed-files (got ${r.mode}/${r.fallbackReason ?? "-"})`,
@@ -268,6 +290,63 @@ assert(
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// --- a prepared context answers exactly what the directory form answers ----------
+// The context is the selector's own read of this tree, so the assertion is between the
+// two forms of the same question over the classes the selector answers differently: a
+// docs file (literal namers), a TS helper, a src module, configuration, a path the
+// table cannot place, and the empty set. A context built under the OFF switch value must
+// also keep answering with the OFF rules once the environment has moved on — the
+// recorded verdict, not the current one, is what a selection is judged by.
+{
+  const PATHS = [
+    ["docs/troubleshooting.md"],
+    ["smoke-tests/lib/adversarial-reviewer-harness.ts"],
+    ["src/lean/config.ts"],
+    ["agents.json"],
+    ["weird/unplaceable.bin"],
+    [],
+  ];
+  const shape = (r: VerifySelection) =>
+    JSON.stringify({
+      mode: r.mode,
+      tests: r.tests,
+      alwaysRun: r.alwaysRun,
+      fallbackReason: r.fallbackReason ?? null,
+    });
+  const differ: string[] = [];
+  for (const changed of PATHS) {
+    const a = shape(selectVerifyTests(extensionDir, changed));
+    const b = shape(selectVerifyTestsFromContext(ctx, changed));
+    if (a !== b) differ.push(changed[0] ?? "(empty)");
+  }
+  assert(
+    differ.length === 0,
+    `a selection through the prepared context returns the same answer as the directory form for every class of path (${PATHS.length} rows)${differ.length ? ` — differs on ${differ.join(", ")}` : ""}`,
+  );
+  const prior = process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
+  process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = "0";
+  const offCtx = prepareVerifySelection(extensionDir);
+  // Back to the ON value while the off context is still held: the point of the row is
+  // that the context answers by the verdict it recorded, not the one the environment
+  // carries now.
+  process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = undefined;
+  try {
+    const r = selectVerifyTestsFromContext(offCtx, ["docs/troubleshooting.md"]);
+    assert(
+      r.mode === "full" && r.fallbackReason === "outside-graph:docs/troubleshooting.md",
+      `a context built under the OFF switch keeps answering with the OFF rules after the environment changed (got ${r.mode}/${r.fallbackReason ?? "-"})`,
+    );
+    const on = selectVerifyTests(extensionDir, ["docs/troubleshooting.md"]);
+    assert(
+      on.mode === "selected",
+      `and the same path selects on a context built under the ON value (got ${on.mode}/${on.fallbackReason ?? "-"}) — the difference is the recorded verdict, not the tree`,
+    );
+  } finally {
+    if (prior === undefined) delete process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
+    else process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = prior;
   }
 }
 
