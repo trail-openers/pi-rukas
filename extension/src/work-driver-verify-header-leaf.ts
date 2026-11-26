@@ -49,9 +49,14 @@ const RUST_PANIC_NAME_SRC = String.raw`(${RUST_PANIC_NAME_BODY_SRC})`;
  * ID GAP is line-local (`[ \t]`, not `\s+`): the id sits inside one printed
  * line, and a `\s+` here would let a `(\d+)` from a FOLLOWING line weld onto the
  * name, so a record whose raw bytes carry no header could still match — and
- * strip — as one. The open's other separators are `\s+` and do cross newlines;
- * what the welded form then fails on is the stripper, whose gap is line-local,
- * so it leaves the id in place and no key contains it (fail-closed). */
+ * strip — as one. The open's other separators are `\s+` and do cross newlines,
+ * and the welded forms fail closed in both directions by different mechanisms:
+ * with the id on the line AFTER the name, the stripper's line-local gap leaves
+ * the id in place and no key contains it; with `thread` severed from its quoted
+ * name (`thread` newline `'a::t' (9) panicked at …`), the head `thread\s+'`
+ * spans the newline and the stripper DOES strip — the fail-closed anchor there
+ * is the surviving newline, which keeps the welded key out of containment with
+ * any one-line header. */
 const RUST_PANIC_ID_SRC = String.raw`(?:[ \t]+\(\d+\))?`;
 /** The verb that separates the header's subject from its location. */
 const RUST_PANIC_PANICKED_SRC = String.raw`panicked\s+at\s`;
@@ -215,11 +220,14 @@ export function rustPanicHeaderIn(text: string): string | undefined {
  * here is what it does, not what it ought to. `thread 'main' panicked at 'boom:
  * oh', src/main.rs:5:5` DOES reach the identity match, because its token run ends
  * at a colon — the one inside the quoted message — so the key is the truncated
- * `thread 'main' panicked at 'boom:`. Two inline-form failures of the SAME test
- * at the SAME line with different messages therefore carry that one key and
- * compare as the SAME assertion whenever their messages agree up to that first
- * colon (an inline message with no colon before its first space reaches the
- * fail-closed half instead, and answers `null`). Disclosed, and out of scope: a
+ * `thread 'main' panicked at 'boom:`. The truncation lands before the location,
+ * so file and line are already out of the key: the thread name and the message
+ * text up to that first colon are all that discriminates. Two inline-form
+ * failures under the SAME thread name with different messages therefore carry
+ * that one key and compare as the SAME assertion whenever their messages agree
+ * up to that first colon, whatever file and line they print (an inline message
+ * with no colon before its first space reaches the fail-closed half instead,
+ * and answers `null`). Disclosed, and out of scope: a
  * pre-1.73 spelling current cargo no longer prints, and a case this key does not
  * fold. Any other assertion —
  * every shape that does not open with the panic look — is its own key; exact

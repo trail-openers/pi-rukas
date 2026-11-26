@@ -512,6 +512,7 @@
     "smoke-tests/test-verify-heartbeat-repeat.ts",
     "smoke-tests/lib/verify-rust-sweep-corpus.ts",
     "smoke-tests/test-verify-rust-id-bearing-arms.ts",
-    "smoke-tests/test-verify-rust-veto-sweep.ts"
+    "smoke-tests/test-verify-rust-veto-sweep.ts",
+    "smoke-tests/test-verify-rust-panic-quote-excuse.ts"
   ]
 }
