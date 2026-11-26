@@ -440,6 +440,11 @@ export function classifyFailureCause(tail: FailureTail): FailureClass {
   // after the 429 ladder and the model check, so a genuine provider cap the
   // child carried still halts the queue, but ahead of the severance fallback
   // that would retry a child pi-rukas ended itself.
+  // #2644 — the caller's hung-request lever: a re-spawn replays the same hung request, so no
+  // retry, and it is its own cause rather than `inactivity` (which one fresh attempt can clear).
+  if (tail.killCause === "stall") {
+    return { cause: "self-killed:stall", shouldRetry: false, maxRetries: 0 };
+  }
   if (tail.killCause === "no-progress") {
     return { cause: "self-killed:no-progress", shouldRetry: false, maxRetries: 0 };
   }

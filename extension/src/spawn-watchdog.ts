@@ -65,6 +65,10 @@ export interface KillFlags {
   /** The opt-in no-progress arm of the same poll fired (ChildProgress.stall). */
   noProgressKilled(): boolean;
   setNoProgressKilled(v: boolean): void;
+  /** #2644 — the poll's stall arm fired: the caller's hung-request window passed with the stream
+   *  quiet and no tool in flight. */
+  stalled(): boolean;
+  setStalled(v: boolean): void;
   /** #951 — the budget that actually fired (set by the inactivity poll's
    * onKill callback; the active bound, since exactly one is armed per poll). */
   killedBudgetMs(): number;
@@ -86,6 +90,7 @@ export function declareKillFlags(): KillFlags {
   let inactivityKilled = false;
   let toolInactivityKilled = false;
   let noProgressKilled = false;
+  let stalled = false;
   let killedBudgetMs = 0;
   let aborted = false;
   let childExited = false;
@@ -105,6 +110,10 @@ export function declareKillFlags(): KillFlags {
     noProgressKilled: () => noProgressKilled,
     setNoProgressKilled: (v) => {
       noProgressKilled = v;
+    },
+    stalled: () => stalled,
+    setStalled: (v) => {
+      stalled = v;
     },
     killedBudgetMs: () => killedBudgetMs,
     setKilledBudgetMs: (v) => {
@@ -172,6 +181,7 @@ export function armCapSession(
     inactivityKilled: flags.inactivityKilled,
     toolInactivityKilled: flags.toolInactivityKilled,
     noProgressKilled: flags.noProgressKilled,
+    stalled: flags.stalled,
     aborted: flags.aborted,
     capKillGraceMs: capKillGraceMs(),
     childExited: flags.childExited,

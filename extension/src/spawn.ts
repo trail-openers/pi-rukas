@@ -380,6 +380,7 @@ async function spawnSpecialistInner(
     onKill: (cause, budgetMs, toolNames) => {
       if (cause === "tool-inactivity") flags.setToolInactivityKilled(true);
       else if (cause === "no-progress") flags.setNoProgressKilled(true);
+      else if (cause === "stall") flags.setStalled(true);
       else flags.setInactivityKilled(true);
       // #951 — name the tool(s) that went silent, so the report shows
       // WHAT is in flight instead of a bare cause. Inactivity kills

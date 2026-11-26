@@ -63,11 +63,21 @@ async function withEnv(overrides: Record<string, string | undefined>, body: () =
   }
 }
 
-/** A child that never dies on its own: the poll's kill is the only thing that ends it. */
-function fakeChild(input?: Readable): { child: ChildProcess; kills: () => number } {
+/**
+ * The child the poll supervises. `diesOnce` models a real process: the first kill ends it and
+ * every later signal is a no-op, so a case that counts kills counts the supervision stack's
+ * decision rather than how many paths reached a fake that always answers.
+ */
+function fakeChild(
+  input?: Readable,
+  diesOnce = true,
+): { child: ChildProcess; kills: () => number } {
   let kills = 0;
+  let dead = false;
   const child = {
     kill: () => {
+      if (diesOnce && dead) return false;
+      dead = true;
       kills++;
       return true;
     },
@@ -79,10 +89,6 @@ function fakeChild(input?: Readable): { child: ChildProcess; kills: () => number
 
 const LINE = 250;
 const WINDOW = 1200;
-/** The poll measures silence against `Date.now()` (`createInactivityPoll`), so a fixture clock is
- * an OFFSET from the real instant the child started: a clock at 0 reads as decades of silence and
- * every budget fires on the first tick, which is the wrong cause for the wrong reason. */
-const T0 = Date.now();
 
 /** One assistant turn that opens `n` tool calls; no result follows them. */
 function turnWithToolCalls(n: number): PiJsonEvent {
@@ -101,11 +107,19 @@ function turnWithToolCalls(n: number): PiJsonEvent {
   } as PiJsonEvent;
 }
 
-/** One assistant turn with no tool call — a line that is life without work in flight. */
+/** One assistant turn with no tool call — a line that is life without work in flight. Each call
+ * says something NEW: the tracker counts a turn that repeats the previous one as nothing, so a
+ * case that wants three pieces of progress needs three distinct turns. */
+let turnSeq = 0;
 function plainTurn(): PiJsonEvent {
+  turnSeq++;
   return {
     type: "message_end",
-    message: { role: "assistant", stopReason: "endTurn", content: [{ type: "text", text: "ok" }] },
+    message: {
+      role: "assistant",
+      stopReason: "endTurn",
+      content: [{ type: "text", text: `ok ${String(turnSeq)}` }],
+    },
   } as PiJsonEvent;
 }
 
@@ -125,9 +139,21 @@ async function drive(opts: {
   onEmit?: (i: number) => void;
   /** Advance the clock once the stream has gone quiet, before the final wait. */
   afterEmitMs?: number;
+  /** Wait between the lines, so each turn is stamped at its own real instant. The poll measures
+   *  silence on `Date.now()`, and a batch delivered inside one tick leaves the child measured
+   *  from its spawn start however many lines the case pushed. */
+  betweenEventsMs?: number;
+  /** Let the child die exactly once, as a real one does: whichever path ends it first wins, and
+   *  the other kill is a no-op on a dead process. Without this the two paths double-count, and
+   *  the tally measures the fake child rather than the supervision stack. */
+  diesOnce?: boolean;
 }): Promise<{ checks: number; kills: number; budgetMs: number; progress: number; inFlight: InFlightTools }> {
   const inFlightTools = new InFlightTools();
-  let now = T0;
+  // The case's simulated clock, stated as an offset from the real instant the child started:
+  // `ChildProgress` and the poll both stamp with `Date.now()`, and a clock that starts at 0 would
+  // read as decades of silence against the poll's budgets.
+  const t0 = Date.now();
+  let now = t0;
   const childProgress = new ChildProgress(() => now);
   let checks = 0;
   let budgetMs = 0;
@@ -165,27 +191,35 @@ async function drive(opts: {
     onAgentEnd: () => undefined,
   });
   const input = new Readable({ read() {} });
-  const { child, kills } = fakeChild(input);
+  const { child, kills } = fakeChild(input, opts.diesOnce !== false);
   const pump = attachStdoutLinePump({ child, handler, onLine: () => undefined });
+  const events = opts.events ?? [];
+  const stepMs = events.length > 0 ? Math.floor(opts.silenceMs / (events.length + 1)) : 0;
+  const emit = async (): Promise<void> => {
+    for (let i = 0; i < events.length; i++) {
+      opts.onEmit?.(i);
+      input.push(`${JSON.stringify(events[i])}\n`);
+      // The pump reads synchronously on push; the clock moves after each line.
+      now += stepMs;
+      if (opts.betweenEventsMs !== undefined) await wait(opts.betweenEventsMs);
+    }
+    opts.onEmit?.(events.length);
+  };
   const stop = createInactivityPoll({
     child,
     inFlightTools,
-    lastActivityAt: () => now,
+    // The pump stamps this clock with `Date.now()` on the child's own lines, so the case states
+    // its silence on the same clock: the child's last line was `sinceMs` of simulated time ago.
+    // A fixture clock that is not an offset of the real one reads as decades of silence, and the
+    // poll's own budgets fire on the first tick — the wrong cause for the wrong reason.
+    lastActivityAt: () => Date.now() - (now - childProgress.lastProgressAt),
     childProgress,
     onKill: (_cause, ms) => {
       budgetMs = ms;
     },
     stall: armed,
   });
-  const events = opts.events ?? [];
-  const stepMs = events.length > 0 ? Math.floor(opts.silenceMs / (events.length + 1)) : 0;
-  for (let i = 0; i < events.length; i++) {
-    opts.onEmit?.(i);
-    input.push(`${JSON.stringify(events[i])}\n`);
-    // The pump reads synchronously on push; the clock moves after each line.
-    now += stepMs;
-  }
-  opts.onEmit?.(events.length);
+  await emit();
   if (opts.afterEmitMs !== undefined) now += opts.afterEmitMs;
   await wait(4 * LINE + 100);
   stop();
@@ -257,20 +291,26 @@ const WINDOW_ENV = { ...BUDGET_ENV, PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS: String(LI
       windowMs: WINDOW,
       silenceMs: WINDOW + LINE,
       events: [plainTurn(), plainTurn(), plainTurn()],
+      betweenEventsMs: LINE,
       afterEmitMs: LINE,
     });
   });
-  assert(
-    r!.checks === 1,
-    `(4) canary, and the harness holds: three real turns arrived inside the window and the lever still read the stream (progress ${String(r!.progress)}, checks ${String(r!.checks)})`,
-  );
-  assert(
-    r!.progress >= 3,
-    "(4) the child really emitted turns, so progress arrived inside the window",
-  );
+  assert(r!.progress >= 3, "(4) the child really emitted turns, so progress arrived inside it");
   assert(
     r!.checks === 0,
     `(4) a child that keeps answering is never stalled (got ${String(r!.checks)} checks)`,
+  );
+  // The canary that keeps the two cells above from being vacuous: the poll does tick on this
+  // harness, and the same child silent past the window is fired by it. Same shape as cell (1),
+  // which passes, so a failure here means the poll stopped supervising a live child — not that the
+  // case raced a boundary.
+  let fired: Awaited<ReturnType<typeof drive>> | undefined;
+  await withEnv(WINDOW_ENV, async () => {
+    fired = await drive({ windowMs: WINDOW, silenceMs: 0, afterEmitMs: WINDOW });
+  });
+  assert(
+    fired!.checks === 1,
+    `(4) canary, the poll really runs here: the same child silent past the window IS fired (got ${String(fired!.checks)} checks, kills ${String(fired!.kills)}, budget ${String(fired!.budgetMs)})`,
   );
 }
 
@@ -295,25 +335,31 @@ const WINDOW_ENV = { ...BUDGET_ENV, PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS: String(LI
   const seen: string[] = [];
   const { child, kills } = fakeChild();
   const inFlightTools = new InFlightTools();
-  let now = T0;
+  // The case's simulated clock, stated as an offset from the real instant the child started:
+  // `ChildProgress` and the poll both stamp with `Date.now()`, and a clock that starts at 0 would
+  // read as decades of silence against the poll's budgets.
+  const t0 = Date.now();
+  let now = t0;
   const childProgress = new ChildProgress(() => now);
   const stop = createInactivityPoll({
     child,
     inFlightTools,
-    lastActivityAt: () => now,
+    // The pump stamps this clock with `Date.now()` on the child's own lines, so the case states
+    // its silence on the same clock: the child's last line was `sinceMs` of simulated time ago.
+    // A fixture clock that is not an offset of the real one reads as decades of silence, and the
+    // poll's own budgets fire on the first tick — the wrong cause for the wrong reason.
+    lastActivityAt: () => Date.now() - (now - childProgress.lastProgressAt),
     childProgress,
     onKill: (cause, ms) => seen.push(`${cause}:${String(ms)}`),
     stall: {
       windowMinutes: WINDOW / 60_000,
       windowMs: WINDOW,
       silence: () => ({ sinceMs: now - childProgress.lastProgressAt, toolInFlight: inFlightTools.active }),
-      // The caller's hook is the abort: what `armBudget`'s controller does, and the poll kills too.
-      check: () => {
-        void (child as { kill?: () => boolean }).kill?.();
-      },
+      // The caller's hook in this cell does nothing on purpose: the cell asks what the POLL
+      // contributes when the lever fires — a named cause, and a guarded kill of its own.
     },
   });
-  now = T0 + WINDOW;
+  now = t0 + WINDOW;
   await wait(4 * LINE + 100);
   stop();
   assert(
@@ -324,7 +370,7 @@ const WINDOW_ENV = { ...BUDGET_ENV, PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS: String(LI
 }
 
 // ── (7) the spawn's own reader is what the poll reads (no placeholder reading).
-{
+await withEnv(BUDGET_ENV, async () => {
   const inFlightTools = new InFlightTools();
   const childProgress = new ChildProgress();
   const arm = stallLever(
@@ -344,20 +390,28 @@ const WINDOW_ENV = { ...BUDGET_ENV, PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS: String(LI
   // The event production closes a span with: the tool's result message. Its arrival is itself
   // progress, so the reader's silence restarts there — which is the whole reason the poll can
   // tell a wedged tool from a quiet model.
-  childProgress.observe({
+  const toolResult = {
     type: "message_end",
     message: { role: "toolResult", toolCallId: "tc-0", toolName: "bash", isError: false },
-  } as PiJsonEvent);
+  } as PiJsonEvent;
+  // Both trackers see it, as both do in production: the call leaves the stream's open set and the
+  // result counts as progress, which restarts the silence the reader reports.
+  childProgress.observe(toolResult);
+  inFlightTools.observe(toolResult);
+  // ONE reading per moment: the reader is a live measurement, and re-calling it inside the
+  // message after an `await` would report time the case itself spent between the two calls.
+  // The bounds are what the wait leaves room for on a loaded host, not a claim about the tracker.
+  const justClosed = arm!.silence();
   assert(
-    arm!.silence().toolInFlight === false && arm!.silence().sinceMs === 0,
-    `(7) and once the result lands the reader reports the tracker's own silence (${String(arm!.silence().sinceMs)} ms)`,
+    justClosed.toolInFlight === false && justClosed.sinceMs < 1_000,
+    `(7) and once the result lands the reader reports the tracker's own silence (${String(justClosed.sinceMs)} ms)`,
   );
-  await new Promise((r) => setTimeout(r, 700));
-  const since = arm!.silence().sinceMs;
+  await wait(700);
+  const quiet = arm!.silence();
   assert(
-    arm!.silence().toolInFlight === false && since >= 600 && since < 5_000,
-    `(7) and the silence it reports is the real one since that last piece of progress (${String(since)} ms)`,
+    quiet.toolInFlight === false && quiet.sinceMs >= justClosed.sinceMs,
+    `(7) and the silence it reports grows with the wall clock since that last piece of progress (${String(quiet.sinceMs)} ms, from ${String(justClosed.sinceMs)} ms)`,
   );
-}
+});
 
 process.exit(failed);

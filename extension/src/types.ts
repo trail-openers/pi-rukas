@@ -234,6 +234,10 @@ export interface DispatchResult {
     | "child-bound"
     | "no-progress"
     | "stuck-tool"
+    /** #2644 - the caller's hung-request lever ended a child whose stream went quiet past its
+     *  armed window with no tool in flight. A failure kill, and NEVER retried: re-spawning it
+     *  replays the same hung request (lens-review-child.ts, adversarial-classify.ts). */
+    | "stall"
     /** #1827 — a reviewer re-read its own skill file past
      * PI_ENSEMBLE_REVIEW_SKILL_READS (steer at N+1, this kill at N+2). A
      * failure kill: a lens ended by it keeps its evidence and is not retried. */

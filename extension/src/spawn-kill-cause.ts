@@ -37,6 +37,10 @@ export function resolveKillCause(facts: {
   stuckToolKilled?: boolean;
   noProgressKilled?: boolean;
   childBoundKilled?: boolean;
+  /** #2644 — the inactivity poll's stall arm ended a child whose request went quiet past the
+   *  window the caller armed. Optional, like the other supervisor causes, because each enforcing
+   *  piece passes only its own flag. */
+  stalled?: boolean;
   aborted: boolean;
 }): DispatchResult["killCause"] {
   if (facts.loopKilled) return "loop";
@@ -52,6 +56,9 @@ export function resolveKillCause(facts: {
   // supervisor ended that also outlived the backstop is named for the
   // supervisor's reason. Most specific first: a second call-kill on one
   // command, then a frozen child, then the plain per-child time limit.
+  // #2644 — a request the caller's hung-request lever ended is more specific than any wall clock
+  // it also outlived, so it ranks with the poll's other silence kills.
+  if (facts.stalled) return "stall";
   if (facts.stuckToolKilled) return "stuck-tool";
   if (facts.noProgressKilled) return "no-progress";
   if (facts.childBoundKilled) return "child-bound";

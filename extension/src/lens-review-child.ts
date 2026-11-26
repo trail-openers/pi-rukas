@@ -346,7 +346,11 @@ export async function runLensChild(opts: {
           result.killCause === "token-budget" ||
           result.killCause === "child-bound" ||
           result.killCause === "review-skill-reread" ||
-          result.killCause === "no-progress")
+          result.killCause === "no-progress" ||
+          // #2644 — a lens whose model request hung and was ended by the step's stall lever is
+          // the least transient death on this list: re-spawning it pays for the same hung request
+          // up to three more times and the review still comes back incomplete.
+          result.killCause === "stall")
       ) {
         break;
       }

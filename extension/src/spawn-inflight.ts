@@ -244,10 +244,18 @@ export function createInactivityPoll(opts: {
       if (stall !== undefined && !inFlightTools.active) {
         const quiet = stall.silence();
         // The caller's abort is one-shot, so the arm stands itself down after it fires: the poll
-        // has no reason to keep reading a stream whose child is already being ended.
+        // has no reason to keep reading a stream whose child is already being ended. The kill is
+        // the poll's own — same guarded path as its silence budgets — and the cause is NAMED, so
+        // the report says a stalled request ended this child rather than leaving it unattributed.
         if (quiet.sinceMs >= stall.windowMs) {
           stopPoll();
           stall.check?.();
+          onKill("stall", stall.windowMs, inFlightTools.toolNames());
+          try {
+            killProcessTree(child);
+          } catch (err) {
+            traceWarn(`stall killProcessTree failed: ${String(err)}`);
+          }
         }
       }
     },
