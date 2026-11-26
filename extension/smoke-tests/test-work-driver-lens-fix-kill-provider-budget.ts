@@ -33,7 +33,7 @@ import {
 } from "./lib/lens-fix-kill-cause-fixtures.ts";
 import { buildCompletionEvent } from "../src/work-driver-completion-event.ts";
 import { PROVIDER_MAX } from "../src/provider-text-budget.ts";
-import { FAILURE_REASON_CHARS } from "../src/work-driver-failure-taxonomy.ts";
+import { FAILURE_REASON_CHARS } from "../src/work-driver-failure-text.ts";
 
 let exitCode = 0;
 function assert(cond: boolean, msg: string): void {

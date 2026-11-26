@@ -20,7 +20,7 @@ import { trace } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
 import type { CycleContext, DriverContext } from "./work-driver-context.ts";
 import { parseAbort } from "./work-driver-diff.ts";
-import { FAILURE_REASON_CHARS, clip } from "./work-driver-failure-taxonomy.ts";
+import { FAILURE_REASON_CHARS, clip } from "./work-driver-failure-text.ts";
 import {
   CYCLE_DEADLINE_ENV,
   type FixerBoundSource,

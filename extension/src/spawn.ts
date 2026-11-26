@@ -39,13 +39,8 @@ import { collapseEvents } from "./spawn-collapse-events.ts";
 import { installExitKillSeam, startExitWait } from "./spawn-exit-await-session.ts";
 
 import { discoverPackageExtensions } from "./spawn-extension-forward.ts";
-import {
-  InFlightTools,
-  attachStdoutLinePump,
-  createInactivityPoll,
-  createStdoutLineHandler,
-  stallLever,
-} from "./spawn-inflight.ts";
+import { createInactivityPoll, stallLever } from "./spawn-inactivity-poll.ts";
+import { InFlightTools, attachStdoutLinePump, createStdoutLineHandler } from "./spawn-inflight.ts";
 import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
 import { withOperatorConfigGuard } from "./spawn-operator-config.ts";
 import { planChildPermissions } from "./spawn-permission.ts";

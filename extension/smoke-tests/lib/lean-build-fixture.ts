@@ -36,7 +36,9 @@ import { createRun } from "../../src/lean/state.ts";
 import type { BudgetOpts, DispatchUsageRow } from "../../src/lean/step-budget.ts";
 import { type QuietTickOpts, deliverQuietTick } from "./lean-quiet-child-tick.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
-import { gitTestEnv } from "./git-test-env.ts";
+// The git contract lives in `lean-build-git.ts`; re-exported so a case imports one module.
+export { git, gitEnvFor } from "./lean-build-git.ts";
+import { git, gitEnv } from "./lean-build-git.ts";
 import {
   type ClockOpts,
   type DispatchResultOverride,
@@ -56,30 +58,6 @@ export function outsideDir(): string {
   const dir = mkdtempSync(path.join(tmpdir(), "lean-build-outside-"));
   ROOTS.push(dir);
   return dir;
-}
-
-/** The identity every git child runs with, the production commit included. */
-function gitEnv(): Record<string, string> {
-  return {
-    ...gitTestEnv(),
-    GIT_AUTHOR_NAME: "t",
-    GIT_AUTHOR_EMAIL: "t@t",
-    GIT_COMMITTER_NAME: "t",
-    GIT_COMMITTER_EMAIL: "t@t",
-  };
-}
-
-/** The same identity, for the challenge fixture's own git children. */
-export function gitEnvFor(): Record<string, string> {
-  return gitEnv();
-}
-
-/** git in `dir`, with an identity in the child's environment. */
-export function git(dir: string, ...args: string[]): string {
-  const r = spawnSync("git", args, { cwd: dir, encoding: "utf8", env: gitEnv() });
-  if (r.status !== 0)
-    throw new Error(`git ${args.join(" ")} failed in ${dir}: ${(r.stderr ?? "").trim()}`);
-  return (r.stdout ?? "").trim();
 }
 
 /** The sha256 of a string's bytes, the way the freeze records them. */

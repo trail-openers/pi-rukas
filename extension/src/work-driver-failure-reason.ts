@@ -13,12 +13,8 @@
  */
 
 import type { DispatchFailureCause, DispatchResult } from "./types.ts";
-import {
-  type FailureTail,
-  classifyFailureCause,
-  clip,
-  repeatsNote,
-} from "./work-driver-failure-taxonomy.ts";
+import { type FailureTail, classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
+import { clip, repeatsNote } from "./work-driver-failure-text.ts";
 
 /**
  * #309 — produce the operator-facing reason string for a dispatch failure.

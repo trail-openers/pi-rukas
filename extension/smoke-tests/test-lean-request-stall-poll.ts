@@ -20,13 +20,8 @@ import type { ChildProcess } from "node:child_process";
 import type { PiJsonEvent } from "../src/pi-event-shapes.ts";
 import { emptyRunningState } from "../src/progress.ts";
 import { ChildProgress } from "../src/child-progress.ts";
-import {
-  InFlightTools,
-  attachStdoutLinePump,
-  createInactivityPoll,
-  createStdoutLineHandler,
-  stallLever,
-} from "../src/spawn-inflight.ts";
+import { createInactivityPoll, stallLever } from "../src/spawn-inactivity-poll.ts";
+import { InFlightTools, attachStdoutLinePump, createStdoutLineHandler } from "../src/spawn-inflight.ts";
 
 let failed = 0;
 function assert(cond: boolean, msg: string): void {
