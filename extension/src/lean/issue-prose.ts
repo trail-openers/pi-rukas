@@ -18,7 +18,7 @@
  *      close the block the prompt opened.
  *
  * `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` removes the section from the builder's seat ONLY: that per-seat
- * isolation is the point of the knob. The oracle seats have no switch.
+ * isolation is the point of the knob, and the oracle seats have no switch.
  */
 import { fencedIssueBody } from "../adversarial-prompts.ts";
 import { hasSurvivingSpecShapedFence, normalizeProse, stripPiSpecBlocks } from "./spec.ts";
@@ -38,11 +38,7 @@ export const LEAN_ISSUE_LEAD =
 export const LEAN_BUILD_ISSUE_LEAD =
   "The issue text below is what the acceptance criteria summarise. Where the criteria are silent it states what to build; it never overrides a frozen test.";
 
-/**
- * Whether the BUILDER's prompt carries the issue section. Read at call time, like its sibling: every lean
- * smoke file runs in one `bun` process and pins its own arms with `withEnv`, so a load-time read would let one
- * file's pin disable the next file's.
- */
+/** Whether the BUILDER's prompt carries the issue section. Read at call time, like its sibling. */
 export function leanBuildIssueProseEnabled(): boolean {
   const v = process.env.PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE;
   return v !== "0";
@@ -53,9 +49,8 @@ export function leanBuildIssueProseEnabled(): boolean {
  *
  * Two answers of "nothing" belong to every seat: the body is blank once its `pi-spec` block is stripped, or a
  * spec-SHAPED FENCE survived that strip. The builder's seat adds two of its own — its own switch, consulted at
- * its call site, and the prose being the spec's own `problem` line restated.
- *
- * `lead` is the seat's own instruction; it defaults to the oracle's.
+ * its call site, and the prose being the spec's own `problem` line restated. `lead` is the seat's own
+ * instruction; it defaults to the oracle's.
  */
 export function leanIssueSection(
   issueBody: string | undefined,

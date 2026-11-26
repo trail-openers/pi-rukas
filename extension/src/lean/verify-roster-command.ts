@@ -25,7 +25,7 @@ const ROSTER_MAX_BUFFER = 16 * 1024 * 1024;
  * A configured `verify.roster` template is the runner's machine-readable report form. With none
  * configured the default is DERIVED from `verify.test`: one whole-word `{file}` deleted and
  * `--junitxml={report} {dir}` appended, so `pytest -q {file}` becomes `pytest -q --junitxml={report}
- * {dir}`. Deleting the word is required, not decoration — the loader REQUIRES `verify.test` to
+ * {dir}`. Deleting the word is required — the loader REQUIRES `verify.test` to
  * carry one, so appending alone hands the runner a path literally named `{file}` and no report.
  * A template with no such word derives by appending alone.
  *

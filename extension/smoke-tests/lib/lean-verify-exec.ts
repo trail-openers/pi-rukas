@@ -50,6 +50,7 @@ import {
 } from "./lean-verify-probe-shapes.ts";
 import {
   NO_REPORT_SENTINEL,
+  asksForRosterReport,
   bareDepsOf,
   isRosterReportRead,
   rosterSideOf,
@@ -306,6 +307,7 @@ export function makeVerifyExec(opts: {
       String(o2?.cwd ?? "") === wt
     )
       suiteTierRuns++;
+
     if (rosterRuns.isRosterSuiteRun(cmd, o2))
       return rosterRuns.runRosterSuite(cmd, o2, rosterSideOf(String(o2?.cwd ?? ""), wt, probeDir));
     // A frozen-test run is the argv-form call the runner template makes: `runTestFile`

@@ -70,15 +70,11 @@ const BOTH_SETTLED: DispatchResult = {
  * non-blocking findings, printed into every lens brief — and pass 1 passes it
  * `undefined`: the step reads the gate's blocking record before it decides
  * anything, and the findings that are not blocking reach the fixer's brief and the
- * re-review, which is where the step acts on them at all. A run whose gate is
- * non-blocking and whose lenses are clean has no brief and no re-review to carry
- * them to, and the review layer's residual post is the LENS round's — it fires on
- * an `ISSUES_FOUND` round only — so on that shape the step itself discloses the
- * gate's words: `review.ts` joins them into the pass reason through
- * `disclosureNote`, the surface the cleared wave already uses. Nothing is
- * undisclosed. What the overlap costs is that the six lenses never get to judge
- * those findings themselves — the gate had not answered when that round was
- * bought, and no brief could have said what it had not yet said.
+ * re-review, which is where the step acts on them at all; on a gate that is
+ * non-blocking and lenses that are clean there is nowhere to carry them, and
+ * `review.ts` joins the gate's words into the pass reason through `disclosureNote`.
+ * What the overlap costs is that the six lenses never get to judge those findings
+ * themselves — the gate had not answered when that round was bought.
  *
  * `lensGate` re-resolves origin for its own read and refuses a range it cannot
  * open, so the two gates disagreeing about the commit is a refusal rather than a

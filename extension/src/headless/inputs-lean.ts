@@ -41,6 +41,11 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // token cap changes. The reader is `leanFixerTruncationReaskEnabled` in
   // fixer-truncation.ts.
   flag("LEAN_FIXER_TRUNCATION_REASK", true),
+
+  // How wide the roster's head run reaches over the project's `verify.full` tier: on, the tier may end in
+  // one directory of the tree the roster scanned, sparing a duplicate whole-suite run. The reader is
+  // lean/full-tier-operand-switch.ts; the comparison is lean/verify-suite-command.ts.
+  flag("LEAN_FULL_TIER_OPERAND", true),
   // #2279 — the handback's four origin reads (`ls-remote` for the record's head, the held
   // head, and the branch/keeping-ref pair that decide success) go through the driver's
   // network-git wrapper: non-interactive env, process-group kill, bounded wait. `0` puts

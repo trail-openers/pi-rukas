@@ -42,14 +42,10 @@ export const CI_FULL_TIER = "full";
  *
  * `tierFailure` already throws for a kill and for a command that never started; what is
  * left is an ordinary non-zero exit and — the one that does not throw on its own — an
- * output BUFFER OVERFLOW. A flooded tier really did fail, but its stream is truncated at
- * the bound, so the omitted half could hold this run's failure: the excuse is refused and
- * the red stands.
- *
- * The observation test is `verify`'s own `tierObserved`, so `ci`'s excuse cannot be
- * reached behind a shape `verify` would have refused. On top of it the run must have
- * ANSWERED with a numeric exit code — a rejection that stamped nothing is neither killed,
- * un-startable nor overflowed, and would grade the excuse on a stream nobody produced.
+ * output BUFFER OVERFLOW, whose truncated stream could hold this run's failure: the excuse
+ * is refused and the red stands. The observation test is `verify`'s own `tierObserved`; on
+ * top of it the run must have ANSWERED with a numeric exit code, since a rejection that
+ * stamped nothing would grade the excuse on a stream nobody produced.
  */
 export function ciTierObserved(ran: unknown): boolean {
   if (!tierObserved(ran)) return false;

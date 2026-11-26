@@ -120,8 +120,11 @@ export async function baselineRedArm(opts: {
   return { preexisting: excuse.record };
 }
 
-/** A name past the disclosure's per-row bound is clipped so one row cannot crowd out the rest. */
-const clipName = (line: string) =>
+/** A name past the disclosure's per-row bound is clipped so one row cannot crowd out the rest. The roster
+ * bounds a name by this ceiling, one shorter than the record reader's own (`ROSTER_PATH_MAX_CHARS`): a
+ * roster name is a test name, so it is bounded by the rule for names, while the wider ceiling stays the
+ * reader's backstop for any roster it is handed. Exported so the roster and the excuse arm clip once. */
+export const clipName = (line: string) =>
   line.length > PREEXISTING_NAME_MAX_CHARS ? line.slice(0, PREEXISTING_NAME_MAX_CHARS) : line;
 
 /**

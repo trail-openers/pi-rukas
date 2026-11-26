@@ -30,9 +30,11 @@ import { leanPreVerifySharePercent } from "../../src/lean/pre-verify-share-switc
 import { leanDetectVerifyEnabled } from "../../src/lean/config-detect.ts";
 import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
+
 import { leanSpecifyGapHandbackEnabled } from "../../src/lean/specify-gap-switch.ts";
 import { leanBuildIssueProseEnabled } from "../../src/lean/issue-prose.ts";
 import { leanPrefixHeadEnabled } from "../../src/lean/review-log.ts";
+import { leanFullTierOperandEnabled } from "../../src/lean/full-tier-operand-switch.ts";
 import { leanPreflightProbeContainEnabled } from "../../src/lean/preflight-probe-switch.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
 import { leanSpecifyReaskEnabled } from "../../src/lean/specify-reask.ts";
@@ -221,6 +223,10 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LEAN_PRE_VERIFY_SHARE", leanPreVerifySharePercent],
   ["PI_ENSEMBLE_LEAN_PROJECT_ROSTER", leanProjectRosterEnabled],
   ["PI_ENSEMBLE_LEAN_FIXER_TRUNCATION_REASK", leanFixerTruncationReaskEnabled],
+  // The full-tier skip's trailing operand. The reader is `v !== "0"`, so the gate's LIVE loop (env
+  // deleted) pins "unset means on"; the arms, the off-arm golden and the docs row are pinned by
+  // test-2633-full-tier-relative-operand.ts.
+  ["PI_ENSEMBLE_LEAN_FULL_TIER_OPERAND", leanFullTierOperandEnabled],
   // #2279 — the handback's origin reads through the network-git wrapper. The reader is
   // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth
   // table, the docs row and the off-arm call shape are pinned by

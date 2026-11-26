@@ -29,7 +29,7 @@ import type { VerifyExec } from "../../src/lean/verify-types.ts";
 import type { VerifyDeps } from "../../src/lean/verify-deps.ts";
 import { gitTestEnv } from "./git-test-env.ts";
 import { ROSTER_REPORT_FILE } from "../../src/lean/verify-roster-command.ts";
-import { rosterReportXml } from "./lean-verify-roster.ts";
+import { asksForRosterReport, rosterReportXml } from "./lean-verify-roster.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -320,7 +320,7 @@ export async function runCommandVerify(o: CommandVerifyOpts): Promise<CommandVer
     // The roster's suite run: the stub writes the report the gate reads back, naming one test that
     // passes in both trees. These cases ask about the spec's `command` criteria, not about the
     // project's verdicts, and a roster nobody ran would hand every one of them back.
-    if (cmd === "sh" && Array.isArray(opts?.argv) && opts.argv.some((a) => a.startsWith("--junitxml="))) {
+    if (cmd === "sh" && opts !== undefined && asksForRosterReport(opts.argv)) {
       const tree = String(opts.cwd ?? wt);
       const xml = rosterReportXml({ passed: ["project_test_passes"], failed: [] });
       if (xml !== undefined) writeFileSync(path.join(tree, ROSTER_REPORT_FILE), xml);

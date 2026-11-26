@@ -103,6 +103,21 @@ export function isRosterReportRead(o2: { argv?: string[] } | undefined): boolean
   );
 }
 
+/**
+ * Does this argv ask the runner for a machine-readable report? Both spellings the gate accepts count:
+ * the flag glued to its path (`--junitxml=<report>`) and the flag as its own word with the path the word
+ * after it. The counter that separates the roster's own suite run from a frozen run of the SAME runner
+ * template asks this, so a fixture whose roster spells the flag as two words is not silently mis-counted
+ * as a tier run.
+ */
+export function asksForRosterReport(argv: readonly string[] | undefined): boolean {
+  if (!Array.isArray(argv)) return false;
+  // A word shaped like the flag, glued to its path or holding the path in the word after it.
+  return argv.some(
+    (a, i) => /^--junit-?xml=/.test(a) || (/^--junit-?xml$/.test(a) && argv[i + 1] !== undefined),
+  );
+}
+
 /** The roster command the fixture renders from the config, or `undefined` when none applies. */
 export function rosterCommandFor(config: {
   roster?: string;
@@ -146,7 +161,10 @@ export function rosterTestFiles(opts: VerifyOpts): Record<string, string[]> {
   // The case's declared files are the base commit's suite, in full: the default is for the case that
   // declared nothing, and keeping it beside a case's own list would hand the gate a file whose
   // verdicts the case never declared.
-  return Object.fromEntries((opts.roster.files ?? []).map((rel): [string, string[]] => [rel, []]));
+  // A case that names its own files states them through `files`; one whose test directory is not the
+  // fixture's default states them by path, so the base commit carries a file the enumeration finds.
+  const listed = opts.roster.files ?? opts.projectTestFiles ?? [];
+  return Object.fromEntries(listed.map((rel): [string, string[]] => [rel, []]));
 }
 
 /**

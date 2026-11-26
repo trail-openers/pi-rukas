@@ -27,12 +27,10 @@
  * count. The entry is therefore normalised before it is compiled (a spelling change, never a
  * meaning change) and four counts of it are capped: 256 characters, two `**` SEGMENTS, four `*`/`?`
  * wildcards in one segment, and four wildcards in TOTAL (a `**` segment counting one). Position
- * decides what a shape costs where counts cannot see it: a wildcard ADJACENT to a doublestar with no
- * literal between is retried at every offset the `**` can absorb, so both such positions are refused
- * by shape ({@link wildcardBesideDoublestar}), while a leading doublestar, a wildcard after the LAST
- * one, and a bare `*`/`?` SEGMENT beside a doublestar (which the doublestar swallows whole, starting
- * no retry of its own) all stay admitted. The rows of `test-lean-protected-globs.ts` are the
- * matcher's contract; the caps and those refusals are the entry's.
+ * decides what a shape costs where counts cannot see it, so {@link wildcardBesideDoublestar} refuses
+ * the wildcards a doublestar would retry at every offset. The rows of
+ * `test-lean-protected-globs.ts` are the matcher's contract; the caps and those refusals are the
+ * entry's.
  *
  * The other half of that bound is the INPUT, and it belongs to the filesystem rather than the
  * config: {@link SEGMENT_CEILING} and {@link PATH_CEILING}. A path past either cannot exist on
@@ -62,13 +60,9 @@ const DEPTH_STAR_CEILING = 2;
 const SEGMENT_WILDCARD_CEILING = 4;
 
 /** A wildcard written beside a doublestar with nothing to stop it, on the normalised entry — the one
- *  shape no count bounds, so the entry is refused by shape rather than priced. A `**` compiles to
- *  "any number of whole segments", so a wildcard NEXT TO one is retried at every offset that
- *  doublestar can absorb and each retry carries the length of the path — a cost no count can see,
- *  because counts are blind to position. Two spellings pay: a wildcard in a segment BEFORE the first
- *  doublestar, and one BETWEEN two doublestar segments (where it carries a length term for each).
- *  A wildcard the doublestars cannot reach stays admitted, anchored after the LAST one; and a BARE
- *  `*`/`?` SEGMENT never pays, wherever it sits.
+ *  shape no count bounds, so the entry is refused by shape rather than priced: a wildcard NEXT TO a
+ *  `**` is retried at every offset that doublestar can absorb, each retry carrying the length of the
+ *  path. A wildcard the doublestars cannot reach, and a BARE `*`/`?` SEGMENT, stay admitted.
  *
  *  Returns the first offending segment, which the refusal quotes back. */
 function wildcardBesideDoublestar(entry: string): string | undefined {

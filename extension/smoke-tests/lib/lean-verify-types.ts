@@ -319,6 +319,12 @@ export interface VerifyOpts extends ProbeShapeOpts {
    */
   rosterTemplate?: string;
   /**
+   * The pre-existing test files this case's BASE commit carries, at the paths the case names them
+   * (default: one `tests/test-project.sh`). A case whose `testDir` is not `tests` must name its files
+   * under that directory, or the roster's enumeration finds none and the step hands back.
+   */
+  projectTestFiles?: string[];
+  /**
    * Make the base commit's copy of each declared pre-existing test EXIT NON-ZERO. The roster's
    * base-version run executes the base's own bytes through `verify.test`, so this is how a case asks
    * "what if the file as the mainline wrote it fails against the head code" — bench cell 2.

@@ -29,7 +29,6 @@
  *      clipped again by {@link reason} — a legal path can overshoot the record's bound and refuse the whole
  *      outcome rather than one criterion.
  */
-
 import { trace } from "../trace.ts";
 import type { Criterion } from "./spec.ts";
 import { fileProblem, normaliseRelPath, pathProblem } from "./specify-path.ts";
@@ -45,9 +44,7 @@ import {
 } from "./verify-tree.ts";
 import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 
-/**
- * The outcome of one executed `command` criterion, kept for the record.
- */
+/** The outcome of one executed `command` criterion, kept for the record. */
 interface CommandCriterionRecord {
   /** `passed` — the criterion ran through the gate's own runner and exited 0. */
   kind: "passed";

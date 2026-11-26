@@ -13,7 +13,6 @@
  * already red at base, renumbered TAP output, a moved timing line — is a hand-back, never a green. Both
  * sides must be non-empty, every head line must equal a base line verbatim, the trees must be two trees,
  * and a base red shaped like a missing dependency tree is the probe's provisioning, not the commit's.
- * "Could not tell" is never an excuse: every refusal leaves the caller keeping the hand-back.
  */
 
 import { realpathSync } from "node:fs";
@@ -25,6 +24,7 @@ import {
   type PreexistingTierRecord,
   preexistingFailuresProblem,
 } from "./state-outcome-maps.ts";
+import { clipName } from "./verify-baseline-arm.ts";
 import type { BaseProbe } from "./verify-baseline.ts";
 
 /** Why the base red cannot excuse this tier's red. */
@@ -206,7 +206,7 @@ export function baselineExcuse(opts: {
     .filter((line) => line.length > 0);
   const record: PreexistingTierRecord = {
     cmd: opts.cmd,
-    names: matched.slice(0, PREEXISTING_NAMES_CAP).map(boundedLine),
+    names: matched.slice(0, PREEXISTING_NAMES_CAP).map(clipName),
     total: matched.length,
     baseSha: opts.baseSha,
   };
@@ -220,11 +220,6 @@ export function baselineExcuse(opts: {
 /**
  * A head line cut to what the step log's reader accepts, for DISPLAY only; `total` carries the true count.
  */
-function boundedLine(line: string): string {
-  return line.length > PREEXISTING_NAME_MAX_CHARS
-    ? line.slice(0, PREEXISTING_NAME_MAX_CHARS)
-    : line;
-}
 
 /**
  * The tail a green carries when a tier was excused over the base commit: what is KNOWN (every failing line

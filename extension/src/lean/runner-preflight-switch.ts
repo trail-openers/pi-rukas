@@ -9,16 +9,10 @@
  * the run back as infrastructure where the same run without the check is judged by the red proof
  * alone. A third thing is switched and it is only WORDING: the decline a child that submitted nothing
  * is reported under. The silence predicate and its single retry are NOT switched, and `observeVerdict`
- * is never switched.
- *
- * Only the literal `"0"` turns it off.
+ * is never switched. Only the literal `"0"` turns it off, read at CALL time.
  *
  * The submodule gate sits inside `resetWorktreeToBase` rather than in its callers, because the resets
  * are made in six places and one gate there covers every lean reset.
- *
- * The env var is read at CALL time, not at module load: every lean smoke file runs in one bun process
- * and pins off/on arms with `withEnv`, so a load-time read would let one file's pin silently disable
- * the probe in the next.
  */
 
 /** Whether the runner preflight and the reset's submodule init run. */
