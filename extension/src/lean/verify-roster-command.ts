@@ -3,8 +3,7 @@
  *
  * The roster's hands, not its judgement: render the project's report command for a tree, re-render
  * it for another, run it once, and turn the runner's machine-readable report into per-test verdicts.
- * What those verdicts MEAN is `verify-roster.ts`; this module answers only "what did the runner
- * report". The rules it enforces are stated where they are judged — `verify-roster.ts`'s header.
+ * What those verdicts MEAN is `verify-roster.ts`.
  */
 
 import { lstatSync, readFileSync, rmSync } from "node:fs";

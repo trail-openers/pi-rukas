@@ -4,7 +4,7 @@
  *
  * A frozen file is a promise made earlier in the run: `specify` hashed each acceptance test at the
  * commit it committed them to, and every later verdict is a verdict about THOSE bytes. Three things
- * can break that promise, and each says something different to whoever reads the handback:
+ * can break that promise, each with its own handback wording:
  *
  *   - **HEAD's tree no longer holds the frozen blob** — somebody committed a change to the test, or
  *     the run sits at a commit that never held it. `frozenMatches` (from `build-git.ts`) is the same

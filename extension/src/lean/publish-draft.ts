@@ -17,10 +17,9 @@ import { PublishInfraError } from "./publish-deps.ts";
 /**
  * The state of a PR this step has just CREATED, as the forge reports it.
  *
- * The create reply carries no `isDraft`, so the forge is asked through `draftStateOf` — the same reader a
- * reused PR goes through, so one rule says how a draft is established. A forge that will not say is NOT
- * infrastructure here: the PR exists and the head is pushed, so the refusal is swallowed and the outcome
- * records no `draft`. What this run REQUESTED is never recorded in its place.
+ * The create reply carries no `isDraft`, so the forge is asked through `draftStateOf`. A forge that will not
+ * say is NOT infrastructure here: the PR exists and the head is pushed, so the refusal is swallowed and the
+ * outcome records no `draft`. What this run REQUESTED is never recorded in its place.
  */
 export async function createdDraftState(
   f: PublishForge,
@@ -63,8 +62,7 @@ export async function reusedDraftState(
   });
   // A `prDraft` that returned without throwing is a CLAIM, not an observation: the head is already pushed, so
   // a forge that accepted the call and left the PR READY hands back `ok` with a mergeable PR behind
-  // unverified bytes. Read it back; only `isDraft === true` continues. The rejection message is kept so an
-  // operator can tell an unreachable forge from one that answered `ready`.
+  // unverified bytes. Read it back; only `isDraft === true` continues.
   let why: string | undefined;
   const after = await f
     .prView(found.number)

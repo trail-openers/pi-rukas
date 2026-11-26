@@ -18,8 +18,7 @@
  * contract the gate reads.
  *
  * An edge case that turns out to pass is worse than not writing it: the parent keeps
- * only the submitted files that FAIL at the current head, so an always-failing stub and
- * an already-green test both buy the child nothing.
+ * only the submitted files that FAIL at the current head.
  */
 
 import type { TestLocation } from "./config-test-location.ts";

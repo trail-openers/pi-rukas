@@ -5,9 +5,8 @@
  * `lean/config.ts` names the row in `DEFAULT_BUDGETS` (so `budgets.derive` in
  * `.pi/work.json` overrides it) and `lean/spec-derive.ts`, which imports that
  * loader, arms the child with it. Declaring the number in either would make the
- * other import it back. The figures are a one-pass budget: the child reads text
- * already in its prompt and has no repository to explore, so it needs neither a
- * builder's turns nor a reviewer's wall clock.
+ * other import it back. The child reads text already in its prompt and has no
+ * repository to explore, so it needs neither a builder's turns nor a reviewer's wall clock.
  */
 
 import type { Budget } from "./config.ts";

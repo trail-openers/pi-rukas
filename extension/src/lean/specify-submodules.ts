@@ -11,8 +11,7 @@
  * the same with one word changed: the source is the superproject's own copy, COMPUTED HERE from paths of
  * this superproject and never read out of repo content (`.gitmodules` is base content, and the submodule's
  * own is content of ANOTHER repository). Nothing is rewritten — the source reaches git ONLY as `-c` on the
- * one invocation that needs it. A step that fixed the next run by mutating the repository it was handed
- * would be hiding that it could.
+ * one invocation that needs it.
  *
  * DEPTH keeps the transport licence narrow: only the first level is seeded, and only the `git submodule
  * update` carrying a URL computed here gets `protocol.file.allow` — command-line `-c`, never a config file,
