@@ -51,8 +51,9 @@ const RUST_PANIC_NAME_SRC = String.raw`(${RUST_PANIC_NAME_BODY_SRC})`;
  * name, so a record whose raw bytes carry no header could still match — and
  * strip — as one. The open's other separators are `\s+` and do cross newlines,
  * and the welded forms fail closed in both directions by different mechanisms:
- * with the id on the line AFTER the name, the stripper's line-local gap leaves
- * the id in place and no key contains it; with `thread` severed from its quoted
+ * with the id kept on the name's line and `panicked at` severed to the next,
+ * the stripper's line-local gap leaves the id in place and no key contains it;
+ * with `thread` severed from its quoted
  * name (`thread` newline `'a::t' (9) panicked at …`), the head `thread\s+'`
  * spans the newline and the stripper DOES strip — the fail-closed anchor there
  * is the surviving newline, which keeps the welded key out of containment with
