@@ -34,7 +34,7 @@ import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { type CaptureResult, captureTestBytes } from "../../src/lean/specify-capture.ts";
 import { parsePorcelainZ } from "../../src/lean/specify-tree.ts";
-import { type SpecifyDeps } from "../../src/lean/specify-run.ts";
+import { type SpecifyDeps } from "../../src/lean/specify.ts";
 import type { DerivedSpec } from "../../src/lean/state-derived-spec.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";

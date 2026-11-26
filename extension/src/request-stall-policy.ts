@@ -31,8 +31,6 @@ export interface StallArms {
 
 /** Reads THIS child's stream: how long quiet, and whether a tool call is running. */
 export type StreamSilence = () => { sinceMs: number; toolInFlight: boolean };
-/** The type a caller's `silence` reader must return, spelled once for both sides of the seam. */
-export type SilenceReading = ReturnType<StreamSilence>;
 
 /**
  * The ONE reader of the switch. Default ON: only the literal `"0"` takes it out, read at CALL

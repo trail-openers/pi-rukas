@@ -172,12 +172,14 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
     if (hit !== undefined) return hit;
     if (result.killCause !== CHILD_BOUND_CAUSE) return undefined;
     // The minutes lever, inferred from the cause `applyChildBound` stamps — or, when no wall clock was
-    // armed, named by the turns / tokens signal.
+    // armed, named by a lever's own signal. The stall lever is one of those signals: its abort rides
+    // the SAME controller as turns / tokens, so a `child-bound` cause under a stall-only arm is that
+    // lever's stop mislabelled, not a wall-clock bound that never fired.
     if (boundMs === undefined) {
-      if (turns <= 0 && tokens <= 0) return undefined;
-      return turns > 0
-        ? { limit: "turns", value: turns, used: 0 }
-        : { limit: "tokens", value: tokens, used: 0 };
+      if (turns <= 0 && tokens <= 0 && stallOpts === undefined) return undefined;
+      if (turns > 0) return { limit: "turns", value: turns, used: 0 };
+      if (tokens > 0) return { limit: "tokens", value: tokens, used: 0 };
+      return { limit: "stall", value: stallOpts?.windowMinutes ?? 0, used: 0 };
     }
     return minutesBreach(result);
   };

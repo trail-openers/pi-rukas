@@ -36,6 +36,9 @@ import { leanBuildIssueProseEnabled } from "../../src/lean/issue-prose.ts";
 import { leanPrefixHeadEnabled } from "../../src/lean/review-log.ts";
 import { leanFullTierOperandEnabled } from "../../src/lean/full-tier-operand-switch.ts";
 import { leanPreflightProbeContainEnabled } from "../../src/lean/preflight-probe-switch.ts";
+// #2644 — the bound on ONE model request inside a lean step; the reader sits at `src/`'s top level
+// because the lever is spawn policy, not engine state.
+import { leanRequestStallEnabled } from "../../src/request-stall-policy.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
 import { leanSpecifyReaskEnabled } from "../../src/lean/specify-reask.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../../src/lens-evidence.ts";
@@ -236,6 +239,10 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // #2199 — the review fix wave's saved pre-fix head; truth table and off arm in
   // test-lean-prefix-head.ts.
   ["PI_ENSEMBLE_LEAN_PREFIX_HEAD", leanPrefixHeadEnabled],
+  // #2644 — the hung-request lever. The reader is `v !== "0"`, so the gate's LIVE loop (env deleted)
+  // pins "unset means on"; the truth table, the docs row and the off arm are pinned by
+  // test-lean-request-stall-switch.ts and test-lean-request-stall-off-arm.ts.
+  ["PI_ENSEMBLE_LEAN_REQUEST_STALL", leanRequestStallEnabled],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],
   // #2223 — the delta reader's incomplete-row rule. The reader is `v !== "0"`, so

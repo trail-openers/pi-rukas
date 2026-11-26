@@ -8,8 +8,8 @@ import { type StallArms, requestStallWindowMs } from "../request-stall-policy.ts
 import { REVIEW_DEADLINE_RESERVE_MS } from "./review-bound.ts";
 import type { LeanRun } from "./state.ts";
 
-/** The arms one step passes `armBudget`, from the run's own clock. A step has no stream to read — the
- *  child's spawn supplies the stamp and reports the breach through `onProgress` — so this reader is inert. */
+/** The arms one step passes `armBudget`, from the run's own clock. The stream reading is a
+ *  placeholder: the child's spawn replaces it with its own stamp and in-flight set. */
 export function stallArms(ctx: { run: LeanRun; now: () => number }): StallArms {
   const now = ctx.now();
   return {

@@ -180,6 +180,26 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
     ran?.outcome?.kind === "ok",
     `(b) a silent child WITH a tool in flight finishes its work (got ${String(ran.outcome?.kind)})`,
   );
+  // The reading above is the production reader's own — `spawn-inflight.ts`'s `stallLever` over a
+  // real `InFlightTools`, fed the child's stream events — so the arm is pinned from both sides:
+  // a stream that reports a call in flight is never quiet, whatever the case's declared silence.
+  let live: Awaited<ReturnType<typeof runBuild>> | undefined;
+  await withEnv(stallEnv(), async () => {
+    live = await runBuild({
+      issue: 2646,
+      config: stallOnlyConfig(),
+      clock: { deadlineMs: PANEL_START_MS + PANEL_CELL_S * MINUTE_MS, now: () => PANEL_NOW },
+      child: (wt) => put(wt, "src/stall.ts", "export const stall = () => 1;\n"),
+      // No declared call, but the stream says one is running — the state a child reaches while a
+      // tool result is still to come. The check must stand down on the production reading alone.
+      toolInFlight: true,
+      silentMs: silent(HUNG_REQUEST_MS),
+    });
+  });
+  assert(
+    live?.outcome?.kind === "ok",
+    `(b) and the production reader's own in-flight bit is what stands the check down — not the case's tool list (got ${String(live.outcome?.kind)})`,
+  );
 }
 
 // ── (c) the window: the reserve, clamped, never zero ─────────────────────────
