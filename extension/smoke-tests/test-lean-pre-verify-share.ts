@@ -21,6 +21,12 @@
  *   (d) inert arms: no deadline, and `PI_ENSEMBLE_DISPATCH_CAPS=0` — nothing bounded, and it says so
  *   (e) `specify` past the share buys no retry, and the review reserve rule still fires
  *   (f) `challenge: skipped` is the optional round: verify with `challengeDone`, no build round
+ *
+ * The off arm is NOT proved here. Every expected byte this file asserts about the off arm comes from
+ * the same module the change under review owns, so it could only ever equal itself; the off arm's
+ * byte-identity against `main` is pinned by `test-lean-pre-verify-share-off-arm.ts` against a record
+ * captured from the pre-change tree. This file exercises what that tree could not reach at all: the
+ * `skipped` kind, its reason, and its routing.
  */
 
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
