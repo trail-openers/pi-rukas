@@ -60,7 +60,7 @@ import {
 } from "./work-driver-verify-classify.ts";
 import { type LiteralTrust, literalTrustFromLexed } from "./work-driver-verify-literal-trust.ts";
 import { type OfflineTests, readOfflineTests } from "./work-driver-verify-offline-tests.ts";
-import { type LexedSource, lexSource } from "./work-driver-verify-select-lex.ts";
+import { type BuiltGraph, buildGraph } from "./work-driver-verify-select-graph.ts";
 import { namersForPaths } from "./work-driver-verify-select-literals.ts";
 import { SMOKE_TEST_NAME_RE, isOfflineTest } from "./work-driver-verify-shared.ts";
 import {
@@ -69,6 +69,15 @@ import {
   TEST_SUPPORT_RE,
   untrustedNode,
 } from "./work-driver-verify-trust.ts";
+
+/**
+ * The node set and the per-file edge reader are the graph's own vocabulary; they
+ * live in `work-driver-verify-select-graph` and `work-driver-verify-select-edges`
+ * and are re-exported here so the gates that ask the SELECTOR what its graph is keep
+ * asking the selector, and not a hand-derived copy of either.
+ */
+export { edgesOf, type FileEdges } from "./work-driver-verify-select-edges.ts";
+export { listNodes } from "./work-driver-verify-select-graph.ts";
 
 export interface VerifySelection {
   /** `selected`: run `tests` (plus `alwaysRun`). `full`: run the whole suite. */
@@ -114,61 +123,6 @@ const LITERAL_ARG_RE = new RegExp("^\\s*\\uE000(\\d+)\\uE000\\s*\\)");
 /** `src/x.ts` (optionally `extension/`- or `../`-prefixed) as a whole string value. */
 const PATH_LITERAL_RE = /^(?:\.{1,2}\/)*(?:extension\/)?(src\/[^\s]+?\.ts)$/;
 
-export interface FileEdges {
-  /** Relative specifiers this file imports (static, re-export, literal dynamic or literal require). */
-  specifiers: string[];
-  /** Extension-relative `src/…ts` targets named by a path string literal. */
-  paths: string[];
-  /** True when a dynamic import or require names its target through a non-literal. */
-  dynamic: boolean;
-  /**
-   * True when a smoke test spells a bare `"src"` string (`path.join(ext, "src", "x.ts")`):
-   * it reaches source modules through a path no specifier shows, so it depends on all of them.
-   */
-  touchesSrc: boolean;
-}
-
-/**
- * The edges of one file, from its text. Undefined when the tokenizer cannot
- * close a comment, string, template or regex: the file is then unreadable, and
- * the selector falls back rather than trust a graph built from it.
- */
-export function edgesOf(fileRel: string, raw: string): FileEdges | undefined {
-  const lexed = lexSource(raw);
-  if (lexed === undefined) return undefined;
-  return factsOf(fileRel, lexed);
-}
-
-function factsOf(fileRel: string, lexed: LexedSource): FileEdges {
-  const { code, strings } = lexed;
-  const specifiers: string[] = [];
-  const add = (spec: string | undefined) => {
-    if (spec !== undefined && RELATIVE_SPEC_RE.test(spec)) specifiers.push(spec);
-  };
-  for (const m of code.matchAll(STATIC_RE)) add(strings[Number(m[1])]);
-  let dynamic = false;
-  for (const m of code.matchAll(CALL_RE)) {
-    const from = (m.index ?? 0) + m[0].length;
-    const lit = LITERAL_ARG_RE.exec(code.slice(from, from + 64));
-    if (lit) add(strings[Number(lit[1])]);
-    else dynamic = true;
-  }
-  const isSmoke = fileRel.startsWith("smoke-tests/");
-  const paths: string[] = [];
-  if (isSmoke) {
-    for (const s of strings) {
-      const m = PATH_LITERAL_RE.exec(s);
-      if (m?.[1] !== undefined) paths.push(m[1]);
-    }
-  }
-  return {
-    specifiers,
-    paths,
-    dynamic,
-    touchesSrc: isSmoke && strings.includes("src"),
-  };
-}
-
 /**
  * Resolve a relative specifier to a graph node: the file as written (with a
  * `.js` spelling read as `.ts`), then the same name with `.ts`, then a directory
@@ -186,95 +140,6 @@ function resolveSpecifier(
     if (nodes.has(candidate)) return candidate;
   }
   return undefined;
-}
-
-/**
- * The graph's node set — every file `selectVerifyTests` will tokenize.
- *
- * Exported for the gate that asserts every one of them lexes
- * (test-verify-select-lex-tree.ts): a whole-tree precondition asserted on a set
- * re-derived by hand can silently be narrower than the graph it protects, so the
- * gate asks the selector what its graph is.
- */
-export function listNodes(extensionDir: string, withLib = changedPathRulesEnabled()): string[] {
-  const files: string[] = [];
-  const walk = (rel: string) => {
-    for (const entry of readdirSync(path.join(extensionDir, rel), { withFileTypes: true })) {
-      const child = `${rel}/${entry.name}`;
-      if (entry.isDirectory()) walk(child);
-      else if (NODE_RE.test(child)) files.push(child);
-    }
-  };
-  walk("src");
-  for (const name of readdirSync(path.join(extensionDir, "smoke-tests"))) {
-    const rel = `smoke-tests/${name}`;
-    if (NODE_RE.test(rel)) files.push(rel);
-  }
-  // The lib helpers join the graph only for the #2649 arm, and only where the
-  // directory exists: a tree with no `smoke-tests/` at all must throw from the
-  // top-level scan (the caller's try/catch turns that into a full-suite fallback),
-  // not from here, and an absent lib directory is not a doubt about anything.
-  if (withLib && existsSync(path.join(extensionDir, "smoke-tests", "lib"))) {
-    walk("smoke-tests/lib");
-  }
-  return files;
-}
-
-/** The graph, or the first file the tokenizer could not read. */
-function buildGraph(
-  extensionDir: string,
-  rules: boolean,
-): (Graph & { lexed: Map<string, LexedSource>; libTs: string[] }) | { unreadable: string } {
-  // `rules` is the caller's verdict, passed in rather than read from the switch here:
-  // a selection reads the switch exactly once (see `selectVerifyTests`), so the node
-  // set, the lib subtree and every rule below are judged by the same answer even if
-  // an operator flips the variable while a selection is running. The tests that pin
-  // both arms in one bun process depend on that single read per call.
-  // `libTs` is the subtree the literal rules ask about, gathered from the same walk
-  // that lexes it — never a second walk of `smoke-tests/lib/`.
-  const libTs: string[] = [];
-  const files = listNodes(extensionDir, rules);
-  const nodes = new Set(files);
-  const importers = new Map<string, Set<string>>();
-  const dynamic = new Set<string>();
-  const unresolved = new Set<string>();
-  const lib = new Set<string>();
-  // The lexed text of every node, kept so the doubt over the `smoke-tests/lib/`
-  // subtree is answered from this walk rather than a second walk over the same
-  // ~300 files (see `libTrust` below).
-  const lexed = new Map<string, LexedSource>();
-  const addImporter = (target: string, from: string) => {
-    const set = importers.get(target) ?? new Set<string>();
-    set.add(from);
-    importers.set(target, set);
-  };
-  const srcTouchers: string[] = [];
-  for (const rel of files) {
-    const l = lexSource(readFileSync(path.join(extensionDir, rel), "utf8"));
-    if (l === undefined) return { unreadable: rel };
-    lexed.set(rel, l);
-    if (rules && rel.startsWith("smoke-tests/lib/")) libTs.push(rel);
-    const edges = factsOf(rel, l);
-    if (edges.dynamic) dynamic.add(rel);
-    if (rel.startsWith("smoke-tests/lib/")) lib.add(rel);
-    if (edges.touchesSrc && !rel.startsWith("smoke-tests/lib/")) srcTouchers.push(rel);
-    for (const spec of edges.specifiers) {
-      const target = resolveSpecifier(rel, spec, nodes);
-      if (target === undefined) unresolved.add(rel);
-      else addImporter(target, rel);
-    }
-    for (const p of edges.paths) if (nodes.has(p)) addImporter(p, rel);
-  }
-  // A test that builds a src path itself is an importer of every src module. The
-  // heuristic is scoped to the top-level smoke files: it exists because a TEST can
-  // open any module by a name it assembles, and applying it to the #2649 lib helpers
-  // would make every fixture under `smoke-tests/lib/` an importer of every module in
-  // the repo — which is a widening of the selection, not a sound one, and the
-  // helpers are reached by their real importers already.
-  for (const toucher of srcTouchers) {
-    for (const src of files) if (src.startsWith("src/")) addImporter(src, toucher);
-  }
-  return { nodes, importers, dynamic, unresolved, lib, lexed, libTs };
 }
 
 /** Every node that imports `start`, transitively, plus `start`. */
@@ -327,7 +192,7 @@ function isLiteralClass(kind: ChangedPathClass): boolean {
  * graph walk already did. A lib `.ts` file the walk never lexed (or could not
  * close) is the doubt; a tree with no lib directory lists no file and is no doubt.
  */
-function libDoubtOf(graph: { lexed: Map<string, LexedSource>; libTs: string[] }): string {
+function libDoubtOf(graph: BuiltGraph): string {
   const trust = literalTrustFromLexed(graph.libTs, graph.lexed);
   return trust.trusted ? "" : trust.reason;
 }
