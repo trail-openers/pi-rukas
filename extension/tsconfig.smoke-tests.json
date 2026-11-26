@@ -518,6 +518,10 @@
     "smoke-tests/test-verify-select-real-tree-context-snapshot.ts",
     "smoke-tests/test-verify-select-real-tree-off-arm.ts",
     "smoke-tests/lib/verify-select-fixture-tree.ts",
-    "smoke-tests/lib/verify-select-agreement.ts"
+    "smoke-tests/lib/verify-select-agreement.ts",
+    "smoke-tests/lib/verify-rust-sweep-corpus.ts",
+    "smoke-tests/test-verify-rust-id-bearing-arms.ts",
+    "smoke-tests/test-verify-rust-veto-sweep.ts",
+    "smoke-tests/test-verify-rust-panic-quote-excuse.ts"
   ]
 }

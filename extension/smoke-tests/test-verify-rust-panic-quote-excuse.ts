@@ -47,6 +47,7 @@ import {
   CARGO_TARGET_SUMMARY,
   makeAssert,
   rustPanicHeader,
+  rustPanicHeaderWithId,
 } from "./lib/verify-failure-shapes-fixtures.ts";
 
 const { assert, failed } = makeAssert();
@@ -87,6 +88,37 @@ const { assert, failed } = makeAssert();
     assert(
       ask(`${verdictLine}\n${header}\n${elision}`) === header,
       `panic join: the elision marker ${JSON.stringify(elision)} is never joined (the header alone still names the test)`,
+    );
+  }
+
+  // #2372 round 1 — the join guard asks the SAME per-test reader the vetoes
+  // ask, so a verdict line the fold makes visible is refused like any other:
+  // a decorated `#[should_panic]` `ok` and a spaced doctest `FAILED` are
+  // libtest's verdict lines for SOME test, and welding either onto a header
+  // quotes a test the run reported differently — the #798/#1762 misdirection
+  // class. Asked in the id-bearing spelling, the one a current cargo prints
+  // and the reason the guard became reachable on production streams. The
+  // header's own name (`worker-3`) carries no verdict line, so what is under
+  // test is the JOIN refusal, not the veto.
+  const idHeader = rustPanicHeaderWithId("worker-3", "src/lib.rs:20:13", 2271626);
+  for (const verdict of [
+    "test tests::cap - should panic ... ok",
+    "test src/lib.rs - fast_path_ms (line 3) ... FAILED",
+  ]) {
+    const stream = `${idHeader}\n${verdict}`;
+    assert(
+      extractSpecificAssertion(stream, stream) === idHeader,
+      `panic join: the verdict line ${JSON.stringify(verdict)} is never welded onto an id-bearing header (got ${JSON.stringify(extractSpecificAssertion(stream, stream))})`,
+    );
+  }
+  // The refusals are of verdict-shaped lines, not of continuation lines: the
+  // pair the ticket exists to quote still joins in the id-bearing spelling too.
+  {
+    const msg = "pool bound exceeded: 101ms over the 100 ms bound";
+    const stream = `${idHeader}\n${msg}`;
+    assert(
+      extractSpecificAssertion(stream, stream) === `${idHeader} ${msg}`,
+      `panic join: an id-bearing header's real message still joins (got ${JSON.stringify(extractSpecificAssertion(stream, stream))})`,
     );
   }
 }
