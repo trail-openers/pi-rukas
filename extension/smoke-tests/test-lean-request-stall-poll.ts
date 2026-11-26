@@ -205,7 +205,7 @@ async function drive(opts: {
     }
     opts.onEmit?.(events.length);
   };
-  const stop = createInactivityPoll({
+  const poll = createInactivityPoll({
     child,
     inFlightTools,
     // The pump stamps this clock with `Date.now()` on the child's own lines, so the case states
@@ -222,7 +222,7 @@ async function drive(opts: {
   await emit();
   if (opts.afterEmitMs !== undefined) now += opts.afterEmitMs;
   await wait(4 * LINE + 100);
-  stop();
+  poll.stop();
   pump.close();
   input.destroy();
   return { checks, kills: kills(), budgetMs, progress, inFlight: inFlightTools };
@@ -341,7 +341,7 @@ const WINDOW_ENV = { ...BUDGET_ENV, PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS: String(LI
   const t0 = Date.now();
   let now = t0;
   const childProgress = new ChildProgress(() => now);
-  const stop = createInactivityPoll({
+  const poll = createInactivityPoll({
     child,
     inFlightTools,
     // The pump stamps this clock with `Date.now()` on the child's own lines, so the case states
@@ -361,7 +361,7 @@ const WINDOW_ENV = { ...BUDGET_ENV, PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS: String(LI
   });
   now = t0 + WINDOW;
   await wait(4 * LINE + 100);
-  stop();
+  poll.stop();
   assert(
     seen.length >= 1 && seen[0] === `stall:${String(WINDOW)}`,
     `(6) the poll's stall arm is a NAMED cause carrying its own window (got ${JSON.stringify(seen)})`,

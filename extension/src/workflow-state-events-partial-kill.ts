@@ -83,6 +83,8 @@ export type DispatchFailKillCause =
   | "child-bound"
   | "no-progress"
   | "stuck-tool"
+  /** #2644 — the caller's hung-request lever ended the child (a failure kill). */
+  | "stall"
   /** #1827 — a reviewer re-read its own skill file past the cap (a failure kill). */
   | "review-skill-reread";
 // #1827 round 1 — `review-post-verdict` is deliberately absent. This union is

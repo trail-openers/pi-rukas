@@ -182,87 +182,112 @@ export type PollKillCause = "inactivity" | "tool-inactivity" | "no-progress" | "
  * caller's `check` (the abort); the poll fires it on a timer tick, after its own budgets, so a
  * silence the poll itself ends keeps its own cause.
  */
+export interface InactivityPoll {
+  /** Stop the timer. */
+  stop: () => void;
+  /** One supervision pass, the body the timer runs. */
+  tick: () => void;
+}
+
 export function createInactivityPoll(opts: {
   /** Headless S4 (#1024): the child leads its own process group (spawn-kill.ts). */
   child: ChildProcess;
   inFlightTools: InFlightTools;
   lastActivityAt: () => number;
   childProgress: ChildProgress;
-  onKill: (
-    cause: PollKillCause,
-    budgetMs: number,
-    toolNames: string[],
-  ) => void;
+  onKill: (cause: PollKillCause, budgetMs: number, toolNames: string[]) => void;
   /** #2644 — the caller's hung-request lever: the enforced window in ms, the reader of THIS
    *  child's stream, and the hook that aborts the child. Absent means no stall arm, which is
    *  every caller that bounds its child some other way. */
   stall?: StallOpts;
-}): () => void {
+  /** The two silence budgets, in the shape the operator's knobs arrive in. The spawn passes none and
+   *  gets `PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS` / `PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS`; a case that
+   *  supervises a child the lever alone must end says so here, so the poll cannot reach a cause it
+   *  was never asked to own. Read per tick, because the knobs are read at CALL time everywhere in
+   *  this stack. */
+  budgets?: () => { inactivityMs: number; toolInactivityMs: number };
+}): InactivityPoll {
   const { child, inFlightTools, lastActivityAt, childProgress, onKill, stall } = opts;
-  const inactivityMs = inactivityTimeoutMs();
-  const toolInactivityMs = toolInactivityTimeoutMs();
-  const armedBudget = () =>
-    inFlightTools.active
+  const budgets =
+    opts.budgets ??
+    (() => ({
+      inactivityMs: inactivityTimeoutMs(),
+      toolInactivityMs: toolInactivityTimeoutMs(),
+    }));
+  const armedBudget = () => {
+    const { inactivityMs, toolInactivityMs } = budgets();
+    return inFlightTools.active
       ? { ms: toolInactivityMs, cause: "tool-inactivity" as const }
       : { ms: inactivityMs, cause: "inactivity" as const };
-  const pollBudgetMs = Math.min(
-    inactivityMs > 0 ? inactivityMs : Number.POSITIVE_INFINITY,
-    toolInactivityMs > 0 ? toolInactivityMs : Number.POSITIVE_INFINITY,
-    progressSilenceMs(false) || Number.POSITIVE_INFINITY,
-    stall !== undefined && stall.windowMs > 0 ? stall.windowMs : Number.POSITIVE_INFINITY,
-  );
-  if (pollBudgetMs === Number.POSITIVE_INFINITY) return () => undefined;
-  const stopPoll = (): void => clearInterval(interval);
-  const interval = setInterval(
-    () => {
-      const armed = armedBudget();
-      const now = Date.now();
-      // A disabled budget (ms <= 0) never fires; the other is checked in its own branch.
-      const budget =
-        armed.ms > 0 && now - lastActivityAt() >= armed.ms
-          ? armed
-          : childProgress.stall(now, inFlightTools.active);
-      if (budget) {
-        onKill(budget.cause, budget.ms, inFlightTools.toolNames());
-        // #1510 — this runs on its OWN setInterval, so a throw here is an
-        // uncaught exception at timer level: it aborts the parent and takes
-        // down every sibling child still in flight, exactly the shape the
-        // budget kill guards. `onKill` has already recorded the cause, so the
-        // kill is attributed even when the signal cannot land — the failure is
-        // reported at default log level, never swallowed.
+  };
+  /** The tick cadence: half the tightest bound that can end this child, floored so a case with a
+   *  one-minute budget still ticks, and capped so a child with only a wide lever is still watched. */
+  const pollBudgetMs = () =>
+    Math.min(
+      (() => {
+        const b = budgets();
+        return b.inactivityMs > 0 ? b.inactivityMs : Number.POSITIVE_INFINITY;
+      })(),
+      (() => {
+        const b = budgets();
+        return b.toolInactivityMs > 0 ? b.toolInactivityMs : Number.POSITIVE_INFINITY;
+      })(),
+      progressSilenceMs(false) || Number.POSITIVE_INFINITY,
+      stall !== undefined && stall.windowMs > 0 ? stall.windowMs : Number.POSITIVE_INFINITY,
+    );
+  const period = pollBudgetMs();
+  if (period === Number.POSITIVE_INFINITY) return { stop: () => undefined, tick: () => undefined };
+  /** One supervision pass: the poll's own budgets first, then the caller's lever. The timer below
+   *  is the production driver; it is also the seam a case calls when a host's timer cadence cannot
+   *  be relied on to land a verdict inside the case's wait. */
+  const tick = (): void => {
+    const armed = armedBudget();
+    const now = Date.now();
+    // A disabled budget (ms <= 0) never fires; the other is checked in its own branch.
+    const budget =
+      armed.ms > 0 && now - lastActivityAt() >= armed.ms
+        ? armed
+        : childProgress.stall(now, inFlightTools.active);
+    if (budget) {
+      onKill(budget.cause, budget.ms, inFlightTools.toolNames());
+      // #1510 — this runs on its OWN setInterval, so a throw here is an
+      // uncaught exception at timer level: it aborts the parent and takes
+      // down every sibling child still in flight, exactly the shape the
+      // budget kill guards. `onKill` has already recorded the cause, so the
+      // kill is attributed even when the signal cannot land — the failure is
+      // reported at default log level, never swallowed.
+      try {
+        killProcessTree(child);
+      } catch (err) {
+        traceWarn(`inactivity killProcessTree failed: ${String(err)}`);
+      }
+      return;
+    }
+    // #2644 — the caller's hung-request lever, on this tick and nowhere else: a hung request
+    // emits nothing, so nothing else ticks. A tool in flight is a running bash — work, not
+    // silence — and is never a stall (#951). The caller owns the abort, so the poll contributes
+    // only the reading and the cadence.
+    if (stall !== undefined && !inFlightTools.active) {
+      const quiet = stall.silence();
+      // The caller's abort is one-shot, so the arm stands itself down after it fires: the poll
+      // has no reason to keep reading a stream whose child is already being ended. The kill is
+      // the poll's own — same guarded path as its silence budgets — and the cause is NAMED, so
+      // the report says a stalled request ended this child rather than leaving it unattributed.
+      if (quiet.sinceMs >= stall.windowMs) {
+        clearInterval(interval);
+        stall.check?.();
+        onKill("stall", stall.windowMs, inFlightTools.toolNames());
         try {
           killProcessTree(child);
         } catch (err) {
-          traceWarn(`inactivity killProcessTree failed: ${String(err)}`);
-        }
-        return;
-      }
-      // #2644 — the caller's hung-request lever, on this tick and nowhere else: a hung request
-      // emits nothing, so nothing else ticks. A tool in flight is a running bash — work, not
-      // silence — and is never a stall (#951). The caller owns the abort, so the poll contributes
-      // only the reading and the cadence.
-      if (stall !== undefined && !inFlightTools.active) {
-        const quiet = stall.silence();
-        // The caller's abort is one-shot, so the arm stands itself down after it fires: the poll
-        // has no reason to keep reading a stream whose child is already being ended. The kill is
-        // the poll's own — same guarded path as its silence budgets — and the cause is NAMED, so
-        // the report says a stalled request ended this child rather than leaving it unattributed.
-        if (quiet.sinceMs >= stall.windowMs) {
-          stopPoll();
-          stall.check?.();
-          onKill("stall", stall.windowMs, inFlightTools.toolNames());
-          try {
-            killProcessTree(child);
-          } catch (err) {
-            traceWarn(`stall killProcessTree failed: ${String(err)}`);
-          }
+          traceWarn(`stall killProcessTree failed: ${String(err)}`);
         }
       }
-    },
-    Math.min(30_000, Math.max(250, Math.floor(pollBudgetMs / 2))),
-  );
+    }
+  };
+  const interval = setInterval(tick, Math.min(30_000, Math.max(250, Math.floor(period / 2))));
   interval.unref();
-  return () => clearInterval(interval);
+  return { stop: () => clearInterval(interval), tick };
 }
 
 export function stallLever(

@@ -8,6 +8,7 @@
  */
 
 import { ChildProgress } from "../../src/child-progress.ts";
+import type { StallOpts } from "../../src/request-stall-policy.ts";
 import type { BudgetOpts } from "../../src/lean/step-budget.ts";
 import type { PiJsonEvent } from "../../src/pi-event-shapes.ts";
 import { emptyRunningState } from "../../src/progress.ts";
@@ -19,20 +20,9 @@ import {
 import type { ChildProcess } from "node:child_process";
 import type { DispatchResult } from "../../src/types.ts";
 
-/** The poll's period with the budgets left at their shipped defaults is capped at 30 s, so a case
- *  would wait half a minute for one tick. A quiet-tick case therefore runs the poll under short
- *  silence budgets (`QUIET_TICK_ENV`): the tick the spawn takes in 30 s arrives in 150 ms, and the
- *  case waits four of them. No shipped default is changed — these are the operator's own knobs. */
+/** The poll's cadence: the case drives the poll's own supervision pass this many times, so the
+ *  wait stays a case's wait rather than the 30 s a poll with only a wide lever would take. */
 const TICK_MS = 300;
-const T0 = Date.now();
-
-/** The env a quiet-tick case runs the poll under: both silence budgets long enough that only the
- *  stall lever can end the child, and the no-progress arm off. Read at every poll tick. */
-export const QUIET_TICK_ENV: Record<string, string> = {
-  PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS: String(TICK_MS * 20),
-  PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS: String(TICK_MS * 20),
-  PI_ENSEMBLE_PROGRESS_SILENCE_MS: "0",
-};
 
 export interface QuietTickOpts {
   /** The case's measured silence, ms; a function so a case can vary it per dispatch. */
@@ -41,8 +31,10 @@ export interface QuietTickOpts {
   toolUses?: unknown[] | (() => unknown[]);
   /** Force the in-flight reading, overriding what the stream's own events say — the arm no
    *  hand-built event stream can reach, because production closes a call on a result the fake
-   *  child never sends. Used only to show a live child stays clear of the check. */
-  toolInFlight?: boolean;
+   *  child never sends. Used only to show a live child stays clear of the check. A FUNCTION is
+   *  asked once per dispatch, so a case that means its FIRST child cannot leak the reading into
+   *  every later one. */
+  toolInFlight?: boolean | (() => boolean);
 }
 
 /** The child's stream in the shape Pi stamps it: the assistant turn that opened each call. With
@@ -62,19 +54,6 @@ function childStream(declared: unknown[]): PiJsonEvent[] {
       },
     },
   ];
-}
-
-/** The snapshot the spawn hands its progress hook on an assistant turn: zeros but for the clock. */
-function progressTick(role: DispatchResult["role"], elapsedMs: number) {
-  return {
-    role,
-    turns: 0,
-    toolUses: 0,
-    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
-    totalTokens: 0,
-    elapsedMs,
-    done: false,
-  };
 }
 
 /**
@@ -100,55 +79,60 @@ export async function deliverQuietTick(
   const inFlight = new InFlightTools();
   for (const event of childStream(declared)) inFlight.observe(event);
   const progress = new ChildProgress(() => now);
-  // The spawn's own arm: the same function production calls, over the same two trackers. Its
-  // `check` is the caller's progress hook, which is what aborts — reached through the arm, never
-  // by the case calling the step's hook directly.
-  const arm = stallLever(
-    {
-      // The step's armed window, and the two facts the spawn contributes — the enforced threshold
-      // rides through unchanged, so the fixture cannot widen it.
-      stall: { ...o.stall, silence: () => ({ sinceMs: 0, toolInFlight: false }) },
-      onProgress: () => undefined,
-    } as never,
+  // `stallLever` is the spawn's own composer of the arm — the function `spawn.ts` calls over the
+  // child's two trackers. The case states the window the step froze, in the shape the caller hands
+  // the spawn; everything else about the arm (the enforced threshold, the reader, the hook) is the
+  // production code's, and the fixture cannot widen it.
+  const arm: StallOpts = stallLever(
+    { stall: { ...o.stall, silence: () => ({ sinceMs: 0, toolInFlight: false }) } } as never,
     progress,
     inFlight,
     emptyRunningState(role),
-  );
+  ) as StallOpts;
   if (arm === undefined) throw new Error("stallLever armed nothing for a declared stall");
-  const toolInFlight = () => opts.toolInFlight ?? inFlight.active;
-  arm.silence = () => ({
+  const forced = typeof opts.toolInFlight === "function" ? opts.toolInFlight() : opts.toolInFlight;
+  const toolInFlight = () => forced ?? inFlight.active;
+  const quiet = (): { sinceMs: number; toolInFlight: boolean } => ({
     // A call in flight is work, not silence: the reading says quiet for nothing (#951).
     sinceMs: toolInFlight() ? 0 : now - progress.lastProgressAt + silent,
     toolInFlight: toolInFlight(),
   });
-  arm.check = () => o.onProgress?.(progressTick(role, silent));
+  const check = (): void => {
+    // The spawn's own snapshot, zeros but for the clock — `stallBreach` reads `turns` /
+    // `totalTokens` off it, and a hand-made shape with those missing is not the reading the
+    // step's hook ever sees.
+    o.onProgress?.({ ...emptyRunningState(role), elapsedMs: silent });
+  };
+  arm.silence = quiet;
+  arm.check = check;
   o.stall.silence = arm.silence;
   o.stall.check = arm.check;
   // The spawn's own poll, on the case's short budgets (`QUIET_TICK_ENV`, applied by the case):
   // its tick is what reads the silence and calls the arm. The case waits long enough for several
   // ticks and then stops the poll itself.
-  const stop = createInactivityPoll({
+  const poll = createInactivityPoll({
     child: { kill: () => true, on: () => undefined } as unknown as ChildProcess,
     inFlightTools: inFlight,
     // The pump stamps the spawn's activity clock with `Date.now()` on the child's own lines, so
     // the fixture states the same silence on that clock: the child's last line was `sinceMs` ago.
-    lastActivityAt: () => T0 - arm.silence().sinceMs,
+    lastActivityAt: () => Date.now() - arm.silence().sinceMs,
     childProgress: progress,
+    // The poll's own silence budgets are switched OFF for this fixture: the case is exercising the
+    // caller's lever, and a child quiet for 28 minutes would be ended by `inactivity` — a cause the
+    // case never armed — long before the lever's own window closed.
+    budgets: () => ({ inactivityMs: 0, toolInactivityMs: 0 }),
     onKill: () => undefined,
-    stall: arm,
+    // The arm as the spawn composes it, with the two facts only the case knows: how long its
+    // child sat quiet, and that the caller's hook is what ends it.
+    stall: { ...arm, silence: quiet, check },
   });
   now += TICK_MS; // the child's own turn arrives, then the stream goes quiet.
-  // The poll arms its own `setInterval`, which Bun's test runner does not drive for an unref'd
-  // timer; run its tick body directly, once per period, which is what the spawn's clock does.
-  for (let tick = 0; tick < 4; tick++) {
+  // The poll's own supervision pass makes the decision — the same body its `setInterval` runs, and
+  // driven here because Bun's runner does not deliver an unref'd timer inside a case's wait. The
+  // fixture never re-implements the decision: it calls the poll and observes what the poll did.
+  for (let i = 0; i < 4; i++) {
     await new Promise((r) => setTimeout(r, TICK_MS));
-    arm.check === undefined && void 0;
-    const quiet = arm.silence();
-    if (!inFlight.active && quiet.sinceMs >= arm.windowMs) {
-      stop();
-      arm.check?.();
-      break;
-    }
+    poll.tick();
   }
-  stop();
+  poll.stop();
 }

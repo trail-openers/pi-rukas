@@ -90,7 +90,8 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // (`limit: "stall"`). The window is derived — the handoff allowance plus the review reserve,
   // clamped to what the deadline leaves — and never configured. `0` is the ONLY off value, which
   // returns a hung request to the outer wall alone. The reader is `leanRequestStallEnabled` in
-  // lean/request-stall.ts, which also derives the window; the arm is lean/step-budget.ts.
+  // request-stall-policy.ts, which also derives the window; lean/request-stall.ts pins the lean
+  // reserve into it and lean/step-budget.ts arms it.
   flag("LEAN_REQUEST_STALL", true),
   // The executed acceptance table in front of the lean review seats and on the run's
   // PR: each criterion, the frozen test the run recorded for it, and what the

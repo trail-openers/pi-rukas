@@ -420,10 +420,12 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     prompts.push(spec.prompt);
     extraArgs.push(o.extraArgs ?? []);
     opts.onProgressTick?.(o.onProgress);
-    await deliverQuietTick(spec.role, o, opts); // #2644 — see `lean-quiet-child-tick.ts`
     if (!childActed) opts.child?.((childActed = true) && (spec.cwd as string));
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
+    // The child's own acts are declared BEFORE the quiet tick runs, so the tick reads what THIS
+    // dispatch's child did and nothing a later one will.
+    await deliverQuietTick(spec.role, o, opts); // #2644 — see `lean-quiet-child-tick.ts`
     const over = resultOverride(opts.dispatchResults, dispatched - 1);
     const result: DispatchResult = {
       role: spec.role,

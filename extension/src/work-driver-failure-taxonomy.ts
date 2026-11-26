@@ -182,6 +182,8 @@ function seamLabelFor(
     case "self-killed:plan-timeout":
     case "self-killed:child-bound":
     case "self-killed:no-progress":
+    // #2644 — a structured kill the rule reads exactly, so no model is asked.
+    case "self-killed:stall":
     // #1827 — a structured kill the rule reads exactly, so no model is asked.
     case "self-killed:review-skill-reread":
     case "success":

@@ -33,6 +33,7 @@ import { neededFromLog } from "../src/lean/handback.ts";
 import { leanIssueResult } from "../src/headless/work-lean-result.ts";
 import { INITIAL_COUNTERS, type LeanRun, type Outcome, type Step } from "../src/lean/state.ts";
 import { requestStallWindowMs } from "../src/request-stall-policy.ts";
+import { stallArms } from "../src/lean/request-stall.ts";
 import { REVIEW_DEADLINE_RESERVE_MS } from "../src/lean/review-bound.ts";
 import { MINUTE_MS } from "../src/lean/deadline.ts";
 import { withEnv } from "./lib/env-scope.ts";
@@ -221,6 +222,8 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
   const { makeRunPhase } = await import("../src/adversarial-phase.ts");
 
   const windowMinutes = Math.ceil(reserveMs() / MINUTE_MS);
+  /** The step's own arms, at a stated instant — `lean/request-stall.ts`'s reader of the policy. */
+  const stallArmsFor = (run: { deadlineMs: number }, now: number) => stallArms({ run, now });
   /** The lever the step arms for a cell with room to spare — a real `armBudget`, not a fixture's. */
   const armStall = () =>
     armBudget(
@@ -330,6 +333,34 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
     calls.find((c) => c.role === "adversarial-developer")?.stall === undefined,
     "(b2) with no armed lever the reviewer's spawn options are those it had before this change",
   );
+
+  // (b3) the enforced threshold is the DERIVED window, not the minutes a verdict prints. A step
+  // near its deadline derives a sub-minute window; rounding it up to a whole minute and enforcing
+  // THAT would let a hung request sit past the time the deadline leaves, and the verdict would
+  // print a bound that never held. Same arms, two different fields, each carrying its own job.
+  const SUB_MINUTE_MS = 40_000;
+  const sub = armBudget(
+    { minutes: 0, turns: 0, tokens: 0 },
+    {
+      windowMs: SUB_MINUTE_MS,
+      silence: () => ({ sinceMs: 0, toolInFlight: false }),
+      deadlineMs: PANEL_START_MS + PANEL_CELL_S * MINUTE_MS,
+      now: PANEL_NOW,
+    },
+  ).opts.stall;
+  assert(
+    sub?.windowMs === SUB_MINUTE_MS,
+    `(b3) the window enforced is the one the step derived (got ${String(sub?.windowMs)} ms)`,
+  );
+  assert(
+    sub?.windowMinutes === Math.ceil(SUB_MINUTE_MS / MINUTE_MS),
+    `(b3) …while the verdict still prints whole minutes, never 0 (got ${String(sub?.windowMinutes)})`,
+  );
+  assert(
+    sub?.windowMinutes !== undefined && sub.windowMinutes * MINUTE_MS > sub.windowMs,
+    "(b3) the two disagree by construction here, so a mutant enforcing the minutes is caught",
+  );
+
 }
 
 // ── (c) the window: the reserve, clamped, never zero ─────────────────────────

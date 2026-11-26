@@ -389,7 +389,7 @@ const result = (id: string): PiJsonEvent => ({
   } as unknown as ChildProgress;
   const poll = async (lastActivityAt: () => number, inFlightTools = new InFlightTools()) => {
     let seen = "";
-    const stop = createInactivityPoll({
+    const poll = createInactivityPoll({
       child: fakeChild,
       inFlightTools,
       lastActivityAt,
@@ -399,7 +399,7 @@ const result = (id: string): PiJsonEvent => ({
       },
     });
     await new Promise((r) => setTimeout(r, 600));
-    stop();
+    poll.stop();
     return seen;
   };
   const emitting = await poll(() => Date.now());

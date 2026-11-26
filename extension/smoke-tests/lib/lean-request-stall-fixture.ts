@@ -40,8 +40,11 @@ export const HUNG_REQUEST_MS = 1668_000;
  */
 export const PINNED_ALLOWANCE_MS = 8 * MINUTE_MS;
 
-/** The env the ON arm runs under: the switch left as an operator leaves it, the
- *  allowance pinned, and dispatch caps on so neither lever is inert by master switch. */
+/**
+ * The env the ON arm runs under: the switch left as an operator leaves it, the allowance pinned,
+ * and dispatch caps on so neither lever is inert by master switch.
+ *
+ */
 export function stallEnv(): Record<string, string | undefined> {
   return {
     PI_ENSEMBLE_HANDOFF_TIMEOUT_MS: String(PINNED_ALLOWANCE_MS),

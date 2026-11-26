@@ -457,6 +457,9 @@ export type DispatchFailureCause =
   | "self-killed:child-bound"
   /** The opt-in PI_ENSEMBLE_PROGRESS_SILENCE_MS arm ended a child that emitted without progress; a retry replays the stall. */
   | "self-killed:no-progress"
+  /** #2644 — the caller's hung-request lever ended a child whose stream went quiet past its armed
+   *  window with no tool in flight. Re-spawning replays the request that hung, so no retry. */
+  | "self-killed:stall"
   /** #1827 — a reviewer re-read its own skill file past PI_ENSEMBLE_REVIEW_SKILL_READS. A self-inflicted cap: re-spawning reads the same file again, so no retry. */
   | "self-killed:review-skill-reread"
   | "crashed"

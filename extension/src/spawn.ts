@@ -372,7 +372,7 @@ async function spawnSpecialistInner(
   // poll. #951 — ONE poll, two budgets (createInactivityPoll): the tool-inactivity
   // bound while a tool is in flight, the model-silence bound when none is, so
   // exactly one is armed at any poll and there is no both-expired race.
-  const stopInactivityPoll = createInactivityPoll({
+  const inactivityPoll = createInactivityPoll({
     child,
     inFlightTools,
     lastActivityAt: stdoutPump.lastActivityAt,
@@ -412,7 +412,7 @@ async function spawnSpecialistInner(
     stopWallClockBackstop();
     childBound.stop();
     budgetProgress.stop();
-    stopInactivityPoll();
+    inactivityPoll.stop();
     caps.cleanup();
     detachAbortKill();
     stdoutPump.close(); // #1827 — why, at `attachStdoutLinePump`

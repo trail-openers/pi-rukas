@@ -360,7 +360,7 @@ try {
         inFlightTools.observe(toolCallEvent);
       }
       let cause = "";
-      const stop = createInactivityPoll({
+      const poll = createInactivityPoll({
         child,
         inFlightTools,
         lastActivityAt: () => Date.now() - 5_000, // permanently silent
@@ -375,7 +375,7 @@ try {
       const wait = awaitingExit(child, observer);
       const t0 = Date.now();
       await expectResolved(arm, observer, wait, t0);
-      stop();
+      poll.stop();
       assert(cause === arm, `[${arm}] the poll fired its OWN arm (got "${cause}")`);
       assert(
         inFlightTools.active === (arm === "tool-inactivity"),

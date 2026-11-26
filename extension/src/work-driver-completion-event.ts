@@ -97,6 +97,10 @@ export function overrideEnvForKillCause(
           : fixerBoundEnv(fixerBoundSource);
     case "no-progress":
       return "PI_ENSEMBLE_PROGRESS_SILENCE_MS";
+    // #2644 — the hung-request lever is derived from the deadline, not configured; the one knob an
+    // operator holds is the switch that takes the lever out.
+    case "stall":
+      return "PI_ENSEMBLE_LEAN_REQUEST_STALL";
     case "stuck-tool":
       return "PI_ENSEMBLE_DISPATCH_CAPS";
     // #1827 — the reviewer's skill re-read cap: its own knob plus the caps
