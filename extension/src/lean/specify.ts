@@ -38,9 +38,8 @@
  * engine turns it into handed-back exit 10 without blaming the issue.
  *
  * The pipeline is shared with `challenge` through `specifyRun.ts`; the ref it resets
- * to is the only difference, so it is a parameter rather than a second copy.
- * Everything outside the pure parts is injected, so the test drives a real temp git
- * repo through the same seams production uses.
+ * to is the only difference. Everything outside the pure parts is injected, so the
+ * test drives a real temp git repo through the same seams production uses.
  */
 
 import { traceWarn } from "../trace.ts";

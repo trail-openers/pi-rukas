@@ -24,7 +24,7 @@ import { execp } from "../../src/exec.ts";
 import { ROSTER_REPORT_FILE } from "../../src/lean/verify-roster-command.ts";
 import type { VerifyExec } from "../../src/lean/verify-types.ts";
 import type { VerifyOpts } from "./lean-verify-types.ts";
-import { writeDeclaredReport } from "./lean-verify-roster.ts";
+import { asksForRosterReport, writeDeclaredReport } from "./lean-verify-roster.ts";
 
 /** One roster run's side: the run's worktree, or the probe's throwaway checkout of the base. */
 export type RosterSide = "head" | "base";
@@ -73,8 +73,9 @@ export function makeRosterRuns(opts: {
     if (!Array.isArray(o2?.argv)) return false;
     // The report flag is what separates the roster's run from a FROZEN run of the same runner
     // template: `sh <file>` and `sh --junitxml=… <tree>` are the same binary and the same shape,
-    // and only one of them is being asked for a machine-readable report.
-    if (!o2.argv.some((a) => a.startsWith("--junitxml="))) return false;
+    // and only one of them is being asked for a machine-readable report. Both spellings the gate
+    // accepts count, so a two-word flag is not counted as a tier run.
+    if (!asksForRosterReport(o2.argv)) return false;
     // Any cwd: the base run happens in the roster's OWN throwaway checkout of the base commit, whose
     // path the step derives and the fixture does not know. Requiring the fixture's baseline dir would
     // silently miss every base run, and a base run the stub misses is a run whose report nobody wrote.

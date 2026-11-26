@@ -85,10 +85,8 @@ export const NEWNESS_REASON =
  *
  * A stat or read whose error carries `ENOENT`, `ENOTDIR` or `ELOOP` is a DROP — a fact about the child's
  * file. Any other failure is infrastructure and THROWS `SpecifyInfraError`. No raw `err.message` is ever
- * interpolated into a reason.
- *
- * `wt` is REQUIRED: a boundary whose rules switch themselves off on a missing argument is one a caller can
- * silently opt out of. `sizeRules: false` is the one exception and is test-only.
+ * interpolated into a reason. `wt` is REQUIRED so a caller cannot silently opt out of the size rules;
+ * `sizeRules: false` is the one exception and is test-only.
  *
  * The boundary and the capture judge a kept file through the SAME code (`readOneDescriptor`).
  */

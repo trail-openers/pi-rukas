@@ -9,12 +9,12 @@
  * The spec's problem and criteria go in VERBATIM: a paraphrase would be a second spec, and the child would
  * work toward it rather than the contract the gate reads.
  *
- * The re-entry block is the second most important part: a build following a red `verify` or red CI is a FIX
+ * The re-entry block matters next to that: a build following a red `verify` or red CI is a FIX
  * round, and a child not told what failed re-derives a solution and usually re-produces the same failure. The
  * reason is pasted rather than summarised — the gate's own words are the evidence.
  *
- * "Do not commit" is a courtesy, not a guarantee: the step folds, unstages, restores and re-commits whatever
- * the child does anyway (`build-normalise.ts`).
+ * The step folds, unstages, restores and re-commits whatever the child does anyway
+ * (`build-normalise.ts`), which is why the prompt's "Do not commit" is a courtesy, not a guarantee.
  *
  * The `report_blocked` sentence is the child's ONLY exit valve for a contract it cannot satisfy: without it a
  * builder that finds two frozen assertions in conflict has nothing to do but probe them until the turn ceiling

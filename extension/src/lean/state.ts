@@ -16,7 +16,8 @@
  *     truth: `steps` is the record.
  *
  * A step WITHOUT an `outcome` is a crash mid-step, and is what makes a resume
- * safe to reason about: the engine re-runs exactly that step and no other.
+ * safe to reason about: the engine re-runs exactly that step and no other (see
+ * {@link newestDecided}).
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
@@ -92,9 +93,7 @@ function progressOf(pg: Record<string, unknown>): Partial<Outcome> {
  * The newest DECIDED step of one state, or `undefined`.
  *
  * A step without an outcome is a crash mid-step — the engine is about to
- * re-run it, and it has said nothing, so it is never "the newest". Reading
- * a trailing outcome-less `verify:1` as the state's verdict made a
- * legitimately green run look unverified.
+ * re-run it, and it has said nothing, so it is never "the newest".
  *
  * Lives next to `Step` rather than in `engine.ts` because the rule is a
  * property of the log, not of the runner: the engine's land gate and the

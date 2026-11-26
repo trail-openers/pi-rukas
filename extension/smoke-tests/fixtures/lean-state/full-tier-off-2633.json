@@ -1,0 +1,562 @@
+{
+  "base": "45fb130a44",
+  "rows": [
+    {
+      "why": "(derived) the roster's words with its own pair taken back",
+      "tier": "pytest -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(derived) the roster's whole command",
+      "tier": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) a tier missing only the report flag",
+      "tier": "pytest -q /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) a tier missing only the tree",
+      "tier": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) the same words in another order",
+      "tier": "pytest --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml -q /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) the binary alone",
+      "tier": "pytest",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) the stripped command plus one flag",
+      "tier": "pytest -q --x",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) a different binary",
+      "tier": "sh -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) a stripped command with the wrong binary",
+      "tier": "sh -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) a quoted binary",
+      "tier": "'pytest' -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) an env prefix",
+      "tier": "FOO=1 pytest -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) a shell chain",
+      "tier": "cd /var/tmp/lean-wt && pytest -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) the same command twice",
+      "tier": "pytest -q && pytest -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) blanks between words",
+      "tier": "pytest  -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(derived) a substituted report path",
+      "tier": "pytest -q --junitxml=$(mk) /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) the whole command, red head",
+      "tier": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [
+        "tests/test-suite.sh::passes"
+      ],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) no configured tier",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) a blank tier",
+      "tier": "   ",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(derived) surrounding blanks",
+      "tier": "  pytest -q  ",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(configured) the roster's words with its own pair taken back",
+      "tier": "pytest -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(configured) the roster's whole command",
+      "tier": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) a tier missing only the report flag",
+      "tier": "pytest -q /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) a tier missing only the tree",
+      "tier": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) the same words in another order",
+      "tier": "pytest --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml -q /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) the binary alone",
+      "tier": "pytest",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) the stripped command plus one flag",
+      "tier": "pytest -q --x",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) a different binary",
+      "tier": "sh -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) a stripped command with the wrong binary",
+      "tier": "sh -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) a quoted binary",
+      "tier": "'pytest' -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) an env prefix",
+      "tier": "FOO=1 pytest -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) a shell chain",
+      "tier": "cd /var/tmp/lean-wt && pytest -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) the same command twice",
+      "tier": "pytest -q && pytest -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) blanks between words",
+      "tier": "pytest  -q",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(configured) a substituted report path",
+      "tier": "pytest -q --junitxml=$(mk) /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) the whole command, red head",
+      "tier": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [
+        "tests/test-suite.sh::passes"
+      ],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) no configured tier",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) a blank tier",
+      "tier": "   ",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(configured) surrounding blanks",
+      "tier": "  pytest -q  ",
+      "roster": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(mid) the command the head ran",
+      "tier": "pytest --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml -q /var/tmp/lean-wt",
+      "roster": "pytest --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml -q /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(mid) the runner's words",
+      "tier": "pytest -q",
+      "roster": "pytest --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml -q /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(mid) the same words reordered",
+      "tier": "pytest -q --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "roster": "pytest --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml -q /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(two-word) the verbatim command",
+      "tier": "pytest -q --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(two-word) the runner's words",
+      "tier": "pytest -q",
+      "roster": "pytest -q --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(two-word) a tier that drops the flag",
+      "tier": "pytest -q /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "roster": "pytest -q --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(own) the bare wrapper",
+      "tier": "bash extension/smoke-tests/lib/lean-roster.sh",
+      "roster": "bash extension/smoke-tests/lib/lean-roster.sh /var/tmp/lean-wt /var/tmp/lean-wt/.lean-roster-report.xml",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(own) the wrapper pointed at another tree",
+      "tier": "bash extension/smoke-tests/lib/lean-roster.sh /some/other/tree",
+      "roster": "bash extension/smoke-tests/lib/lean-roster.sh /var/tmp/lean-wt /var/tmp/lean-wt/.lean-roster-report.xml",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) the runner's own words, two-word roster",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) the runner's own words, glued roster",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(panel) tests, two-word roster",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) tests, glued roster",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) test, two-word roster",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/test",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) server, two-word roster",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/server",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) tests over a red roster",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [
+        "tests/test-suite.sh::passes"
+      ],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) a tier that keeps the step's pair, two-word",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(panel) a tier that keeps the step's pair, glued",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) naming the tree itself",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) the operand twice",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/tests /var/tmp/lean-wt/tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) an operand plus a filter",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/tests -k smoke",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) a filter before the operand",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider -k smoke /var/tmp/lean-wt/tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) outer blanks around the tier",
+      "tier": "   env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/tests\t\n",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) a quoted runner word",
+      "tier": "env PATH=/opt/tools/bin python -m  'pytest' -q -p no:cacheprovider /var/tmp/lean-wt/tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) a case-folded runner word",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider PYTEST /var/tmp/lean-wt/tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(panel) a glued roster's own whole-tree tier",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(never) a roster whose flag value IS the tree",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(never) an operand against a flag-value-is-tree roster",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(never) its own report elsewhere",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /opt/other.xml /var/tmp/lean-wt",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /opt/other.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(never) an operand against a foreign report roster",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml /opt/other.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(never) a mid-command flag, verbatim",
+      "tier": "env PATH=/opt/tools/bin python -m pytest --junitxml /var/tmp/lean-wt/.lean-roster-report.xml -q -p no:cacheprovider /var/tmp/lean-wt",
+      "roster": "env PATH=/opt/tools/bin python -m pytest --junitxml /var/tmp/lean-wt/.lean-roster-report.xml -q -p no:cacheprovider /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(never) an operand against a mid-flag roster",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest --junitxml /var/tmp/lean-wt/.lean-roster-report.xml -q -p no:cacheprovider /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(never) this repo's wrapper, verbatim",
+      "tier": "bash extension/smoke-tests/lib/lean-roster.sh /var/tmp/lean-wt /var/tmp/lean-wt/.lean-roster-report.xml",
+      "roster": "bash extension/smoke-tests/lib/lean-roster.sh /var/tmp/lean-wt /var/tmp/lean-wt/.lean-roster-report.xml",
+      "head": [],
+      "satisfied": true
+    },
+    {
+      "why": "(never) an absolute path under the tree",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(never) a parent segment under the tree",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/tests/..",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(never) an absolute path outside the tree",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /etc/tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(never) a climbing operand",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/../tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(never) a dotted operand",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/./tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(never) a trailing slash",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider /var/tmp/lean-wt/tests/",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(never) ./tests",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider ./tests",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(never) tests/",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider tests/",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    },
+    {
+      "why": "(never) tests//",
+      "tier": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider tests//",
+      "roster": "env PATH=/opt/tools/bin python -m pytest -q -p no:cacheprovider --junitxml=/var/tmp/lean-wt/.lean-roster-report.xml /var/tmp/lean-wt",
+      "head": [],
+      "satisfied": false
+    }
+  ]
+}

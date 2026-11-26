@@ -5,8 +5,7 @@
  * The loop's refusals in `review.ts` are verdicts about the WORK under review; these
  * four are about whether the step may start at all — is the ref it will push a legal
  * name, is it a name this step may push, is the base a commit at all. Each answers from
- * state-file data before a child is dispatched, a tree is created or a ref is moved. A
- * leaf module, so the fixtures and the step share one definition of the shape.
+ * state-file data before a child is dispatched, a tree is created or a ref is moved.
  *
  * **Placement is the contract.** `review-git.ts`'s `integrate()` runs AFTER
  * `resetWorktreeToBase` (`checkout -B`, `reset --hard`, `clean -fdx`) and after the

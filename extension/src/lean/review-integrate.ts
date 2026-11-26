@@ -6,9 +6,8 @@
  * clone. `FixRoundOutcome` stays declared where the round's reader narrows on it (`review-git.ts`
  * exports the type; both halves of the round import it from there).
  *
- * Same rule as the rest of `lean/review*`: every git call is argv form through `ReviewDeps.exec`, and
- * the child goes through the deps' seams, so a test drives the whole round against a real temp repo
- * with no model in the loop.
+ * Every git call is argv form through `ReviewDeps.exec`, and the child goes through the deps' seams,
+ * so a test drives the whole round against a real temp repo with no model in the loop.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";

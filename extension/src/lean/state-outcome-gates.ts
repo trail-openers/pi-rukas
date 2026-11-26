@@ -14,12 +14,10 @@
  * evidence-bearing field follows. A projection that parsed prose for these answers
  * would put a host's branch on a sentence.
  *
- * The bounds are the load-bearing part, not decoration: each value is handler- or
- * child-authored text that survives a resume, and a run that wrote a million-entry map
- * today would be a run whose state file the loader spends its memory on tomorrow. So
- * every map is entry-capped and every string length-bounded at BOTH the writer and the
- * validator, and the writer clips rather than throwing — a gate must not lose its
- * verdict over the length of a name it was quoting.
+ * The bounds are load-bearing: each value is handler- or child-authored text that survives a
+ * resume, so every map is entry-capped and every string length-bounded at BOTH the writer and
+ * the validator, and the writer clips rather than throwing — a gate must not lose its verdict
+ * over the length of a name it was quoting.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";

@@ -1,8 +1,8 @@
 /**
  * lean/spec-intake-switch — how a run obtains its `pi-spec v1` contract.
  *
- * `require` (the default, and today's behaviour byte-for-byte): the issue body
- * carries the block, and an issue without one is refused by `decline`.
+ * `require` (the default): the issue body carries the block, and an issue without one is refused by
+ * `decline`.
  *
  * `derive`: an issue whose body carries NO block at all gets one derived inside
  * the run by one bounded read-only child (`lean/spec-derive.ts`), so a team
@@ -17,11 +17,7 @@
  * then `require`. An env value outside the two is an error naming the allowed
  * values, never a fallback: a typo'd knob that read as "the safe setting" would
  * be a silent behaviour change, in the direction where the run costs a model
- * call.
- *
- * The env is read at CALL time, like every other lean switch: the offline
- * suites share one bun process and pin their own arms with `withEnv`, so a
- * load-time read would let one file's pin disable the next file's.
+ * call. The env is read at CALL time.
  */
 
 import type { WorkConfig } from "./config.ts";
@@ -43,10 +39,8 @@ function refusal(where: string, value: unknown): SpecIntakeError {
   );
 }
 
-/**
- * Validate one knob value. `undefined` means "this source said nothing", which
- * lets the next source decide; anything but the two names is refused.
- */
+/** Validate one knob value: `undefined` means "this source said nothing" and lets the next
+ * source decide; anything but the two names is refused. */
 export function validateSpecIntake(
   value: unknown,
   where = "PI_ENSEMBLE_LEAN_SPEC_INTAKE",

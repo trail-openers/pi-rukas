@@ -1,9 +1,8 @@
 /**
  * lean/lock — one run per issue.
  *
- * The engine has no other concurrency control, and the absence is not theoretical: two `runLean` calls on one
- * issue started together both drove the whole table, both ran `land`, and the second merge happened anyway. The
- * step log makes a *resumed* run safe; nothing makes a *concurrent* one safe.
+ * The engine has no other concurrency control: the step log makes a *resumed* run safe, and nothing makes a
+ * *concurrent* one safe — two `runLean` calls on one issue both drive the whole table and both reach `land`.
  *
  * The lock is `<repoRoot>/.pi/lean-state/<issue>.lock`, taken ATOMICALLY WITH ITS OWNER INSIDE: bytes go to a
  * unique temp file in the same directory and are then `link`ed into place, so the moment the lock exists it

@@ -142,7 +142,7 @@ export function prNumberFromLog(steps: Step[]): number | undefined {
 }
 
 /**
- * Whether a review fix wave saves the head it starts from. Read at call time, like every lean switch; only
+ * Whether a review fix wave saves the head it starts from. Read at call time; only
  * `"0"` turns it off, and off the step neither saves nor names the head.
  */
 export function leanPrefixHeadEnabled(): boolean {

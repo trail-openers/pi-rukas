@@ -8,12 +8,9 @@
  * `netGitEnv()`, so a passphrase prompt fails instead of reading /dev/tty.
  *
  * `PI_ENSEMBLE_LEAN_HANDBACK_NET_GIT=0` puts all four calls back on the plain executor — same argv,
- * no env, no `killGroup` — for the operator whose origin needs an interactive credential helper. Only the literal `"0"` turns the routing off. The push is not the
- * switch's: the lease switch owns that argv.
- *
- * The env var is read at CALL time, not at module load: every lean smoke file runs in one bun
- * process and pins off/on arms with `withEnv`, so a load-time read would let one file's pin
- * silently disarm the routing in the next.
+ * no env, no `killGroup` — for the operator whose origin needs an interactive credential helper. Only the
+ * literal `"0"` turns the routing off, read at CALL time. The push is not the switch's: the lease switch
+ * owns that argv.
  */
 
 /** Whether the handback's origin reads run through `runNetGit`. */

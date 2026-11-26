@@ -29,15 +29,11 @@
  *     The stem is dot-free and visible, and checked against the project's OWN `testGlob` with the
  *     boundary's matcher, so it can never be collected as one of the project's tests.
  *
- * The two shape switches sit apart from `runner-preflight-switch.ts`, which decides whether a probe runs.
- *
  * It costs one runner invocation, and the probe is removed on every path — including the throw. The retry
  * does NOT re-probe: a runner that broke between attempts is caught by the shared pipeline's per-file infra
- * throw (`assertRan`).
- *
- * `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` returns before any of it; the whole check lives here so the switch
- * has one gate to close. An empty git submodule is one shape this catches, fixed where caused:
- * `initSubmodules`, behind the same switch.
+ * throw (`assertRan`). The whole check lives here so `runner-preflight-switch.ts` has one gate to close.
+ * An empty git submodule is one shape this catches, fixed where
+ * caused: `initSubmodules`, behind the same switch.
  */
 
 import { existsSync, realpathSync } from "node:fs";
@@ -90,18 +86,13 @@ const PY_PROBE_BASENAME = "_lean_runner_probe.py";
  *
  * Two facts must hold at once: the probe is not mistaken for an acceptance test, and writing it does not
  * change the tree — no directory created, nothing left for the clean-tree assertion or the acceptance-test
- * commit to explain.
- *
- * The root satisfies both whatever the config says, and the hidden name needs no further check because
- * `validateTestGlob` refuses a pattern starting with `.`. A project whose tests live in a SUBDIRECTORY
- * already has a directory free of the constraint — the test directory's parent — and the config vouches it exists;
- * the preflight confirms it on the tree, since an uncreated directory is an untracked byte the step must
- * then account for. A parent not on the tree falls back to the root.
- *
- * A Python probe sits INSIDE the test directory instead, since a runner that must import the file must be pointed at
- * a real one. It is checked against the project's own pattern: a repo whose `testGlob` matches
- * `_lean_runner_probe.py` would collect the probe as one of its tests, so this refuses rather than writing
- * a probe the CI would grade.
+ * commit to explain. The root satisfies both whatever the config says, and the hidden name needs no further
+ * check because `validateTestGlob` refuses a pattern starting with `.`. A project whose tests live in a
+ * SUBDIRECTORY already has a directory free of the constraint — the test directory's parent — and the config
+ * vouches it exists; the preflight confirms it on the tree, since an uncreated directory is an untracked
+ * byte the step must then account for. A parent not on the tree falls back to the root. A Python probe sits
+ * INSIDE the test directory instead, since a runner that must import the file must be pointed at a real one,
+ * and is checked against the project's own pattern so CI can never collect it as one of its tests.
  *
  * `py` is reported here and read nowhere else: the reading of exit 4 is a fact about the NAME the probe ends
  * up carrying, so it is decided once, at placement — see {@link runProbeAt}.

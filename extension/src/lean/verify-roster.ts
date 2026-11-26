@@ -6,12 +6,12 @@ import { NO_HOOKS } from "./specify-reset.ts";
 import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
 import {
   PREEXISTING_NAMES_CAP,
-  PREEXISTING_NAME_MAX_CHARS,
   ROSTER_FILES_CAP,
   ROSTER_NAMES_CAP,
   preexistingFailuresProblem,
   projectRosterProblem,
 } from "./state-outcome-maps.ts";
+import { clipName } from "./verify-baseline-arm.ts";
 import { probeWorktreePath } from "./verify-baseline.ts";
 import { listProjectTestFilesAtBase, undeliveredDeps } from "./verify-roster-base.ts";
 import {
@@ -207,7 +207,8 @@ export async function buildProjectRoster(opts: {
     // Carried only when the cap actually cut the list: a record naming every file has none to disclose.
     ...(preexisting.length > recordedFiles.length ? { fileCount: preexisting.length } : {}),
     ...(skipBase ? { baseSkipped: true } : {}),
-    ...(fullTierSatisfiedBy(opts.fullTier, rendered, head) ? { fullSatisfied: true } : {}),
+    // The whole-tree head run covered the project's `verify.full` tier, so the step skipped its suite.
+    ...(fullTierSatisfiedBy(opts.fullTier, rendered, head, wt) ? { fullSatisfied: true } : {}),
   };
   const redWith = (reason: string): ProjectRosterOutcome => ({
     status: "red",
@@ -284,19 +285,6 @@ function newlyFailingReason(names: readonly string[], baseSha: string): string {
   return `project tests that passed at the base commit now fail: ${clip(names)} — these were green at ${baseSha.slice(0, 12)}, so this run broke them`;
 }
 
-/**
- * A recorded name cut to what the step log's reader accepts.
- *
- * The roster bounds a name by {@link PREEXISTING_NAME_MAX_CHARS}, one shorter than the record reader's
- * own ceiling (`ROSTER_PATH_MAX_CHARS`): a roster name is a test name, so it is bounded by the rule for
- * names, while the wider ceiling stays the reader's backstop for any roster it is handed.
- */
-function boundedName(name: string): string {
-  return name.length > PREEXISTING_NAME_MAX_CHARS
-    ? name.slice(0, PREEXISTING_NAME_MAX_CHARS)
-    : name;
-}
-
 /** Order-preserving dedupe and bound; stream order is what an operator re-running the suite sees. */
 function dedupe(names: readonly string[]): string[] {
   const seen = new Set<string>();
@@ -304,7 +292,7 @@ function dedupe(names: readonly string[]): string[] {
   for (const name of names) {
     if (name === "" || seen.has(name)) continue;
     seen.add(name);
-    out.push(boundedName(name));
+    out.push(clipName(name));
   }
   return out;
 }
@@ -374,7 +362,7 @@ export function arbitrateTierWithRoster(opts: {
   if (!opts.headFailed.every((name) => baseFailed.has(name))) return { kind: "uninvolved" };
   const record: PreexistingTierRecord = {
     cmd: opts.cmd,
-    names: opts.headFailed.slice(0, PREEXISTING_NAMES_CAP).map(boundedName),
+    names: opts.headFailed.slice(0, PREEXISTING_NAMES_CAP).map(clipName),
     total: opts.headFailed.length,
     baseSha: opts.baseSha,
   };

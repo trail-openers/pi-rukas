@@ -4,14 +4,10 @@
  * renderer consults either.
  *
  * The value is a whole number of percent, 0 to 100, and it has ONE spelling — digits. `0` is the
- * ONLY off value — and the rule it feeds short-circuits at that value, so `0` bounds nothing
- * rather than bounding the pair at zero (see `pre-verify-share.ts`). Anything else that is not a
- * whole percent in that range (`40.5`, `101`, `-1`, `0x10`, `1e2`, `abc`, empty) is not a share an
- * operator meant, so it reads as the shipped default rather than as off — an accidental empty value
- * must never silently disable a cap.
- *
- * Read at CALL time, not at module load: the lean smoke files share one bun process and pin arms
- * with `lib/env-scope.ts` `withEnv`.
+ * ONLY off value, and the rule it feeds short-circuits at that value, so `0` bounds nothing rather than
+ * bounding the pair at zero. Anything else that is not a whole percent in that range (`40.5`, `101`,
+ * `-1`, `0x10`, `1e2`, `abc`, empty) is not a share an operator meant, so it reads as the shipped default
+ * rather than as off — an accidental empty value must never silently disable a cap. Read at CALL time.
  */
 
 /** The shipped share of the cell budget the pre-verify steps get, in percent. */

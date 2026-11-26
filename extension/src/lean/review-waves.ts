@@ -7,9 +7,8 @@
  * the one bar a row must reach to block, and the rendering of a row into a handback line.
  *
  * **One full review, one fix wave, one re-review of the fix diff.** There is no round loop, so there
- * is no round constant, no stagnation tie-breaker and no per-round tree naming. Extra rounds make
- * things worse: a second review round lowers F1 with false positives rising faster than true ones,
- * and forced extra revisions drop patch correctness.
+ * is no round constant, no stagnation tie-breaker and no per-round tree naming: extra rounds add false
+ * positives faster than true ones and drop patch correctness.
  *
  * **The budget is a budget, not an aspiration.** `REVIEW_CHILD_BUDGET` is the ceiling on the children
  * THIS step dispatches, and counts lean's own children only. The bound is asserted against `rows` —

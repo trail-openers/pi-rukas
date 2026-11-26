@@ -13,7 +13,7 @@
  *     not a read of wherever it points;
  *   - `fstat` on that fd must see a REGULAR file with `nlink === 1` — the hard-link check lives here as well
  *     as in `fileProblem` because `lstat` ran before the swap and this is the only look a post-swap link
- *     gets (a hard link is not a link: `lstat` sees an ordinary file and `realpath` stays inside the tree);
+ *     gets (`lstat` sees a hard link as an ordinary file and `realpath` stays inside the tree);
  *   - the whole file is read from that descriptor, never by name;
  *   - `fstat` again on the same fd must agree with the first — same `ino`, `size`, `mtimeMs` — or what was
  *     read was not one file the whole time.

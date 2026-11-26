@@ -4789,3 +4789,15 @@ re-run — a fix in the working tree changes nothing, because the config is read
 such a repository falls back on this kind alone ([headless.md → The `failure`
 object](headless.md#the-failure-object)). Source: `extension/src/lean/ready-setup.ts`; pinned by
 `extension/smoke-tests/test-lean-ready-setup.ts`.
+
+**Related symptom — the run pays for its whole suite twice.** The `verify` step skips a configured
+`verify.full` tier only when the tier's words are the roster's own command with the report pair the step
+appended taken back, optionally with one trailing operand naming a directory of the tree the roster
+scanned and the tier runs in (`PI_ENSEMBLE_LEAN_FULL_TIER_OPERAND`, on by default). A tier is run again —
+correctly — when it carries an operand outside that shape: a bare word unrelated to the tree, a tilde path,
+an absolute path, a parent segment, `./tests`, a nested path, or a trailing slash. Name the directory the way
+`verify.testDir` names one (`extension/smoke-tests`, not `./extension/smoke-tests/`), or write it as the tier
+sees it from the worktree, and let the step write its own report pair rather than writing `--junitxml <path>
+{dir}` into the tier. The lever that takes the operand allowance out entirely, so only the roster's exact
+words skip, is `PI_ENSEMBLE_LEAN_FULL_TIER_OPERAND=0`. Source: `extension/src/lean/verify-suite-command.ts`;
+pinned by `extension/smoke-tests/test-2633-full-tier-relative-operand.ts`.

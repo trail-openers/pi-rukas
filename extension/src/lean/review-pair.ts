@@ -4,7 +4,7 @@
  *
  * The step is the decision procedure (which verdict ends the wave, what a fixer is
  * told); this is the ONE place that buys the full review's two children, and the
- * overlap is what makes the step cheaper, so the ordering is stated here, once.
+ * overlap is what makes the step cheaper.
  *
  * Three rules the caller cannot see from the outside and cannot enforce itself:
  *
@@ -44,9 +44,8 @@ import type { BudgetArms, DispatchUsageRow } from "./step-budget.ts";
  * it infers from a `killCause: "child-bound"`. A child the shared abort ended, or one
  * that answered normally, carries no such cause, so the stand-in below can only ever
  * reach the turns/tokens branch that reads the frozen `hit` and ignores the argument.
- * A real wall-clock breach is reported by the gate's own `stop` (the armed bound ends
- * the child that holds it and the adapter reads it), which is why the arm is asked
- * for the pair rather than the child.
+ * A real wall-clock breach is reported by the gate's own `stop`, which is why the arm
+ * is asked for the pair rather than the child.
  */
 const BOTH_SETTLED: DispatchResult = {
   role: "review-pair",
@@ -70,15 +69,11 @@ const BOTH_SETTLED: DispatchResult = {
  * non-blocking findings, printed into every lens brief — and pass 1 passes it
  * `undefined`: the step reads the gate's blocking record before it decides
  * anything, and the findings that are not blocking reach the fixer's brief and the
- * re-review, which is where the step acts on them at all. A run whose gate is
- * non-blocking and whose lenses are clean has no brief and no re-review to carry
- * them to, and the review layer's residual post is the LENS round's — it fires on
- * an `ISSUES_FOUND` round only — so on that shape the step itself discloses the
- * gate's words: `review.ts` joins them into the pass reason through
- * `disclosureNote`, the surface the cleared wave already uses. Nothing is
- * undisclosed. What the overlap costs is that the six lenses never get to judge
- * those findings themselves — the gate had not answered when that round was
- * bought, and no brief could have said what it had not yet said.
+ * re-review, which is where the step acts on them at all; on a gate that is
+ * non-blocking and lenses that are clean there is nowhere to carry them, and
+ * `review.ts` joins the gate's words into the pass reason through `disclosureNote`.
+ * What the overlap costs is that the six lenses never get to judge those findings
+ * themselves — the gate had not answered when that round was bought.
  *
  * `lensGate` re-resolves origin for its own read and refuses a range it cannot
  * open, so the two gates disagreeing about the commit is a refusal rather than a

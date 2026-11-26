@@ -11,9 +11,7 @@
  * The machinery is `specify`'s, unchanged, and lives in `specify-run.ts` for both
  * steps. The one thing `challenge` passes differently is the ref: `specify` resets
  * to the run's base sha (red-on-nothing), `challenge` to the current head
- * (red-on-the-code-that-claims-to-be-done).
- *
- * The differences that ARE challenge's own:
+ * (red-on-the-code-that-claims-to-be-done). The differences that ARE challenge's own:
  *
  *   1. **Preconditions before the dispatch** — the frozen map is non-empty and every
  *      frozen blob still hashes to its record AT THE HEAD (build's

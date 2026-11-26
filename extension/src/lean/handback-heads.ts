@@ -5,8 +5,7 @@
  * The rule keys on the LOG, not the stop cause. Two edges put unverified bytes on origin's branch while the
  * run walks: a `review` step whose fix wave pushed (`machine.ts` routes `fixed` back through `verify`, so a
  * run reaching `handback` over a `fixed` review with no decided `verify` behind it never ran that
- * re-verification), and the `build + exhausted` draft publish. How either was reached changes nothing about
- * what origin holds.
+ * re-verification), and the `build + exhausted` draft publish.
  *
  * "We know a head we can ship" is a different claim from "the run once saw a gate": the newest DECIDED
  * `verify` must be `green` and must name a head.
