@@ -30,6 +30,14 @@ export const AGREEMENT_ROWS: readonly (readonly string[])[] = [
   [],
 ];
 
+/** The classified half of the table, split across two files by row range so each file
+ * pays only its own directory reads. The table is positional, so the ranges are named by
+ * index over `AGREEMENT_ROWS` — the single literal — and the two halves together are the
+ * whole classified set. `AGREEMENT_ROWS.slice()` is not re-exported: a caller that wants
+ * rows takes one of these two, so no file gets to invent its own slice. */
+export const CLASSIFIED_ROWS_A: readonly (readonly string[])[] = AGREEMENT_ROWS.slice(0, 2);
+export const CLASSIFIED_ROWS_B: readonly (readonly string[])[] = AGREEMENT_ROWS.slice(2, 4);
+
 /** The comparable half of a verdict: what a caller would act on, and nothing else. */
 export const shape = (r: VerifySelection): string =>
   JSON.stringify({

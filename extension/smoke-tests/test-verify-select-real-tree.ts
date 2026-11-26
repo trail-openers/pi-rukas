@@ -22,7 +22,8 @@
  * The fixture-tree half of that pair — the planted shapes, whose verdict is a
  * selection over a tree this suite built — lives in
  * `test-verify-select-real-tree-fixture.ts`, and the #2649 half that compares the two
- * forms the selector offers lives in `test-verify-select-real-tree-agreement.ts`. What
+ * forms the selector offers lives in `test-verify-select-real-tree-agreement.ts` and its
+ * `-b` sibling. What
  * stays here is everything only THIS repository can answer: the roster and graph read
  * from it. The split is by cost as well as by subject: each selection over the real tree
  * reads and lexes ~1,900 files, and the ceiling in #2449 is per file.

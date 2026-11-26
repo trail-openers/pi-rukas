@@ -513,6 +513,7 @@
     "smoke-tests/test-verify-select-real-tree.ts",
     "smoke-tests/test-verify-select-real-tree-fixture.ts",
     "smoke-tests/test-verify-select-real-tree-agreement.ts",
+    "smoke-tests/test-verify-select-real-tree-agreement-b.ts",
     "smoke-tests/test-verify-select-real-tree-agreement-unclassified.ts",
     "smoke-tests/test-verify-select-real-tree-context-snapshot.ts",
     "smoke-tests/test-verify-select-real-tree-off-arm.ts",

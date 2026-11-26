@@ -2,9 +2,10 @@
 /**
  * #2649 (half 3b) — the two forms agree for what the classifier cannot place.
  *
- * Companion to `test-verify-select-real-tree-agreement.ts`, which compares the rows the
- * classification table places. These are the two rows whose answer comes from BEFORE that
- * table engages: a path the table cannot place, and the empty change set. Each still
+ * Companion to `test-verify-select-real-tree-agreement.ts` and its `-b` sibling, which
+ * compare the rows the classification table places. These are the two rows whose answer
+ * comes from BEFORE that table engages: a path the table cannot place, and the empty change
+ * set. Each still
  * compares one directory read against one context read — the comparison is between the two
  * FORMS of the same question, never between two answers from one form.
  *
