@@ -18,161 +18,179 @@
  *   - the outside-graph and helper policies still answer `full`, so fixing the
  *     lexer did not quietly turn a doc change or a `smoke-tests/lib/` edit into a
  *     selection (both belong to #2424 item 5, and must stay full-suite runs).
+ *
+ * The fixture-tree half of that pair — the planted shapes, whose verdict is a
+ * selection over a tree this suite built — lives in
+ * `test-verify-select-real-tree-fixture.ts`, and the #2649 half that compares the two
+ * forms the selector offers lives in `test-verify-select-real-tree-agreement.ts` and its
+ * `-b` sibling. What
+ * stays here is everything only THIS repository can answer: the roster and graph read
+ * from it. The split is by cost as well as by subject: each selection over the real tree
+ * reads and lexes ~1,900 files, and the ceiling in #2449 is per file.
  */
-import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import path from "node:path";
-import { lexSource } from "../src/work-driver-verify-select-lex.ts";
-import { selectVerifyTests } from "../src/work-driver-verify-select.ts";
+import type { OfflineTests } from "../src/work-driver-verify-offline-tests.ts";
+import {
+  selectVerifyTestsFromContext,
+  prepareVerifySelection,
+} from "../src/work-driver-verify-select.ts";
+import { assert, exit } from "./lib/assert-rig.ts";
 
 const extensionDir = path.resolve(import.meta.dirname, "..");
-
-let exit = 0;
-const assert = (c: boolean, m: string) => {
-  if (c) console.log(`✓ ${m}`);
-  else {
-    console.error(`✗ ${m}`);
-    exit = 1;
-  }
-};
+/**
+ * The whole real tree, read ONCE for every selection this file makes on it.
+ *
+ * Each `selectVerifyTests(dir, …)` re-reads and re-lexes the tree — ~1,650 test files
+ * and ~300 lib files — and this file asks the same question about a dozen changed sets.
+ * The tree does not change across those questions, so the answers are the same answers
+ * and the reads are the cost worth removing. The OFF-arm rows build their own context
+ * inside the switch pin, since a context records the verdict it was read under.
+ */
+const ctx = prepareVerifySelection(extensionDir);
+/** A selection on the real tree, from the one read. */
+const sel = (changed: readonly string[]) => selectVerifyTestsFromContext(ctx, changed);
 
 // --- the real tree: a src-only change selects --------------------------------
-const sel = selectVerifyTests(extensionDir, ["src/lean/config.ts"]);
+const sel0 = sel(["src/lean/config.ts"]);
 assert(
-  sel.mode === "selected",
-  `a real src-only change selects rather than falling back (got ${sel.mode}${
-    sel.fallbackReason ? `, ${sel.fallbackReason}` : ""
+  sel0.mode === "selected",
+  `a real src-only change selects rather than falling back (got ${sel0.mode}${
+    sel0.fallbackReason ? `, ${sel0.fallbackReason}` : ""
   }) — on main this answered full/unlexable:src/worktree-loss.ts`,
 );
 assert(
-  sel.mode === "selected" && sel.tests.length > 0,
-  `the selection names at least one test (${sel.tests.length})`,
+  sel0.mode === "selected" && sel0.tests.length > 0,
+  `the selection names at least one test (${sel0.tests.length})`,
 );
 assert(
-  sel.alwaysRun.length > 0,
-  `the computed always-run set rides along (${sel.alwaysRun.length})`,
+  sel0.alwaysRun.length > 0,
+  `the computed always-run set rides along (${sel0.alwaysRun.length})`,
 );
 assert(
-  sel.mode === "selected" && sel.fallbackReason === undefined,
+  sel0.mode === "selected" && sel0.fallbackReason === undefined,
   "a `selected` verdict carries no fallbackReason",
 );
 assert(
-  sel.mode === "selected" && sel.tests.every((t) => /^smoke-tests\/test-[^/]+\.ts$/.test(t)),
+  sel0.mode === "selected" && sel0.tests.every((t) => /^smoke-tests\/test-[^/]+\.ts$/.test(t)),
   "every selected name is a top-level offline smoke test",
 );
 assert(
-  sel.mode === "selected" && sel.tests.every((t) => !/-live\.ts$/.test(t)),
+  sel0.mode === "selected" && sel0.tests.every((t) => !/-live\.ts$/.test(t)),
   "a real-tree selection never carries a -live.ts test",
 );
 // The selection must be a subset of what the full command would have run: a name
 // the tree does not have would make the selected command fail on a missing file.
 assert(
-  sel.mode === "selected" &&
-    [...sel.tests, ...sel.alwaysRun].every((t) => Bun.file(path.join(extensionDir, t)).size > 0),
+  sel0.mode === "selected" &&
+    [...sel0.tests, ...sel0.alwaysRun].every((t) => existsSync(path.join(extensionDir, t))),
   "every name a real-tree selection emits exists in that tree",
 );
 
 // A second, unrelated src file, so the assertion is not one lucky path.
-const sel2 = selectVerifyTests(extensionDir, ["src/forge.ts"]);
+const sel2 = sel(["src/forge.ts"]);
 assert(
   sel2.mode === "selected",
   `a second src-only change selects too (got ${sel2.mode}${sel2.fallbackReason ? `, ${sel2.fallbackReason}` : ""})`,
 );
 
-// --- and the policy that must NOT have moved ---------------------------------
-// These are the fallbacks #2424 item 5 owns. Selection going live must not turn a
-// doc change into a graph walk: an edit outside the graph still runs everything.
-for (const [changed, reason] of [
-  [["docs/troubleshooting.md"], "outside-graph:docs/troubleshooting.md"],
-  [["agents.json"], "outside-graph:agents.json"],
-  [[".github/workflows/ci.yml"], "outside-graph:.github/workflows/ci.yml"],
-  [["smoke-tests/lib/verify-loop.sh"], "smoke-test-helper:smoke-tests/lib/verify-loop.sh"],
-] as const) {
-  const r = selectVerifyTests(extensionDir, changed);
+// --- and the policy the ticket DID move, row by row -------------------------
+// These rows are what #2649 exists to change. Before it, every one of them
+// answered `full` and the develop round ran the whole offline suite; the ticket's
+// binding decisions say a docs file, an ignore-like file and a helper each get the
+// sound subset, and configuration keeps the full suite under its own reason. The
+// PRE-#2649 answers are pinned too, under the switch's off arm — in
+// `test-verify-select-real-tree-off-arm.ts`, whose OFF-arm context is a second read of
+// this tree and cannot share the one below.
+{
+  // The ON arm: configuration still runs everything, with a reason that names it.
+  // The three config paths fall back BEFORE the graph is consulted (the classifier
+  // places them and the selector returns), so their answer does not depend on the
+  // other paths in the set — one selection over all three answers all three rows.
+  {
+    const CONFIG_ROWS = ["agents.json", ".github/workflows/ci.yml", "tsconfig.smoke-tests.json"];
+    const cfg = sel(CONFIG_ROWS);
+    for (const p of CONFIG_ROWS) {
+      // Each row's reason is the first refusal the batch walk reaches, and the
+      // classifier's config answer is a table over the path, so a batch that fell
+      // back at an earlier row still says nothing about the later ones: those rows
+      // ask for their own selection rather than be passed on a borrowed verdict.
+      const r = cfg.fallbackReason === `config-file:${p}` ? cfg : sel([p]);
+      assert(
+        r.mode === "full" && r.fallbackReason === `config-file:${p}` && r.alwaysRun.length > 0,
+        `${p} runs the full suite with config-file:${p} and carries the tree's always-run set (got ${r.mode}/${r.fallbackReason ?? "-"})`,
+      );
+    }
+  }
+  // The three ON-arm rows this file pins (a docs file, the selector's standing
+  // floor, an ignore-like file) are computed HERE, once, and read by every assertion
+  // over them. Each of these selections reads and lexes the whole tree — roster and
+  // graph — so re-running one per assertion buys no new observation: the answer for a
+  // given changed set is fixed for a fixed tree. The floor pair is shared by the docs
+  // row and the `.gitignore` row because both compare against the same standing floor.
+  const docs = sel(["docs/troubleshooting.md"]);
+  const baseline = sel([
+    "src/work-driver-verify-literal-trust.ts",
+    ".gitignore",
+  ]);
+  const ign = sel([".gitignore"]);
+  const floor = sel(["src/work-driver-verify-literal-trust.ts"]);
   assert(
-    r.mode === "full" && r.fallbackReason === reason,
-    `${changed[0]} still falls back to the full suite with ${reason} (got ${r.mode}/${r.fallbackReason ?? "-"})`,
+    docs.mode === "selected" && docs.tests.length > 0,
+    `a docs-only change selects rather than falling back (${docs.mode}/${docs.fallbackReason ?? "-"}, ${docs.tests.length} selected)`,
+  );
+  {
+    // The namers are the tests that hold the exact path as a literal — a strict
+    // subset of the tests a directory-level membership rule would have pulled in.
+    // The roster is null only on the OFF arm, which never reaches this block.
+    const roster = ctx.roster as OfflineTests;
+    const namers = roster.names.filter((n) => {
+      const l = roster.lexed.get(n);
+      return l !== undefined && [...l.strings, ...l.templates].includes("docs/troubleshooting.md");
+    });
+    assert(
+      namers.length > 0 && namers.every((n) => docs.tests.includes(n)),
+      `every test that names docs/troubleshooting.md exactly is selected (${namers.length})`,
+    );
+    assert(
+      docs.alwaysRun.length > 0 &&
+        docs.tests.every(
+          (t) => docs.alwaysRun.includes(t) || namers.includes(t) || baseline.tests.includes(t),
+        ),
+      "a docs selection is always-run + the exact namers + the selector's standing floor, nothing else",
+    );
+  }
+  // An ignore-like file cannot change what any test runs, so the selection it gets is
+  // the always-run set plus whatever the standing rules select for EVERY change: the
+  // tests that reach a module through a non-literal `import()` and the tests that
+  // build a `src/` path themselves. Those two are the selector's conservative floor,
+  // not a widening of this row, and the assertion is that nothing beyond them is
+  // pulled in — the row's whole point is that a file no test reads runs no new test.
+  assert(
+    ign.mode === "selected" && ign.alwaysRun.length > 0,
+    `an ignore file selects rather than falling back (${ign.mode}/${ign.fallbackReason ?? "-"})`,
+  );
+  assert(
+    ign.tests.every((t) => ign.alwaysRun.includes(t) || floor.tests.includes(t)),
+    `.gitignore selects no test outside the always-run set and the selector's standing floor (${ign.tests.length} selected, ${floor.tests.length} in the floor)`,
+  );
+  assert(
+    floor.alwaysRun.length === ign.alwaysRun.length,
+    "the always-run half of both selections is the same computed set",
+  );
+  // A shell helper selects the tests that quote its exact path.
+  const loop = sel(["smoke-tests/lib/verify-loop.sh"]);
+  assert(
+    loop.mode === "selected" && loop.tests.includes("smoke-tests/test-verify-select-hardening.ts"),
+    `the verify-loop helper selects the tests that reference it (${loop.mode}/${loop.fallbackReason ?? "-"}, ${loop.tests.length} selected)`,
   );
 }
 {
-  const r = selectVerifyTests(extensionDir, []);
+  const r = sel([]);
   assert(
     r.mode === "full" && r.fallbackReason === "no-changed-files",
     `an empty change set falls back with no-changed-files (got ${r.mode}/${r.fallbackReason ?? "-"})`,
   );
-}
-
-// --- observed red: an unlexable file in a graph the selector walks -----------
-{
-  const root = mkdtempSync(path.join(tmpdir(), "pi-verify-select-tree-"));
-  try {
-    const ext = path.join(root, "extension");
-    const put = (rel: string, text: string) => {
-      const file = path.join(ext, rel);
-      mkdirSync(path.dirname(file), { recursive: true });
-      writeFileSync(file, text, "utf8");
-    };
-    put("src/a.ts", "export const a = 1;\n");
-    put("src/b.ts", "export const b = 2;\n");
-    put("smoke-tests/test-a.ts", 'import { a } from "../src/a.ts";\nvoid a;\n');
-
-    const before = selectVerifyTests(ext, ["src/b.ts"]);
-    assert(
-      before.mode === "full" && before.fallbackReason === "no-selected-tests:src/b.ts",
-      `fixture: a module no test imports selects nothing (got ${before.mode}/${before.fallbackReason ?? "-"})`,
-    );
-    put("smoke-tests/test-b.ts", 'import { b } from "../src/b.ts";\nvoid b;\n');
-    const after = selectVerifyTests(ext, ["src/b.ts"]);
-    assert(
-      after.mode === "selected" && after.tests.includes("smoke-tests/test-b.ts"),
-      `fixture: with its test present, src/b.ts selects (got ${after.mode}/${after.fallbackReason ?? "-"})`,
-    );
-
-    // The other direction of the same mutant: the nested-template-with-brace shape
-    // that made this repo's nine nodes unlexable. The suite that owns the lexer
-    // (`test-verify-select-lex-tree.ts`) asserts its verdict; this gate owns the
-    // SELECTION, so the shape is asserted here as a `selected` answer — which is
-    // what a fixed lexer must produce, and what it did not produce before #2450.
-    put("src/nested-ok.ts", "export const f = (r: string) => `x ${JSON.stringify(`${r}^{tree}`)}`;\n");
-    put("smoke-tests/test-nested-ok.ts", 'import { f } from "../src/nested-ok.ts";\nvoid f;\n');
-    assert(
-      lexSource(readFileSync(path.join(ext, "src/nested-ok.ts"), "utf8")) !== undefined,
-      "the planted nested-template-with-brace file lexes",
-    );
-    const nestedOk = selectVerifyTests(ext, ["src/nested-ok.ts"]);
-    assert(
-      nestedOk.mode === "selected" && nestedOk.tests.includes("smoke-tests/test-nested-ok.ts"),
-      `the nested-template-with-brace node selects (got ${nestedOk.mode}/${nestedOk.fallbackReason ?? "-"}) — on the pre-fix lexer this fell back as unlexable`,
-    );
-    rmSync(path.join(ext, "src", "nested-ok.ts"), { force: true });
-    rmSync(path.join(ext, "smoke-tests", "test-nested-ok.ts"), { force: true });
-
-    // The mutant: the nested-template shape from the issue, planted in the graph.
-    // Before the fix this made the WHOLE selection fall back for every input; the
-    // whole-graph rule is unchanged, so it must still be the reason named here —
-    // and the reason must name the file, not say "unknown".
-    put(
-      "src/nested-broken.ts",
-      "export const s = 'unterminated, and this template never closes: `${`${x}^{tree}`;\n",
-    );
-    const mutant = selectVerifyTests(ext, ["src/b.ts"]);
-    assert(
-      mutant.mode === "full" && mutant.fallbackReason === "unlexable:src/nested-broken.ts",
-      `a mutant with an unlexable file reports unlexable:<file> (got ${mutant.mode}/${mutant.fallbackReason ?? "-"}) — the gate is observed red`,
-    );
-    assert(
-      mutant.tests.length === 0,
-      "a fallback selects nothing, so a caller cannot run a partial suite and call it the selection",
-    );
-    rmSync(path.join(ext, "src", "nested-broken.ts"), { force: true });
-    const restored = selectVerifyTests(ext, ["src/b.ts"]);
-    assert(
-      restored.mode === "selected",
-      `removing the mutant restores the selection (got ${restored.mode}/${restored.fallbackReason ?? "-"}) — the fallback was the mutant, not the fixture`,
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
 }
 
 console.log(exit === 0 ? "\nAll real-tree selection checks passed." : "\nFAILED");

@@ -86,6 +86,17 @@ write(
   "smoke-tests/test-comment.ts",
   'import {\n  k, // a comment inside the import list\n} from "../src/k.ts";\nvoid k;\n',
 );
+const offArm = <T>(body: () => T): T => {
+  const prior = process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
+  process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = "0";
+  try {
+    return body();
+  } finally {
+    if (prior === undefined) delete process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS;
+    else process.env.PI_ENSEMBLE_VERIFY_SELECT_CHANGED_PATHS = prior;
+  }
+};
+
 const sel = (changed: string[]) => selectVerifyTests(ext, changed);
 
 // --- comments, deletions and path-joined sources ------------------------------
@@ -109,12 +120,17 @@ assert(
   "a smoke test that builds a src path with path.join depends on every src module",
 );
 rmSync(spawnRoot, { recursive: true, force: true });
-const deleted = sel(["smoke-tests/test-deleted.ts"]);
+const deleted = offArm(() => sel(["smoke-tests/test-deleted.ts"]));
 assert(
   deleted.mode === "full" &&
     deleted.tests.length === 0 &&
     deleted.fallbackReason?.startsWith("no-selected-tests") === true,
   "a deleted smoke test is not selected (it cannot run); the selection falls back rather than running a missing file",
+);
+// The same answer with the rules on: a file the table cannot place keeps its reason.
+assert(
+  sel(["weird/unplaceable.bin"]).fallbackReason === "outside-graph:weird/unplaceable.bin",
+  "an unclassified path keeps outside-graph and the full suite",
 );
 
 // --- static, re-export, dynamic-literal and path-literal edges ---------------
@@ -161,21 +177,61 @@ assert(
 );
 
 // --- full-suite fallbacks, each with its reason -----------------------------
-const helper = sel(["smoke-tests/lib/verify-loop.sh"]);
+// #2649 split these: a changed helper is now a graph node (asserted in
+// `test-verify-select-classify.ts`), and a markdown module or `agents.json` is
+// classified rather than refused. The PRE-#2649 answers are pinned here under the
+// switch's off arm, so the escape hatch's behaviour stays an assertion and not a
+// reading.
+const helper = offArm(() => sel(["smoke-tests/lib/verify-loop.sh"]));
 assert(
   helper.mode === "full" && helper.fallbackReason?.startsWith("smoke-test-helper:") === true,
-  "a change under smoke-tests/lib/ falls back to the full suite",
+  "with the switch at 0 a change under smoke-tests/lib/ falls back to the full suite",
 );
-const manifest = sel(["agents.json"]);
+const manifest = offArm(() => sel(["agents.json"]));
 assert(
   manifest.mode === "full" && manifest.fallbackReason === "outside-graph:agents.json",
-  "a file that is not a graph node (agents.json) falls back to the full suite",
+  "with the switch at 0 a file that is not a graph node (agents.json) falls back to the full suite",
 );
-const prompt = sel(["modules/x.md"]);
+const prompt = offArm(() => sel(["modules/x.md"]));
 assert(
   prompt.mode === "full" && prompt.fallbackReason === "outside-graph:modules/x.md",
-  "a markdown module change falls back to the full suite",
+  "with the switch at 0 a markdown module change falls back to the full suite",
 );
+// With the rules ON, the same three paths answer the new way — and `agents.json`
+// is configuration, so it still runs everything, under a reason that names it.
+assert(
+  sel(["agents.json"]).fallbackReason === "config-file:agents.json",
+  `agents.json is configuration and falls back with its own reason (got ${sel(["agents.json"]).fallbackReason ?? "-"})`,
+);
+{
+  write("modules/x.md", "# x\n");
+  const r = sel(["modules/x.md"]);
+  // The selection a text-file change may never exceed: the always-run set, the tests
+  // that name the file exactly, and the standing dynamic-import floor (a test that
+  // can load anything runs whatever the diff touched). Nothing else.
+  // The fixture's dynamic-import floor: `test-nonlit.ts` reaches `src/loader.ts`,
+  // whose import call takes a computed name. The floor is anchored on that module,
+  // because a change to an unrelated file selects nothing at all — it has no importers.
+  const floor = sel(["smoke-tests/test-nonlit.ts"]);
+  assert(
+    floor.mode === "selected" && floor.tests.includes("smoke-tests/test-nonlit.ts"),
+    "a test that reaches a module with a non-literal dynamic import is selected for that module's change",
+  );
+  assert(
+    r.mode === "selected" &&
+      r.alwaysRun.length > 0 &&
+      r.tests.every(
+        (t) => r.alwaysRun.includes(t) || floor.tests.includes(t) || t === "smoke-tests/test-hub2.ts",
+      ),
+    `a markdown module change selects only the always-run set and tests that reach a dynamic-import node (got ${r.mode}/${r.fallbackReason ?? "-"}/${JSON.stringify(r.tests)})`,
+  );
+  assert(
+    r.mode === "selected" &&
+      !r.tests.includes("smoke-tests/test-unrelated.ts") &&
+      !r.tests.includes("smoke-tests/test-a.ts"),
+    "an unrelated test is not selected for a module change it neither reads nor imports",
+  );
+}
 const orphan = sel(["src/orphan.ts"]);
 assert(
   orphan.mode === "full" && orphan.fallbackReason === "no-selected-tests:src/orphan.ts",

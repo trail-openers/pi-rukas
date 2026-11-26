@@ -197,4 +197,21 @@ export const SEAMS_1454: Seam[] = [
     },
     canary: { symbol: "awaitInflightBaseHealth", importer: "work-driver-verify-aggregate.ts" },
   },
+  {
+    // #2649 — the prepared selection context. `prepareVerifySelection` reads the tree
+    // once (roster, graph, always-run set, literal index) so a caller that asks the
+    // selector many questions of one tree pays for one read, not one per question; the
+    // selector's own suites are its caller today and production keeps the directory
+    // form, whose answers are asserted identical to the context form's by
+    // test-verify-select-real-tree.ts. Declared, not left to rot: the reachability the
+    // gate can see is the selector module's own call, and the context's own exports are
+    // what the suite pins.
+    file: "work-driver-verify-select-context.ts",
+    pending: {},
+    testOnly: {
+      selectVerifyTestsFromContext:
+        "the context entry of the selector; the real-tree suite asserts it answers every changed set exactly as the directory form does, and that a context keeps the switch verdict it was built under",
+    },
+    canary: { symbol: "prepareVerifySelection", importer: "work-driver-verify-select.ts" },
+  },
 ];
