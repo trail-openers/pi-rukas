@@ -34,7 +34,16 @@ import {
   keepsForgeLogin,
 } from "./child-forge-env.ts";
 import { FORGE_READ_SECRET_ENV, FORGE_READ_SOCKET_ENV } from "./child-forge-read-activation.ts";
+import {
+  FORGE_PROTECTED_HOMES_ENV,
+  FORGE_PROTECTED_PATHS_ENV,
+  forgeHomesFrom,
+  protectedForgeHomesEnvValue,
+  protectedForgePathsEnvValue,
+} from "./child-forge-read-roots.ts";
+import { FORGE_CLI_GUARD_REASON_ENV, forgeCliGuardEnv } from "./forge-cli-guard-wrapper.ts";
 import { type ForgeReadBrokerHandle, bindForgeReadSocket } from "./forge-read-broker.ts";
+import { forgeReadRefusalText } from "./forge-read-refusal.ts";
 import { type BrokerHandle, startBroker } from "./permission-broker.ts";
 import { isParentInTrustMode, makeBrokerDeps } from "./permission-guard.ts";
 import { trace } from "./trace.ts";
@@ -54,6 +63,31 @@ export interface ChildForgePlan {
    * one credential, and half of it is worthless (and dangerous) on its own.
    */
   secret?: string;
+  /**
+   * The protected forge config directories, as the PARENT resolved them (#2638).
+   *
+   * Resolved here, at dispatch, from the parent's own env and the parent's own
+   * passwd entry, and carried to the child as one harness-owned string. The child
+   * resolves nothing: its `HOME` is its own to change, so a child-side resolver
+   * would protect whatever the child pointed at. `undefined` is the fail-closed
+   * answer the guard reads as "no set was given" and refuses.
+   */
+  protectedPaths?: string;
+  /**
+   * The parent's own homes, colon-joined (#2638): what a leading `~` in a judged
+   * path stands for. Handed down because the CHILD's `HOME` is not the answer — a
+   * read-only role's home is a scratch tree the harness itself redirects, and a
+   * `~/.config/gh/…` typed by that child means the parent's home, not its own.
+   */
+  protectedHomes?: string;
+  /**
+   * The directory holding the `gh`/`glab` stubs, when this child gets them (#2638).
+   * Absent for the role that keeps its login: the wrapper refusing for `ops` would
+   * break the role that lands work, so it is not handed the stubs at all.
+   */
+  guardBinDir?: string;
+  /** Whether this child's roster carries `forge_read` — the refusal's route clause. */
+  forgeReadAvailable?: boolean;
 }
 
 /**
@@ -91,7 +125,20 @@ export interface ChildPermissionPlan {
  * `forge_read` tool can reach the broker the parent serves.
  */
 export function childBaseEnv(role: string, forge: ChildForgePlan): Record<string, string> {
-  return forgeReadChildEnv(process.env, role, forge.socketPath, forge.configDir, forge.secret);
+  const env = forgeReadChildEnv(process.env, role, forge.socketPath, forge.configDir, forge.secret);
+  // #2638 — the two halves of the forge read rule the parent owns, both handed down
+  // by name so neither has a second spelling: the protected set the guard judges,
+  // and the refusal the CLI stub prints. Ops is returned untouched by the wrapper
+  // helper, so the role that lands work keeps the real CLIs.
+  if (forge.protectedPaths !== undefined) env[FORGE_PROTECTED_PATHS_ENV] = forge.protectedPaths;
+  if (forge.protectedHomes !== undefined) env[FORGE_PROTECTED_HOMES_ENV] = forge.protectedHomes;
+  if (forge.guardBinDir !== undefined) {
+    env[FORGE_CLI_GUARD_REASON_ENV] = forgeReadRefusalText(forge.forgeReadAvailable === true);
+    const inherited = env.PATH ?? "";
+    env.PATH =
+      inherited === "" ? forge.guardBinDir : `${forge.guardBinDir}${path.delimiter}${inherited}`;
+  }
+  return env;
 }
 
 /**
@@ -135,9 +182,36 @@ function isDirectoryAndEmpty(dir: string): boolean {
 function startForgeBroker(
   role: string,
   cwd: string,
-): { forge: ChildForgePlan; stop: () => void; ready: Promise<void> } {
+  /**
+   * Called once, inside the bind, for a helper child (never for ops): it writes the
+   * protected set and the stub dir into `forge` and resolves `ready`. It is handed to
+   * the bind because only the bind knows the name of the tree the stubs live in.
+   */
+  arm?: (forge: ChildForgePlan) => Promise<void>,
+): {
+  forge: ChildForgePlan;
+  stop: () => void;
+  ready: Promise<void>;
+  /** The broker's 0700 temp dir, where this child's stubs and config root live. */
+  dir?: string;
+} {
   const forge: ChildForgePlan = { keepsLogin: false };
   let handle: ForgeReadBrokerHandle | undefined;
+  // #2638 — the two gates a bind must clear before `ready` settles: `armed`, which
+  // the caller's arm function resolves once it has written the protected set and the
+  // stub dir, and `allocated`, which this module resolves the instant the config
+  // root exists. Neither can be done before the bind: the stubs go in the tree the
+  // bind ALLOCATES (see `armForgeReadGuard`), and a fallback that wrote them wherever
+  // `os.tmpdir()` pointed would leave the refusal executable in a directory every
+  // other process on the host may write.
+  let releaseArm: () => void = () => {};
+  const armed = new Promise<void>((resolve) => {
+    releaseArm = resolve;
+  });
+  let releaseAllocated: () => void = () => {};
+  const allocated = new Promise<void>((resolve) => {
+    releaseAllocated = resolve;
+  });
   // The broker's temp dir holds the socket AND this child's forge-config dir, so
   // the handle is the ONE owner of that tree: `stop()` removes the socket and the
   // config root together, and a bind that never succeeded leaves no handle and no
@@ -161,17 +235,24 @@ function startForgeBroker(
     // leftover temp dir is a leak, not a wrong answer.
     if (forge.configDir) removeTree(forge.configDir);
   };
+  const out: { dir?: string } = {};
   const bind = bindForgeReadSocket(cwd)
-    .then((bound) => {
+    .then(async (bound) => {
       // Late success: `stop()` already ran (an abort or a timeout took the
       // dispatch down while the bind was in flight), so nothing else will ever
       // close this server. Tear the whole tree down here rather than leaving a
       // listening socket and a 0700 temp dir that outlive the child.
       if (stopped) {
         bound.stop();
+        // The caller is still waiting on `armed`; releasing it keeps a stopped plan's
+        // `ready` from hanging forever, and the arm finds no config root to write into.
+        releaseArm();
+        releaseAllocated();
         return;
       }
       forge.socketPath = bound.socketPath;
+      // Published for the caller: the CLI stubs go in the tree this handle already owns.
+      out.dir = bound.dir;
       // The key is the sibling of the socket: it names the same child, lives as
       // long as the same broker, and is handed to that child and no other.
       forge.secret = bound.secret;
@@ -214,14 +295,62 @@ function startForgeBroker(
         trace(
           `spawn[${role}]: forge-config dir could not be made — this child gets no config root: ${describeError(err)}`,
         );
+      } finally {
+        releaseAllocated();
       }
+      // The stubs and the protected set are written only now: the config root exists
+      // (or its absence is known), and the tree that will hold the stubs has a name.
+      await arm?.(forge);
+      releaseArm();
+      await armed;
     })
     .catch((err: unknown) => {
       trace(
         `spawn[${role}]: forge-read broker could not bind — this child has no forge reads: ${describeError(err)}`,
       );
+      // A bind that never happened has no stub dir and no config root, but the caller
+      // is still waiting on the two gates `ready` is built from; releasing them here
+      // is what keeps a bind failure (the ordinary case for a host with an unwritable
+      // temp root) from hanging the dispatch.
+      releaseAllocated();
+      releaseArm();
     });
-  return { forge, stop: stopAll, ready: bind };
+  return { forge, stop: stopAll, ready: bind, dir: out.dir };
+}
+
+/**
+ * The #2638 forge-read arm of one helper child, written once the tree that holds it
+ * exists: the protected set the parent resolved, and the `gh`/`glab` stubs whose
+ * directory is the first `PATH` entry the child inherits.
+ *
+ * Called from inside the bind's `.then`, where `broker.dir` is the 0700 tree the
+ * handle owns and `forge.configDir` the empty config root inside it. There is no
+ * `os.tmpdir()` arm: a stub the child's `PATH` points at has to be a directory only
+ * the harness can write, and the shared temp root is not one.
+ */
+function armForgeReadGuard(
+  role: string,
+  forge: ChildForgePlan,
+  source: Record<string, string | undefined>,
+): Promise<void> {
+  const homes = forgeHomesFrom(source);
+  forge.protectedPaths = protectedForgePathsEnvValue(source, homes);
+  forge.protectedHomes = protectedForgeHomesEnvValue(homes);
+  const stubHome = forge.configDir === undefined ? undefined : path.dirname(forge.configDir);
+  if (stubHome === undefined) {
+    trace(`spawn[${role}]: no forge tree to hold the CLI stubs — this child gets no stub dir`);
+  } else {
+    try {
+      const built = forgeCliGuardEnv(role, stubHome, forgeReadRefusalText(!!forge.socketPath));
+      if (built.PATH !== undefined) forge.guardBinDir = built.PATH.split(path.delimiter)[0];
+    } catch (err) {
+      // Failing to write the stubs is not a reason to drop the read guard — the
+      // guard is the rule, the stub is the politeness.
+      trace(`spawn[${role}]: forge CLI stubs could not be written: ${describeError(err)}`);
+    }
+  }
+  forge.forgeReadAvailable = !!forge.socketPath;
+  return Promise.resolve();
 }
 
 function describeError(err: unknown): string {
@@ -255,7 +384,7 @@ export function planChildPermissions(opts: {
   const keepsLogin = keepsForgeLogin(opts.role);
   const broker = keepsLogin
     ? { forge: { keepsLogin } as ChildForgePlan, stop: (): void => {}, ready: Promise.resolve() }
-    : startForgeBroker(opts.role, opts.cwd);
+    : startForgeBroker(opts.role, opts.cwd, (f) => armForgeReadGuard(opts.role, f, process.env));
   const forge = broker.forge;
   const ready = broker.ready;
   const stopForgeBroker = (): void => {

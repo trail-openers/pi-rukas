@@ -42,6 +42,14 @@ export interface Word {
   dyn: boolean;
   glob?: boolean;
   /**
+   * The word as the child TYPED it, when that differs from `text` — today only a
+   * leading `~` / `~/`, which `text` carries already expanded against THIS process's
+   * home. A judge that must ask "which home did the PARENT mean?" cannot recover the
+   * spelling from the expansion: a helper child's home is the scratch tree the
+   * harness redirected it to, and the operator's config lives at another home.
+   */
+  raw?: string;
+  /**
    * Set on a synthetic word the fence refuses outright, with the reason. Used for a
    * write whose path the command does not name (`git config` writes the shared config).
    */
@@ -56,19 +64,29 @@ type Expanded = { status: "none" } | { status: "ok"; end: number } | { status: "
 
 export type Tok = { kind: "word"; word: Word } | { kind: "op"; text: string };
 
-/** The lexer's output: the token stream, and the body of each substitution found in it. */
+/** The lexer's output: the token stream, the body of each substitution, and every heredoc body. */
 export interface Lexed {
   toks: Tok[];
   subs: string[];
+  /**
+   * Every heredoc body, quoted delimiter or not. A heredoc is how a child hands a
+   * PROGRAM to an interpreter (`python3 - << 'PY'`, `bash << 'EOF'`), so the caller
+   * that judges reads has to see the body whatever the shell would expand in it —
+   * the quoting decides expansion, not whether the child wrote the path.
+   */
+  bodies: string[];
 }
 
 /** The lexer's running state, threaded through the helpers that build words. */
 interface State {
   toks: Tok[];
   subs: string[];
+  bodies: string[];
   word?: string;
   dyn: boolean;
   glob: boolean;
+  /** The word as typed, when it began with a bare `~` or `~/` (see `lexTilde`). */
+  raw?: string;
 }
 
 function add(s: State, text: string): void {
@@ -82,11 +100,15 @@ function mark(s: State): void {
 
 function endWord(s: State): void {
   if (s.word !== undefined) {
-    s.toks.push({ kind: "word", word: { text: s.word, dyn: s.dyn, glob: s.glob } });
+    s.toks.push({
+      kind: "word",
+      word: { text: s.word, dyn: s.dyn, glob: s.glob, raw: s.raw },
+    });
   }
   s.word = undefined;
   s.dyn = false;
   s.glob = false;
+  s.raw = undefined;
 }
 
 function op(s: State, text: string): void {
@@ -158,6 +180,13 @@ function lexDouble(s: State, src: string, i: number): number {
 function lexTilde(s: State, src: string, i: number): number {
   const name = /^~([^\s'"`$;&|<>()\\/]*)/.exec(src.slice(i))?.[1] ?? "";
   if (name === "") {
+    // The word began with a bare `~`: keep the RAW spelling alongside the expansion.
+    // A judge that must ask "which home did the PARENT mean?" cannot recover it from text
+    // already substituted with THIS process's home, which for a helper child is the
+    // scratch tree the harness redirected it to.
+    // The whole word as typed, not just the `~`: a judge that re-expands it under
+    // another home needs the part after the marker too.
+    if (s.word === undefined) s.raw = src.slice(i);
     add(s, expandHome("~"));
     return i + 1;
   }
@@ -174,7 +203,7 @@ function lexTilde(s: State, src: string, i: number): number {
 
 /** Lex a command. Undefined when it does not lex (see the module doc). */
 export function lex(src: string): Lexed | undefined {
-  const s: State = { toks: [], subs: [], dyn: false, glob: false };
+  const s: State = { toks: [], subs: [], bodies: [], dyn: false, glob: false };
   const heredocs: Heredoc[] = [];
   let i = 0;
   while (i < src.length) {
@@ -232,8 +261,12 @@ export function lex(src: string): Lexed | undefined {
     if (ch === "\n") {
       op(s, "\n");
       const unquoted: string[] = [];
-      i = skipHeredocBodies(src, i + 1, heredocs, unquoted);
-      // An unquoted body is data, but bash runs the `$(…)` and backticks in it: judge those as commands.
+      const all: string[] = [];
+      i = skipHeredocBodies(src, i + 1, heredocs, unquoted, all);
+      // Every body travels, quoted or not: a `cat <F>` inside a quoted body is a
+      // read even though the shell expands nothing there. The substitutions of an
+      // UNQUOTED body are additionally judged as commands, because the shell runs them.
+      s.bodies.push(...all);
       for (const body of unquoted) {
         const subs = heredocSubstitutions(body);
         if (subs === undefined) return undefined;
@@ -280,7 +313,12 @@ export function lex(src: string): Lexed | undefined {
     } else if (ch === "<") {
       dropFdNumber(s);
       if (next === "<" && src[i + 2] === "<") {
-        op(s, "<");
+        // A here-string (`<<<`). Its operand is DATA, so a caller that judges reads
+        // has to be able to tell it from an input redirect: the lexer otherwise keeps
+        // both operands as plain words and emits the SAME `<` token for each. The
+        // operator's text carries the difference, and `<<<` is no operator the
+        // write-side splitter or the read judge treats as a file-opening redirect.
+        op(s, "<<<");
         i += 3;
       } else if (next === "<") {
         const heredoc = heredocDelimiter(src, i);
@@ -299,5 +337,5 @@ export function lex(src: string): Lexed | undefined {
     }
   }
   endWord(s);
-  return { toks: s.toks, subs: s.subs };
+  return { toks: s.toks, subs: s.subs, bodies: s.bodies };
 }

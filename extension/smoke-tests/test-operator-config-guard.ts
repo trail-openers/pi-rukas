@@ -40,6 +40,7 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -53,6 +54,7 @@ import { protectedPaths, withOperatorConfigGuard } from "../src/spawn-operator-c
 import type { DispatchResult } from "../src/types.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { runEntryHardeningCases } from "./lib/opcfg-entry-cases.ts";
+import { PROTECTED, runGlabCases, sentinelHome } from "./lib/opcfg-glab-cases.ts";
 import { runPostChildReadCases } from "./lib/opcfg-readback-cases.ts";
 
 let exit = 0;
@@ -85,42 +87,6 @@ function result(): DispatchResult {
   return { role: "developer", ok: true, text: "done", toolUses: [], ms: 1, exitCode: 0 };
 }
 
-/**
- * A sentinel home under $TMPDIR, with the four protected paths either present
- * or absent as the case asks. **The real `~/.gitconfig` is never opened**: the
- * bug was a child writing the operator's actual file, so every case here runs
- * against this tree and passes it through the env `protectedPaths` reads.
- */
-function sentinelHome(
-  tag: string,
-  present: readonly string[] = PROTECTED,
-): { home: string; env: Record<string, string> } {
-  const root = mkdtempSync(path.join(tmpdir(), `pi-opcfg-${tag}-`));
-  const home = path.join(root, "home");
-  const xdg = path.join(home, ".config");
-  // Both parent directories always exist: a "create" case must be able to write
-  // the file a child would create, while the file itself stays absent.
-  mkdirSync(path.join(xdg, "git"), { recursive: true });
-  mkdirSync(path.join(xdg, "gh"), { recursive: true });
-  const contents: Record<string, string> = {
-    [path.join(home, ".gitconfig")]: "[user]\n\tname = Operator\n",
-    [path.join(xdg, "git", "config")]: "[core]\n\teditor = vim\n",
-    [path.join(xdg, "gh", "config.yml")]: "editor: nano\n",
-    [path.join(xdg, "gh", "hosts.yml")]: "github.com:\n    oauth_token: oper\n",
-  };
-  for (const [file, text] of Object.entries(contents)) {
-    if (!present.includes(path.relative(home, file))) continue;
-    mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, text);
-  }
-  return {
-    home,
-    env: { HOME: home, XDG_CONFIG_HOME: xdg, GH_CONFIG_DIR: path.join(xdg, "gh") },
-  };
-}
-
-const PROTECTED = [".gitconfig", ".config/git/config", ".config/gh/config.yml", ".config/gh/hosts.yml"];
-
 function filesOf(home: string): string[] {
   return PROTECTED.map((rel) => path.join(home, rel));
 }
@@ -133,10 +99,12 @@ function xdgOf(home: string): string {
 
 {
   const { home, env } = sentinelHome("paths");
-  const got = protectedPaths(env).map((p) => path.relative(home, p)).sort();
+  const got = protectedPaths(env)
+    .map((p) => path.relative(home, p))
+    .sort();
   assert(
     JSON.stringify(got) === JSON.stringify([...PROTECTED].sort()),
-    `protectedPaths resolves exactly the four files (got ${got.join(", ")})`,
+    `protectedPaths resolves exactly the five files (got ${got.join(", ")})`,
   );
   // GH_CONFIG_DIR wins over the XDG default, in gh's own documented order.
   const elsewhere = path.join(home, "elsewhere");
@@ -166,7 +134,8 @@ function xdgOf(home: string): string {
   assert(
     protectedPaths({ ...env, GH_CONFIG_DIR: "relative/gh" }).includes(
       path.join(xdgOf(home), "gh", "hosts.yml"),
-    ) && !protectedPaths({ ...env, GH_CONFIG_DIR: "relative/gh" }).includes("relative/gh/hosts.yml"),
+    ) &&
+      !protectedPaths({ ...env, GH_CONFIG_DIR: "relative/gh" }).includes("relative/gh/hosts.yml"),
     "a relative GH_CONFIG_DIR is ignored in favour of the XDG gh default",
   );
 }
@@ -178,10 +147,7 @@ for (const rel of PROTECTED) {
     // `create` exercises the path that was ABSENT at snapshot time (restored by
     // deletion); the other two need it to exist so there is something to change.
     const present = kind === "create" ? PROTECTED.filter((p) => p !== rel) : PROTECTED;
-    const { home, env } = sentinelHome(
-      `${rel}-${kind}`.replace(/[^a-z0-9.-]/g, "_"),
-      present,
-    );
+    const { home, env } = sentinelHome(`${rel}-${kind}`.replace(/[^a-z0-9.-]/g, "_"), present);
     const target = path.join(home, rel);
     const before = existsSync(target) ? readFileSync(target) : null;
     const mtimeBefore = before ? statSync(target).mtimeMs : 0;
@@ -203,8 +169,7 @@ for (const rel of PROTECTED) {
     if (!res) throw new Error(`guard returned no result for ${rel}/${kind}`);
 
     const after = existsSync(target) ? readFileSync(target) : null;
-    const restored =
-      before === null ? after === null : after !== null && after.equals(before);
+    const restored = before === null ? after === null : after !== null && after.equals(before);
     assert(
       restored,
       `AC1 ${rel}: a child's "${kind}" is restored byte-for-byte (an absent file stays absent)`,
@@ -309,11 +274,9 @@ await runPostChildReadCases(assert, sentinelHome, drainWarns, result);
   );
   const reattachSrc = readFileSync(path.join(SRC, "work-driver-resume-reattach.ts"), "utf8");
   const spawnIdx = reattachSrc.indexOf("spawn(command, args,");
-  const wrapIdx = reattachSrc.indexOf("withOperatorConfigGuard(\"resume-reattach\"", spawnIdx - 2000);
+  const wrapIdx = reattachSrc.indexOf('withOperatorConfigGuard("resume-reattach"', spawnIdx - 2000);
   assert(
-    reattachSrc.includes('from "./spawn-operator-config.ts"') &&
-      wrapIdx > 0 &&
-      wrapIdx < spawnIdx,
+    reattachSrc.includes('from "./spawn-operator-config.ts"') && wrapIdx > 0 && wrapIdx < spawnIdx,
     "AC4 canary: the resume-reattach spawn is wrapped too (its violations are traceWarn-only)",
   );
 }
@@ -328,7 +291,10 @@ await runPostChildReadCases(assert, sentinelHome, drainWarns, result);
   ];
   const report = formatSingleReport("job-1", "developer", res);
   const lines = report.split("\n").filter((l) => l.startsWith("VIOLATION: "));
-  assert(lines.length === 2, `AC5: each operatorConfig line renders as its own VIOLATION line (${lines.length})`);
+  assert(
+    lines.length === 2,
+    `AC5: each operatorConfig line renders as its own VIOLATION line (${lines.length})`,
+  );
   assert(
     lines[0] === `VIOLATION: ${res.operatorConfig[0]}` &&
       lines[1] === `VIOLATION: ${res.operatorConfig[1]}`,
@@ -341,6 +307,8 @@ await runPostChildReadCases(assert, sentinelHome, drainWarns, result);
     "AC5: a result with no operatorConfig renders no VIOLATION line",
   );
 }
+
+/** Whether a path is itself a symlink (as opposed to the file it points at). */
 
 // --------------- G — the gate is observed failing: skip the compare, no report
 
@@ -379,6 +347,10 @@ await runPostChildReadCases(assert, sentinelHome, drainWarns, result);
     "with the guard's compare/restore in place the same write is reverted and reported",
   );
 }
+
+// -------- F2 — glab's credential file: the shape that leaked a token (#2638)
+
+await runGlabCases(drainWarns);
 
 console.log(`\nexit ${exit}`);
 process.exit(exit);

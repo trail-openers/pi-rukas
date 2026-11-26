@@ -9,6 +9,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerBroadcastKillGuard } from "./broadcast-kill-guard.ts";
+import { registerForgeReadGuard } from "./child-forge-read-guard.ts";
 import { registerDeveloperPushGuard } from "./developer-push-guard.ts";
 import { execp } from "./exec.ts";
 import { registerIssueCreationGuard } from "./issue-creation-guard.ts";
@@ -90,4 +91,13 @@ export function registerModeIndependentGuards(pi: ExtensionAPI): void {
   // placement rule above does not drive it; it sits here because this is the
   // list both child entry points load, and the bound is a child-side bound.
   registerReviewBashTimeout(pi);
+  // #2638 — a helper child reads the operator's forge credentials. The token file
+  // sits in the operator's `gh`/`glab` config dir, the parent deliberately keeps its
+  // own login, and trust/sandbox mode consults no allowlist — so nothing stood
+  // between a `cat ~/.config/gh/hosts.yml` and a token in a helper's transcript.
+  // Role-scoped inside the guard: `ops` is exempt, every other role (and an absent
+  // role) is judged. Registered unconditionally: a child that was given no
+  // protected set is refused rather than trusted, which is the only answer that
+  // cannot be reached by forgetting a spawn-time step.
+  registerForgeReadGuard(pi);
 }

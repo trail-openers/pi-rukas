@@ -122,11 +122,24 @@ function ghConfigDir(env: OperatorConfigEnv): string {
   return path.join(configHome(env), "gh");
 }
 
+/** The config root glab resolves — its documented order, mirroring `ghConfigDir`. */
+function glabConfigDir(env: OperatorConfigEnv): string {
+  const glab = env.GLAB_CONFIG_DIR;
+  // Absolute-only, for the same reason as `GH_CONFIG_DIR`: a relative value would
+  // watch paths under the CWD and leave the operator's real file unwatched.
+  if (glab !== undefined && glab !== "" && path.isAbsolute(glab)) return glab;
+  return path.join(configHome(env), "glab-cli");
+}
+
 /**
  * The files whose contents a child must not leave changed, resolved from `env`
  * at CALL time — never latched at module load, so a test (or a caller) that
- * points HOME / XDG_CONFIG_HOME / GH_CONFIG_DIR at a sentinel tree points the
- * guard there too.
+ * points HOME / XDG_CONFIG_HOME / GH_CONFIG_DIR / GLAB_CONFIG_DIR at a sentinel
+ * tree points the guard there too.
+ *
+ * glab's `config.yml` is in the set alongside gh's credential files: it holds the
+ * GitLab token in plaintext, and the same child that learned to unset
+ * `GLAB_CONFIG_DIR` and read it is the one this guard restores behind.
  */
 export function protectedPaths(env: OperatorConfigEnv = process.env): string[] {
   const gitHome = path.join(configHome(env), "git");
@@ -136,6 +149,7 @@ export function protectedPaths(env: OperatorConfigEnv = process.env): string[] {
     path.join(gitHome, "config"),
     path.join(gh, "config.yml"),
     path.join(gh, "hosts.yml"),
+    path.join(glabConfigDir(env), "config.yml"),
   ];
 }
 

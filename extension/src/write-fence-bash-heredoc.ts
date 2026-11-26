@@ -53,15 +53,19 @@ export function heredocDelimiter(
 }
 
 /**
- * The heredoc bodies that follow a newline. Each is skipped as data; an unquoted body's
- * text is pushed to `unquoted` for its substitutions to be judged. Returns the position
- * after the last one read.
+ * The heredoc bodies that follow a newline. Each is skipped as far as the token
+ * stream goes, and EVERY body — quoted delimiter or not — is pushed to `bodies`
+ * for the caller that judges reads: the child wrote those words and the program
+ * it hands them to will open whatever they name. `unquoted` carries just the
+ * bodies whose delimiter was unquoted, i.e. the ones the shell expands `$(…)`
+ * and backticks in. Returns the position after the last body read.
  */
 export function skipHeredocBodies(
   src: string,
   from: number,
   heredocs: Heredoc[],
   unquoted: string[],
+  all?: string[],
 ): number {
   let i = from;
   for (const doc of heredocs.splice(0)) {
@@ -73,6 +77,7 @@ export function skipHeredocBodies(
       if ((doc.strip ? line.replace(/^\t+/, "") : line) === doc.delim) break;
       body += `${line}\n`;
     }
+    all?.push(body);
     if (!doc.quoted) unquoted.push(body);
   }
   return i;

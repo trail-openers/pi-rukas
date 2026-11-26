@@ -118,6 +118,11 @@ export async function callChildTool(
   env: Record<string, string | undefined>,
   args: Record<string, unknown>,
 ): Promise<{ text: string; details: unknown }> {
+  // A process-wide SAVE, not a copy of this call's own vars: `registerChildForgeReadTool`
+  // is a no-op once the tool has been registered for this process, so a case that
+  // left a broker pair in `process.env` would make a later case's predicate answer
+  // from THAT pair. The restore deletes every key that appeared during the call, so
+  // a nested `Object.assign` cannot leak a socket or a key into the next case.
   const saved = { ...process.env };
   const registered: Array<{
     name: string;
@@ -139,8 +144,16 @@ export async function callChildTool(
     const res = await tool.execute("call-1", args);
     return { text: res.content.map((c) => c.text).join(""), details: res.details };
   } finally {
-    for (const k of Object.keys(process.env)) delete process.env[k];
-    Object.assign(process.env, saved);
+    // Keys the call itself ADDED are gone again, and every saved value is put back
+    // verbatim — a `saved` entry whose value is `undefined` deletes rather than
+    // assigns, so a variable this process never had cannot come back as the string.
+    for (const k of Object.keys(process.env)) {
+      if (!(k in saved)) delete process.env[k];
+    }
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
   }
 }
 

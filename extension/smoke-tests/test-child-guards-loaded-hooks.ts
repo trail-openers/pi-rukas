@@ -68,6 +68,11 @@ const PIN_CHILD = {
   // with an ambient pair cleared too.
   PI_ENSEMBLE_FORGE_READ_SOCKET: undefined,
   PI_ENSEMBLE_FORGE_READ_SECRET: undefined,
+  // #2638 — the forge read guard registers in every mode and refuses whenever it
+  // was handed no harness-owned protected set, so a count is only stable with an
+  // ambient set cleared too. Without this, a /work child's own protected set leaks
+  // into the rows below and the loaded hooks start refusing ordinary commands.
+  PI_ENSEMBLE_FORGE_PROTECTED_PATHS: undefined,
 };
 
 /** The env of a helper child whose parent DID serve a forge-read broker. */
@@ -76,6 +81,9 @@ const PIN_FORGE_CHILD = {
   PI_ENSEMBLE_ROLE: "developer",
   PI_ENSEMBLE_FORGE_READ_SOCKET: "/tmp/pi-rukas-forge-read-test/broker.sock",
   PI_ENSEMBLE_FORGE_READ_SECRET: "0123456789abcdef".repeat(4),
+  // The set the parent hands a stripped child, as one harness-owned string. These
+  // paths are FAKE: no row below reads them, and the guard never prints one.
+  PI_ENSEMBLE_FORGE_PROTECTED_PATHS: "/operator/.config/gh:/operator/.config/glab-cli",
 };
 
 // ============================================================
@@ -87,8 +95,8 @@ await withEnv(PIN_CHILD, async () => {
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;
   check(
-    n === 10,
-    `registers exactly 10 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write, #2381 broadcast-kill, #1788 public-hygiene and #2140 reviewer-bash-timeout, plus the #1655 write fence and the #2200 deletion rule; oo-rewrite excluded; got ${n})`,
+    n === 11,
+    `registers exactly 11 tool_call hooks (the mode-independent guards incl. #1105 review-accept, #1113 developer-push, #1666 vipune-write, #2381 broadcast-kill, #1788 public-hygiene and #2140 reviewer-bash-timeout and the #2638 forge-config read guard, plus the #1655 write fence and the #2200 deletion rule; oo-rewrite excluded; got ${n})`,
   );
   // A child with no broker socket gets no tool at all — the tool's registration
   // and its activation share one predicate, so the always-refuses state is not
@@ -250,14 +258,14 @@ await withEnv(PIN_FORGE_CHILD, async () => {
   const fake = makeFakePi();
   childGuards(fake as unknown as ExtensionAPI);
   const n = fake.handlers.tool_call?.length ?? 0;
-  // Eight, not section 1's nine: this env names `developer`, so the #2200
+  // Nine, not section 1's eleven: this env names `developer`, so the #2200
   // deletion rule's `ops` cwd carve-out is off and the #1655 fence self-gates off
   // (no `PI_ENSEMBLE_WRITE_ROOT`), leaving the mode-independent guards plus the
   // deletion rule. The control below is the load-bearing half: the same env with
   // a write root MUST add a hook, so this number cannot be reached by the fence
   // or the deletion rule quietly failing to register.
   check(
-    n === 9,
+    n === 10,
     `a stripped child with a broker socket registers the guards plus the #2200 deletion rule (got ${n})`,
   );
   await withEnv({ ...PIN_FORGE_CHILD, PI_ENSEMBLE_WRITE_ROOT: "/tmp" }, async () => {

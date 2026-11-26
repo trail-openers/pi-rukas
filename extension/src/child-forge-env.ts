@@ -33,11 +33,18 @@
  * all — so an inherited operator root in a token-less child is the very
  * fallback this module exists to close.
  *
- * The threat model, stated honestly: helpers run as the operator's UID, so a
- * helper that deliberately re-points `GH_CONFIG_DIR` at the operator's config
- * or reads a credential store can regain the login. This removes the AMBIENT
- * login — the accidental and the prompted-but-careless landing — and is not a
- * sandbox. Confinement remains the sandbox's job.
+ * The threat model, stated honestly: helpers run as the operator's UID, so this
+ * module's own env edits are not a fence — a helper that re-points `GH_CONFIG_DIR`
+ * sees whatever it names. What closes that route is the guard beside it:
+ * `child-forge-read-guard.ts` refuses a `bash` or `read` call naming a protected
+ * config root, judging the set the PARENT resolved and handed down
+ * (`PI_ENSEMBLE_FORGE_PROTECTED_PATHS`, `PI_ENSEMBLE_FORGE_PROTECTED_HOMES`) rather
+ * than anything the child's env says, so unsetting or re-pointing a variable here
+ * restores no access. Both halves are guardrails against a child's own bad
+ * judgement, not security boundaries: what never reaches a `tool_call` hook — a
+ * `node:fs` read inside a `codemode` script, a detached grandchild, a path
+ * assembled at run time — is outside them by construction, which is why an exposed
+ * token is rotated by the operator. Confinement remains the sandbox's job.
  *
  * Ops keeps the login: it is the only role that lands work, and it is the one
  * role that must be able to run `gh`/`glab` itself. The parent session keeps
@@ -49,6 +56,13 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FORGE_READ_SECRET_ENV, FORGE_READ_SOCKET_ENV } from "./child-forge-read-activation.ts";
+import {
+  FORGE_PROTECTED_HOMES_ENV,
+  FORGE_PROTECTED_PATHS_ENV,
+  forgeHomesFrom,
+  protectedForgeHomesEnvValue,
+  protectedForgePathsEnvValue,
+} from "./child-forge-read-roots.ts";
 import { trace } from "./trace.ts";
 
 /** The five variables that carry a forge login to `gh` / `glab`. */
@@ -224,6 +238,23 @@ export function buildChildForgeEnv(
     if (v !== undefined) env[k] = v;
   }
   stripForgeCredentials(env, role, configDir);
+  // The protected set travels with the strip, in the ONE place every child env is
+  // built. The read guard judges the paths in `PI_ENSEMBLE_FORGE_PROTECTED_PATHS`,
+  // and a set a call site has to remember to set is a set one call site forgets:
+  // the reattach and re-ask paths each build their env here and each left the child
+  // with no set to judge, which the guard reads as "nothing published" rather than
+  // as "nothing protected". Resolved from the PARENT's env, at dispatch time, so a
+  // child that unsets or re-points its own variable cannot shrink what it was given.
+  if (!keepsForgeLogin(role)) {
+    const homes = forgeHomesFrom(source);
+    env[FORGE_PROTECTED_PATHS_ENV] = protectedForgePathsEnvValue(source, homes);
+    env[FORGE_PROTECTED_HOMES_ENV] = protectedForgeHomesEnvValue(homes);
+  } else {
+    // Ops owns the login and is exempt from the read rule; a stale set in its env
+    // would be judged by nothing and read by a wrapper as a promise.
+    Reflect.deleteProperty(env, FORGE_PROTECTED_PATHS_ENV);
+    Reflect.deleteProperty(env, FORGE_PROTECTED_HOMES_ENV);
+  }
   if (socketPath && secret) {
     env.PI_ENSEMBLE_FORGE_READ_SOCKET = socketPath;
     env.PI_ENSEMBLE_FORGE_READ_SECRET = secret;

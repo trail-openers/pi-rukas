@@ -164,6 +164,11 @@ const stubExec = async (cmd: string): Promise<{ stdout: string }> => {
     // are the defaults, so a trust or sandbox child that got only this block
     // would otherwise publish private text unguarded.
     "registerPublicHygieneGuard",
+    // #2638 — the forge config read refusal. Same placement reasoning again: a
+    // helper's bash is unfenced in the modes that are the default, and the token
+    // file sits in the operator's home, so a block that left it out would leave
+    // the credential readable exactly where nothing else guards it.
+    "registerForgeReadGuard",
   ];
   // The companion delegates to the shared block — the single list.
   assert(
