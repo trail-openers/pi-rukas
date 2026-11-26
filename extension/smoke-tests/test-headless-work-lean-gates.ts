@@ -115,6 +115,15 @@ const { assert, failures } = makeAssert();
   // report a challenge this run is no longer standing on. The crash's own entry must
   // sit AT THE END of the log — that is the only shape the engine ever writes an
   // undecided step in, and a log that buried one mid-way would be refused at load.
+  const skipped = await driveLean("handed-back", 10, gatesLog({ challenge: "skipped" }));
+  assert(
+    JSON.stringify(gatesOf(skipped.issue).challenge) ===
+      JSON.stringify({
+        kind: "skipped",
+        reason: "challenge SKIPPED: pre-verify share 40% of the 4200s cell used up (used 0s)",
+      }),
+    `challenge: the pre-verify skip is disclosed as its own kind with the reason the step recorded (${JSON.stringify(gatesOf(skipped.issue).challenge)})`,
+  );
   const crashed = await driveLean("handed-back", 10, [
     ...gatesLog({ challenge: "none", ci: null, review: null }).filter(
       (s) => s.state !== "handback",

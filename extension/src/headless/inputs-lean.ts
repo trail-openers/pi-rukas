@@ -16,7 +16,7 @@
  * reader lives under `lean/`; the builders are `entry.ts`'s.
  */
 
-import { type HostInput, flag, input } from "./entry.ts";
+import { type HostInput, flag, input, int } from "./entry.ts";
 
 /** The lean switches, in the list's order. */
 export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
@@ -49,6 +49,15 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // `leanHandbackNetGitEnabled` in lean/handback-net-git-switch.ts; the push's argv is
   // not in scope — its `--atomic` and its unforced lease-bound refspec ship with the rule.
   flag("LEAN_HANDBACK_NET_GIT", true),
+  // The share of the cell budget the steps BEFORE the first verify may spend together. The
+  // number is a whole percent, 0 to 100, and the shipped default is 40; `0` is the ONLY off
+  // value — the rule short-circuits there, so it puts the pair back on its per-child ceilings
+  // alone rather than bounding it at zero. Anything that is not a whole
+  // percent in range (`40.5`, `101`, `abc`, empty) reads as the default, not as off. The reader
+  // is `leanPreVerifySharePercent` in lean/pre-verify-share-switch.ts; the bound it feeds — the
+  // no-dispatch stop on `specify`'s retry and the `challenge` skip with its recorded reason — is
+  // lean/pre-verify-share.ts. It never cuts a child already running.
+  int("LEAN_PRE_VERIFY_SHARE", 40),
   // A review fix wave saves the head it starts from before the fixer runs, and the
   // range rides the step's reason, a PR comment, the handback and `issues[].preFixHead`. `0`
   // saves and names nothing. The reader is `leanPrefixHeadEnabled` in lean/review-log.ts.

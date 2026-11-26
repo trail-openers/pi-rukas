@@ -524,6 +524,44 @@ and in the host's `failure.message` alike. A review step therefore never carries
 the `limit`/`value`/`used` trio — the prose is its channel. `PI_ENSEMBLE_DISPATCH_CAPS=0`
 makes the wall clock inert, and the step says so.
 
+**The two steps before the first verify share a wall.** `specify` and `challenge`
+are each bounded per CHILD and were never bounded together, so a cell could spend
+half its budget on the pair and still be asked to open `review`, whose reserve
+then fired on a head already green and published. `PI_ENSEMBLE_LEAN_PRE_VERIFY_SHARE`
+(a whole percent, default **40**) is the share of the cell — the run's resolved
+cycle deadline — that the pair may spend. The spend is the sum of every `specify`
+and `challenge` entry in the durable step log, counted over **every visit**, so a
+resumed run cannot be handed the whole share again.
+
+Like the review clock it is asked **before each dispatch** and is **never a
+kill**: a child already running is bounded only by its own per-child ceiling.
+Once the share is used `specify` dispatches no further retry (the attempt it
+already paid for decides the verdict, and its bytes stand), and challenge is skipped:
+its step records `kind: "skipped"` with one stable
+`challenge SKIPPED: …` line naming what was not bought and the seconds the pair
+used, and the run goes to `verify` with the optional round marked done — no child
+dispatched, no worktree reset paid for a round that never touched the tree.
+The host sees the verdict as `gates.challenge` = `{kind: "skipped", reason}` and
+as one `## Run` line in the PR body.
+
+The round is skipped on a second ground too, measured at `challenge` entry: when
+the time the resolved deadline still leaves is at or below the review reserve plus
+**one verify** — the floor is the reserve plus one verify, spelled
+`handoffAllowanceMs()` plus `REVIEW_DEADLINE_RESERVE_MS` plus a named 20-minute
+figure (`ONE_VERIFY_MS`) read only by this rule, so
+`verify` gains no `budgets` row and no verify child is ever armed from it. A
+round that would eat the reserve or the gate buys nothing anyone can act on.
+
+With **no resolved deadline**, or with `PI_ENSEMBLE_DISPATCH_CAPS=0`, the bound is
+**inert** — it stops nothing and says so, the way the review step's clock does;
+an absent deadline is never a reason to shrink work. `PI_ENSEMBLE_LEAN_PRE_VERIFY_SHARE=0`
+is the only off value and takes the whole change out — the rule short-circuits at `0`
+itself, rather than trusting the reader to have said so — so the pair is bounded by its
+per-child ceilings alone and no step record gains a key. The review step's own
+reserve rule, its two levers and its gates are unchanged. Sources:
+`extension/src/lean/pre-verify-share-switch.ts` (the reader),
+`extension/src/lean/pre-verify-share.ts` (the wall, the skip, the reason).
+
 **The review step's own clock.** Every lever above bounds ONE CHILD; the `review`
 step also bounds ITSELF, because it buys two adversarial passes, twelve lens
 children and one fixer serially and each child can sit inside its own bound while

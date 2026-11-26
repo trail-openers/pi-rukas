@@ -1,0 +1,137 @@
+{
+  "steps": [
+    {
+      "state": "ready",
+      "key": "2634:ready:0",
+      "outcome": {
+        "kind": "ok"
+      }
+    },
+    {
+      "state": "specify",
+      "key": "2634:specify:0",
+      "outcome": {
+        "kind": "ok",
+        "frozen": {
+          "tests/AC1-retry.test.sh": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "tests": {
+          "AC1": [
+            "tests/AC1-retry.test.sh"
+          ]
+        }
+      }
+    },
+    {
+      "state": "build",
+      "key": "2634:build:0",
+      "outcome": {
+        "kind": "ok"
+      }
+    },
+    {
+      "state": "challenge",
+      "key": "2634:challenge:0",
+      "outcome": {
+        "kind": "none"
+      }
+    },
+    {
+      "state": "verify",
+      "key": "2634:verify:0",
+      "outcome": {
+        "kind": "green",
+        "verifiedHead": "<sha>"
+      }
+    },
+    {
+      "state": "publish",
+      "key": "2634:publish:0",
+      "outcome": {
+        "kind": "ok",
+        "prUrl": "https://forge.invalid/o/r/pull/7",
+        "publishedHead": "<sha>",
+        "draft": false,
+        "reason": "already on origin, published PR https://forge.invalid/o/r/pull/7 at <sha12>"
+      }
+    },
+    {
+      "state": "review",
+      "key": "2634:review:0",
+      "outcome": {
+        "kind": "done",
+        "reason": "review is not part of this golden"
+      }
+    },
+    {
+      "state": "ci",
+      "key": "2634:ci:0",
+      "outcome": {
+        "kind": "green"
+      }
+    }
+  ],
+  "runSection": "## Run\n- pi-rukas <version>\n- base `<sha>`\n- models: —\n",
+  "gates": {
+    "specify": {
+      "frozen": {
+        "tests/AC1-retry.test.sh": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "tests": {
+        "AC1": [
+          "tests/AC1-retry.test.sh"
+        ]
+      }
+    },
+    "challenge": {
+      "kind": "none"
+    },
+    "verify": [
+      {
+        "state": "verify",
+        "kind": "green",
+        "tiers": null,
+        "tiersTotal": null,
+        "criteria": null,
+        "criteriaTotal": null,
+        "projectTestsRan": null,
+        "newlyFailing": null,
+        "newlyFailingTotal": null
+      },
+      {
+        "state": "ci",
+        "kind": "green",
+        "tiers": null,
+        "tiersTotal": null,
+        "criteria": null,
+        "criteriaTotal": null,
+        "projectTestsRan": null,
+        "newlyFailing": null,
+        "newlyFailingTotal": null
+      }
+    ],
+    "review": {
+      "kind": "done",
+      "rounds": null,
+      "waves": null,
+      "wavesTotal": null,
+      "reviewBound": null
+    },
+    "handback": {
+      "reason": null,
+      "head": "<sha>",
+      "verified": true,
+      "unshipped": null
+    }
+  },
+  "machine": {
+    "pairs": 27,
+    "challengeKinds": [
+      "new-tests",
+      "none",
+      "budget"
+    ]
+  },
+  "state": "handed-back",
+  "code": 10
+}

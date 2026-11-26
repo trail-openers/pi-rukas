@@ -7,8 +7,7 @@
  * or a dashboard that wanted to know WHICH files froze per criterion, what the
  * challenge answered, which tier went red at which criterion, what each review round
  * found, which head the fix wave pushed, and what the handback actually shipped had to
- * parse the private file for it — and then rebuild the answer from a `reason` sentence,
- * because the durable red carried no tier and the durable review carried no counts.
+ * parse the private file for it.
  * This module publishes the events on the record that promises them.
  *
  * Three rules, each of which the sibling test file exists to break:
@@ -20,9 +19,9 @@
  *     explicit `null` — a host must tell "this run had no challenge" apart from "this
  *     build never looked", and an omitted key cannot make that distinction.
  *   - **re-check what you print.** The loader judges a state file, but the log this
- *     projection reads is a `Step[]` that a run which just finished never passed
- *     through the loader with. So heads go through `isFullCommitSha` and severities
- *     through the published list again, exactly as `prUrlOf` revalidates a URL.
+ *     projection reads is a `Step[]` a finished run never passed through the loader
+ *     with. So heads go through `isFullCommitSha` and severities through the
+ *     published list again, exactly as `prUrlOf` revalidates a URL.
  *   - **the heads cannot disagree with `prState`.** `handback.head` is the head the step
  *     says it shipped, and `handback.verified` is that head put back through the gate
  *     `prStateOf` asks — `gateClearedPublishedHead` — rather than the step's own
@@ -33,8 +32,7 @@
  *     wants the evidence reads these.
  *
  * The object is additive: the projection builds it separately and the caller attaches it
- * whole, rather than filling fields conditionally, so the document either carries the key
- * or does not.
+ * whole, so the document either carries the key or does not.
  */
 
 import { isFullCommitSha } from "../commit-sha.ts";
@@ -48,11 +46,9 @@ import { gateClearedPublishedHead, publishedHeadOf } from "./work-lean-pr.ts";
 /** How many entries of one list a host may be handed. The record caps its own writes;
  * this is the print cap, and the smaller of the two governs what a host parses.
  *
- * Exported because the cap is a published fact and not an implementation detail: a list cut
- * at it prints exactly `LIST_MAX` entries, and the only thing that tells a host this
- * happened is the sibling count this module writes beside it. The truncation cases read the
- * cap from here rather than restating it, so moving it moves the cases with it instead of
- * quietly turning them into assertions about a number nobody chose. */
+ * Exported because a list cut at it prints exactly `LIST_MAX` entries, and the only thing
+ * telling a host that happened is the sibling count written beside it.
+ */
 export const LIST_MAX = 16;
 /** How long one published string may be. Same bound the projection applies to the
  * handback reason elsewhere: redact first, then clip, so a cut cannot strand a token. */
@@ -81,8 +77,7 @@ function clipped<T>(items: T[] | null): Cap<T> {
  * `red` are the gate's verdicts, and `error` is the engine's record of a gate whose handler
  * threw (`lean/error-outcome.ts`) — the infrastructure died and nothing was judged. A host
  * that read an `error` as a red would blame the work for a harness failure and go re-check a
- * criterion nobody ran, so an error entry publishes null attributions: the gate never named
- * a tier, and an empty list would say it named none.
+ * criterion nobody ran, so an error entry publishes null attributions.
  */
 export interface GatesRed {
   state: "verify" | "ci";
@@ -117,13 +112,11 @@ export interface GatesReview {
   wavesTotal: number | null;
   /**
    * The step's own clock, published verbatim from the record beside these counts (G11).
-   *
    * The top-level `issues[].reviewBound` keeps its own rule — ABSENT means no `review`
    * step in the log recorded a stop — and this is the one gate field that does not follow
    * the null rule, because here absence is the answer: `prState`/`reviewBound` are
-   * governed by the omission rule
-   * and everything else in `gates` by the null rule, which is what docs/headless.md
-   * states, and what this comment exists to stop a reader guessing.
+   * governed by the omission rule and everything else in `gates` by the null rule, as
+   * docs/headless.md states.
    */
   reviewBound: GatesReviewBound | null;
 }
@@ -131,10 +124,10 @@ export interface GatesReview {
 /** The `review` step's clock as the host sees it: the record's three fields, plus the lane
  * list's pre-cut count beside the list itself.
  *
- * It is `ReviewBoundRecord` and one extra key rather than that type, because the record is
- * the driver's durable shape — a lane list a writer produces and a loader validates — and
- * the print count belongs to neither of those. Widening the record's own type would tell a
- * reader the durable field carries a number no writer ever writes.
+ * It is `ReviewBoundRecord` and one extra key rather than that type: the durable record is
+ * a lane list a writer produces and a loader validates, and the print count belongs to
+ * neither. Widening the record's own type would tell a reader the durable field carries a
+ * number no writer ever writes.
  */
 export type GatesReviewBound = ReviewBoundRecord & {
   /** The full `unreviewedLanes` count before the print cut; `null` exactly when it is. */
@@ -152,7 +145,13 @@ export interface GatesHandback {
 /** `issues[].gates`: the gate events of one lean run. */
 export interface GatesResult {
   specify: { frozen: Record<string, string> | null; tests: Record<string, string[]> | null };
-  challenge: { kind: string; limit?: string; value?: number; used?: number } | null;
+  challenge: {
+    kind: string;
+    limit?: string;
+    value?: number;
+    used?: number;
+    reason?: string;
+  } | null;
   verify: GatesRed[];
   review: GatesReview | null;
   handback: GatesHandback;
@@ -190,8 +189,8 @@ function textOf(value: unknown, redact: (s: string) => string): string | null {
  * The one-line account of a review that stopped at its own clock, for `issues[].reviewBound`.
  *
  * The sentence's shape is the one the host contract has always published (reason, wave, the
- * lanes named after `unreviewed:`); what this reader adds is the redaction. `reason` and the
- * lane names are CHILD-authored text — the stop's sentence quotes what the step's bound said,
+ * lanes named after `unreviewed:`); what this reader adds is the redaction. Both are
+ * CHILD-authored text — the stop's sentence quotes what the step's bound said,
  * the lanes come off a skill roster — so each is put through `textOf` SEPARATELY before the
  * join, exactly as the `gates` copy of the same fact does. Joining first and redacting one
  * long string would let a credential straddle the `; wave ` boundary this code inserts and
@@ -217,7 +216,7 @@ export function reviewBoundSentence(
  * `specify` froze the files and named the criterion each one answers for; `challenge`
  * may have added more, and `frozenFromLog`'s union across those steps IS the run's
  * definition of the contract. A run refused before any test froze publishes two nulls:
- * `{}` would say "it froze nothing", and an omitted object would say nothing at all.
+ * `{}` would say "it froze nothing".
  */
 function specifyGates(steps: Step[]): GatesResult["specify"] {
   const frozen: Record<string, string> = {};
@@ -229,8 +228,7 @@ function specifyGates(steps: Step[]): GatesResult["specify"] {
       (step.state === "challenge" && step.outcome?.kind === "new-tests");
     if (!froze) continue;
     for (const [path, sha] of Object.entries(step.outcome?.frozen ?? {})) {
-      // A digest that is not a sha256 is not tamper evidence, and printing one as
-      // though it were would tell a host a file is verified when nothing verified it.
+      // A digest that is not a sha256 is not tamper evidence.
       if (typeof sha === "string" && /^[0-9a-f]{64}$/.test(sha)) {
         frozen[path] = sha;
         sawAny = true;
@@ -248,20 +246,23 @@ function specifyGates(steps: Step[]): GatesResult["specify"] {
 }
 
 /**
- * The challenge step's verdict — one of the three the registry gives it, read by
- * POSITION, with the ceiling's trio on its own arm.
- *
- * `null` for a run that has no challenge step and for one whose newest attempt was cut
- * off before it answered: in both cases the run has no verdict to report, and inventing
- * `"none"` would tell a host the adversary looked and found nothing.
+ * The challenge step's verdict — one of the four the registry gives it, read by
+ * POSITION, with the ceiling's trio on its own arm. `null` when there is no
+ * challenge step or its newest attempt died before answering: inventing `"none"`
+ * would tell a host the adversary looked and found nothing. `skipped` carries the
+ * bound's reason, so "nobody looked" reads apart from "nothing was bought". That reason is
+ * record-authored text, so it goes through `textOf` like every other string here.
  */
-function challengeGates(steps: Step[]): GatesResult["challenge"] {
+function challengeGates(steps: Step[], redact: (s: string) => string): GatesResult["challenge"] {
   const step = newestStep(steps, "challenge");
   const kind = step?.outcome?.kind;
-  if (kind !== "new-tests" && kind !== "none" && kind !== "budget") return null;
+  if (kind !== "new-tests" && kind !== "none" && kind !== "budget" && kind !== "skipped")
+    return null;
+  if (kind === "skipped") {
+    const reason = textOf(step?.outcome?.reason, redact);
+    return { kind, ...(reason === null ? {} : { reason }) };
+  }
   if (kind !== "budget") return { kind };
-  // The ceiling arm's typed trio — what it ran out of, the ceiling, the spend. Data
-  // rather than prose precisely so "out of turns" reads apart from "out of minutes".
   const { limit, value, used } = step?.outcome ?? {};
   return {
     kind,
@@ -275,12 +276,6 @@ function challengeGates(steps: Step[]): GatesResult["challenge"] {
  * Every `verify` and `ci` verdict the run recorded, in the order it recorded them, each
  * red with the tier that failed and the criteria the failing checks answer for.
  *
- * Three kinds reach the host, and the third is not a judgement of the code: `green` and
- * `red` are the gate's verdicts, and `error` is what the engine records when a gate's
- * handler threw (`lean/error-outcome.ts`). An entry of that kind attributes nothing — the
- * gate named no tier because it never finished — and a host that read it as a red would go
- * and re-check a criterion nobody ran.
- *
  * A list rather than one field because a run genuinely carries more than one red — a
  * first red, a fix round, and a pipeline that then fails — and a host triaging the run
  * needs to see which gate ended it, not only the last one to speak.
@@ -288,11 +283,9 @@ function challengeGates(steps: Step[]): GatesResult["challenge"] {
  * Every published string here goes through `textOf`, the tier names included. The loader
  * bounds a tier name's LENGTH but says nothing about its CONTENT, and the writer's tier
  * names come off reason lines this step composed — so the projection is the last place a
- * credential-shaped or oversized name can be stopped before a host parses it, exactly as
- * for the two `reviewBound` strings and the handback reason.
+ * credential-shaped or oversized name can be stopped before a host parses it.
  *
- * The `Total` beside each list counts what survives THAT filter, before the cut: a tier name
- * the seam empties and a criterion id that is not `AC<n>` are in neither number, so
+ * The `Total` beside each list counts what survives THAT filter, before the cut, so
  * `Total > length` means one thing here — entries this document cut for LENGTH.
  */
 function verifyGates(steps: Step[], redact: (s: string) => string): GatesRed[] {
@@ -338,13 +331,10 @@ function verifyGates(steps: Step[], redact: (s: string) => string): GatesRed[] {
  * What the review step judged: one tally per round keyed by exactly the four published
  * severities, each fix wave's FULL head, and the unreviewed lanes verbatim.
  *
- * The severity filter is the projection's last defence. The loader refuses a fifth key,
+ * The severity filter is the projection's last defence: the loader refuses a fifth key,
  * but a value that reaches this function without passing through the loader has been
  * judged by nobody, and a host that switches on four names silently misses a finding
- * carried under a fifth — so a round holding anything else publishes nothing rather
- * than publishing a partial truth. The WHOLE tally goes, not the bad round: a tally that
- * named three of a run's four rounds would read as a complete count, which is the same
- * failure the waves arm refuses by dropping every wave for one malformed head.
+ * carried under a fifth.
  */
 function reviewGates(steps: Step[], redact: (s: string) => string): GatesResult["review"] {
   const step = newestStep(steps, "review");
@@ -353,12 +343,9 @@ function reviewGates(steps: Step[], redact: (s: string) => string): GatesResult[
   const { kind } = oc;
   if (kind !== "done" && kind !== "fixed" && kind !== "error") return null;
   const roundsArr = Array.isArray(oc.review?.rounds) ? oc.review.rounds : null;
-  // All rounds or none. A tally that named two of a run's three rounds is not a shorter
-  // truth, it is a wrong one: a host that sums `rounds` divides the run's findings by the
-  // rounds it was shown and concludes the missing round found nothing. The waves arm below
-  // already refuses its whole field for one malformed head, and a round is the same kind of
-  // claim — so one refused round refuses the tally, while the waves keep publishing because
-  // they were judged on their own terms.
+  // All rounds or none: a host that sums `rounds` divides the run's findings by the rounds
+  // it was shown and concludes the missing round found nothing. One refused round refuses
+  // the whole tally, as the waves arm below refuses its field for one malformed head.
   const rounds =
     roundsArr === null ||
     roundsArr.every(
@@ -396,8 +383,6 @@ function reviewGates(steps: Step[], redact: (s: string) => string): GatesResult[
   // so a lane or a reason that quoted a credential would otherwise be the one gate field
   // that ships it.
   const bound = oc.reviewBound;
-  // One pass over the lanes: both halves of the pair come off the same `Cap`, so the count
-  // cannot disagree with the list it stands beside.
   const lanes = clipped(
     bound === undefined
       ? null
@@ -429,17 +414,15 @@ function reviewGates(steps: Step[], redact: (s: string) => string): GatesResult[
  * that head tested against the same gate `prStateOf` stands on, so the two fields answer
  * the same question with the same evidence and cannot drift. `reason` is the step's own
  * line for why the run ended where it did; `handoff.body` is the full report, of which
- * this reason is the headline — a host that wants the whole thing reads `handoff`, a host
- * that wants to triage reads this.
+ * this reason is the headline.
  */
 function handbackGates(steps: Step[], redact: (s: string) => string): GatesResult["handback"] {
   const oc: Outcome | undefined = newestDecided(steps, "handback")?.outcome;
   const unshippedHead = headOf(oc?.unshippedHead);
   const unshippedReason = textOf(oc?.unshippedReason, redact);
-  // The handback's OWN record wins where it spoke. `shippedHead`/`shippedVerified` are
-  // what this step wrote after its rewind settled — including the case the publish-side
-  // reading cannot see, where the rewind moved origin back to the verified head, so what
-  // shipped is no longer what `publish` recorded.
+  // The handback's OWN record wins where it spoke: `shippedHead`/`shippedVerified` are what
+  // this step wrote after its rewind settled, including the case the publish-side reading
+  // cannot see, where the rewind moved origin back to the verified head.
   const own = headOf(oc?.shippedHead);
   if (own !== null) {
     // The step's `shippedVerified` is what IT believed about its own rewind, and nothing
@@ -479,13 +462,12 @@ function handbackGates(steps: Step[], redact: (s: string) => string): GatesResul
  *
  * The head fields are read through `work-lean-pr`'s helpers rather than re-derived here,
  * so there is exactly ONE reader of "which head did this run ship, and did its gate clear
- * it" across this projection and `prState` — two derivations of one fact is how two fields
- * start telling two stories.
+ * it" across this projection and `prState`.
  */
 export function leanGates(steps: Step[], redact: (s: string) => string): GatesResult {
   return {
     specify: specifyGates(steps),
-    challenge: challengeGates(steps),
+    challenge: challengeGates(steps, redact),
     verify: verifyGates(steps, redact),
     review: reviewGates(steps, redact),
     handback: handbackGates(steps, redact),

@@ -29,7 +29,7 @@ export const OUTCOME_KINDS = {
   // `blocked` is the child's own "these frozen tests cannot all pass together", honoured only after the
   // driver re-ran the named tests itself. It is not `exhausted`: the route must never reach `publish`.
   build: ["ok", "exhausted", "budget", "blocked"],
-  challenge: ["new-tests", "none", "budget"],
+  challenge: ["new-tests", "none", "budget", "skipped"],
   verify: ["green", "red"],
   publish: ["ok"],
   // Two kinds; the difference is whether the step moved the head. `done` pushed nothing, so `ci` runs;
@@ -162,7 +162,9 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           return to(run, "verify", { challengeDone: true });
         case BUDGET_KIND:
         case "none":
-          // A budget stop ends the optional round rather than the run.
+        case "skipped":
+          // A stop ends the optional round rather than the run; `skipped` bought no child, so it
+          // owes no worktree reset either.
           return to(run, "verify", { challengeDone: true });
       }
       break;

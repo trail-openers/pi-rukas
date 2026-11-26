@@ -53,6 +53,7 @@ import type { WorkConfig } from "./config.ts";
 import { loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
+import { challengeSkip } from "./pre-verify-share.ts";
 import { rereadSpec } from "./spec-for.ts";
 import { type PiSpec, readiness } from "./spec.ts";
 import { existsInCommit, fileProblem, pathProblem } from "./specify-path.ts";
@@ -85,6 +86,8 @@ export interface ChallengeDeps {
   dispatch: ChallengeDispatch;
   fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
   loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
+  /** The instant the run began — with `run.deadlineMs`, the cell the pre-verify share is a fraction OF. */
+  cellStartedAt?: () => number | undefined;
   /** Preflight for the reporter companion; `statReporterPath` in production. */
   statReporter?: (p: string) => Promise<unknown>;
   /** Per-run runner limits; a test injects a short timeout to prove a hang is infra. */
@@ -230,6 +233,16 @@ async function assertTreeAndContract(
 /** The `challenge` step. Returns `new-tests` | `none`; THROWS on infrastructure. */
 export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
+
+  // 0. Whether the round is bought at all — asked BEFORE any precondition and before the worktree
+  //    is touched, so a skipped round pays no reset: it made no writes.
+  const skip = challengeSkip(
+    ctx.steps,
+    ctx.run.deadlineMs,
+    deps.cellStartedAt !== undefined ? deps.cellStartedAt() : ctx.steps[0]?.startedAt,
+    ctx.now(),
+  );
+  if (skip.stop === true) return { kind: "skipped", reason: skip.reason };
 
   // 1. The contract the run already holds, read out of its own record — the
   //    union of every `specify:ok` and `challenge:new-tests` the log carries, so

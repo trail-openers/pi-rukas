@@ -146,8 +146,7 @@ export const DISPATCH_STATES: readonly LeanState[] = [
  */
 const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>> = {
   prUrl: "publish", // Publish's own record of what it pushed; elsewhere it claims a commit that
-  // step never shipped. Same shape rule as `verifiedHead`, which it is matched to for
-  // equality.
+  // step never shipped.
   publishedHead: "publish",
   draft: "publish",
   // The two steps that REPORT how a run ended are the only ones that may claim a comment
@@ -159,11 +158,10 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // …and the only ones that may name the channel they reported on.
   channel: REPORTING_STATES,
   dispatches: DISPATCH_STATES,
-  // Only `ready` may record a derived contract: it is the one step that reads the
-  // issue, and a derived spec licenses every later step to execute a contract no
-  // author wrote. A step that never ran the deriving child has no evidence for it.
+  // Only `ready` may record a derived contract: a step that never ran the deriving
+  // child has no evidence for a contract no author wrote.
   derivedSpec: "ready",
-  // …and the same for the commit the run was judged at. A step stamping its own
+  // …and the same for the commit the run was judged at: a step stamping its own
   // `baseSha` would anchor a diff, a config read and a verify verdict to a commit the
   // run never seeded.
   baseSha: "ready",
@@ -229,10 +227,8 @@ function rowsField(rows: DispatchUsageRow[]): { dispatches?: DispatchUsageRow[] 
 
 /**
  * Why a step's own report of itself is not a valid outcome, or `undefined`.
- *
- * `state` is the step's own state; when it is supplied, a field that belongs to
- * another state is refused. Omitting it keeps the shape-only checks for callers
- * that have not resolved the step's state yet.
+ * With `state` supplied, a field belonging to another state is refused; omitting
+ * it keeps the shape-only checks for callers that have not resolved the state yet.
  */
 export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): string | undefined {
   if (typeof oc.kind !== "string") return "outcome needs a string kind";
@@ -247,8 +243,16 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     }
   }
   // The budget trio is only ever written by a budget verdict: `handback` renders
-  // `limit`/`value`/`used` into the operator's cause line, so the trio on a step whose kind
-  // is not `budget` is a ceiling this run never crossed, printed as the run's cause.
+  // `limit`/`value`/`used` into the operator's cause line, so the trio on any other kind is a
+  // ceiling this run never crossed, printed as the run's cause. `challenge` asks the question first
+  // and names its own sentence — it is the one state with a legitimate `budget` kind, so “which
+  // ceiling?” is one its operator actually has — and every other state keeps the generic wording.
+  if (
+    state === "challenge" &&
+    oc.kind !== "budget" &&
+    ["limit", "value", "used"].some((key) => oc[key] !== undefined)
+  )
+    return `outcome on a challenge ${String(oc.kind)} step carries the ceiling trio it never crossed`;
   if (oc.kind !== "budget") {
     for (const key of ["limit", "value", "used"] as const) {
       if (oc[key] !== undefined) return `outcome ${key} is only recorded by a budget verdict`;
