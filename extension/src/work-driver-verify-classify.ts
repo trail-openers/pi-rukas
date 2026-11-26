@@ -41,6 +41,7 @@
 
 import type { OfflineTests } from "./work-driver-verify-offline-tests.ts";
 import { isRepoPath, repoDirs, repoFiles } from "./work-driver-verify-repo-paths.ts";
+import { type LiteralIndex, literalIndex, namersOf } from "./work-driver-verify-select-literals.ts";
 
 /** What one changed path means for the selection. */
 export type ChangedPathClass =
@@ -50,7 +51,10 @@ export type ChangedPathClass =
   | "non-code"
   | "helper"
   | "config"
-  | "unknown";
+  | "unknown"
+  /** Internal to this module: a nameable repository file, which the caller's namers
+   * answer decides between `named` and `text`. Never returned. */
+  | "nameable";
 
 /**
  * A path the graph walks: never classified, always resolved through imports.
@@ -100,8 +104,62 @@ function isNameableRepoPath(rel: string): boolean {
   return repoFiles().includes(rel) || repoDirs().some((d) => rel === d || rel.startsWith(`${d}/`));
 }
 
-/** The offline tests whose lexed code holds `rel` as an exact literal. */
-function exactNamers(roster: OfflineTests, rel: string): string[] {
+/** The classification, plus the exact namers of a `named` path. */
+export interface ClassifiedPath {
+  kind: ChangedPathClass;
+  /** Offline tests whose lexed code holds this path as an exact literal. */
+  namers: string[];
+}
+
+/** The shared table: where a path sits, before anything asks who names it. */
+function classifyTable(rel: string): ChangedPathClass {
+  if (NODE_PATH_RE.test(rel)) return "node";
+  if (isConfigPath(rel)) return "config";
+  if (rel.startsWith("smoke-tests/lib/")) return "helper";
+  const name = rel.slice(rel.lastIndexOf("/") + 1);
+  if (NON_CODE_BASENAMES.includes(name)) return "non-code";
+  if (isNameableRepoPath(rel)) return "nameable";
+  return "unknown";
+}
+
+/**
+ * Classify one changed path, scanning the roster of offline tests the caller holds for
+ * the exact namers of a nameable path. `classifyChangedPathIndexed` is the same table
+ * answered from an index, and is what a selection uses; this form is the one the
+ * classifier's own suite drives, so the rule stays assertable without the selector.
+ */
+export function classifyChangedPath(roster: OfflineTests, rel: string): ClassifiedPath {
+  const kind = classifyTable(rel);
+  if (kind !== "nameable") return { kind, namers: [] };
+  const namers = exactNamers(roster, rel);
+  return { kind: namers.length > 0 ? "named" : "text", namers };
+}
+
+/**
+ * Classify one changed path from the caller's literal index (`literalIndex`, built once
+ * per selection from the same roster): the classification is a table over the path, and
+ * only a nameable path asks it a question — a Map lookup per spelling a test could have
+ * written, where `classifyChangedPath` scans the roster. The answers are the same
+ * because a literal that names a path must be spelled one of those ways.
+ */
+export function classifyChangedPathIndexed(index: LiteralIndex, rel: string): ClassifiedPath {
+  const kind = classifyTable(rel);
+  if (kind !== "nameable") return { kind, namers: [] };
+  const namers = namersOf(index, rel, exactNamersSpelled);
+  return { kind: namers.length > 0 ? "named" : "text", namers };
+}
+
+/**
+ * The offline tests whose lexed code holds `rel` as an exact literal — the whole
+ * inclusion test of the classifier's exact-namer rule, roster first, and the one place
+ * that rule is spelled. A selection asks the index instead
+ * (`classifyChangedPathIndexed`), which hands each candidate spelling to
+ * `exactNamersSpelled` — the same comparison, so an index answer and a roster answer to
+ * the same question cannot disagree. This is the line the mutation gate in
+ * `test-verify-select-classify.ts` edits to prove the rule is what selects a named
+ * file's tests.
+ */
+export function exactNamers(roster: OfflineTests, rel: string): string[] {
   const out: string[] = [];
   for (const name of roster.names) {
     const lexed = roster.lexed.get(name);
@@ -116,27 +174,11 @@ function exactNamers(roster: OfflineTests, rel: string): string[] {
   return out;
 }
 
-/** The classification, plus the exact namers of a `named` path. */
-export interface ClassifiedPath {
-  kind: ChangedPathClass;
-  /** Offline tests whose lexed code holds this path as an exact literal. */
-  namers: string[];
-}
-
 /**
- * Classify one changed path. The roster of offline tests is the caller's (one read
- * of the tree per selection); it is consulted only to find the exact namers of a
- * `named` path — the classification itself is a table over the path.
+ * The classifier's exact-namer rule on one literal: a repository path that spells `rel`
+ * once its leading prefix is ignored. The second half of the test `exactNamers` asks of
+ * the roster, and what a selection's index lookup asks of each candidate spelling.
  */
-export function classifyChangedPath(roster: OfflineTests, rel: string): ClassifiedPath {
-  if (NODE_PATH_RE.test(rel)) return { kind: "node", namers: [] };
-  if (isConfigPath(rel)) return { kind: "config", namers: [] };
-  if (rel.startsWith("smoke-tests/lib/")) return { kind: "helper", namers: [] };
-  const name = rel.slice(rel.lastIndexOf("/") + 1);
-  if (NON_CODE_BASENAMES.includes(name)) return { kind: "non-code", namers: [] };
-  if (isNameableRepoPath(rel)) {
-    const namers = exactNamers(roster, rel);
-    return { kind: namers.length > 0 ? "named" : "text", namers };
-  }
-  return { kind: "unknown", namers: [] };
+function exactNamersSpelled(s: string, rel: string): boolean {
+  return isRepoPath(s) && s.replace(LEADING_RE, "") === rel;
 }

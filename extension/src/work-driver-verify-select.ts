@@ -60,8 +60,15 @@ import {
 } from "./work-driver-verify-classify.ts";
 import { type LiteralTrust, literalTrustFromLexed } from "./work-driver-verify-literal-trust.ts";
 import { type OfflineTests, readOfflineTests } from "./work-driver-verify-offline-tests.ts";
+import { isRepoPath } from "./work-driver-verify-repo-paths.ts";
 import { type BuiltGraph, buildGraph } from "./work-driver-verify-select-graph.ts";
-import { namersForPaths } from "./work-driver-verify-select-literals.ts";
+import {
+  type LiteralIndex,
+  emptyLiteralIndex,
+  literalIndex,
+  namersOf,
+  quotersOf,
+} from "./work-driver-verify-select-literals.ts";
 import { SMOKE_TEST_NAME_RE, isOfflineTest } from "./work-driver-verify-shared.ts";
 import {
   type Graph,
@@ -182,6 +189,19 @@ export function literalReferrers(roster: OfflineTests, rel: string): string[] {
   return out;
 }
 
+/**
+ * The classifier's exact-namer rule as the index asks it: does this literal, spelled as
+ * a test wrote it, name this changed path? `work-driver-verify-classify` holds the
+ * roster-wide form of the same test (`exactNamers`), so a selection's index answer and a
+ * roster scan cannot disagree about one question.
+ */
+function exactNamersFor(literal: string, rel: string): boolean {
+  return isRepoPath(literal) && literal.replace(NAMER_LEADING_RE, "") === rel;
+}
+
+/** A leading interpolation or relative prefix that does not change which file a literal names — the classifier's own rule. */
+const NAMER_LEADING_RE = /^(?:\$\{[^}]*\}\/|\.{1,2}\/|extension\/)*/;
+
 /** Does this classification select on what a test's code SAYS rather than imports? */
 function isLiteralClass(kind: ChangedPathClass): boolean {
   return kind === "named" || kind === "text" || kind === "helper";
@@ -281,11 +301,11 @@ export function selectVerifyTests(
     }
     return libDoubt;
   };
-  // One pass over the roster's lexed literals builds the namer index for every path
-  // in `changed`, so a multi-path diff scans the roster once instead of once per
-  // path. Only the classes that name or quote a path need it, and the classification
-  // that decides between them is a table over the path alone — so classifying every
-  // path first, then scanning, answers the same questions in the same order.
+  // One pass over the roster's lexed literals indexes them for the whole selection, so
+  // every literal question afterwards is a lookup rather than a scan of the roster per
+  // changed path. The classifier reads it for a `named` path's namers and the helper rule
+  // for a `helper` path's quoterS, each through its own module's spelling of the rule.
+  let literals: LiteralIndex = emptyLiteralIndex();
   const literalIndexes = {
     exact: new Map<string, string[]>(),
     raw: new Map<string, string[]>(),
@@ -303,26 +323,24 @@ export function selectVerifyTests(
   ) {
     const trust = libTrustDoubt();
     if (trust !== "") return full(trust);
-    // The `named`/`text` rows match the leading prefix off (a test may spell
-    // `./docs/x.md`), the `helper` rows match the exact path as quoted. A path is
-    // one class or the other, so a bucket is never filled under both spellings.
-    const exactPaths = new Set<string>();
-    const rawPaths = new Set<string>();
+    literals = literalIndex(roster);
+    // The `helper` rows match the exact path as quoted; the `named` rows match the
+    // leading prefix off, through the classifier's own rule. A path is one class or the
+    // other, so no bucket is filled under both spellings.
+    const rawPaths: string[] = [];
+    const exactPaths: string[] = [];
     for (const [i, classified] of classifiedList.entries()) {
       const f = changed[i];
       if (f === undefined) continue;
-      if (classified.kind === "helper") rawPaths.add(f);
-      else if (isLiteralClass(classified.kind)) exactPaths.add(f);
+      if (classified.kind === "helper") rawPaths.push(f);
+      else if (isLiteralClass(classified.kind)) exactPaths.push(f);
     }
-    if (exactPaths.size > 0) {
-      for (const [key, names] of namersForPaths(roster, exactPaths, literalReferrers)) {
-        literalIndexes.exact.set(key, names);
-      }
+    for (const [key, names] of quotersOf(roster, literals, rawPaths, literalReferrers)) {
+      literalIndexes.raw.set(key, names);
     }
-    if (rawPaths.size > 0) {
-      for (const [key, names] of namersForPaths(roster, rawPaths, literalReferrers)) {
-        literalIndexes.raw.set(key, names);
-      }
+    for (const target of exactPaths) {
+      const names = namersOf(literals, target, exactNamersFor);
+      if (names.length > 0) literalIndexes.exact.set(target, names);
     }
   }
   // The pre-check order is part of the off arm's bytes: the pre-#2649 code refused
