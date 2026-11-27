@@ -16,7 +16,7 @@ import { buildLedgerNote } from "./adversarial-ledger-note.ts";
 import type { AdversarialLoopParams } from "./adversarial-loop-params.ts";
 import { isToolPathProvenance } from "./adversarial-loop-params.ts";
 import { makeRunPhase } from "./adversarial-phase.ts";
-import { policyInfraFailureText, reportPolicyError } from "./adversarial-policy.ts";
+import { NO_DIFF, policyInfraFailureText, reportPolicyError } from "./adversarial-policy.ts";
 import { buildAdversarialPrompt, buildFixPrompt } from "./adversarial-prompts.ts";
 import { onRereadFailure, rereadStalenessNote } from "./adversarial-reread.ts";
 import { type InfraCtx, infraFailureResult, runPhaseWithInfraRetry } from "./adversarial-retry.ts";
@@ -25,6 +25,7 @@ import {
   projectReviewerKillCause,
   synthKillCause,
 } from "./adversarial-reviewer-arm.ts";
+import { reviewerBoundGrace } from "./adversarial-reviewer-grace.ts";
 import { type RoundReview, roundAfterReread } from "./adversarial-round-state.ts";
 import { type RoundRecord, createUsageTally } from "./adversarial-usage.ts";
 import { reaskResultText, reaskRoundOnce } from "./adversarial-verdict-reask.ts";
@@ -219,9 +220,7 @@ export async function runAdversarialLoop(
       return r.diff;
     };
   } else {
-    return noDiffResult(
-      "Adversarial loop: provide `diff`, or both `base` and `head` (with `workCwd`) — nothing to review was supplied.",
-    );
+    return noDiffResult(NO_DIFF);
   }
 
   // Mark this job as orchestrator-shaped so dispatch_peek / dispatch_steer
@@ -252,6 +251,7 @@ export async function runAdversarialLoop(
       ? {}
       : { stallWindowMinutes: params.stallWindowMinutes }),
     ...(params.signal === undefined ? {} : { budgetSignal: params.signal }),
+    ...reviewerBoundGrace(params.childBoundGraceMs),
     onProgress: params.onProgress,
   });
 

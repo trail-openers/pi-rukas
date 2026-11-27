@@ -66,15 +66,21 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         ...(cmd === "git" && o?.env === undefined ? { env: netGitEnv(process.env, o?.cwd) } : {}),
       }),
     adversarial: (a) => {
-      // The budget arms are DESTRUCTURED rather than spread, as the lens seam below does:
+      // The step's budget arms are DESTRUCTURED rather than spread, as the lens seam below does:
       // `arms` is what the reviewer may inherit (the abort signal and the progress hook)
       // with `childBoundMs` taken out of the object AND out of the type so the clamp below
       // cannot be re-supplied by a spread. `loopChildBoundMs()` is the reviewer's own knob
       // and the step's armed bound can only TIGHTEN it. Asserted on the value the reviewer
       // dispatch received in `test-adversarial-reviewer-bound.ts`.
-      // `stall` comes out of `arms` beside `childBoundMs`: the loop and the lens engine build their
-      // own spawn options, so only the frozen whole minutes travel (as `stallWindowMinutes`).
-      const { childBoundMs: budgetBoundMs, stall: budgetStall, ...arms } = a.budget.opts;
+      // `stall` and `childBoundGraceMs` come out beside `childBoundMs`: the loop and the lens engine
+      // build their own spawn options, so only frozen data reaches a leaf — and a bound with no grace
+      // of its own gets the configured 10 minutes, a full grace past the deadline.
+      const {
+        childBoundMs: budgetBoundMs,
+        stall: budgetStall,
+        childBoundGraceMs: budgetGraceMs,
+        ...arms
+      } = a.budget.opts;
       return runAdversarialLoop(
         {
           base: a.base,
@@ -109,6 +115,8 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           // The step's hung-request lever, as the frozen whole minutes: the reading that
           // decides whether the child is quiet. Its abort already rides `arms.signal`.
           ...(budgetStall === undefined ? {} : { stallWindowMinutes: budgetStall.windowMinutes }),
+          // The grace the deadline left, beside the bound above.
+          ...(budgetGraceMs === undefined ? {} : { childBoundGraceMs: budgetGraceMs }),
           ...leanChildOpts(a.headless),
         },
         new AbortController().signal,
@@ -121,8 +129,14 @@ export function reviewDeps(headless: boolean): ReviewDeps {
       // back the budget's own value and it wins, making `PI_ENSEMBLE_LENS_BOUND_MS` inert.
       // Taking the key out of the type too makes a future spread that could carry it a
       // compile error. Asserted on the delivered value in `test-lean-review-deps-bound.ts`.
-      // `stall` is taken out beside `childBoundMs` for the same reason.
-      const { childBoundMs: budgetBoundMs, stall: budgetStall, ...arms } = a.budget.opts;
+      // `stall` and the deadline grace are taken out beside `childBoundMs` for the same reason:
+      // `runLensReview` hands its options to `runLensChild`, which builds its own spawn options.
+      const {
+        childBoundMs: budgetBoundMs,
+        stall: budgetStall,
+        childBoundGraceMs: budgetGraceMs,
+        ...arms
+      } = a.budget.opts;
       const summary = await (deps.lensEngine ?? runLensReview)({
         base: a.base,
         head: a.head,
@@ -159,6 +173,8 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         ...(deps.lensChildFn === undefined ? {} : { lensChildFn: deps.lensChildFn }),
         // The same hung-request lever for the six lens children.
         ...(budgetStall === undefined ? {} : { stallWindowMinutes: budgetStall.windowMinutes }),
+        // And the grace that keeps each lens's kill inside deadline + the handoff allowance.
+        ...(budgetGraceMs === undefined ? {} : { childBoundGraceMs: budgetGraceMs }),
         ...arms,
         ...leanChildOpts(a.headless),
       });

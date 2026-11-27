@@ -34,11 +34,15 @@ import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import type { BudgetOpts, DispatchUsageRow } from "../../src/lean/step-budget.ts";
-import { type QuietTickReport, type QuietTickOpts, deliverQuietTick } from "./lean-quiet-child-tick.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
+import { type ArmedOptsSink, recordArmedOpts } from "./lean-arms-recorder.ts";
+import {
+  type QuietTickOpts,
+  type QuietTickReport,
+  deliverQuietTick,
+} from "./lean-quiet-child-tick.ts";
 // The git contract lives in `lean-build-git.ts`; re-exported so a case imports one module.
 export { git, gitEnvFor } from "./lean-build-git.ts";
-import { git, gitEnv } from "./lean-build-git.ts";
 import {
   type ClockOpts,
   type DispatchResultOverride,
@@ -46,6 +50,7 @@ import {
   resultOverride,
 } from "./lean-build-artifacts.ts";
 import { configWithRunner, issueBodyReader } from "./lean-build-asserts.ts";
+import { git, gitEnv } from "./lean-build-git.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -118,6 +123,7 @@ export function buildFixture(
      */
     extraFrozen?: Record<string, string>;
     childOwnsBranch?: boolean;
+    buildStartedAt?: number; // #2660 — the start a deadline-derived bound measures from
     /**
      * Files committed into the BASE commit only, as `path -> bytes`: never hashed,
      * never in the frozen record. A case whose subject is the base tree — a project
@@ -221,7 +227,11 @@ export function buildFixture(
           },
         ]),
     // The position the log folds to: one build round owed.
-    { key: `${issue}:build:0`, state: "build", startedAt: 3 },
+    {
+      key: `${issue}:build:0`,
+      state: "build",
+      startedAt: opts?.buildStartedAt ?? 3,
+    },
   ];
   // One entry per build ROUND. The pending entry the engine re-runs is appended below it, exactly as
   // `runLean` appends a fresh step per round: a run already carrying a decided build
@@ -229,7 +239,7 @@ export function buildFixture(
   const pending: Step = {
     key: `${issue}:build:${steps.filter((x) => x.state === "build").length}`,
     state: "build",
-    startedAt: 3,
+    startedAt: opts?.buildStartedAt ?? 3,
   };
   const withSteps = { ...run, steps: [...steps, pending] };
   const ctx: HandlerCtx = {
@@ -360,6 +370,8 @@ export interface RunOpts {
   execSpy?: (cmd: string, o?: unknown) => void;
   /** The clock knobs of {@link deadlineOf}: the run's deadline and its `now`. */
   clock?: ClockOpts;
+  buildStartedAt?: number; // #2660 — the start the deadline's bound measures from
+  armedOpts?: ArmedOptsSink; // #2660 — the arms each dispatch was handed, in order
 }
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
@@ -371,6 +383,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       ...(opts.frozenText === undefined ? {} : { frozenText: opts.frozenText }),
       ...(opts.extraFrozen === undefined ? {} : { extraFrozen: opts.extraFrozen }),
       ...(opts.childOwnsBranch === undefined ? {} : { childOwnsBranch: opts.childOwnsBranch }),
+      ...(opts.buildStartedAt === undefined ? {} : { buildStartedAt: opts.buildStartedAt }),
     });
   if (opts.extraSteps !== undefined) {
     built.ctx.run.steps = [...built.ctx.run.steps, ...opts.extraSteps];
@@ -403,6 +416,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     extraArgs.push(o.extraArgs ?? []);
     opts.onProgressTick?.(o.onProgress);
     if (!childActed) opts.child?.((childActed = true) && (spec.cwd as string));
+    recordArmedOpts(opts.armedOpts, o); // #2660 — the arms as the seam received them
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
     // The child's own acts are declared BEFORE the quiet tick runs, so the tick reads what THIS

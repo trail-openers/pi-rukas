@@ -252,9 +252,10 @@ const SRC = join(import.meta.dirname, "..", "src");
   const scheduleCalls = (armSource.match(/childBoundSchedule\(/g) ?? []).length;
   eq(scheduleCalls, 1, "the arm asks for the bound's schedule exactly once");
   assert(
-    /childBoundSchedule\(\s*o\.opts\.childBoundMs \?\? 0,\s*graceMs,\s*o\.start,?\s*\)/.test(
-      armSource,
-    ),
+    // #2660 refactored the one schedule call into `childBoundScheduleFor(o.opts, o.start)`, which
+    // is where the caller's `childBoundGraceMs` is now read. The rule is unchanged: exactly one
+    // schedule, built from the caller's grace and the spawn's own start (counted above).
+    /childBoundScheduleFor\(\s*o\.opts,\s*o\.start\s*\)/.test(armSource),
     "that one schedule is asked from the single graceMs and the spawn's own start",
   );
   assert(

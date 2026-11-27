@@ -106,6 +106,14 @@ export interface SpawnOptions extends WriteFenceOpt {
    */
   verdictStop?: true;
   /**
+   * #2660 — the grace between the child's wrap-up steer and its kill, ms. Absent means
+   * the configured `childBoundGraceMs()`. A step whose bound was derived from the run's
+   * deadline passes what the deadline still owns, so the kill lands inside deadline plus
+   * the handoff allowance instead of a full grace past it. Callers that bound through the
+   * cycle clock leave this unset: that clamp already shortens `bound + grace` together.
+   */
+  childBoundGraceMs?: number;
+  /**
    * Pi's tool-execute AbortSignal — fires when the user hits Esc to cancel
    * the running tool. We listen on this and kill the child with SIGTERM so
    * cancellation actually propagates instead of leaving Pi stuck.

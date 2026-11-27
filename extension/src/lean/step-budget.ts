@@ -9,6 +9,7 @@
  * `child-bound` cause; the stall verdict is only ever what the poll's breach froze.
  * Ask {@link readDispatched} BEFORE a caller's infra throw, so a stop is never read as a failure.
  */
+import { type StepBound, deadlineTrace } from "../lean-step-bound.ts";
 import type { LensRunResult } from "../lens-review-types.ts";
 import type { RunningState } from "../progress.ts";
 import type { BudgetLimit, StallArms, StallFired, StallOpts } from "../request-stall-policy.ts";
@@ -35,6 +36,9 @@ export interface BudgetOpts {
   signal?: AbortSignal;
   onProgress?: (s: RunningState) => void;
   budgetTurns?: number;
+  /** The grace the bound's kill sits behind: absent means the configured `childBoundGraceMs()`, a
+   *  deadline-derived arm passes what the deadline still owns. */
+  childBoundGraceMs?: number;
   /** #2644: quiet this long with nothing in flight is a hung request (#951). Absent = lever not armed. */
   stall?: StallOpts;
 }
@@ -122,14 +126,14 @@ function traceBreach(fired: BudgetFired, phrase: string): void {
   );
 }
 
-/** The arms a step hands its dispatch seam: what the child gets, and the reader. */
+/** The arms a step hands its dispatch seam: what the child gets, and the reader. `fired` reads what a
+ *  ceiling breach froze, else the minutes lever inferred from a `child-bound` kill cause — a cause the
+ *  wall clock stamped, so it can name turns / tokens but never the stall, which only the poll's breach
+ *  ever names. `warning` is set when a wall clock was armed that the runtime will not enforce
+ *  (`PI_ENSEMBLE_DISPATCH_CAPS=0`) or the stall lever armed nothing. */
 export type BudgetArms = {
   opts: BudgetOpts;
-  /** The verdict this arm saw: what a ceiling breach froze, else the minutes lever inferred from a
-   *  `child-bound` kill cause — a cause the wall clock stamped, so it can name turns / tokens but
-   *  never the stall, which only the poll's breach ever names. */
   fired: (result: DispatchResult) => BudgetFired | undefined;
-  /** Set when a wall clock was armed that the runtime will not enforce (`PI_ENSEMBLE_DISPATCH_CAPS=0`). */
   warning?: string;
 };
 
@@ -139,12 +143,22 @@ export type BudgetArms = {
  * The `minutes` lever is `childBoundMs`, enforced by `spawn-child-bound.ts` — the kill lands AFTER its
  * grace period and the reported `ms` overshoots, so {@link minutesUsed} rounds up. `turns` / `tokens` /
  * `stall` abort through one controller, and a breach of any of them is a `budget` stop, never a cancel.
+ * `derived` is what the run's deadline leaves (`lean-step-bound.ts`); absent, or a row already tighter,
+ * and the minutes lever is the configured row exactly as it was.
  */
-export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms {
+export function armBudget(
+  b: Budget | undefined,
+  stall?: StallArms,
+  derived?: StepBound,
+): BudgetArms {
   const minutes = b?.minutes ?? 0;
   const turns = b?.turns ?? 0;
   const tokens = b?.tokens ?? 0;
-  const boundMs = minutes > 0 ? minutes * 60_000 : undefined;
+  const boundMs = minutes > 0 ? Math.max(1_000, derived?.boundMs ?? minutes * 60_000) : undefined;
+  const traced = derived === undefined ? undefined : deadlineTrace(derived);
+  // The grace travels with the bound only when the deadline set it, so the kill stays inside the
+  // line plus the handoff allowance instead of a configured grace past it.
+  const grace = derived?.clamped === true ? { childBoundGraceMs: derived.graceMs } : {};
   // Frozen HERE: a running child's bound must not move with a later clock read, and the lever
   // derives its own window from the arms, so arming it reads no clock and cannot shift this bound.
   const stallOpts = stallLever(stall);
@@ -160,7 +174,7 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
     // The one lever with no hook to trace it, so the reader says it out loud. The flag dedupes.
     if (!minutesTraced) {
       minutesTraced = true;
-      traceBreach(breach, "the child stopped at its bound");
+      traceBreach(breach, traced ?? "the child stopped at its bound");
     }
     return breach;
   };
@@ -189,7 +203,7 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
   );
   if (turns <= 0 && tokens <= 0 && stallOpts === undefined) {
     return {
-      opts: boundMs === undefined ? {} : { childBoundMs: boundMs },
+      opts: boundMs === undefined ? {} : { childBoundMs: boundMs, ...grace },
       fired,
       ...(inert === undefined ? {} : { warning: inert }),
     };
@@ -226,7 +240,7 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
   };
   return {
     opts: {
-      ...(boundMs === undefined ? {} : { childBoundMs: boundMs }),
+      ...(boundMs === undefined ? {} : { childBoundMs: boundMs, ...grace }),
       signal: controller.signal,
       onProgress,
       // The steer's denominator, present only when a turns ceiling exists.
@@ -254,24 +268,22 @@ export function dispatchUsageRow(result: DispatchResult): DispatchUsageRow {
     role: result.role,
     ms: result.ms ?? 0,
     ok: result.ok && result.killCause === undefined && result.errorStop === undefined,
-    usage: result.usage ?? zeroDispatchUsage(),
+    usage: result.usage ?? ZERO_DISPATCH_USAGE,
     ...(typeof result.stopReason === "string" ? { stopReason: result.stopReason } : {}),
   };
 }
 
-/** A child that reported nothing cost nothing that anybody observed. */
-function zeroDispatchUsage(): DispatchUsageRow["usage"] {
-  return {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    cost: 0,
-    turns: 0,
-    toolCalls: 0,
-    toolErrors: 0,
-  };
-}
+/** What a child that reported nothing cost: all zeroes, so the record never reads as "free". */
+const ZERO_DISPATCH_USAGE: DispatchUsage = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  cost: 0,
+  turns: 0,
+  toolCalls: 0,
+  toolErrors: 0,
+};
 
 /** The lens children's role and the fixer's role — the values `leanUsage` folds `byRole` on. */
 export const LENS_ROLE = "code-review-specialist";
@@ -287,7 +299,7 @@ export function lensRows(lenses: LensRunResult[]): DispatchUsageRow[] {
     ms: lens.ms,
     // `blocked` is a lens that never ran; `killCause` is the dispatch-cap kill.
     ok: lens.ok && lens.blocked !== true && lens.killCause === undefined,
-    usage: lens.usage ?? zeroDispatchUsage(),
+    usage: lens.usage ?? ZERO_DISPATCH_USAGE,
   }));
 }
 
@@ -296,28 +308,20 @@ export function budgetSentence(state: LeanState, fired: BudgetFired): string {
   return `${state} stopped: ${fired.limit} budget ${String(fired.value)} exceeded (used ${String(fired.used)})`;
 }
 
-/**
- * The verdict for a step that ran out of budget, not out of ideas.
- */
-function budgetVerdict(state: LeanState, fired: BudgetFired): Outcome {
-  return {
+/** The budget verdict for a step that ran out of budget, not out of ideas, carrying the rows of every
+ *  dispatch it paid for so a stopped round's tokens reach the host. Clipped HERE to the validator's
+ *  cap, keeping the newest. */
+export function budgetVerdictWithRows(
+  state: LeanState,
+  fired: BudgetFired,
+  rows: DispatchUsageRow[],
+): Outcome {
+  const verdict: Outcome = {
     kind: "budget",
     limit: fired.limit,
     value: fired.value,
     used: fired.used,
     reason: budgetSentence(state, fired),
   };
-}
-
-/**
- * The budget verdict carrying the rows of every dispatch the step paid for, so a stopped round's tokens
- * reach the host. Clipped HERE to the validator's cap, keeping the newest.
- */
-export function budgetVerdictWithRows(
-  state: LeanState,
-  fired: BudgetFired,
-  rows: DispatchUsageRow[],
-): Outcome {
-  const verdict = budgetVerdict(state, fired);
   return rows.length === 0 ? verdict : { ...verdict, dispatches: rows.slice(-DISPATCHES_MAX_ROWS) };
 }

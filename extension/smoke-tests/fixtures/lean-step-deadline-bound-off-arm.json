@@ -1,0 +1,90 @@
+{
+  "note": "Pre-change arms of a lean step's child bound, captured from 11c1e8a8a73cffcda48583b4a147c785e5c80160 (the commit before lean-step-bound.ts existed) by a script that imported that tree from a git archive, so no import resolved at this checkout's src/. Rows: deadline present/absent, the minutes row smaller and larger than what the deadline leaves, headless on/off. Compared byte for byte by smoke-tests/test-lean-step-deadline-bound-off-arm.ts at PI_ENSEMBLE_LEAN_STEP_DEADLINE_BOUND=0.",
+  "baseCommit": "11c1e8a8a73cffcda48583b4a147c785e5c80160",
+  "startMs": 1700003222000,
+  "deadlineMs": 1700004200000,
+  "rows": {
+    "deadline/minutes=45/headless=false": {
+      "opts": {
+        "childBoundMs": 2700000,
+        "budgetTurns": 400,
+        "stall": {
+          "windowMinutes": 9,
+          "windowMs": 498000
+        }
+      },
+      "schedule": {
+        "wrapAtMs": 2700000,
+        "killAtMs": 3300000,
+        "stopInMs": 600000
+      }
+    },
+    "deadline/minutes=3/headless=false": {
+      "opts": {
+        "childBoundMs": 180000,
+        "budgetTurns": 400,
+        "stall": {
+          "windowMinutes": 9,
+          "windowMs": 498000
+        }
+      },
+      "schedule": {
+        "wrapAtMs": 180000,
+        "killAtMs": 780000,
+        "stopInMs": 600000
+      }
+    },
+    "deadline/minutes=60/headless=false": {
+      "opts": {
+        "childBoundMs": 3600000,
+        "budgetTurns": 400,
+        "stall": {
+          "windowMinutes": 9,
+          "windowMs": 498000
+        }
+      },
+      "schedule": {
+        "wrapAtMs": 3600000,
+        "killAtMs": 4200000,
+        "stopInMs": 600000
+      }
+    },
+    "deadline/minutes=45/headless=true": {
+      "opts": {
+        "childBoundMs": 2700000,
+        "budgetTurns": 400,
+        "stall": {
+          "windowMinutes": 9,
+          "windowMs": 498000
+        }
+      },
+      "schedule": {
+        "wrapAtMs": 2700000,
+        "killAtMs": 3300000,
+        "stopInMs": 600000
+      }
+    },
+    "no-deadline/minutes=45/headless=false": {
+      "opts": {
+        "childBoundMs": 2700000,
+        "budgetTurns": 400
+      },
+      "schedule": {
+        "wrapAtMs": 2700000,
+        "killAtMs": 3300000,
+        "stopInMs": 600000
+      }
+    },
+    "no-deadline/minutes=3/headless=false": {
+      "opts": {
+        "childBoundMs": 180000,
+        "budgetTurns": 400
+      },
+      "schedule": {
+        "wrapAtMs": 180000,
+        "killAtMs": 780000,
+        "stopInMs": 600000
+      }
+    }
+  }
+}

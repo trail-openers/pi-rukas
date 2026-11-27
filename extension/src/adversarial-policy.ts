@@ -71,3 +71,12 @@ export function reportPolicyError(policy: {
 export function policyInfraFailureText(reason: string): string {
   return `Adversarial loop infrastructure failure: ${reason} (reportVerdict must be "terminal" or "routed"). No verdict was produced — this is NOT a review rejection.`;
 }
+
+/** The loop's round ceiling: how many reviewer rounds one adversarial review buys. A reviewer
+ *  round is the most expensive child in a lean cell, so the cap on it is stated once, here. */
+export const MAX_ROUNDS = 3;
+
+/** What the loop says when it was given nothing to review: neither a pasted diff nor a base/head
+ *  range. The wording is loop policy (it is the operator's only clue), not control flow. */
+export const NO_DIFF =
+  "Adversarial loop: provide `diff`, or both `base` and `head` (with `workCwd`) — nothing to review was supplied.";

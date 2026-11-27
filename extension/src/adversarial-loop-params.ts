@@ -144,6 +144,17 @@ export type AdversarialLoopParams = ReportPolicy & {
    */
   stallWindowMinutes?: number;
   /**
+   * #2660 — the caller's deadline-derived CHILD-BOUND GRACE, in ms, beside
+   * {@link AdversarialLoopParams.childBoundMs}. Reviewer-only like the bound, read ONLY by the
+   * reviewer branch, and it can only TIGHTEN the configured grace. Set in ms rather than whole
+   * minutes because `lean-step-bound.ts` floors a deadline-derived grace at `MIN_KILL_GRACE_MS`
+   * (30 s) — a value minutes cannot carry, and one the bound was PLACED against: the bound is
+   * derived as `room − grace`, so a grace rounded elsewhere moves the wrap-up steer off the
+   * position that bound was computed for. `childBoundSchedule` still clamps `bound + grace`
+   * against the cycle clock exactly once, whatever this says.
+   */
+  childBoundGraceMs?: number;
+  /**
    * An extra abort for the reviewer child. Set ONLY by lean's review step, so
    * `budgets.review.turns` / `tokens` can stop a runaway reviewer at a turn
    * boundary. Reviewer-only, like {@link AdversarialLoopParams.childBoundMs}:

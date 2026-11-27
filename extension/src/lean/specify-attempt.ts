@@ -11,6 +11,7 @@
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { verdictReasonClause } from "../lean-step-bound.ts";
 import { statReporterPath } from "../reporter-preflight.ts";
 import { makeRunId } from "../spawn-support.ts";
 import { traceWarn } from "../trace.ts";
@@ -87,6 +88,9 @@ interface SpecifyAttemptArgs {
   resubmit?: boolean;
   /** #2644 — the hung-request lever the caller derived from the run's deadline. */
   stall?: Parameters<typeof armBudget>[1];
+  /** The child bound the caller derived from the run's deadline at this dispatch; it rides beside
+   *  the lever, both from one `stepDispatchArms`. */
+  bound?: Parameters<typeof armBudget>[2];
 }
 
 interface SpecifyAttemptResult {
@@ -196,7 +200,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   // The body the step already fetched to parse `spec` — threaded, never re-read.
   const { issueBody } = args;
   // Each dispatch gets its own budget, armed the way the first was.
-  const budget = armBudget(budgetFor(config, "specify"), args.stall);
+  const budget = armBudget(budgetFor(config, "specify"), args.stall, args.bound);
   if (budget.warning !== undefined) traceWarn(`lean specify #${String(issue)}: ${budget.warning}`);
   // Minted here, before the child exists, so its re-ask can open the same session. A retry attempt
   // gets none: the step's ceiling is one child, one follow-up and one fresh retry.
@@ -238,7 +242,10 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   const dispatchedRead = readDispatched(dispatchedChild);
   if ("stop" in dispatchedRead)
     return {
-      outcome: budgetVerdictWithRows("specify", dispatchedRead.stop, rows),
+      outcome: verdictReasonClause(
+        budgetVerdictWithRows("specify", dispatchedRead.stop, rows),
+        args.bound,
+      ),
       refused: [],
       silent: false,
       dispatched: rows,
@@ -278,6 +285,8 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
     ),
     declared: first.rows.length,
     budget: budgetFor(config, "specify"),
+    // The re-ask keeps the first child's bound, so the pair agrees on the room.
+    bound: args.bound,
     wt,
     repoRoot,
     issue,
@@ -285,7 +294,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   if (reask !== undefined) rows.push(reask.row);
   if (reask !== undefined && "stop" in reask)
     return {
-      outcome: budgetVerdictWithRows("specify", reask.stop, rows),
+      outcome: verdictReasonClause(budgetVerdictWithRows("specify", reask.stop, rows), args.bound),
       refused: [],
       silent: false,
       dispatched: rows,

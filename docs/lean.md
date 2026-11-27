@@ -610,7 +610,7 @@ tokens levers use. The step ends as the `budget` verdict those levers already pr
 
 `PI_ENSEMBLE_LEAN_REQUEST_STALL=0` is the only off value; it returns a hung request to being
 bounded by the outer wall alone. Sources: `extension/src/request-stall-policy.ts` (the switch and the window),
-`extension/src/lean/request-stall.ts` (the lean reserve), `extension/src/lean/step-budget.ts` (the arm and the verdict).
+`extension/src/lean-step-bound.ts` (the lean reserve, armed by `stepDispatchArms`), `extension/src/lean/step-budget.ts` (the arm and the verdict).
 
 **The review step's own clock.** Every lever above bounds ONE CHILD; the `review`
 step also bounds ITSELF, because it buys two adversarial passes, twelve lens
