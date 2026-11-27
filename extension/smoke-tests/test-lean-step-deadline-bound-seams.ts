@@ -30,6 +30,7 @@ import { stepDispatchArms } from "../src/lean-step-bound.ts";
 import { defaultConfig } from "../src/lean/config.ts";
 import type { Budget } from "../src/lean/config.ts";
 import { armBudget } from "../src/lean/step-budget.ts";
+import { MIN_DEADLINE_GRACE_MS, MIN_KILL_GRACE_MS } from "../src/lean-step-bound.ts";
 import { childBoundGraceMs } from "../src/spawn-child-bound.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { withEnv } from "./lib/env-scope.ts";
@@ -169,11 +170,31 @@ function killedChild(): DispatchResult {
 }
 
 // ── (0) non-vacuity: the step's own arms really do carry the pair ───────────
+// The two 30 s floors of the derivation, pinned by LITERAL here rather than trusted to the
+// arithmetic above. They are two constants, not one, because they police different
+// comparisons — the clamp's worth (`full − bound`) and the kill's placement
+// (`room − allowance − grace`) — and either could move alone; a single constant would let a
+// change to one silently move the other. `armed` above is the row that exercises each, so a
+// floor changed in isolation fails its own assertion rather than moving a row unnoticed.
+assert(
+  MIN_DEADLINE_GRACE_MS === 30_000,
+  `(0) the CLAMP floor is the shipped 30 s — a clamp shorter than this is not worth arming (got ${String(MIN_DEADLINE_GRACE_MS)})`,
+);
+assert(
+  MIN_KILL_GRACE_MS === 30_000,
+  `(0) the KILL floor is the shipped 30 s — a kill closer to its steer than this never reads the steer (got ${String(MIN_KILL_GRACE_MS)})`,
+);
 for (const state of ["build", "challenge", "specify", "review"]) {
   const a = armsFor(state);
   assert(
     a.opts.childBoundMs === EXPECT_BOUND && a.opts.childBoundGraceMs === EXPECT_GRACE,
     `(0) ${state}'s own arms carry the deadline's pair (${String(EXPECT_BOUND)} + ${String(EXPECT_GRACE)}); got ${String(a.opts.childBoundMs)} + ${String(a.opts.childBoundGraceMs)}`,
+  );
+  // And the grace it carries is the kill floor exactly, which is what ties the two constants
+  // above to this row: the shipped grace does not fit, so the derivation floors at the kill rule.
+  assert(
+    a.opts.childBoundGraceMs === MIN_KILL_GRACE_MS,
+    `(0) ${state}: the grace this row armed sits exactly on the kill floor (got ${String(a.opts.childBoundGraceMs)}, floor ${String(MIN_KILL_GRACE_MS)})`,
   );
 }
 

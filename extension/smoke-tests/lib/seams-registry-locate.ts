@@ -99,7 +99,8 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
     // the frozen arms and the inertness line. It sits at `src/`'s top level because it is spawn
     // policy, not engine state, and takes the lean reserve as a PARAMETER so it never imports the
     // lean tree. Both of its production callers are `src/lean/` files — `step-budget.ts` arms the
-    // lever, `request-stall.ts` supplies the reserve, the deadline and the step's start — so the flat
+    // lever, `lean-step-bound.ts`'s `stepDispatchArms` supplies the reserve, the deadline and the
+    // step's start — so the flat
     // top-level scan that
     // the orphan check and both importer checks use cannot see them, and the module's three
     // smoke-tests importers make it look test-only. `locate` points the checks at the recursive corpus.
@@ -161,6 +162,11 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
       // test-lean-deadline-step-bound.ts (e), which build their rows FROM this constant.
       MIN_DEADLINE_GRACE_MS:
         "the derivation's own floor; test-lean-deadline-step-bound.ts (a)/(e) pin the pair it guards",
+      // The sibling floor, on the kill's placement rather than the clamp's worth. Pinned by
+      // literal beside its sibling in (a), which is the only reason it is exported: the two
+      // are separate constants and a change to one must show up as a red assertion.
+      MIN_KILL_GRACE_MS:
+        "the floor a deadline-derived grace never sits below; test-lean-deadline-step-bound.ts (a) pins it by literal beside its sibling",
       // The deadline's own words, reached only through `verdictReasonClause`.
       deadlineReasonClause:
         "the clause a stopped step prints; test-lean-deadline-step-bound.ts (c) pins build's verdict, test-lean-step-deadline-bound-reasons.ts pins the other three callers",

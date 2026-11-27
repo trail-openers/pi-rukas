@@ -65,15 +65,21 @@ export interface StepBoundArms {
 
 /** The least room a deadline-derived bound may leave between the child's bound and the
  *  row it replaced: below it the deadline saved nothing worth a clamp, and the child's
- *  own grace would exceed the shortening. */
+ *  own grace would exceed the shortening. A rule about the SHORTENING — it is compared
+ *  against `full - left`, the size of the clamp. Its sibling below is a rule about the
+ *  KILL's placement. Both are 30 s today and are deliberately two constants: either could
+ *  move alone (a steer that needs longer to land changes the kill rule, not the clamp's
+ *  worth). Both are pinned by the literal assertions in `test-lean-deadline-step-bound.ts`. */
 export const MIN_DEADLINE_GRACE_MS = 30_000;
 
 /** The least grace a deadline-derived kill may sit behind its wrap-up steer. A child
  *  steered and killed in the same instant never reads the steer, and the steer is the
  *  half of the bound that costs the child nothing — so a derivation that would leave the
  *  kill less than this behind the bound keeps the configured grace instead and places the
- *  bound a full grace before the line. */
-const MIN_KILL_GRACE_MS = 30_000;
+ *  bound a full grace before the line. A rule about the KILL, compared against the
+ *  grace/placement arithmetic; see {@link MIN_DEADLINE_GRACE_MS} for why the two 30 s
+ *  floors are not merged into one constant. */
+export const MIN_KILL_GRACE_MS = 30_000;
 
 /** Why the deadline did not shorten a bound, or `undefined` when it did. */
 type InertCause = "switch" | "deadline" | "caps" | "now" | "room" | "row";
