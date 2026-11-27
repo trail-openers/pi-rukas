@@ -127,6 +127,10 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
       // clamping near the line and the no-room refusal are pinned by the direct calls.
       requestStallWindowMs:
         "the derived window: the reserve with room to spare, the remainder near the line, nothing at all with no room; test-lean-request-stall.ts (c) pins all three",
+      // The ONE composer of a step's inertness line. `armBudget` is its only production caller and
+      // never inspects the answer, so the join order and the both-silent `undefined` need the direct pin.
+      inertWarning:
+        "the join of the two inertness halves, and no warning at all when both are silent; test-lean-request-stall.ts (e) pins the composition directly",
     },
     canary: {
       symbol: "stallLever",

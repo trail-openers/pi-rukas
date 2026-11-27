@@ -82,8 +82,9 @@ export function requestStallWindowMs(
  */
 export function requestStallUnarmed(
   deadlineMs: number | undefined,
-  startedAt: number,
+  startedAt: number | undefined,
 ): string | undefined {
+  if (deadlineMs === undefined || startedAt === undefined) return undefined;
   const causes = {
     caps: "PI_ENSEMBLE_DISPATCH_CAPS=0",
     deadline: "no cycle deadline",
@@ -92,6 +93,26 @@ export function requestStallUnarmed(
   } as const;
   const reason = unarmed(deadlineMs, startedAt);
   return reason === undefined ? undefined : `request stall bound is inert: ${causes[reason]}`;
+}
+
+/**
+ * The ONE composer of a step's inertness line: the minutes lever the runtime will not enforce under
+ * `PI_ENSEMBLE_DISPATCH_CAPS=0` (`armChildBound` returns early there, where arming buys nothing) and
+ * the stall lever that armed nothing, joined in that order. A silent half — `0` minutes, or `undefined`
+ * stall wording — says nothing, and `undefined` for both is what tells the step to carry no `warning`
+ * field at all rather than an empty one.
+ */
+export function inertWarning(minutes: number, stallInert: string | undefined) {
+  return (
+    [
+      minutes > 0 && !capsEnabled()
+        ? `${String(minutes)}-minute budget is inert: PI_ENSEMBLE_DISPATCH_CAPS=0`
+        : "",
+      stallInert ?? "",
+    ]
+      .filter(Boolean)
+      .join("; ") || undefined
+  );
 }
 
 /** Minutes of a stream's silence — the whole minutes a stall verdict prints. Rounds UP like its

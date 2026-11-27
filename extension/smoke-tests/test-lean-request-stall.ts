@@ -32,7 +32,7 @@ import { budgetTrio } from "../src/lean/step-budget.ts";
 import { neededFromLog } from "../src/lean/handback.ts";
 import { leanIssueResult } from "../src/headless/work-lean-result.ts";
 import { INITIAL_COUNTERS, type LeanRun, type Outcome, type Step } from "../src/lean/state.ts";
-import { requestStallWindowMs } from "../src/request-stall-policy.ts";
+import { inertWarning, requestStallWindowMs } from "../src/request-stall-policy.ts";
 import { REVIEW_DEADLINE_RESERVE_MS } from "../src/lean/review-bound.ts";
 import { MINUTE_MS } from "../src/lean/deadline.ts";
 import { withEnv } from "./lib/env-scope.ts";
@@ -415,6 +415,40 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
   assert(
     warns.some((w) => /stall/i.test(w) && /PI_ENSEMBLE_DISPATCH_CAPS=0/.test(w)),
     `(d) the trace discloses the lever as inert rather than reporting a bound that held (${JSON.stringify(warns)})`,
+  );
+}
+
+// ── (e) the composer of the step's inertness line ───────────────────────
+{
+  // `armBudget` is the only production caller and never inspects the answer, so the join rule is
+  // pinned here: the minutes half first, a silent half says nothing, both silent is NO warning.
+  const minutes = "20-minute budget is inert: PI_ENSEMBLE_DISPATCH_CAPS=0";
+  const stall = "request stall bound is inert: no cycle deadline";
+  const capsOff = async (body: () => void) =>
+    withEnv({ PI_ENSEMBLE_DISPATCH_CAPS: "0", PI_ENSEMBLE_LEAN_REQUEST_STALL: "1" }, body);
+  await capsOff(async () => {
+    assert(
+      inertWarning(20, stall) === `${minutes}; ${stall}`,
+      "(e) both halves ride one line, minutes first, joined by '; '",
+    );
+    assert(
+      inertWarning(20, undefined) === minutes && inertWarning(0, stall) === stall,
+      "(e) a silent half contributes nothing to the line",
+    );
+    assert(
+      inertWarning(0, undefined) === undefined,
+      "(e) both silent means no warning field at all, not an empty one",
+    );
+  });
+  const capsOn = async (body: () => void) =>
+    withEnv({ PI_ENSEMBLE_DISPATCH_CAPS: undefined, PI_ENSEMBLE_LEAN_REQUEST_STALL: "1" }, async () => {
+      body();
+    });
+  await capsOn(() =>
+    assert(
+      inertWarning(20, stall) === stall,
+      `(e) with the caps on the minutes lever arms and only the stall half speaks (got ${JSON.stringify(inertWarning(20, stall))})`,
+    ),
   );
 }
 

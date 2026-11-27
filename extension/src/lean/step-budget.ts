@@ -12,8 +12,12 @@
 import type { LensRunResult } from "../lens-review-types.ts";
 import type { RunningState } from "../progress.ts";
 import type { BudgetLimit, StallArms, StallOpts } from "../request-stall-policy.ts";
-import { requestStallUnarmed, stallBreach, stallLever } from "../request-stall-policy.ts";
-import { capsEnabled } from "../spawn-child-bound.ts";
+import {
+  inertWarning,
+  requestStallUnarmed,
+  stallBreach,
+  stallLever,
+} from "../request-stall-policy.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
@@ -180,19 +184,13 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
     }
     return minutesBreach(result);
   };
-  // `armChildBound` returns early under `PI_ENSEMBLE_DISPATCH_CAPS=0`, where arming buys nothing; the
-  // stall lever's inertness rides the SAME warning instead of going quiet per step.
-  const inert =
-    [
-      ...(boundMs !== undefined && !capsEnabled()
-        ? [`${String(minutes)}-minute budget is inert: PI_ENSEMBLE_DISPATCH_CAPS=0`]
-        : []),
-      ...(stall?.deadlineMs === undefined || stall.startedAt === undefined
-        ? []
-        : [requestStallUnarmed(stall.deadlineMs, stall.startedAt) ?? ""]),
-    ]
-      .filter(Boolean)
-      .join("; ") || undefined;
+  // One line, minutes half first: the ceiling the runtime will not enforce under
+  // `PI_ENSEMBLE_DISPATCH_CAPS=0`, and the stall lever that armed nothing.
+  const inert = inertWarning(
+    // `boundMs`, not `minutes`, says a minutes lever exists — the switch must not report a budget that has none.
+    boundMs === undefined ? 0 : minutes,
+    requestStallUnarmed(stall?.deadlineMs, stall?.startedAt),
+  );
   if (turns <= 0 && tokens <= 0 && stallOpts === undefined) {
     return {
       opts: boundMs === undefined ? {} : { childBoundMs: boundMs },
