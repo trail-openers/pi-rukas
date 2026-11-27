@@ -51,6 +51,11 @@ import {
 } from "./lean-build-artifacts.ts";
 import { configWithRunner, issueBodyReader } from "./lean-build-asserts.ts";
 import { git, gitEnv } from "./lean-build-git.ts";
+// #2661: the two knobs a re-ask case needs (a per-dispatch child act, and the build deps' seam
+// slots) live in this split so the fixture stays inside the 500-line gate.
+import { reaskActs } from "./lean-build-reask-fixture.ts";
+
+export { reaskDeps } from "./lean-build-reask-fixture.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -322,6 +327,12 @@ export interface RunOpts {
   issue: number;
   /** The child's acts in the worktree, at the moment it is still working. */
   child?: (wt: string) => void;
+  /** The WHOLE build deps, including the seams `BuildDeps` declares and this harness does not
+   *  expose (the resumed-child seam a #2661 re-ask case drives). Spread LAST, so a case replaces
+   *  exactly the seam it names and keeps every other one — the fixture's fake `dispatch`, its
+   *  recording `exec`, its counting issue reader. A case that injects `continueSession` is
+   *  answering the step's ask the way production answers it, through the same dependency slot. */
+  deps?: Partial<BuildDeps>;
   /** A non-child commit planted at the instant the blocked gate re-runs its files. */
   afterDispatch?: (wt: string) => void;
   /** Extra steps to append to the log (a re-entry `verify:red` for case (i)). */
@@ -368,6 +379,10 @@ export interface RunOpts {
   hungExec?: (cmd: string, o?: unknown) => Promise<unknown>;
   /** Watches every exec WITHOUT replacing it, so the verdict stays the real one. */
   execSpy?: (cmd: string, o?: unknown) => void;
+  /** What the nth child (0-based) does in the tree, at the instant it is still working. Unlike
+   *  {@link RunOpts.child} this fires on EVERY dispatch, which is what lets a case give the first
+   *  turn no act at all and a later turn the implementation. */
+  childActs?: (n: number, wt: string) => void;
   /** The clock knobs of {@link deadlineOf}: the run's deadline and its `now`. */
   clock?: ClockOpts;
   buildStartedAt?: number; // #2660 — the start the deadline's bound measures from
@@ -415,7 +430,12 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     prompts.push(spec.prompt);
     extraArgs.push(o.extraArgs ?? []);
     opts.onProgressTick?.(o.onProgress);
-    if (!childActed) opts.child?.((childActed = true) && (spec.cwd as string));
+    // The child's acts belong to the FIRST dispatch unless the case says what each one does — a
+    // #2661 re-ask case needs a first turn that acts NOWHERE and a later one that writes the file,
+    // so the per-index rule is the only shape that can state "this child worked, that one did not".
+    if (opts.childActs === undefined) {
+      if (!childActed) opts.child?.((childActed = true) && (spec.cwd as string));
+    } else reaskActs(opts.childActs, dispatched - 1, (spec.cwd as string) ?? built.worktree);
     recordArmedOpts(opts.armedOpts, o); // #2660 — the arms as the seam received them
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
@@ -452,6 +472,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   };
   const deps: BuildDeps = {
     ...inner,
+    ...(opts.deps ?? {}),
     ...(opts.afterDispatch === undefined
       ? {}
       : {
