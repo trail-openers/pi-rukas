@@ -236,6 +236,36 @@ try {
       `(g) lastActivity names the hung tool, not the ack (got ${r.lastActivity?.kind})`,
     );
   }
+
+  // Case (h) — #2644: the caller's request-stall lever reaches the REAL spawn's poll. A child
+  // that emits nothing (a hung request) with both silence budgets far away is ended by the lever
+  // alone, under its own cause and window, and the caller's hook sees the breach.
+  {
+    process.env.PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS = "120000";
+    process.env.PI_ENSEMBLE_TOOL_INACTIVITY_TIMEOUT_MS = "120000";
+    writeFakePi("sleep 30");
+    console.log("\n[test h] silent child, request-stall lever armed...");
+    const fired: unknown[] = [];
+    const start = Date.now();
+    const r = await spawnSpecialist(
+      { role: "explore", prompt: "irrelevant" },
+      {
+        stall: {
+          windowMinutes: 1,
+          windowMs: 1500,
+          silence: () => ({ sinceMs: 0, toolInFlight: false }),
+          fire: (b) => fired.push(b),
+        },
+      },
+    );
+    assertLocal(
+      r.killCause === "stall",
+      `(h) the spawn's poll ends a silent child on the armed lever (got ${r.killCause ?? "none"})`,
+    );
+    assertLocal(r.killBudgetMs === 1500, `(h) killBudgetMs = the lever's window (got ${r.killBudgetMs})`);
+    assertLocal(fired.length === 1, `(h) the caller's hook saw the breach once (got ${fired.length})`);
+    assertLocal(Date.now() - start < 15_000, `(h) killed at the window (took ${Date.now() - start}ms)`);
+  }
 } finally {
   restoreEnv();
   rmSync(fakeDir, { recursive: true, force: true });

@@ -197,7 +197,7 @@ export function stallLever(
   opts: SpawnOptions,
   childProgress: ChildProgress,
   inFlightTools: InFlightTools,
-): SpawnOptions["stall"] {
+): StallOpts | undefined {
   if (opts.stall === undefined) return undefined;
   const windowMs = opts.stall.windowMs ?? opts.stall.windowMinutes * 60_000;
   return {

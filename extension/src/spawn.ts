@@ -330,8 +330,6 @@ async function spawnSpecialistInner(
       caps,
       budgetProgress,
       onProgress: opts.onProgress,
-      // #2644 — `stallLever` adds this stream's own two facts to the armed window.
-      ...(stallLever(opts, childProgress, inFlightTools) ?? {}),
       onRawEvent: opts.onRawEvent,
       onAgentEnd: (parsed) => {
         lastAgentEnd = parsed;
@@ -372,6 +370,8 @@ async function spawnSpecialistInner(
     inFlightTools,
     lastActivityAt: stdoutPump.lastActivityAt,
     childProgress,
+    // #2644 — `stallLever` adds this stream's own two facts to the armed window.
+    stall: stallLever(opts, childProgress, inFlightTools),
     onKill: (cause, budgetMs, toolNames) => {
       if (cause === "tool-inactivity") flags.setToolInactivityKilled(true);
       else if (cause === "no-progress") flags.setNoProgressKilled(true);
