@@ -51,8 +51,7 @@ import {
 } from "./lean-build-artifacts.ts";
 import { configWithRunner, issueBodyReader } from "./lean-build-asserts.ts";
 import { git, gitEnv } from "./lean-build-git.ts";
-import { type ReaskOpts, dispatchActs, reaskDeps } from "./lean-build-reask-fixture.ts";
-export { reaskDeps, type ReaskOpts }; // #2661 knobs, defined in that lib
+import { type ReaskOpts, dispatchActs } from "./lean-build-reask-fixture.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -374,11 +373,12 @@ export interface RunOpts {
   clock?: ClockOpts;
   buildStartedAt?: number; // #2660 — the start the deadline's bound measures from
   armedOpts?: ArmedOptsSink; // #2660 — the arms each dispatch was handed, in order
-  reask?: ReaskOpts; // #2661 the seam the case answers, and per-dispatch child acts
+  reask?: ReaskOpts; // #2661 the seam the case answers + per-child acts
 }
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
 export async function runBuild(opts: RunOpts): Promise<RunResult> {
+  const reask = opts.reask ?? {};
   const built =
     opts.built ??
     buildFixture(opts.issue, {
@@ -418,7 +418,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     prompts.push(spec.prompt);
     extraArgs.push(o.extraArgs ?? []);
     opts.onProgressTick?.(o.onProgress);
-    childActed = dispatchActs(opts.reask, opts.child, dispatched, childActed, spec, built);
+    childActed = dispatchActs(reask, opts.child, dispatched, childActed, spec, built);
     recordArmedOpts(opts.armedOpts, o); // #2660 — the arms as the seam received them
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
@@ -452,8 +452,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     },
     ...(opts.captureCeiling === undefined ? {} : { captureCeiling: opts.captureCeiling }),
     ...(opts.blockedTimeoutMs === undefined ? {} : { blockedTimeoutMs: opts.blockedTimeoutMs }),
-    // #2661: the case's seam slots, spread LAST so a case replaces only the seam it names.
-    ...(opts.reask?.deps ?? {}),
+    ...reask.deps, // #2661 LAST, so a case replaces only the seam it names
   };
   const deps: BuildDeps = {
     ...inner,

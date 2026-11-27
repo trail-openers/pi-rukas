@@ -7,19 +7,16 @@ import { traceWarn } from "../trace.ts";
 import type { DispatchResult } from "../types.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 /**
- * lean/build-reask-child — the ask itself, and the switch that lets a build step make it.
+ * lean/build-reask-child — the ask a wasted build turn makes, and the switch that lets it make one.
  *
- * Split from `build-reask.ts` for the cap on `src/lean/` (AGENTS.md §6): the judgement, the prompt
- * and the clause stay with the step's decision, and this is the seam call. It goes through the
- * fixer's own seam (`deps.continueSession`, production `spawnDeveloperContinuationChild`):
- * `pi --mode rpc --session <the first child's transcript>` resumes the child in its own conversation,
- * with its roster, its tree and the fence it was already behind — what makes it a follow-up and not a
- * second opinion. Accepted consequences: no `report_blocked` extension rides it (the dispatch adds
- * that via `extraArgs`), so the first turn's report stands; and `continuationBoundMs` takes the
- * smaller of the seat's ceiling and what the deadline left, so a re-ask cannot outlive its first
- * child's deadline. The row is billed on BOTH arms and BEFORE the outcome is read, as `runFixer` bills
- * its first child — a FAILED continuation was still one that was tried, which is what makes the
- * exhausted clause honest.
+ * Split from `build-reask.ts` for the cap on `src/lean/` (AGENTS.md §6), along the same seam as
+ * `review-fix-child.ts`: the judgement, prompt and clause stay with the step's decision, and this is
+ * the call. Through the fixer's own seam (`deps.continueSession`, production
+ * `spawnDeveloperContinuationChild`), so the resumed child keeps its roster, its tree and its fence —
+ * a follow-up, not a second opinion. No `report_blocked` extension rides it (the dispatch adds that
+ * via `extraArgs`), so the first turn's report stands; `continuationBoundMs` clamps the bound to what
+ * the step's deadline left. The row is billed BEFORE the outcome is read, as `runFixer` bills its
+ * first child: a FAILED continuation was still one that was tried.
  */
 import {
   BUILD_REASK_BOUND_MS,

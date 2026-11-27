@@ -1,6 +1,6 @@
 /**
- * lean/build-reask — a BUILD turn that bought nothing: the judgement, the prompt, the clause, the
- * switch and the ask. The defect: a build child spent its whole completion budget reasoning
+ * lean/build-reask — the judgement that a BUILD turn bought nothing, plus its prompt, clause and
+ * switch. The defect: a build child spent its whole completion budget reasoning
  * (`stopReason: "length"` at the provider's output cap, NO tool call), the fold found no change, and
  * the step ended `exhausted: the developer produced no change`. The no-work re-dispatch cannot reach
  * it (`build-dispatch.ts` needs a DEAD child); the sibling — one clean turn, no tool call, no change
@@ -10,7 +10,8 @@
  * **The order is not cosmetic:** `killCause`/`errorStop` branch first (already routed by
  * `dispatchBuilder`), then the budget, the stop reason, the tool calls — the budget BEFORE anything is
  * spent, since an aborted continuation answers nothing. **One shot:** a resumed session replays the
- * earlier turns, so the flag is the caller's and this module returns rather than recursing.
+ * cut turn, so the flag is the caller's and this module returns rather than recursing. The ask itself
+ * is `lean/build-reask-child.ts`.
  */
 
 import { TRUNCATED_STOP_REASON } from "../fixer-truncation.ts";

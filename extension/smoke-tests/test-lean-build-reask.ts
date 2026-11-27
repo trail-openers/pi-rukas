@@ -35,8 +35,13 @@ import path from "node:path";
 import type { DispatchResult } from "../src/types.ts";
 import { commitPaths, subjectsAbove } from "./lib/lean-build-asserts.ts";
 import { configWithRunner } from "./lib/lean-build-asserts.ts";
-import { ROOTS, git, put, reaskDeps, runBuild } from "./lib/lean-build-fixture.ts";
-import { type ContinuationCalls, answered, silent } from "./lib/lean-build-reask-fixture.ts";
+import { ROOTS, git, put, runBuild } from "./lib/lean-build-fixture.ts";
+import {
+  type ContinuationCalls,
+  answered,
+  reaskDeps,
+  silent,
+} from "./lib/lean-build-reask-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
