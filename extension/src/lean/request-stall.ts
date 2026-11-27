@@ -1,5 +1,5 @@
 /**
- * lean/request-stall — the step's wiring for the #2644 lever: the reserve the window is capped by,
+ * lean/request-stall — the step's wiring for the hung-request lever: the reserve the window is capped by,
  * the run's deadline it is measured against, and the child's stream reader. The policy itself —
  * switch, window, inertness line, frozen arms — lives in `src/request-stall-policy.ts`: spawn
  * policy, not engine state.

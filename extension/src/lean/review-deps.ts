@@ -107,7 +107,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           processGroup: true,
           ...arms,
           childBoundMs: Math.min(budgetBoundMs ?? Number.POSITIVE_INFINITY, loopChildBoundMs()),
-          // #2644 — the step's hung-request lever, as the frozen whole minutes: the reading that
+          // The step's hung-request lever, as the frozen whole minutes: the reading that
           // decides whether the child is quiet. Its abort already rides `arms.signal`.
           ...(budgetStall === undefined ? {} : { stallWindowMinutes: budgetStall.windowMinutes }),
           ...leanChildOpts(a.headless),
@@ -160,7 +160,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         ...(a.threshold === undefined ? {} : { threshold: a.threshold }),
         // The test-only lens-child seam (see `ReviewDeps.lensChildFn`).
         ...(deps.lensChildFn === undefined ? {} : { lensChildFn: deps.lensChildFn }),
-        // #2644 — the same lever for the six lens children: the reading that decides whether a lens
+        // The same lever for the six lens children: the reading that decides whether a lens
         // is quiet. Its abort already rides `arms.signal`.
         ...(budgetStall === undefined ? {} : { stallWindowMinutes: budgetStall.windowMinutes }),
         ...arms,
