@@ -9,18 +9,15 @@ import { blockedEvidenceLines, headEvidenceFromStep } from "../oracle-repair-evi
  * `PI_ENSEMBLE_LEAN_ORACLE_REPAIR`: the adversary that wrote the tests is paid once to correct the named file,
  * in a tree at the run's base, and judged before it may replace anything.
  *
- * Four facts, not the child's good sense, make the round safe: it is billed before it is spent (the table
- * moves `repairsSpent` on the edge ENTERING this state, so a refused or crashed round is spent and cannot be
- * re-bought); the seat is blind (`oracle-repair-evidence.ts` builds its brief from the spec, the named paths,
- * the driver's reasons and the output the DRIVER watched, and the tree is reset to `baseSha` before it is
- * paid); its submission is judged, not believed (`oracle-repair-judge.ts`); and the accepted bytes are frozen
- * by the release's own primitive, so `verify` holds the corrected oracle to the original's standard and
- * `landEarned` is not widened.
+ * Four facts, not the child's good sense, make it safe: billed before it is spent (the table moves
+ * `repairsSpent` on the edge ENTERING this state, so a refused or crashed round cannot be re-bought); the seat
+ * is blind (`oracle-repair-evidence.ts` builds its brief from the spec, the named paths, the driver's reasons
+ * and the output the DRIVER watched; the tree is reset to `baseSha` before it is paid); its submission is
+ * judged, not believed (`oracle-repair-judge.ts`); and the accepted bytes are frozen by the release's own
+ * primitive, so `verify` holds the corrected oracle to the original's standard and `landEarned` is not widened.
  *
- * No child-spawning and no judgement code live here; this reads the record, calls the round, and turns its
- * verdict into the kinds the table routes.
- */
-import { traceWarn } from "../trace.ts";
+ * No child-spawning and no judgement code live here.
+ */import { traceWarn } from "../trace.ts";
 import { buildWriteFence } from "./build-dispatch.ts";
 import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";

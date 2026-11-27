@@ -29,8 +29,8 @@ export const OUTCOME_KINDS = {
   // `blocked` is the child's own "these frozen tests cannot all pass together", honoured only after the
   // driver re-ran the named tests itself. It is not `exhausted`: the route must never reach `publish`.
   build: ["ok", "exhausted", "budget", "blocked"],
-  // The repair round's verdicts: `repaired` rebuilds against the corrected contract, `refused` against the
-  // same one with the red marker standing. Both spend the round.
+  // Repair's verdicts: `repaired` rebuilds against the corrected contract, `refused` against the same one
+  // with the red marker standing. Both spend the round.
   repair: ["repaired", "refused"],
   challenge: ["new-tests", "none", "budget", "skipped"],
   verify: ["green", "red"],
@@ -75,10 +75,9 @@ export const REPORT_FAILED_KIND = "report-failed";
 const BUDGET_KIND = "budget";
 
 /**
- * Does this blocked verdict earn a repair round? Two facts, both read off the RUN rather than the working
- * tree or the environment, so a resume cannot answer them differently: the switch stamped when the run was
- * created, and the counter that says no round has been bought yet. The table stays a pure function of
- * `(run, outcome)` — which is what lets the step log be the record of a run.
+ * Does this blocked verdict earn a repair round? Both facts are read off the RUN, not the environment or the
+ * working tree, so a resume cannot answer differently: the switch stamped at creation, and the spent counter.
+ * The table stays a pure function of `(run, outcome)`, which is what lets the log be the record of a run.
  */
 export function repairRoundDue(run: LeanRun): boolean {
   return run.oracleRepair === true && run.counters.repairsSpent < 1;
@@ -151,10 +150,9 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
           return to(run, c.challengeDone ? "verify" : "challenge");
         case "blocked":
-          // The driver proved the named frozen tests cannot all pass. With the switch on and the run's one
-          // round unspent, that is a question for the adversary who wrote them, not the end of the run.
-          // Without either, the route is the release's: never through `exhausted`, because publishing over
-          // tests the driver proved unsatisfiable is the one shape where an unsatisfied contract lands.
+          // With the switch on and the run's one round unspent, that is a question for the adversary who
+          // wrote the tests, not the end of the run. Otherwise the release's route, and never through
+          // `exhausted`: publishing over tests the driver proved unsatisfiable is how a contract lands broken.
           if (repairRoundDue(run)) return viaBuild(run, "repair");
           return to(run, "handback");
         case "exhausted":
@@ -171,14 +169,12 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "repair":
       switch (outcome.kind) {
         case "repaired":
-          // The corrected oracle is the run's contract now, so the builder rebuilds against it with no red
-          // marker; `verify` holds the replacement to the standard it held the original to. This edge
-          // DISPATCHES the round, so it bills the attempt.
+          // The corrected oracle is the contract now, so the builder rebuilds against it with no red marker.
+          // This edge DISPATCHES the round, so it bills the attempt.
           return viaBuild(run, "build");
         case "refused":
-          // Nothing was corrected, so the unsatisfiable contract is still the contract and this round ships
-          // as a draft if the builder still cannot meet it, with nothing later clearing the marker. A run
-          // must not land over a frozen test the driver proved cannot pass.
+          // Nothing was corrected, so this round ships as a draft if the builder still cannot meet the
+          // contract, with nothing later clearing the marker: a run must not land over a proven-bad oracle.
           return viaBuild(run, "build", true);
       }
       break;
