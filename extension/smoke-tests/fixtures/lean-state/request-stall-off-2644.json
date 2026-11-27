@@ -1,0 +1,85 @@
+{
+  "capturedFrom": "ca9b4be4c8541f3fec12ac1f2ed55e169bb0d1a3",
+  "cells": {
+    "quiet": {
+      "outcome": {
+        "kind": "ok",
+        "reason": "1 file(s) changed",
+        "dispatches": [
+          {
+            "role": "developer",
+            "ms": 1,
+            "ok": true,
+            "usage": {
+              "input": 11,
+              "output": 2,
+              "cacheRead": 3,
+              "cacheWrite": 1,
+              "cost": 0.5,
+              "turns": 4
+            }
+          }
+        ]
+      },
+      "needed": "the run ended without recording why",
+      "failure": null
+    },
+    "turns": {
+      "outcome": {
+        "kind": "budget",
+        "limit": "turns",
+        "value": 3,
+        "used": 4,
+        "reason": "build stopped: turns budget 3 exceeded (used 4); after 3 build attempts; still failing: tests/AC1-retry.test.sh; kept 1 file(s)",
+        "dispatches": [
+          {
+            "role": "developer",
+            "ms": 1,
+            "ok": true,
+            "usage": {
+              "input": 11,
+              "output": 2,
+              "cacheRead": 3,
+              "cacheWrite": 1,
+              "cost": 0.5,
+              "turns": 4
+            }
+          },
+          {
+            "role": "developer",
+            "ms": 1,
+            "ok": true,
+            "usage": {
+              "input": 11,
+              "output": 2,
+              "cacheRead": 3,
+              "cacheWrite": 1,
+              "cost": 0.5,
+              "turns": 4
+            }
+          },
+          {
+            "role": "developer",
+            "ms": 1,
+            "ok": true,
+            "usage": {
+              "input": 11,
+              "output": 2,
+              "cacheRead": 3,
+              "cacheWrite": 1,
+              "cost": 0.5,
+              "turns": 4
+            }
+          }
+        ]
+      },
+      "needed": "build stopped: turns budget 3 exceeded (used 4) after 3 build attempts",
+      "failure": {
+        "kind": "timeout",
+        "message": "build stopped: turns budget 3 exceeded (used 4)",
+        "step": "handoff",
+        "role": "developer"
+      }
+    }
+  }
+}
