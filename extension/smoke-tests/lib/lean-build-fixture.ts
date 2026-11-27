@@ -373,6 +373,16 @@ export interface RunOpts {
   buildStartedAt?: number; // #2660 — the start the deadline's bound measures from
   armedOpts?: ArmedOptsSink; // #2660 — the arms each dispatch was handed, in order
   reask?: ReaskOpts; // #2661 the seam the case answers + per-child acts
+  /**
+   * THE resumed-child seam, in the same slot `buildDeps()` fills (#2661). A case that wants to judge
+   * the PRODUCTION leaf hands the production function; a case that records the call hands a spy,
+   * which it passes through `reask.deps` instead. Split from that bag because the bag's `deps` are
+   * applied last and would silently overwrite a leaf a case asked to keep.
+   */
+  continueSession?: BuildDeps["continueSession"];
+  /** The run's mode, threaded to the step exactly as `command.ts` threads it to its handler (#2661).
+   *  Absent means an interactive run, which is what every case that says nothing about it expects. */
+  headless?: boolean;
 }
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
@@ -450,6 +460,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     },
     ...(opts.captureCeiling === undefined ? {} : { captureCeiling: opts.captureCeiling }),
     ...(opts.blockedTimeoutMs === undefined ? {} : { blockedTimeoutMs: opts.blockedTimeoutMs }),
+    ...(opts.continueSession === undefined ? {} : { continueSession: opts.continueSession }), // #2661 the leaf the case chose to keep
     ...(opts.reask?.deps ?? {}), // #2661 the case's seams, LAST
   };
   const deps: BuildDeps = {
@@ -486,7 +497,10 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   });
   try {
     const { buildOutcome } = await import("../../src/lean/build.ts");
-    const outcome = await buildOutcome(built.ctx, deps);
+    // The run's permission stamp rides with the case that asked for it: `buildOutcome`'s third
+    // argument is the ONLY thing that decides whether a lean child (and the continuation it starts)
+    // is trusted, so a fixture that hardcoded `false` would leave the headless arm unexercised.
+    const outcome = await buildOutcome(built.ctx, deps, opts.headless ?? false);
     // `threw` is added per return, AFTER the `finish()` spread, so it is never shadowed.
     return { outcome, ...finish(), threw: undefined };
   } catch (err) {

@@ -374,6 +374,12 @@ async function runContinuationChild(
   childEnv.PI_ENSEMBLE_WRITE_ROOT = args.writeFence.root;
   childEnv.PI_ENSEMBLE_WRITE_REPO = args.writeFence.repo;
   childEnv.PI_ENSEMBLE_WRITE_SCRATCH = args.writeFence.scratch;
+  // The kill bound, named in the child's own environment beside the fence. The continuation has no
+  // supervisor of its own — no `spawn-child-bound.ts`, no steer, no grace phase — so the value that
+  // decides when its group is killed would otherwise exist only inside this closure, invisible to
+  // the child and to anything reading the dispatch afterwards. A bound that is not stamped is a
+  // bound nobody can audit after the fact.
+  childEnv.PI_ENSEMBLE_CONTINUATION_BOUND_MS = String(args.boundMs);
   // The role stamp, asked through the same helper the spawn path uses — verbatim, and gated on the
   // same switch. An empty role would leave the key absent, which the child-side guards read as "no
   // role judged anything" rather than as some default role.
