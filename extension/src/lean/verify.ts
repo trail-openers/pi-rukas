@@ -45,7 +45,7 @@ import { trace } from "../trace.ts";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { failureLines } from "../work-driver-verify-failures.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
-import { frozenFromLog, testsFromLog } from "./build-context.ts";
+import { frozenFromLog, testsFromLog } from "../lean-log.ts";
 import { porcelain } from "./build-git.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { leanProjectRosterEnabled } from "./project-roster-switch.ts";

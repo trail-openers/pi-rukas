@@ -10,7 +10,7 @@
  */
 import { execp } from "../exec.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
-import { frozenFromLog } from "./build-context.ts";
+import { frozenFromLog } from "../lean-log.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { NO_GATE_VERDICT, handbackHeads, newestDecidedWorkStep } from "./handback-heads.ts";
 import { NO_HEAD, type Rewind, originBranchHead } from "./handback-rewind.ts";

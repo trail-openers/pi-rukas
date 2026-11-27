@@ -30,7 +30,7 @@ import { leanStepDeadlineBoundEnabled } from "../../src/lean-step-deadline-bound
 // #2661 — a wasted build turn's one re-ask. Its truth table is pinned by
 // test-lean-build-reask-pure.ts, its dispatch arms by test-lean-build-reask.ts and its off-arm
 // byte-identity by test-lean-build-reask-off-arm.ts.
-import { leanBuildReaskEnabled } from "../../src/lean/build-reask.ts";
+import { leanBuildReaskEnabled } from "../../src/lean/build-reask-child.ts";
 import { leanDetectVerifyEnabled } from "../../src/lean/config-detect.ts";
 import { leanFullTierOperandEnabled } from "../../src/lean/full-tier-operand-switch.ts";
 import { leanPreVerifySharePercent } from "../../src/lean/pre-verify-share-switch.ts";

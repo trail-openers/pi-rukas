@@ -18,7 +18,7 @@
  */
 
 import type { DeveloperContinuationFn } from "../src/developer-session-continuation.ts";
-import { askBuildReask } from "../src/lean/build-reask.ts";
+import { askBuildReask } from "../src/lean/build-reask-child.ts";
 import {
   BUILD_REASK_BOUND_MS,
   CLEAN_STOP_REASON,

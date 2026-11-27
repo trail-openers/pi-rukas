@@ -20,7 +20,7 @@
  * section reaches six lens briefs, an adversarial brief and a public PR comment.
  */
 import { isFullCommitSha } from "../commit-sha.ts";
-import { testsFromLog } from "./build-context.ts";
+import { testsFromLog } from "../lean-log.ts";
 import type { ReviewDeps } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";
 import { pendingTestEdits, testEditSection } from "./review-test-accept.ts";

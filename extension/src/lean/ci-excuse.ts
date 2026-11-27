@@ -19,7 +19,7 @@
  * equivalent guard.
  */
 import { failureLines } from "../work-driver-verify-failures.ts";
-import { frozenFromLog } from "./build-context.ts";
+import { frozenFromLog } from "../lean-log.ts";
 import type { CiDeps } from "./ci-deps.ts";
 import type { HandlerCtx } from "./engine.ts";
 import type { PreexistingTierRecord } from "./state-outcome-maps.ts";

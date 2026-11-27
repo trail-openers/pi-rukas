@@ -40,6 +40,13 @@ import path from "node:path";
 import { spawnDeveloperContinuationChild } from "../developer-session-continuation.ts";
 import type { DeveloperContinuationFn } from "../developer-session-continuation.ts";
 import { execp } from "../exec.ts";
+import {
+  addedByChallengeFromLog,
+  budgetStopFromLog,
+  frozenFromLog,
+  reentryFromLog,
+  testsFromLog,
+} from "../lean-log.ts";
 import { armsStepBudget, stepDispatchArms, stopReasonClause } from "../lean-step-bound.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
@@ -48,18 +55,12 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { foldStoppedBuild, judgeBlockedReport } from "./build-blocked.ts";
-import {
-  addedByChallengeFromLog,
-  budgetStopFromLog,
-  frozenFromLog,
-  reentryFromLog,
-  testsFromLog,
-} from "./build-context.ts";
 import { dispatchBuilder } from "./build-dispatch.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
-import { askBuildReask, buildReaskClause, buildTurnWasWasted } from "./build-reask.ts";
+import { askBuildReask } from "./build-reask-child.ts";
+import { buildReaskClause, buildTurnWasWasted } from "./build-reask.ts";
 import { budgetFoldAccumulator, failingClause, foldClauses, keptClause } from "./build-reasons.ts";
 import type { BuildDispatch, BuildExec, NormaliseReport } from "./build-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
@@ -355,13 +356,16 @@ export async function buildOutcome(
   // A turn that made NO tool call and left no change is not a builder that declined to edit: it hit
   // the output cap mid-reasoning, or answered one clean turn without acting. Both get the fixer's ONE
   // continuation, judged AFTER the fold ("no change" is the fold's answer, not a child field) and
-  // before the verdict, one-shot by the flag below. `tries` and `noWorkRetryUsed` are untouched.
-  // Both flags carry what THIS site knows: a ceiling that had fired was answered inside the
-  // dispatch loop (no stop reaches here), and the fold above is what says the tree holds no change.
+  // before the verdict. `tries` and `noWorkRetryUsed` are untouched; the ask is one-shot by being
+  // asked once here. `budgetFired` is false because a ceiling that had fired was answered inside the
+  // dispatch loop — no stop reaches here with the budget already spent.
+  const noChange = report.files.length === 0;
   const wasted =
-    report.files.length === 0 && lastChildResult !== undefined
+    noChange && lastChildResult !== undefined
       ? buildTurnWasWasted(lastChildResult, { budgetFired: false, noChange: true })
       : ({ wasted: false, reason: "no-final-turn" } as const);
+  // `undefined` covers both the un-wasted arm and the ask's own refusals (no seam, no session path):
+  // refused before a child was paid for, so nothing is billed and only the trace says why.
   const asked =
     wasted.wasted && lastChildResult !== undefined
       ? await askBuildReask(deps.continueSession, {
@@ -375,8 +379,6 @@ export async function buildOutcome(
           ...leanChildOpts(headless),
         })
       : undefined;
-  // `undefined` is the no-seam / date-rollover guard: refused before a child was paid for, so
-  // nothing is billed and only the trace says why.
   if (asked !== undefined) {
     rows.push(asked.row);
     const again = await normaliseBuild({
@@ -385,19 +387,20 @@ export async function buildOutcome(
     });
     if (again.files.length > 0) return okVerdict(again, rows, waitNote);
   }
-  if (report.files.length === 0)
-    return {
-      kind: "exhausted",
-      reason: joinNotes([
-        "the developer produced no change",
-        waitNote(),
-        // ONE short clause, LAST, and only when the ask was spent: the head and wait note keep
-        // their bytes for every arm that never asked, which the existing literals pin.
-        asked !== undefined ? buildReaskClause(wasted.wasted ? wasted.trigger : "length", wasted.wasted ? wasted.outputTokens : 0) : "",
-      ]),
-      dispatches: rows,
-    };
-  return okVerdict(report, rows, waitNote);
+  if (!noChange) return okVerdict(report, rows, waitNote);
+  return {
+    kind: "exhausted",
+    reason: joinNotes([
+      "the developer produced no change",
+      waitNote(),
+      // ONE short clause, LAST, and only when the ask was spent: the head and the wait note keep
+      // their bytes for every arm that never asked, which the existing literals pin.
+      asked !== undefined && wasted.wasted
+        ? buildReaskClause(wasted.trigger, wasted.outputTokens)
+        : "",
+    ]),
+    dispatches: rows,
+  };
 }
 
 /** The seat's fence — the root, repo and scratch the child was fenced by, so the continuation is

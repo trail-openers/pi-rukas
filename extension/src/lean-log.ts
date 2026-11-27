@@ -1,12 +1,12 @@
 /**
- * lean/build-context — the builder's brief, composed from the run's own record. Every reader is pure
- * over `Step[]` (no child, git tree or runner needed), and `review`/`verify`/acceptance read the same
- * frozen map here. `reentryFromLog` QUOTES a gate's red reason because a gate judged that round; the
- * other two report what NO gate judged — which is why one quotes and one names.
+ * lean-log — the step log read as the builder's brief: the frozen map, the criterion -> tests map,
+ * and the three "why this round exists" lines. Every reader is pure over `Step[]`, so a brief's shape
+ * is testable with no child, git tree or runner, and every lean step reads the same record here.
+ * `reentryFromLog` QUOTES a gate's red reason because a gate judged that round; the other two report
+ * what NO gate judged — which is why one quotes and one names.
  */
-
-import type { Step } from "./state.ts";
-import { RED_REASON_CLIP, clipReason } from "./verify-deps.ts";
+import type { Step } from "./lean/state.ts";
+import { RED_REASON_CLIP, clipReason } from "./lean/verify-deps.ts";
 
 /** How many names one reason line lists before it says "and N more". */
 const LIST_CLIP = 20;
@@ -27,8 +27,8 @@ export function frozenFromLog(steps: Step[]): Record<string, string> {
   return frozen;
 }
 
-/** The criterion -> tests map, unioned over every step that recorded one: the run-level file quota
- *  bounds what a criterion ENDS UP WITH, and only this map knows what an earlier round froze. */
+/** The criterion -> tests map, unioned over every step that recorded one: the quota bounds what a
+ *  criterion ENDS UP WITH, and only this map knows what an earlier round froze. */
 export function testsFromLog(steps: Step[]): Record<string, string[]> {
   const tests: Record<string, string[]> = {};
   for (const step of steps.filter(frozeTests)) {
@@ -57,20 +57,20 @@ function reasonFromLog(
   return undefined;
 }
 
-/** Why this round exists, in the gate's own words: newest decided `verify:red`, else `ci:red`. A
- *  round that came back from added tests is told by {@link addedByChallengeFromLog} instead. */
+/** Why this round exists, in the gate's own words: newest decided `verify:red`, else `ci:red` (a
+ *  round that came back from added tests is told by {@link addedByChallengeFromLog} instead). */
 export function reentryFromLog(steps: Step[]): string | undefined {
   return reasonFromLog(steps, "verify", "red") ?? reasonFromLog(steps, "ci", "red");
 }
 
 /** What stopped the PREVIOUS attempt: the newest decided `build:budget` reason — no gate judged a
- *  killed builder, so `reentryFromLog` is silent and "it stopped" alone re-derives the feature. */
+ *  killed builder, so "it stopped" alone would re-derive the feature. */
 export function budgetStopFromLog(steps: Step[]): string | undefined {
   return reasonFromLog(steps, "build", "budget");
 }
 
-/** What the adversary added: the newest `challenge:new-tests`'s frozen paths, named not quoted —
- *  no gate judged them, the adversary only made the contract bigger. */
+/** What the adversary added: the newest `challenge:new-tests`'s frozen paths, NAMED not quoted — no
+ *  gate judged them, the adversary only made the contract bigger. */
 export function addedByChallengeFromLog(steps: Step[]): string | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
