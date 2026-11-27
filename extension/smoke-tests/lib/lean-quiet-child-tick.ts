@@ -1,8 +1,8 @@
 /**
  * The build fixture's fake-child quiet tick (#2644): a case says only HOW LONG its child was
- * quiet, and the spawn's OWN inactivity poll (`createInactivityPoll`, spawn-inflight.ts) is what
- * measures the silence and fires the arm. The case no longer calls the step's progress hook: the
- * tick that decides a stall is the poll's timer, and the arm's `check` is the hook — the same
+ * quiet, and the spawn's OWN inactivity poll (`createInactivityPoll`, spawn-inactivity-poll.ts) is
+ * what measures the silence and fires the arm. The case no longer calls the step's progress hook:
+ * the tick that decides a stall is the poll's timer, and the arm's `check` is the hook — the same
  * composition `stallLever` builds in production. A tool in flight is work, never a stall (#951),
  * and that reading too comes from the real `InFlightTools`, not from a value the case writes.
  */
