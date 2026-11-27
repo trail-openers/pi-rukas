@@ -11,6 +11,7 @@
  */
 
 import { budgetTrio } from "../src/lean/step-budget.ts";
+import { stallBreach } from "../src/request-stall-policy.ts";
 import type { Outcome } from "../src/lean/state.ts";
 import { REVIEW_DEADLINE_RESERVE_MS } from "../src/lean/review-bound.ts";
 import { MINUTE_MS } from "../src/lean/deadline.ts";
@@ -171,6 +172,26 @@ function silent(ms: number): number {
   assert(
     turnTick.fired({ role: "developer", ok: true, ms: 1 }) === undefined,
     "(b5) nor does one on a child that had worked for turns and tokens",
+  );
+
+  // The decider itself, pinned directly: a silent child past the window breaches whatever it has
+  // spent, and the same reading with a call in flight or inside the window breaches nothing. The
+  // suite above pins this through the poll; this pins that the decision reads nothing but those two
+  // facts — no turns, no tokens, no re-derived window.
+  const armAt = (ms: number, toolInFlight: boolean) => ({
+    windowMinutes: 23,
+    windowMs: ms,
+    silence: () => ({ sinceMs: ms, toolInFlight }),
+  });
+  assert(
+    stallBreach(armAt(1_380_000, false))?.limit === "stall",
+    "(b5) the poll's decider breaches a silent child at its window, on no reading but the silence",
+  );
+  assert(
+    stallBreach(armAt(1_380_000, true)) === undefined &&
+      stallBreach({ ...armAt(1_380_000, false), windowMs: 1_380_000 + 1 }) === undefined &&
+      stallBreach(undefined) === undefined,
+    "(b5) …and nothing while a tool runs, inside the window, or with no arm",
   );
 }
 

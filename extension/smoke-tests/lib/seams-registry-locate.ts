@@ -122,6 +122,11 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
       // calls it — `armBudget` does — so the refusal is pinned directly.
       stallLever:
         "the arms the lever freezes, and the refusal of a window of 0 or less; test-lean-request-stall.ts (c) pins no-zero-timer",
+      // The ONE decider of a stall, asked only by the spawn's poll: the in-flight exemption, the ms
+      // window, and that nothing here reads the child's turns or tokens (the arm that did ended only
+      // a child that hung before its first turn). The poll suite pins it through the real timer.
+      stallBreach:
+        "the poll's own stall decision — in-flight exemption, ms window, no turns/tokens reading; test-lean-request-stall-poll.ts (1)(2)(3)(8) and test-lean-request-stall-worked.ts (b4) pin it through the real poll",
       // The arithmetic from (deadline, start, reserve) to the window. `stallLever` is its only
       // production caller — a step hands over the deadline and the reserve, never a window — so the
       // clamping near the line and the no-room refusal are pinned by the direct calls.
