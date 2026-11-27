@@ -9,7 +9,6 @@
  * `-1`, `0x10`, `1e2`, `abc`, empty) is not a share an operator meant, so it reads as the shipped default
  * rather than as off — an accidental empty value must never silently disable a cap. Read at CALL time.
  */
-
 /** The shipped share of the cell budget the pre-verify steps get, in percent. */
 export const DEFAULT_PRE_VERIFY_SHARE_PERCENT = 40;
 

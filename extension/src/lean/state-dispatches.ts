@@ -9,7 +9,6 @@
  * these, so a row that cannot be attributed to a role, a negative cost, or an `ok` that is not a
  * boolean each quietly corrupts the per-role comparison between the two engines.
  */
-
 import { LANES_CAP, MAX_REASON_CHARS } from "./review-bound.ts";
 import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";

@@ -8,7 +8,6 @@
  * Every failure names itself: "no block", "two blocks", "invalid JSON" and "wrong type" are four
  * distinct reasons.
  */
-
 /** How a criterion is checked. `command` criteria additionally carry a command. */
 type VerifyKind = "test" | "command" | "manual";
 

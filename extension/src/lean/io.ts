@@ -7,7 +7,6 @@
  * Every call is argv-form, so `gh` and `git` never see a shell string here. An issue title or a provider
  * error message cannot become a word the shell re-parses.
  */
-
 import { execp } from "../exec.ts";
 import type { Forge } from "../forge.ts";
 import { issueSpecOrThrow, withApprovedSpec } from "../issue-spec.ts";

@@ -23,14 +23,12 @@
  *
  * **The architectural bound.** Between `build`/`verify` and this handler nothing is
  * pushed, so the code the run produced exists ONLY in this worktree, and `ci`
- * necessarily executes its full tier FROM DISK. "The full tier ran at the frozen
- * head" is therefore NOT achievable by this shape — it never calls `checkout`,
- * `switch`, `reset`, `clean` or `stash`. What the green actually claims is that
+ * necessarily executes its full tier FROM DISK — it never calls `checkout`, `switch`,
+ * `reset`, `clean` or `stash`. What the green actually claims is that
  * **the disk still matches the head the record says was built**: HEAD is re-read
  * against the newest decided `verify`'s `verifiedHead`, HEAD must still sit on the
  * run's branch, and the tree must pass lean's clean-tree gate (`assertTreeClean`).
  */
-
 import { testsFromLog } from "./build.ts";
 import type { CiDeps } from "./ci-deps.ts";
 import { CI_FULL_TIER, fullTierExcuse } from "./ci-excuse.ts";

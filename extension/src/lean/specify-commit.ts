@@ -14,7 +14,6 @@
  * `committedBlob` hashes the COMMITTED bytes rather than the file on disk, so the
  * recorded hash is a fact about the commit and not a race with the tree.
  */
-
 import type { ExecFn } from "../worktree.ts";
 import { SpecifyCommitError as CommitError, NO_HOOKS } from "./specify-reset.ts";
 // The class lives in `specify-reset.ts`; this is the name the commit half's callers and tests know it by.

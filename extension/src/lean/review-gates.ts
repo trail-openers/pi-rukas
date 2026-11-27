@@ -19,7 +19,6 @@
  *   so the precondition is established BEFORE them, by a read that distinguishes
  *   the two.
  */
-
 import { lensFixDelta } from "../fix-delta.ts";
 import { buildEvidence, runClaimScan } from "../lens-evidence.ts";
 import type { Severity } from "../lens-review-format.ts";

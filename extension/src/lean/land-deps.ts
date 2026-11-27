@@ -9,7 +9,6 @@
  * A test injects a recorder into `LandDeps` and the suite never touches a real PR: every `merged` claim came
  * from an evidence read saying `ok` plus a merge read back as `MERGED`.
  */
-
 import { execp } from "../exec.ts";
 import type { Forge } from "../forge-types.ts";
 import type { AuthorRead } from "../merge-author-allowlist.ts";

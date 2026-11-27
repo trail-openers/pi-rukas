@@ -6,7 +6,6 @@
  * into exit 10 — "the tree or the child is broken", as distinct from work that
  * did not pass, which is an `Outcome`, never a throw.
  */
-
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 /** A tree, a child or a commit this step cannot trust. The engine makes it 10. */

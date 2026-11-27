@@ -9,7 +9,6 @@
  * `now`. Handlers are awaited strictly serially; a throw becomes its error outcome in
  * `error-outcome.ts`.
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import { trace } from "../trace.ts";
 import {

@@ -4,7 +4,6 @@
  * As in `build-types.ts`: the orchestrator's seams must be importable by
  * `challenge-dispatch.ts` without importing the step back.
  */
-
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";

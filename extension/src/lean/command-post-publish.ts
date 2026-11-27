@@ -5,7 +5,6 @@
  * `command.ts` owns the command registration, the `ready` verdict and the phase-1
  * handler wiring; this file owns the two post-publish steps' wiring.
  */
-
 import { ciDeps } from "./ci-deps.ts";
 import { ciOutcome } from "./ci.ts";
 import type { HandlerCtx, LeanHandlers } from "./engine.ts";

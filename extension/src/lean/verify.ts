@@ -40,7 +40,6 @@
  * the line comparison made of it. A tier whose report the roster cannot read — a typecheck
  * tier, a lint tier — is not the roster's to judge and keeps the line rule.
  */
-
 import { existsSync } from "node:fs";
 import { trace } from "../trace.ts";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";

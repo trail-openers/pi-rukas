@@ -8,7 +8,6 @@
  * The spec's problem and criteria go in VERBATIM — a paraphrase would be a second spec to keep in step,
  * and the child would be tested against the paraphrase.
  */
-
 import { type TestLocation, testDirsNamed } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import { leanIssueSection } from "./issue-prose.ts";
@@ -205,9 +204,8 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
     opts.spec.problem,
     "",
     // The issue section sits between the problem and the criteria: the child
-    // reads the task statement before the list it must prove. Empty (switch off,
-    // or no body) contributes no line at all, so that render is the pre-section
-    // shape byte for byte rather than the same text with a gap where it was.
+    // reads the task statement before the list it must prove. An empty section
+    // contributes no line at all, so a body with nothing to say leaves no gap.
     ...(issueSection === "" ? [] : [issueSection, ""]),
     "## The acceptance criteria",
     "",

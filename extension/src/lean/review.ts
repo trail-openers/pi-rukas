@@ -62,10 +62,9 @@
  * `build` and `challenge`,** which each have a table arrow for `budget`. `review` has two
  * kinds and neither is a stop, so all three reads of a stopped child throw
  * {@link ReviewInfraError} with the shared `budgetSentence` and the rows the step bought.
- * Returned as `{kind: "budget"}` instead it reaches `settle` with no arrow for the pair
- * and the run's cause reads `no transition for review + "budget"`.
+ * A `{kind: "budget"}` return would reach `settle` with no arrow for the pair and the
+ * run's cause would read `no transition for review + "budget"`.
  */
-
 import { truncatedFixerOutputTokens } from "../fixer-truncation.ts";
 import { isCarried } from "../lens-review-types.ts";
 import { traceWarn } from "../trace.ts";
@@ -354,8 +353,7 @@ async function reviewPass(
     // A fixer cut off at the output-token limit before it wrote anything had ONE continuation
     // spent on it (see `fixer-truncation.ts`); the wave's own record says whether, and the reason
     // line says so too, so a wave that fixed nothing after a truncation reads differently from one
-    // whose fixer read everything and changed nothing. With the switch at `0` the flag is never set
-    // and this is today's reason, byte for byte.
+    // whose fixer read everything and changed nothing.
     head = await assertFixAdvanced(
       review.head,
       fix.head,

@@ -12,7 +12,6 @@
  * roster cannot get a report from it (`rosterStartProblem`). Any other throw from the read is not a
  * setup answer and propagates: the engine hands back on it as the crash it is.
  */
-
 import { LeanConfigError, type WorkConfig } from "./config.ts";
 import { oneLine } from "./text-fence.ts";
 import { rosterStartProblem } from "./verify-roster-command.ts";

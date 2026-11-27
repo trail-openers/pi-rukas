@@ -14,7 +14,6 @@
  * and the verdict text does not distinguish the two; and the bar is resolved
  * once per step, never per round (see `ReviewDeps.reviewThreshold`).
  */
-
 import type { DeveloperContinuationFn } from "../developer-session-continuation.ts";
 import type { LensReviewSummary, Severity } from "../lens-review-format.ts";
 import type { Finding, LensRunResult } from "../lens-review-types.ts";
@@ -38,9 +37,7 @@ export type { FixRunId };
  *
  * `verdict`/`usage`/`note`/`noReview` are the review layer's own summary fields
  * rather than a hand-restated copy: `Pick<LensReviewSummary, ...>` means the
- * compiler refuses this type the moment the layer renames or retypes one of
- * them, which is exactly when a hand-written copy would have quietly kept
- * reading `undefined`.
+ * compiler refuses this type the moment the layer renames or retypes one of them.
  */
 export type LensRound = Pick<
   LensReviewSummary,
@@ -113,13 +110,12 @@ export interface LensArgs {
   wave: ReviewWave;
   /**
    * The run's PR number, when this run opened one. Without it the review layer
-   * pays a `gh pr list` per ISSUES_FOUND round for an answer this run already
-   * holds, and keys its disclosure on whatever that lookup picked.
+   * pays a `gh pr list` per ISSUES_FOUND round and keys its disclosure on whatever
+   * that lookup picked.
    */
   pr: number | undefined;
   /** The context lines this step composes (see `lensContext` in `review-deps.ts`).
-   * The run's issue reaches the lenses inside it: `lensContext` prints the
-   * fenced block there, so the arg shape carries no separate body. */
+   * The run's issue reaches the lenses inside it. */
   context: string;
   /**
    * The base of the re-review's range: the head the fix wave STARTED from, read
@@ -130,7 +126,7 @@ export interface LensArgs {
   since?: string;
   /** The re-review of a carried CRITICAL is bought whole-branch: the layer's own
    * opt-out from its automatic delta base, which a missing `since` alone would not
-   * suppress. Never set on the delta arm. */
+   * suppress. */
   full?: boolean;
   /** Post-change prose and the deterministic claim scan, read from the branch ref. */
   evidence: string | undefined;
@@ -138,9 +134,9 @@ export interface LensArgs {
    * a lens briefed on criteria it can read is briefed on the contract the run ran. */
   derivedSpec?: DerivedSpec;
   /** The seat sections (the acceptance table when there is one, then the roster
-   * summary), appended to this round's `context` by `lensContext`. Its own argument rather than folded into `context` at the call
-   * site because both passes carry it and there is exactly one place that composes
-   * the string. */
+   * summary), appended to this round's `context` by `lensContext` — its own argument
+   * rather than folded into `context` because both passes carry it and exactly one
+   * place composes the string. */
   acceptanceTable?: string;
   /**
    * The severity at which a finding blocks this run, resolved ONCE per review
@@ -169,8 +165,7 @@ export interface ReviewDeps {
    *
    * `BuildDispatch` rather than a re-declared narrower seam: it is the sibling
    * the same child crosses in `build`, and it already carries `writeFence` —
-   * which the review step's fixer needs exactly as the builder does. A seam
-   * that cannot carry the fence can only enforce it by not dispatching.
+   * which the review step's fixer needs exactly as the builder does.
    */
   dispatch: BuildDispatch;
   /**
@@ -180,9 +175,9 @@ export interface ReviewDeps {
    * Injected like every other outside world here, so a case can assert what the resumed child was
    * actually handed — its session file, its tree, its fence — rather than what the step intended to
    * hand it. Production is `spawnDeveloperContinuationChild`; a test that means "the continuation
-   * never happened" returns an outcome whose `ok` is false, which is the arm the step answers with
-   * today's handback. Absent means the surface does not exist, and a truncated fixer then takes
-   * today's path rather than a fresh child started in ignorance of what the first one read.
+   * never happened" returns an outcome whose `ok` is false — the arm the step answers with the
+   * no-change handback. Absent means the surface does not exist, and a truncated fixer takes that
+   * same arm rather than a fresh child started in ignorance of the first one.
    */
   continueSession?: DeveloperContinuationFn;
   fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;

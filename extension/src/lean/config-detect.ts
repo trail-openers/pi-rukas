@@ -12,7 +12,6 @@
  * and the reason rides into `ready`'s setup rule. Detection never invents a fast tier. The caller's
  * readers answer at the run's base commit, so every step that re-loads the config gets one answer.
  */
-
 import type { WorkConfig } from "./config.ts";
 
 /** `1` arms detection; every other value keeps the setup refusal byte for byte. */

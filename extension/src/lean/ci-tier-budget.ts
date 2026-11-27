@@ -11,7 +11,6 @@
  * and must stay startable. A tier with no room left is the handback naming the deadline,
  * thrown before the command spawns: a tier nobody started is not a tier that failed.
  */
-
 import { MINUTE_MS, clampToCycleDeadline } from "./deadline.ts";
 import type { HandlerCtx } from "./engine.ts";
 

@@ -24,7 +24,6 @@
  * Every outside call is a field of {@link DeriveDeps}, so a case drives
  * the whole boundary with a stubbed reply and no model is contacted.
  */
-
 import { execp } from "../exec.ts";
 import { criterionText, piSpecFromBullets, sizeOf } from "../pi-spec-map.ts";
 import { spawnSpecialist } from "../spawn.ts";

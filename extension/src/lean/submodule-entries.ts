@@ -13,7 +13,6 @@
  *     tree's own, and the MAIN working tree from the former — never `--show-toplevel`, which inside a
  *     linked worktree answers with that worktree, so the step would seed from the tree it is populating.
  */
-
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";

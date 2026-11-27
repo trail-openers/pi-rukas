@@ -5,7 +5,6 @@
  * verdict SHAPE the handlers write into it. `state.ts` re-exports the type, so
  * every importer keeps spelling `Outcome` from `state.ts`.
  */
-
 import type { HandoffChannel } from "../work-driver-handoff-channel.ts";
 import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";

@@ -3,7 +3,6 @@
  * what happens to the disposable tree while it exists, the other half of the
  * lifetime seam that put its creation and destruction in `review-tree.ts`.
  */
-
 import {
   continuationBoundMs,
   continuationPrompt,

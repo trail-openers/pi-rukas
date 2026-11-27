@@ -8,10 +8,10 @@
  *
  * The answer is the same stamp the headless /work driver's children carry, decided by the same function —
  * `cycleChildOpts`. `leanChildOpts` is the lean run's call site of it, and the flag is **threaded, never
- * remembered**, so a second lean run in one process cannot inherit the first run's trust.
+ * remembered**: a module-level stamp set once from the headless verb makes a second lean run in the same
+ * process inherit the first run's trust.
  * `PI_ENSEMBLE_STRICT_PERMISSIONS=1` is honoured by `workCycleTrustEnabled()`, which refuses the stamp.
  */
-
 import { cycleChildOpts } from "../work-cycle-trust.ts";
 
 /** Spread AFTER the caller's own options, so no caller can opt a child out of the stamp; `headless` is

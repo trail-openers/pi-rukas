@@ -14,7 +14,6 @@
  * Deliberately no fifth shape: throwing on output containing `Cannot find module` would punish the canonical
  * TDD red. Whether the TOOLCHAIN works is answered once, before the child, by the base-health check.
  */
-
 import { createHash } from "node:crypto";
 import path from "node:path";
 

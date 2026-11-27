@@ -20,7 +20,6 @@
  * An edge case that turns out to pass is worse than not writing it: the parent keeps
  * only the submitted files that FAIL at the current head.
  */
-
 import type { TestLocation } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import { leanIssueSection } from "./issue-prose.ts";
@@ -50,8 +49,7 @@ export interface ChallengePromptOpts {
   /**
    * The issue body the step re-read from the forge. The frozen tests were written
    * from this text, so an edge case the issue never asked for is not a finding —
-   * the sentence the adversary can check. Absent or blank, the section is not
-   * rendered and the prompt is the pre-section shape byte for byte.
+   * the sentence the adversary can check. Absent or blank, no section is rendered.
    */
   issueBody?: string;
 }

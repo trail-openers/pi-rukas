@@ -7,7 +7,6 @@
  * other, so the record's shape cannot drift from the reader's rules without a type error where
  * they meet (`lean/engine.ts`).
  */
-
 import { LeanStateError } from "./state.ts";
 
 /**

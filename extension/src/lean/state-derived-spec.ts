@@ -11,7 +11,6 @@
  * refused at load like any other corruption rather than executed by the steps that
  * would each read it differently.
  */
-
 import { mappingDisagrees } from "../pi-spec-map.ts";
 import { type Guard, guardsProblem } from "./derive-guards.ts";
 import { type PiSpec, parsePiSpec, readiness, renderPiSpec } from "./spec.ts";

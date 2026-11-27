@@ -10,11 +10,9 @@
  *   1. the prose is the body with its `pi-spec v1` block stripped
  *      (`stripPiSpecBlocks` on the RAW body, BEFORE any bound — a clip that lands
  *      inside the block leaves an unterminated fence the strip is obliged to keep),
- *      then bounded at `MAX_ISSUE_CHARS` with the layer's own truncation marker,
- *      so what survives the cut is prose;
- *   2. the criteria are rendered from the parsed spec (`criteriaBlock`, the same
- *      renderer the `build`/`specify`/`challenge` prompts print), so no criterion
- *      is ever cut by a prose bound;
+ *      then bounded at `MAX_ISSUE_CHARS`, so what survives the cut is prose;
+ *   2. the criteria are rendered from the parsed spec (`criteriaBlock`), so no
+ *      criterion is ever cut by a prose bound;
  *   3. both are disarmed at the print site by `fenceText`, because a criterion's
  *      text is issue-author prose crossing into six children's briefs.
  */
@@ -66,9 +64,8 @@ export function renderReviewIssueBlock(
   if (prose === "") return "";
   const criteria = renderSpecCriteriaSection(rawBody, run);
   // With no parsable block the seat reads the ordinary single bounded issue block:
-  // same lead-in, same rule, same fenced body. A body that never carried a spec
-  // cannot tell this module is in force, which is what makes the no-spec arm
-  // assertable byte for byte against the fallback renderers.
+  // same lead-in, same rule, same fenced body — what makes the no-spec arm assertable
+  // against the fallback renderers.
   if (criteria === "") return fencedIssuePromptBlock(rawBody, rule, fencedIssueBody);
   const statementShown =
     normalizeProse(stripPiSpecBlocks(rawBody ?? "")) === normalizeProse(specProblem(rawBody, run));
@@ -108,11 +105,7 @@ export function reviewCriteriaSection(
  * all, beside the section that already renders it.
  *
  * The `criteria !== ""` test is the same one `reviewCriteriaSection` applies, so
- * the two calls thread a pair or thread nothing: a body with no parsable block
- * keeps the raw bytes and the prompt stays today's. A body whose block parses,
- * strips and then renders no rows is the one case the pair is split over — it
- * cannot be, because `criteriaBlock` emits a line per criterion and the split
- * reaches here only when the parse that produced that list succeeded.
+ * the two calls thread a pair or thread nothing.
  *
  * NOT the same as `renderReviewProse`: that one bounds, and the loop applies its
  * own bound to what it prints. Stripping and re-bounding here would be the second

@@ -11,7 +11,6 @@
  * clean passes as exits, so a guard on the first round alone lets the second one's silence read as "the
  * fixer answered everything" — a pass, arrived at by nobody.
  */
-
 import { incompleteLanes } from "../lens-review-incomplete.ts";
 import type { LensRound, ReviewDeps } from "./review-args.ts";
 import { ReviewInfraError } from "./review-errors.ts";

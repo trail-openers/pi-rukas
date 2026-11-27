@@ -16,7 +16,6 @@
  * identified is somebody's run. The body is an identity rather than a bare pid for the reason
  * `process-liveness.ts` gives: a pid in a namespace this process cannot see into proves nothing either way.
  */
-
 import { randomUUID } from "node:crypto";
 import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";

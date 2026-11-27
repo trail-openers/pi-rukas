@@ -25,7 +25,6 @@
  * temp repo without a model in the loop — which is the only way a claim like "the
  * frozen blob still hashes to its record" is a test rather than a comment.
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import { resolveHeadShaOutcome } from "../review-head-sha.ts";
 import { type ReviewDeps, ReviewInfraError } from "./review.ts";

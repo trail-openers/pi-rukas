@@ -9,9 +9,8 @@
  * print (`lean/spec-blocks.ts`) — keeps the wording a run is judged on and the
  * wording its reviewers read in one place, and `fenceText` disarms the result like
  * every other cross-boundary value at these print sites. The adversarial seat gets
- * it through the loop's `reviewCriteria` param, which the lean review step renders
- * for (`reviewCriteriaSection` in `review-spec-split.ts`), so classic /work cannot
- * pass criteria in and its reviewer's prompt is unchanged by this feature.
+ * it through the loop's `reviewCriteria` param, so classic /work cannot pass criteria
+ * in and its reviewer's prompt is unchanged.
  *
  * The section opens with the spec's `problem`, because a review seat that
  * reads only the criteria list is a seat that never saw what the run was for: the
@@ -20,9 +19,7 @@
  * cap and the list at its own, each saying so with its OWN marker, so a child
  * weighing a cut statement and a cut list can tell which half of its contract it
  * lost. The statement prints only when the list has a row to print beside it: a
- * spec that parses with no criteria renders no section at all and the seat keeps
- * today's raw bounded fallback (`readiness()`, not `parsePiSpec()`, is what makes
- * that shape unreachable on a real run).
+ * spec that parses with no criteria renders no section at all.
  */
 import { criteriaBlock } from "./spec-blocks.ts";
 import { specFor } from "./spec-for.ts";

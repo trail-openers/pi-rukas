@@ -15,7 +15,6 @@
  * A tier GREENed by its re-run composes nothing (a flake says nothing about the work), and nor does an
  * infra result — the caller throws before composing.
  */
-
 import { baselineRedReason } from "./verify-baseline.ts";
 
 /** The joiner between the two clauses of one red reason. */

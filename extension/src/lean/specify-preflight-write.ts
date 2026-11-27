@@ -7,7 +7,6 @@
  * The rule the whole module exists for: the step owns the worktree's bytes, and a name the base
  * already carries as a link, a directory or a fifo is not a place to put a probe.
  */
-
 import { lstatSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Proof } from "./specify-proof.ts";

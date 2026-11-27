@@ -17,7 +17,6 @@
  * Every failure to build or judge that tree means "no attribution", never "defective": the tier's own red
  * stands and the run takes the build round it would have taken anyway.
  */
-
 import { rmSync } from "node:fs";
 import path from "node:path";
 import { trace } from "../trace.ts";

@@ -20,13 +20,8 @@
  * builder that finds two frozen assertions in conflict has nothing to do but probe them until the turn ceiling
  * kills the step. The tool's report is a claim the driver verifies for itself (`build-blocked.ts`).
  */
-
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
-import {
-  LEAN_BUILD_ISSUE_LEAD,
-  leanBuildIssueProseEnabled,
-  leanIssueSection,
-} from "./issue-prose.ts";
+import { LEAN_BUILD_ISSUE_LEAD, leanIssueSection } from "./issue-prose.ts";
 import { criteriaBlock, scopeBlock } from "./spec-blocks.ts";
 import type { PiSpec } from "./spec.ts";
 import { baselineRedReadNoNames } from "./verify-baseline.ts";
@@ -57,8 +52,7 @@ export interface BuildPromptOpts {
   /**
    * The issue body the step read for its own spec parse. The frozen tests were written from it, so a
    * requirement stated only in prose is otherwise invisible to the seat that writes the code. Absent,
-   * blank, stripped to the spec block alone or to a restatement of `spec.problem`, or with either switch
-   * at `"0"`, no section is rendered.
+   * blank, stripped to the spec block alone, or restating `spec.problem`, no section is rendered.
    */
   issueBody?: string;
   /**
@@ -125,11 +119,9 @@ export function buildPrompt(opts: BuildPromptOpts): string {
     opts.testRunner === undefined || opts.testRunner.trim() === ""
       ? "No project test runner is configured, so run each frozen file with whatever command runs this repository's tests."
       : `The project runs one test file with \`${opts.testRunner}\` — the literal \`${TEST_RUNNER_PLACEHOLDER}\` is replaced by the file's path. Run the frozen files with that command as you work, and keep going until they pass.`;
-  // The builder consults BOTH switches at its own call site, so `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` takes
-  // this seat's section out and leaves `specify`/`challenge` rendering.
-  const issueSection = leanBuildIssueProseEnabled()
-    ? leanIssueSection(opts.issueBody, LEAN_BUILD_ISSUE_LEAD, opts.spec.problem)
-    : "";
+  // The seat's own renderer call: the builder's lead, and its `problem` line as the one prose shape the
+  // brief already prints. `specify`/`challenge` call the same renderer with the oracle's lead.
+  const issueSection = leanIssueSection(opts.issueBody, LEAN_BUILD_ISSUE_LEAD, opts.spec.problem);
   return [
     `You are implementing issue #${opts.issue}. The acceptance tests already exist and are committed; your job is to make them pass.`,
     "",

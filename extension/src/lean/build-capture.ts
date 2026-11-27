@@ -9,7 +9,6 @@
  * the commit must carry. A link, device, directory, or a name reached through a
  * link or non-directory is refused, and the reset clears it.
  */
-
 import { lstatSync } from "node:fs";
 import path from "node:path";
 

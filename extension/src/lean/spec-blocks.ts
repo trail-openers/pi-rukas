@@ -5,7 +5,6 @@
  * `challenge-prompt.ts`: the rendering is the text those prompts are pinned on,
  * so a second copy could drift into the children reading different criteria.
  */
-
 import type { PiSpec } from "./spec.ts";
 
 /** The spec's criteria as prompt bullets, one per criterion. */

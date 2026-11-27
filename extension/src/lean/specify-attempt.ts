@@ -9,7 +9,6 @@
  * submitted only some test criteria is re-asked for the rest inside the attempt (`specify-reask.ts`).
  * The pipeline is shared with `challenge` through `specify-run.ts`.
  */
-
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { statReporterPath } from "../reporter-preflight.ts";

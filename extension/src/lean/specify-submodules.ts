@@ -22,7 +22,6 @@
  * One gate decides the call: with `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` the runner is untrusted, so no
  * submodule code runs at all — no listing, no seeding, no disclosure read.
  */
-
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";

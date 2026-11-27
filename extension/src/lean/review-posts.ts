@@ -18,7 +18,6 @@
  * the first was refused — one lost post must not cost the run both disclosures. A
  * pushed fix wave adds a third, naming its fix range.
  */
-
 import { traceWarn } from "../trace.ts";
 import { handoffChannel } from "../work-driver-handoff-channel.ts";
 import { acceptanceComment } from "./review-acceptance.ts";

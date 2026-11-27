@@ -11,7 +11,6 @@
  * The prompt is assembled in `challenge-prompt.ts`; this module owns only the seam and
  * the failure taxonomy.
  */
-
 import path from "node:path";
 import { statReporterPath } from "../reporter-preflight.ts";
 import type { DispatchResult } from "../types.ts";

@@ -14,7 +14,6 @@
  * manifest is no reason to lose a run. `"unknown"` says the stamp is missing,
  * which is what a reader years later needs to know.
  */
-
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";

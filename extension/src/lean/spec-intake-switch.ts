@@ -19,7 +19,6 @@
  * be a silent behaviour change, in the direction where the run costs a model
  * call. The env is read at CALL time.
  */
-
 import type { WorkConfig } from "./config.ts";
 
 /** The two modes, in the order `--capabilities` publishes them. */

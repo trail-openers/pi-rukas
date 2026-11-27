@@ -19,7 +19,6 @@
  * deadline (an absent deadline is never a reason to shrink work), or `PI_ENSEMBLE_DISPATCH_CAPS=0`.
  * A child already in flight is never cut here — the per-child ceilings stay the only kill lever.
  */
-
 import { capsEnabled } from "../spawn-child-bound.ts";
 import { MINUTE_MS, handoffAllowanceMs } from "./deadline.ts";
 import { leanPreVerifySharePercent } from "./pre-verify-share-switch.ts";

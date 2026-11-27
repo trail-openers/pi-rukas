@@ -8,7 +8,6 @@
  * and stand in the file's own path only for that run; the head copy is put back before this returns,
  * so the step's clean-tree re-check never reports them as a tier's. Rules stated where judged: roster.ts.
  */
-
 import { chmodSync, lstatSync, readFileSync, rmSync, utimesSync } from "node:fs";
 import path from "node:path";
 import { verifyChildEnv, verifyHostEnv } from "../work-driver-verify-cmd.ts";

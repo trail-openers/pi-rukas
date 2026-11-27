@@ -7,7 +7,6 @@
  * names in a row and the rows in a call come from an untrusted child. The size rules judge the CHILDREN'S
  * work rather than the call's cost, and are applied here, where a submitted path is finally a file.
  */
-
 import path from "node:path";
 import { type TestLocation, testLocationProblem } from "./config-test-location.ts";
 import type { PiSpec } from "./spec.ts";
@@ -22,9 +21,7 @@ import { MAX_TEST_FILES_PER_CRITERION, testFileQuotaProblem } from "./test-size.
  */
 export const MAX_TEST_FILES_PER_ROW = 8;
 
-/**
- * How many DISTINCT paths one call may get probed for. The row cap bounds a row, not the call.
- */
+/** How many DISTINCT paths one call may get probed for. The row cap bounds a row, not the call. */
 const MAX_TEST_FILES_PER_CALL = 32;
 
 /**

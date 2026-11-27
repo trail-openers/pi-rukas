@@ -15,7 +15,6 @@
  * refuses is the repo's own defect and declines, naming the knob. The mode itself is
  * `spec-intake-switch.ts`'s: env, then the committed `lean.specIntake`, then `require`.
  */
-
 import { resolveModel } from "../models.ts";
 import type { WorkConfig } from "./config.ts";
 import type { LeanSeed } from "./seed.ts";

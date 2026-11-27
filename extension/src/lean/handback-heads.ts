@@ -10,7 +10,6 @@
  * "We know a head we can ship" is a different claim from "the run once saw a gate": the newest DECIDED
  * `verify` must be `green` and must name a head.
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import { type LeanState, REPORT_STATES, type Step } from "./state.ts";
 

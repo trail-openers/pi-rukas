@@ -8,7 +8,6 @@
  * other import it back. The child reads text already in its prompt and has no
  * repository to explore, so it needs neither a builder's turns nor a reviewer's wall clock.
  */
-
 import type { Budget } from "./config.ts";
 
 /** The shipped ceiling for the deriving child: one short, read-only drafting pass. */

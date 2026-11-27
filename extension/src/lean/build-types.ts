@@ -5,7 +5,6 @@
  * An orchestrator's types must be importable by the modules it orchestrates
  * (`build-git`, `build-capture`, `build-normalise`) without importing it back.
  */
-
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";

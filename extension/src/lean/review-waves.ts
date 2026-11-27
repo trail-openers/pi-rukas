@@ -14,7 +14,6 @@
  * THIS step dispatches, and counts lean's own children only. The bound is asserted against `rows` —
  * the same record the operator reads — rather than a counter only the tests consult.
  */
-
 import { neutraliseEvidence } from "../comment-evidence.ts";
 import type { Severity, Verdict } from "../lens-review-format.ts";
 import { SEVERITY_RANK, findingDescription } from "../lens-review-format.ts";

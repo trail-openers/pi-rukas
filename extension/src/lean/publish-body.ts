@@ -15,7 +15,6 @@
  * Every line is emitted unconditionally except where stated: a reader must tell "not
  * run" apart from "not applicable".
  */
-
 import type { SpecSource } from "./spec-for.ts";
 import type { PiSpec } from "./spec.ts";
 import { PREEXISTING_NAMES_CAP, type PreexistingTierRecord } from "./state-outcome-maps.ts";
@@ -53,7 +52,7 @@ export interface PublishBodyInput {
    * Where the contract came from. `derived` prints a provenance line under the
    * table: an authored list says what the author asked for, a derived one says what
    * a model read into the ticket, and only the second needs checking against the
-   * issue. Absent (or `issue`) prints nothing — today's body, byte for byte.
+   * issue. Absent (or `issue`) prints nothing.
    */
   specSource?: SpecSource;
   /** The verdict the run's own gate last recorded, or none if it never ran. */

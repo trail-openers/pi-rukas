@@ -8,7 +8,6 @@
  * The rules are reported SEPARATELY because they are different mistakes: a value that is not an object name,
  * and one the clone does not hold. The rule text is the only place an operator reads which half failed.
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import { execp } from "../exec.ts";
 import { resolveHeadShaOutcome } from "../review-head-sha.ts";

@@ -15,7 +15,6 @@
  * reviewed, a clean first round, and a pushed fix route three ways): `review.ts` owns
  * those readings, this module the clock and the stop's shape.
  */
-
 import { neutraliseEvidence } from "../comment-evidence.ts";
 import { capsEnabled } from "../spawn-child-bound.ts";
 import { MINUTE_MS, handoffAllowanceMs } from "./deadline.ts";
@@ -33,7 +32,6 @@ export const REVIEW_DEADLINE_RESERVE_MS = 15 * 60_000;
 /// dispatch nothing further; `inert` means the caps master switch is off, so the step
 /// stops nothing and says so. `limit`/`value`/`reason` are present exactly when a stop
 /// exists and are the record's own fields, never `budgetSentence`'s wording.
-
 export interface StepStop {
   live: boolean;
   inert: boolean;

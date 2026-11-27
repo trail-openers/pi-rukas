@@ -6,7 +6,6 @@
  * and `verify-frozen.ts` runs the frozen files, and both must be able to refuse without importing
  * the orchestrator that owns them.
  */
-
 import type { VerifyExecFn } from "../work-driver-git.ts";
 import type { ExecFn } from "../worktree.ts";
 

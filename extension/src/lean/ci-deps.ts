@@ -5,7 +5,6 @@
  * this file is the wiring to the forge CLI and the project's verify tier. A test
  * injects a recorder here and stays offline.
  */
-
 import { execp } from "../exec.ts";
 import { mergeEvidenceViewCmd, prChecksCmd } from "../forge-commands.ts";
 import type { Forge } from "../forge-types.ts";

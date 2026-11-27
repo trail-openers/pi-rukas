@@ -9,7 +9,7 @@
  *     rule is `baselineExcuse`);
  *   - **a RED that hands the run back**: any other answer from the excuse, or a re-run that observed
  *     nothing;
- *   - **a RED whose first clause is the frozen contract**, which is the case this module exists for.
+ *   - **a RED whose first clause is the frozen contract**.
  *
  * The frozen verdict is asked FIRST, on purpose: the step's ordinary `firstFailure` never sees it once this
  * arm returns, so a run whose own acceptance tests are red cannot be graded green on the strength of a tier
@@ -22,7 +22,6 @@
  * tier's report — leaves the line rule in charge. The two judgements are never combined: a roster
  * red is never made green by a line match, and a roster excuse is recorded rather than re-argued.
  */
-
 import { PREEXISTING_NAME_MAX_CHARS, type PreexistingTierRecord } from "./state-outcome-maps.ts";
 import { baselineExcuse, failureLinesOf } from "./verify-baseline-excuse.ts";
 import { baselineProbeWorktreePath } from "./verify-baseline.ts";

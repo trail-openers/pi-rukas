@@ -14,7 +14,6 @@
  *
  * A leaf module: it imports no step and no engine type.
  */
-
 import {
   DISPATCHES_MAX_ROWS,
   validatedDispatches,

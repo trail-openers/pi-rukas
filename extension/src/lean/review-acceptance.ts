@@ -19,7 +19,6 @@
  * authorship; a `commandNotRunnable` reason is path-check prose) because this
  * section reaches six lens briefs, an adversarial brief and a public PR comment.
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import { testsFromLog } from "./build.ts";
 import type { ReviewDeps } from "./review-args.ts";

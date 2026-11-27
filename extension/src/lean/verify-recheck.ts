@@ -11,7 +11,6 @@
  * the work. A **throw** is a machine that could not answer. Blaming a tier for git refusing to reply accuses
  * the wrong party, so those paths throw and never red.
  */
-
 import { porcelain } from "./build-git.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { oneLine } from "./text-fence.ts";

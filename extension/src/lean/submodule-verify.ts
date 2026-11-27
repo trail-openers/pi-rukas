@@ -5,7 +5,6 @@
  * submodules and then tested against an empty `vendor/` directory. Both checks here are
  * deliberately pessimistic: an unreadable answer counts as a problem, never as an absence of one.
  */
-
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";

@@ -5,7 +5,6 @@
  * cannot reach one arm and miss the other. Each function returns parts, not a joined
  * string: the caller keeps `joinNotes` and the clauses that are its own.
  */
-
 import type { NormaliseReport } from "./build-types.ts";
 import { clipList } from "./text-fence.ts";
 

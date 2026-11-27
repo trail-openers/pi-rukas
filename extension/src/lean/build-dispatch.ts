@@ -7,7 +7,6 @@
  * the developer had tried and produced nothing) and never `ok`. A child that died before its first turn gets
  * one free re-dispatch; the taxonomy decides which deaths qualify. The prompt lives in `build-prompt.ts`.
  */
-
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import { statReporterPath } from "../reporter-preflight.ts";

@@ -9,7 +9,6 @@
  * Every git call is argv form through `ReviewDeps.exec`, and the child goes through the deps' seams,
  * so a test drives the whole round against a real temp repo with no model in the loop.
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import { traceWarn } from "../trace.ts";
 import { cycleChildOpts } from "../work-cycle-trust.ts";
@@ -174,10 +173,8 @@ export async function integrateFix(
       `the fix round changed the frozen acceptance contract: ${broken.slice(0, 6).join(", ")}`,
     );
   // The push is deliberately NOT forced: a branch somebody else moved while the
-  // fixer ran is refused by git itself rather than rewritten here, which is the
-  // whole guarantee this step needs and needs from the one component that
-  // actually holds the truth about what origin holds. Reading origin first would
-  // buy nothing — that read is stale the moment it returns.
+  // fixer ran is refused by git itself rather than rewritten here. Reading origin
+  // first would buy nothing — that read is stale the moment it returns.
   //
   // It is also the only git call in this step that leaves the clone, so it is the
   // one the seam gives the driver's non-interactive env to — the same `netGitEnv`
@@ -186,18 +183,13 @@ export async function integrateFix(
   // /dev/tty and hanging the step). Every other call here is local.
   //
   // The name is checked with the driver's own `netRefProblem` immediately before
-  // the argv is built — the placement `publish`'s `pushHead` uses. It
-  // reads the same charset the entry-point `assertPublishableBranch` applied before
-  // this step paid for anything, so this is NOT the guard — deleting it alone keeps
-  // every refusal in `test-lean-review-push-guards.ts` green, because the earlier
-  // call refuses the same names first. It is the check that sits beside the command
-  // line it protects, so an edit that MOVES or drops the entry-point one cannot
-  // silently put a refspec (`a:b`), a force (`+x`) or an option (`-f`) — all of
-  // which `assertSafeRef` calls legal — in front of a network git call. The case
-  // that proves that layering is (x1)'s "refused before anything mutated" assertion
-  // (no `checkout -B`, no `reset --hard`, no `clean -fdx`, no `worktree add` in the
-  // recorded argv), which goes red the moment the entry-point call is moved back to
-  // after the first mutating git call — verified by performing that move.
+  // the argv is built, beside the command line it protects: an edit that MOVES or
+  // drops the entry-point `assertPublishableBranch` cannot then silently put a
+  // refspec (`a:b`), a force (`+x`) or an option (`-f`) — all of which
+  // `assertSafeRef` calls legal — in front of a network git call. It reads the same
+  // charset that entry point applied before this step paid for anything, so deleting
+  // this line alone keeps `test-lean-review-push-guards.ts` green; what proves the
+  // layering is that suite's "refused before anything mutated" assertion.
   const unsafe = netRefProblem(`refs/heads/${branch}`);
   if (unsafe !== undefined) return await fail(`refusing to push ${branch}: ${unsafe}`);
   const pushed = await gitQuiet(deps.exec, wt, [

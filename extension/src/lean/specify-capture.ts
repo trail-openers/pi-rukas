@@ -22,7 +22,6 @@
  * leaves, its criterion goes uncovered, and the step reports a verdict about the child's work rather than an
  * infrastructure fault.
  */
-
 import { constants as fsConstants } from "node:fs";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";

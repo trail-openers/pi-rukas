@@ -13,7 +13,6 @@
  * Two positions the snapshot may legitimately hold: the fold's own (`pos`), and the one before its last step
  * (`before`) — a crash between recording an outcome and applying it. Anything else throws.
  */
-
 import { hasTransition, next } from "./machine.ts";
 import {
   INITIAL_COUNTERS,

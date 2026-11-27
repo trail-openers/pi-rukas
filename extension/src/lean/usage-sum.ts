@@ -11,7 +11,6 @@
  *
  * Leaf module: it imports types only, so anything can fold the log without pulling a step in.
  */
-
 import type { DispatchUsage } from "../types.ts";
 import type { UsageFold } from "../usage-fold.ts";
 import { foldUsage } from "../usage-fold.ts";

@@ -14,7 +14,6 @@
  * The submodule gate sits inside `resetWorktreeToBase` rather than in its callers, because the resets
  * are made in six places and one gate there covers every lean reset.
  */
-
 /** Whether the runner preflight and the reset's submodule init run. */
 export function leanRunnerPreflightEnabled(): boolean {
   return process.env.PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT !== "0";

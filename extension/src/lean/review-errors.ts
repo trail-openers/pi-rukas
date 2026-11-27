@@ -13,7 +13,6 @@
  * The engine records it through `errorOutcome`, and the distinction is what keeps
  * "the review found nothing wrong" from being reachable by an error path.
  */
-
 import type { ReviewBoundRecord } from "./review-bound.ts";
 import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";

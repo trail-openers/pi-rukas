@@ -8,7 +8,6 @@
  * It NEVER throws: a comment that failed to post is information in the record, not a reason to change the
  * verdict.
  */
-
 import { execp } from "../exec.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import { frozenFromLog } from "./build.ts";

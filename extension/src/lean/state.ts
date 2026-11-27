@@ -19,7 +19,6 @@
  * safe to reason about: the engine re-runs exactly that step and no other (see
  * {@link newestDecided}).
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import { assertDeadline } from "./deadline-record.ts";
 import { type DerivedSpec, assertDerivedSpec } from "./state-derived-spec.ts";
