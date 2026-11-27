@@ -21,9 +21,10 @@
 
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { SpecifyInfraError, runTestPipeline } from "../src/lean/specify-run.ts";
+import { runTestPipeline } from "../src/lean/specify-run.ts";
 import type { ExecFn } from "../src/worktree.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
+import { SpecifyInfraError } from "../src/lean/specify-reset.ts";
 
 const { assert, failures } = makeAssert();
 

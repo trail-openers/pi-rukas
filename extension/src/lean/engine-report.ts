@@ -14,8 +14,7 @@ import { traceWarn } from "../trace.ts";
 import { handoffAllowanceMs, stopReason } from "./deadline.ts";
 import { reportBoundSentence } from "./engine-report-bound.ts";
 import { handbackHeads } from "./handback-heads.ts";
-import type { LeanRun, LeanState, Outcome, Step } from "./state.ts";
-import { nextAttempt } from "./state.ts";
+import { type LeanRun, type LeanState, type Outcome, type Step, nextAttempt } from "./state.ts";
 
 /** The reporting step, as the runner holds it — the `handback` entry of the injected handler table. */
 export type HandbackHandler = (ctx: {

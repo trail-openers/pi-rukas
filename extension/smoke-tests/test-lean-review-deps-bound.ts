@@ -223,4 +223,81 @@ async function deliver(
   );
 }
 
+// ── (6) #2644 — THE HUNG-REQUEST LEVER LEAVES THE SEAM. The adversarial side of the same wiring
+// as (1)-(4) above: `reviewDeps().adversarial` destructures `stall` out of the budget arms and
+// forwards the frozen whole minutes to `runAdversarialLoop`, which forwards them to `makeRunPhase`,
+// which builds the reviewer's spawn options itself. That one forwarding line shipped with no test
+// anywhere — deleting it left every offline suite green, both `test-adversarial-reviewer-*` files
+// included — and it is the whole of the gate reviewer's protection: a model request that never
+// answers emits no turn, so the turns and tokens levers cannot breach it (#2644's lost cells).
+//
+// Asserted on what the REVIEWER'S SPAWN received, through the real seam → real loop → real
+// `makeRunPhase` chain, exactly as (1) asserts the lens clamp on what the lens engine received. An
+// assertion on `a.budget.opts` would have passed with the threading deleted, which is how it shipped.
+// The recorder is `lib/adversarial-reviewer-harness.ts`, which this file must not `mock.module`
+// itself over (a second mock of one specifier does not reliably replace the first — see
+// `lib/lens-stub-spawn.ts` for why that recorder lives beside its own suite).
+{
+  const { deliver } = await import("./lib/adversarial-reviewer-harness.ts");
+  const { armBudget } = await import("../src/lean/step-budget.ts");
+  const { requestStallWindowMs } = await import("../src/request-stall-policy.ts");
+  const MINUTE = 60_000;
+  const startedAt = 1_700_000_000_000;
+  const deadlineMs = startedAt + 90 * MINUTE;
+
+  /** The step's own arms, armed for real — a fixture's `opts` would pin the fixture. */
+  const armsFor = (withDeadline: boolean) =>
+    armBudget(
+      { minutes: 0, turns: 0, tokens: 0 },
+      {
+        reserveMs: 10 * MINUTE,
+        silence: () => ({ sinceMs: 0, toolInFlight: false }),
+        ...(withDeadline ? { deadlineMs } : {}),
+        startedAt,
+      },
+    );
+
+  // The window the step's own arms imply, from the SAME reader the lever uses: the expectation is the
+  // rule's answer, not a literal the fixture agrees with. Written `?? 0` rather than the non-null
+  // assertion: a `/` straight after `!` is where the selector's lexer
+  // (`src/work-driver-verify-select-lex.ts`) cannot tell division from a regex opening, and a file it
+  // refuses sends every develop round to the full suite. A missing window is 0 here and the arm
+  // assertions below are what catch it — `deliver` is armed with the same number they read back.
+  const windowMs = requestStallWindowMs(deadlineMs, startedAt, 10 * MINUTE) ?? 0;
+  const expectedMinutes = Math.ceil(windowMs / MINUTE);
+  const armed = await deliver({ stallWindowMinutes: expectedMinutes });
+  assert(
+    armed.reviewer !== undefined,
+    "(6) precondition: the chain really dispatched the gate's reviewer child",
+  );
+  assert(
+    armed.reviewer?.stall?.windowMinutes === expectedMinutes,
+    `(6) THE LEVER SURVIVES TO THE REVIEWER'S SPAWN: the child was armed with the step's window (${String(expectedMinutes)} min), not with nothing — one line in the seam carries it and it shipped untested (captured ${JSON.stringify(armed.reviewer?.stall)})`,
+  );
+  // The shape `makeRunPhase` actually builds for this child: the frozen whole minutes plus the
+  // placeholder reader the spawn replaces with its own (`stallLever` in `spawn-inactivity-poll.ts`).
+  // A reader is NOT optional here — `SpawnOptions.stall` requires one — so an arm that arrived with
+  // only a number would not compile, and a case asserting that would pin nothing. The enforcement
+  // consequence is real though: `stallLever` takes `windowMinutes * 60_000` as the threshold when no
+  // `windowMs` rides through, which is the coarser of the two and is documented as such.
+  assert(
+    armed.reviewer?.stall?.silence !== undefined &&
+      typeof armed.reviewer?.stall?.silence === "function" &&
+      armed.reviewer?.stall?.windowMs === undefined,
+    `(6) and the arm carries the reader the spawn replaces, in the whole-minutes form this seam documents — its threshold is therefore the minutes, not the step's ms (captured ${JSON.stringify(armed.reviewer?.stall)})`,
+  );
+  assert(
+    armed.reviewer?.signal !== undefined,
+    "(6) and the reviewer's child still holds an abort — a lever with no abort is a bound that cannot be enforced",
+  );
+
+  // The off arm: a step that armed no lever must not hand the reviewer a window of its own. An
+  // invented threshold would end a reviewer the operator chose not to bound.
+  const unarmed = await deliver({});
+  assert(
+    unarmed.reviewer !== undefined && unarmed.reviewer.stall === undefined,
+    `(6) with nothing armed at the step, the reviewer's spawn carries no stall arm either (captured ${JSON.stringify(unarmed.reviewer?.stall)})`,
+  );
+}
+
 process.exit(failures());

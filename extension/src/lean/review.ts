@@ -72,6 +72,7 @@ import { traceWarn } from "../trace.ts";
 import { frozenFromLog } from "./build.ts";
 import { protectedPathsOf } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { stallArms } from "./request-stall.ts";
 import { acceptanceSection, assertHeadIsVerified } from "./review-acceptance.ts";
 import { type StepStop, reviewBoundRecord, stepBound, unjudgedLenses } from "./review-bound.ts";
 import { assertReviewEntry } from "./review-entry.ts";
@@ -187,8 +188,9 @@ async function reviewPass(
   const runId = fixRunIdFromLog(ctx.steps) ?? fixRunId(ctx.now);
   // The step's budget, armed the way `build`, `challenge` and `specify` arm theirs. A
   // child that spends it is NOT a routed verdict — this step has no `budget` arrow, so the
-  // stop throws with the rows it paid for.
-  const budget = armBudget(budgetFor(config, "review"));
+  // stop throws with the rows it paid for. `stallArms` reads no clock: the wave's stop below
+  // measures from the durable review entry, and the lever measures from that same entry.
+  const budget = armBudget(budgetFor(config, "review"), stallArms(ctx));
   if (budget.warning !== undefined) traceWarn(`lean review #${String(issue)}: ${budget.warning}`);
   // **The step's OWN clock, beside the per-child arms and for a different job** — it
   // bounds the whole wave, and its spend comes off the durable review entry so a resumed

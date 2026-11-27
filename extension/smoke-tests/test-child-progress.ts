@@ -16,7 +16,8 @@ import type { ChildProcess } from "node:child_process";
 import { ChildProgress, commandFingerprint, progressSilenceMs } from "../src/child-progress.ts";
 import type { PiJsonEvent } from "../src/pi-event-shapes.ts";
 import { emptyRunningState } from "../src/progress.ts";
-import { InFlightTools, createInactivityPoll } from "../src/spawn-inflight.ts";
+import { createInactivityPoll } from "../src/spawn-inactivity-poll.ts";
+import { InFlightTools } from "../src/spawn-inflight.ts";
 import { recordKillBudgets } from "../src/spawn-review-bounds.ts";
 import { inactivityTimeoutMs, toolInactivityTimeoutMs } from "../src/spawn-support.ts";
 import { armCapSession, declareKillFlags } from "../src/spawn-watchdog.ts";
@@ -389,7 +390,7 @@ const result = (id: string): PiJsonEvent => ({
   } as unknown as ChildProgress;
   const poll = async (lastActivityAt: () => number, inFlightTools = new InFlightTools()) => {
     let seen = "";
-    const stop = createInactivityPoll({
+    const poll = createInactivityPoll({
       child: fakeChild,
       inFlightTools,
       lastActivityAt,
@@ -399,7 +400,7 @@ const result = (id: string): PiJsonEvent => ({
       },
     });
     await new Promise((r) => setTimeout(r, 600));
-    stop();
+    poll.stop();
     return seen;
   };
   const emitting = await poll(() => Date.now());
@@ -431,6 +432,14 @@ const result = (id: string): PiJsonEvent => ({
   assert(
     result.killBudgetMs === 7,
     `a no-progress kill records the window it fired on (got ${result.killBudgetMs})`,
+  );
+  // #2644 — the caller's hung-request lever records the window the poll computed through the SAME
+  // seam; without the case the completion event loses the bound and prints the no-budget arm.
+  const stalled = { killCause: "stall" } as DispatchResult;
+  recordKillBudgets(stalled, { timeoutMs: 1, clamped: false, killedBudgetMs: () => 9 });
+  assert(
+    stalled.killBudgetMs === 9,
+    `a stall kill records the window it fired on (got ${stalled.killBudgetMs})`,
   );
   if (saved === undefined) delete process.env[IDLE];
   else process.env[IDLE] = saved;

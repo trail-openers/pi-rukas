@@ -15,8 +15,12 @@
  * A leaf module: it imports no step and no engine type.
  */
 
-import { validatedReviewBound } from "./state-dispatches.ts";
-import { DISPATCHES_MAX_ROWS, DISPATCH_STATES, validatedDispatches } from "./state-outcome.ts";
+import {
+  DISPATCHES_MAX_ROWS,
+  validatedDispatches,
+  validatedReviewBound,
+} from "./state-dispatches.ts";
+import { DISPATCH_STATES } from "./state-outcome.ts";
 import type { LeanState, Outcome } from "./state.ts";
 
 /** What the engine records for one handler throw: a message, and what it can prove. */

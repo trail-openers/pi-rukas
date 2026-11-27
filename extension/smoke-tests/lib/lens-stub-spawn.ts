@@ -31,6 +31,8 @@ export interface StubSpawnCall {
   prompt: string;
   childBoundMs?: number;
   budgetTurns?: number;
+  /** #2644 — the hung-request lever, so a suite can assert a child was armed with one at all. */
+  stall?: SpawnOptions["stall"];
 }
 
 /** What the recorder answers a spawn with. Mutable so one suite can make a
@@ -74,6 +76,7 @@ export function stubLensSpawn(): StubSpawnCall[] {
         prompt: spec.prompt,
         childBoundMs: opts.childBoundMs,
         budgetTurns: opts.budgetTurns,
+        stall: opts.stall,
       });
       return answer(spec) as never;
     },

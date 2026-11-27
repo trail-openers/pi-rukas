@@ -13,12 +13,8 @@
  */
 
 import type { DispatchFailureCause, DispatchResult } from "./types.ts";
-import {
-  type FailureTail,
-  classifyFailureCause,
-  clip,
-  repeatsNote,
-} from "./work-driver-failure-taxonomy.ts";
+import { type FailureTail, classifyFailureCause } from "./work-driver-failure-taxonomy.ts";
+import { clip, repeatsNote } from "./work-driver-failure-text.ts";
 
 /**
  * #309 — produce the operator-facing reason string for a dispatch failure.
@@ -52,6 +48,10 @@ export function failureCauseReason(tail: {
       return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
     case "self-killed:no-progress":
       return "ended by pi-rukas for emitting without progress past PI_ENSEMBLE_PROGRESS_SILENCE_MS — retrying would replay the stall";
+    // #2644 — its own headline, and it says so at the front: a model request that hung is not the
+    // slow-child shape, and "ran out of time" would send the operator after a wall clock.
+    case "self-killed:stall":
+      return "ended by pi-rukas when one model request went quiet past the request-stall window (PI_ENSEMBLE_LEAN_REQUEST_STALL=0 takes the bound out) — re-spawning would replay the same hung request";
     // #1827 — the reviewer re-read cap gets its own headline: a child that was
     // reloading its SKILL.md is not a slow child, and "it ran out of time"
     // would send the operator after the wrong knob.
@@ -106,6 +106,10 @@ export function failureCauseReasonForClass(
       return "ended by pi-rukas at its per-child run bound (wrap-up steer, then the kill) — a bound on the child, not a provider fault";
     case "self-killed:no-progress":
       return "ended by pi-rukas for emitting without progress past PI_ENSEMBLE_PROGRESS_SILENCE_MS — retrying would replay the stall";
+    // #2644 — its own headline, and it says so at the front: a model request that hung is not the
+    // slow-child shape, and "ran out of time" would send the operator after a wall clock.
+    case "self-killed:stall":
+      return "ended by pi-rukas when one model request went quiet past the request-stall window (PI_ENSEMBLE_LEAN_REQUEST_STALL=0 takes the bound out) — re-spawning would replay the same hung request";
     // #1827 — same wording as the sibling reason site: the two must not drift.
     case "self-killed:review-skill-reread":
       return "ended by pi-rukas for re-reading its own skill file past PI_ENSEMBLE_REVIEW_SKILL_READS (the read/cat/grep alternation no loop detector sees) — retrying would read it again";

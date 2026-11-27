@@ -58,8 +58,6 @@ import { preexistingReason } from "./verify-baseline-excuse.ts";
 import { assertTreeClean } from "./verify-recheck.ts";
 import { VerifyInfraError } from "./verify-types.ts";
 
-export { CI_POLL_MS };
-
 /**
  * The `ci` budget's minutes for one loaded config. One number feeds BOTH bounds of the
  * step — the forge wait and the full tier — so neither drifts from the other or from

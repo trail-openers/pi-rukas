@@ -97,7 +97,7 @@ function allLinesOf(stream: string): string[] {
  * tried. The search stops there: a root appearing later is content the tier printed, and a global removal
  * would erase a difference and excuse it.
  */
-export function stripRoot(line: string, root: string): string {
+function stripRoot(line: string, root: string): string {
   const trimmed = line.trim();
   const pathAt = trimmed.search(/[/.]|[A-Za-z]:/);
   if (pathAt < 0) return trimmed;

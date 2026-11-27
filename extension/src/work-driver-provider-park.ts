@@ -19,11 +19,8 @@ import {
   adversarialDiffUnreadableCapHit,
   isDiffUnreadableDispatch,
 } from "./work-driver-adversarial-diff-cap.ts";
-import {
-  FAILURE_REASON_CHARS,
-  classifyFailureCause,
-  failureCauseReason,
-} from "./work-driver-failure-taxonomy.ts";
+import { classifyFailureCause, failureCauseReason } from "./work-driver-failure-taxonomy.ts";
+import { FAILURE_REASON_CHARS } from "./work-driver-failure-text.ts";
 import type { WorkCapLiteral } from "./workflow-state-events-caps.ts";
 import type { WorkEvent } from "./workflow-state-events.ts";
 import type { WorkState, WorkStep } from "./workflow-state.ts";

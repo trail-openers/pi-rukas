@@ -73,7 +73,9 @@ export function reviewDeps(headless: boolean): ReviewDeps {
       // cannot be re-supplied by a spread. `loopChildBoundMs()` is the reviewer's own knob
       // and the step's armed bound can only TIGHTEN it. Asserted on the value the reviewer
       // dispatch received in `test-adversarial-reviewer-bound.ts`.
-      const { childBoundMs: budgetBoundMs, ...arms } = a.budget.opts;
+      // `stall` comes out of `arms` beside `childBoundMs`: the loop and the lens engine build their
+      // own spawn options, so only the frozen whole minutes travel (as `stallWindowMinutes`).
+      const { childBoundMs: budgetBoundMs, stall: budgetStall, ...arms } = a.budget.opts;
       return runAdversarialLoop(
         {
           base: a.base,
@@ -105,6 +107,9 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           processGroup: true,
           ...arms,
           childBoundMs: Math.min(budgetBoundMs ?? Number.POSITIVE_INFINITY, loopChildBoundMs()),
+          // #2644 — the step's hung-request lever, as the frozen whole minutes: the reading that
+          // decides whether the child is quiet. Its abort already rides `arms.signal`.
+          ...(budgetStall === undefined ? {} : { stallWindowMinutes: budgetStall.windowMinutes }),
           ...leanChildOpts(a.headless),
         },
         new AbortController().signal,
@@ -117,7 +122,9 @@ export function reviewDeps(headless: boolean): ReviewDeps {
       // back the budget's own value and it wins, making `PI_ENSEMBLE_LENS_BOUND_MS` inert.
       // Taking the key out of the type too makes a future spread that could carry it a
       // compile error. Asserted on the delivered value in `test-lean-review-deps-bound.ts`.
-      const { childBoundMs: budgetBoundMs, ...arms } = a.budget.opts;
+      // `stall` is taken out beside `childBoundMs` for the same reason: `runLensReview` hands its
+      // options to `runLensChild`, which builds its own spawn options.
+      const { childBoundMs: budgetBoundMs, stall: budgetStall, ...arms } = a.budget.opts;
       const summary = await (deps.lensEngine ?? runLensReview)({
         base: a.base,
         head: a.head,
@@ -153,6 +160,9 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         ...(a.threshold === undefined ? {} : { threshold: a.threshold }),
         // The test-only lens-child seam (see `ReviewDeps.lensChildFn`).
         ...(deps.lensChildFn === undefined ? {} : { lensChildFn: deps.lensChildFn }),
+        // #2644 — the same lever for the six lens children: the reading that decides whether a lens
+        // is quiet. Its abort already rides `arms.signal`.
+        ...(budgetStall === undefined ? {} : { stallWindowMinutes: budgetStall.windowMinutes }),
         ...arms,
         ...leanChildOpts(a.headless),
       });
@@ -198,6 +208,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         extraArgs: o.extraArgs,
         ...(o.childBoundMs === undefined ? {} : { childBoundMs: o.childBoundMs }),
         budgetTurns: o.budgetTurns,
+        ...(o.stall === undefined ? {} : { stall: o.stall }),
         ...(o.signal === undefined ? {} : { signal: o.signal }),
         ...(o.onProgress === undefined ? {} : { onProgress: o.onProgress }),
         ...leanChildOpts(headless),

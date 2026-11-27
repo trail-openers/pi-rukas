@@ -44,9 +44,6 @@ import { fenceText, oneLine } from "./text-fence.ts";
 /** The role of the one child: a reader, never a writer. */
 export const DERIVE_ROLE = "explore";
 
-// Re-exported from its leaf so the number is declared once for `config.ts` too.
-export { DERIVE_DEFAULT_BUDGET } from "./derive-budget.ts";
-
 /** The most criteria the deriving child may return: the count at which the mapper
  * still calls the change `M`. NOT the mapper's embedding cap (12) and not to be
  * raised to it: `size` is counted from the ORIGINAL bullet list and `readiness`

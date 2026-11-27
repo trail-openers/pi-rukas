@@ -41,7 +41,6 @@ import { ChallengeInfraError } from "../src/lean/challenge.ts";
 import {
   ROOTS,
   RUNNER,
-  SpecifyInfraError,
   TWO_AC_BODY,
   blobSha,
   challengeFixture,
@@ -57,6 +56,7 @@ import {
   subjectsAbove,
   submit,
 } from "./lib/lean-challenge-fixture.ts";
+import { SpecifyInfraError } from "../src/lean/specify-reset.ts";
 
 /**
  * Is this throw the infrastructure family? Both steps name their own subclass

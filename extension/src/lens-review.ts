@@ -114,6 +114,8 @@ export async function runLensReview(opts: {
   workCycleTrust?: boolean;
   /** #1242 — each lens child's run bound (default: lensChildBoundMs). */
   childBoundMs?: number;
+  /** #2644 — the step's armed hung-request window, whole minutes; reaches each lens child. */
+  stallWindowMinutes?: number;
   /** #973 — the delta base (see resolveReviewDiff for the full contract). */
   since?: string;
   /** #973 — force a full review (the automatic delta base is not consulted; an explicit `since` still wins when given). */

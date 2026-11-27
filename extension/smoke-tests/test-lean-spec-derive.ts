@@ -16,8 +16,8 @@
  * hands in a reply. No model is called here.
  */
 
+import { DERIVE_DEFAULT_BUDGET } from "../src/lean/derive-budget.ts";
 import {
-  DERIVE_DEFAULT_BUDGET,
   DERIVE_MAX_CRITERIA,
   DERIVE_ROLE,
   SpecDeriveError,

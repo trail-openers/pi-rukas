@@ -32,7 +32,6 @@ import path from "node:path";
 import { ChallengeInfraError } from "../src/lean/challenge.ts";
 import {
   ROOTS,
-  SpecifyInfraError,
   TWO_AC_BODY,
   blobSha,
   challengeFixture,
@@ -47,6 +46,7 @@ import {
   subjectsAbove,
   submit,
 } from "./lib/lean-challenge-fixture.ts";
+import { SpecifyInfraError } from "../src/lean/specify-reset.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {

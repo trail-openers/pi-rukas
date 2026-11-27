@@ -23,7 +23,6 @@
 import { ChallengeInfraError } from "../src/lean/challenge.ts";
 import {
   ROOTS,
-  SpecifyInfraError,
   commitPaths,
   git,
   greenEdge,
@@ -32,6 +31,7 @@ import {
   runChallenge,
   submit,
 } from "./lib/lean-challenge-fixture.ts";
+import { SpecifyInfraError } from "../src/lean/specify-reset.ts";
 
 function isInfra(err: Error | undefined): boolean {
   return err instanceof SpecifyInfraError || err instanceof ChallengeInfraError;

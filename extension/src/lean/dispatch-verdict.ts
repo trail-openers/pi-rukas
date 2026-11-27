@@ -26,7 +26,7 @@ type InfraErrorCtor = new (
  * The text is the child's or the endpoint's, so it is bounded and scrubbed HERE — `redactClip` redacts FIRST
  * and clips second at the shared provider budget, so a cut can never leave a credential fragment.
  */
-function dispatchFailureWhy(result: DispatchResult): string {
+export function dispatchFailureWhy(result: DispatchResult): string {
   const why =
     result.killCause ??
     result.errorStop?.message ??
@@ -39,7 +39,7 @@ function dispatchFailureWhy(result: DispatchResult): string {
  * The tail: throws when the child did not come back clean, nothing when it did. `rows` rides on the error so a
  * child that died still has its cost on the record.
  */
-function throwIfDispatchFailed(
+export function throwIfDispatchFailed(
   result: DispatchResult,
   ErrorClass: InfraErrorCtor,
   prefix: string,
@@ -48,5 +48,3 @@ function throwIfDispatchFailed(
   if (result.ok && result.killCause === undefined && result.errorStop === undefined) return;
   throw new ErrorClass(`${prefix}${dispatchFailureWhy(result)}`, rows);
 }
-
-export { dispatchFailureWhy, throwIfDispatchFailed };

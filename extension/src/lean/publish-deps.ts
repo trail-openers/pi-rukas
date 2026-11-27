@@ -9,8 +9,7 @@
  * dependency for a machine that would not answer.
  */
 
-import { execp } from "../exec.ts";
-import type { ExecOpts } from "../exec.ts";
+import { type ExecOpts, execp } from "../exec.ts";
 import type { Forge } from "../forge-types.ts";
 import { type IssueSpec, type SpecBlockAt, issueSpecOrThrow, specBlockAt } from "../issue-spec.ts";
 import { MAINLINE_PROBE_TIMEOUT_MS, type MainlineExecFn, resolveMainline } from "../mainline.ts";

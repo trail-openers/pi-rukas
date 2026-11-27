@@ -100,6 +100,18 @@ export function classifyDispatchOutcome(r: DispatchResult): {
         "killed by pi-rukas (per-child run bound) — it was steered to wrap up and never finished; re-spawning would spend the bound again",
     };
   }
+  // #2644 — the caller's hung-request lever ended this child. Re-spawning it replays the same
+  // hung request, so like `no-progress` it is a self-kill with no retry, and it is NOT the
+  // `inactivity` shape above (which a fresh attempt can clear).
+  if (r.killCause === "stall") {
+    return {
+      cause: "self-killed:stall",
+      shouldRetry: false,
+      maxRetries: 0,
+      headline:
+        "killed by pi-rukas (request-stall lever) — its model request went quiet past the armed window; re-spawning would replay the stall",
+    };
+  }
   // Parity with the taxonomy's `no-progress` branch, for the same reason.
   if (r.killCause === "no-progress") {
     return {

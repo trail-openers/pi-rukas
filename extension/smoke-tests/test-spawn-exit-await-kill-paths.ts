@@ -38,7 +38,8 @@ import type { PiJsonEvent } from "../src/pi-event-shapes.ts";
 import { createCapSession } from "../src/spawn-caps.ts";
 import { armChildBound } from "../src/spawn-child-bound.ts";
 import { awaitExitWithin } from "../src/spawn-exit-await.ts";
-import { InFlightTools, createInactivityPoll } from "../src/spawn-inflight.ts";
+import { createInactivityPoll } from "../src/spawn-inactivity-poll.ts";
+import { InFlightTools } from "../src/spawn-inflight.ts";
 import { installKillSeam } from "../src/spawn-kill.ts";
 import { createKillObserver } from "../src/spawn-kill-observed.ts";
 import { attachAbortKill, createWallClockBackstop } from "../src/spawn-supervision.ts";
@@ -360,7 +361,7 @@ try {
         inFlightTools.observe(toolCallEvent);
       }
       let cause = "";
-      const stop = createInactivityPoll({
+      const poll = createInactivityPoll({
         child,
         inFlightTools,
         lastActivityAt: () => Date.now() - 5_000, // permanently silent
@@ -375,7 +376,7 @@ try {
       const wait = awaitingExit(child, observer);
       const t0 = Date.now();
       await expectResolved(arm, observer, wait, t0);
-      stop();
+      poll.stop();
       assert(cause === arm, `[${arm}] the poll fired its OWN arm (got "${cause}")`);
       assert(
         inFlightTools.active === (arm === "tool-inactivity"),

@@ -47,6 +47,11 @@ const WHY: Record<string, string> = {
   // from a wall-clock timeout: a repeating call was detected structurally,
   // so "split the work" does not apply (re-issuing the same prompt loops again).
   loop: "was looped on — it repeated the same tool call after normalisation, so the harness killed it before it burned more budget; changing approach (not retrying) is the fix",
+  // #2644 — the caller's hung-request lever: ONE model request emitted nothing for the whole
+  // derived window with no tool in flight. The operator's corrective is neither of the two
+  // above — splitting the work re-issues the same request, and retrying replays the same hang.
+  stall:
+    "went quiet mid-request for the whole request-stall window with no tool call in flight — one model request hung (the lean step's bound; PI_ENSEMBLE_LEAN_REQUEST_STALL=0 takes it out); re-spawning replays the same hang",
   // #772 — the success-keyed variant: a distinct incident (re-issuing an
   // already-green command with identical output, non-adjacent repetition the
   // streak counter cannot see). The WHY line must match the new report

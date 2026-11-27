@@ -10,6 +10,7 @@ import path from "node:path";
 import { execp } from "../src/exec.ts";
 import { formatSubmitted } from "../src/lean/specify-format.ts";
 import type { ExecFn } from "../src/worktree.ts";
+import { SpecifyInfraError } from "../src/lean/specify-reset.ts";
 
 const SELF = "test-lean-format-reason.ts";
 let exit = 0;

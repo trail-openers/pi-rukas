@@ -33,7 +33,7 @@
  */
 import { buildCompletionEvent } from "../src/work-driver-completion-event.ts";
 import { PROVIDER_MAX } from "../src/provider-text-budget.ts";
-import { FAILURE_REASON_CHARS } from "../src/work-driver-failure-taxonomy.ts";
+import { FAILURE_REASON_CHARS } from "../src/work-driver-failure-text.ts";
 import { validateDiscriminants } from "../src/workflow-state-validate.ts";
 import { type WorkEvent, initialState } from "../src/workflow-state.ts";
 import {

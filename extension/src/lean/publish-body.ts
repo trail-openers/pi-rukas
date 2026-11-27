@@ -18,8 +18,7 @@
 
 import type { SpecSource } from "./spec-for.ts";
 import type { PiSpec } from "./spec.ts";
-import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
-import { PREEXISTING_NAMES_CAP } from "./state-outcome-maps.ts";
+import { PREEXISTING_NAMES_CAP, type PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { Step } from "./state.ts";
 import { budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
@@ -85,7 +84,7 @@ export interface PublishBodyInput {
    */
   preexistingFailures?: Record<string, PreexistingTierRecord>;
   /** The challenge round's own ceiling, when the log carries a `budget` outcome — so a reader tells "the contract was never attacked" from "it was attacked and held". */
-  challengeBudget?: { limit: "minutes" | "turns" | "tokens"; value: number };
+  challengeBudget?: { limit: "minutes" | "turns" | "tokens" | "stall"; value: number };
   /** The pre-verify bound's reason, when the log carries a `skipped` outcome — nothing was paid for, so the line says the round was never bought, not that it stopped at a ceiling. */
   challengeSkipped?: string;
   draft: boolean;
@@ -170,7 +169,7 @@ export function challengeSkipReasonFromLog(steps: Step[]): string | undefined {
 
 export function challengeBudgetFromLog(
   steps: Step[],
-): { limit: "minutes" | "turns" | "tokens"; value: number } | undefined {
+): { limit: "minutes" | "turns" | "tokens" | "stall"; value: number } | undefined {
   for (let i = steps.length - 1; i >= 0; i--) {
     const step = steps[i];
     if (step?.state !== "challenge" || step.outcome === undefined) continue;

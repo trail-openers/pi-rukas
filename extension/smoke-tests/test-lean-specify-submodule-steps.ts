@@ -21,7 +21,6 @@ import {
 } from "./lib/lean-challenge-fixture.ts";
 import {
   ROOTS,
-  SpecifyInfraError,
   configWith,
   git,
   runSpecify,
@@ -36,6 +35,7 @@ import {
   writeSubmoduleTest,
 } from "./lib/lean-specify-submodule-fixture.ts";
 import { submoduleCalls } from "./lib/lean-submodule-off-fixture.ts";
+import { SpecifyInfraError } from "../src/lean/specify-reset.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {

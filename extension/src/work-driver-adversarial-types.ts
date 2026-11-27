@@ -91,6 +91,9 @@ export interface AdversarialOutcome {
     | "child-bound"
     | "no-progress"
     | "stuck-tool"
+    /** #2644 — the caller's hung-request lever ended the reviewer. Carried for reporting and for
+     * the no-retry decision; never promoted into a cap the lane does not own. */
+    | "stall"
     /** #1827 — the reviewer re-read its own skill file past the cap. Carried
      * for REPORTING only: never promoted into `capKillOutcomeFields` /
      * `DISPATCH_CAP_KILL_CAUSES`, so it cannot park a cycle on a fixed-literal

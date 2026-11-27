@@ -71,6 +71,10 @@ const RETRY_LADDER_KILL_CAUSES: readonly RetryLadderKillCause[] = [
   // and that is the consumer whose absence this fixes.
   "child-bound",
   "no-progress",
+  // #2644 — the caller's hung-request lever survives the projection for the same reason: a cause
+  // this list drops reaches the fan-out with no structured signal, and the classifier reports the
+  // stall as a provider severance. The ladder itself never runs it — `shouldRetry: false`.
+  "stall",
 ] as const;
 
 function isRetryLadderKillCause(cause: string): cause is RetryLadderKillCause {

@@ -37,12 +37,7 @@ import {
   validatedPreexistingFailures,
   validatedProjectRoster,
 } from "./state-outcome-maps.ts";
-// The two print caps for a `blockedBy` entry live with the validator that enforces the
-// record's own bound; re-exported so a caller need not know which file holds them.
-export { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./state-outcome-maps.ts";
 import type { LeanState, Outcome } from "./state.ts";
-// Re-exported so every consumer's import site stays where it was.
-export { DISPATCHES_MAX_ROWS, validatedDispatches } from "./state-dispatches.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**
@@ -206,7 +201,7 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
 };
 
 /** The ceilings a budget verdict may name; the only reader of the field's type. */
-const LIMITS = ["minutes", "turns", "tokens"] as const;
+const LIMITS = ["minutes", "turns", "tokens", "stall"] as const;
 
 /** Is this value one of the ceilings {@link LIMITS} names? No cast involved. */
 function isBudgetLimit(value: unknown): value is LeanLimit {
@@ -260,7 +255,7 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
   }
   if (oc.kind === "budget") {
     if (!isBudgetLimit(oc.limit))
-      return 'outcome kind "budget" needs limit "minutes" | "turns" | "tokens"';
+      return 'outcome kind "budget" needs limit "minutes" | "turns" | "tokens" | "stall"';
     for (const key of ["value", "used"] as const) {
       if (!isCount(oc[key]))
         return `outcome ${key} must be a non-negative safe integer for a budget verdict`;

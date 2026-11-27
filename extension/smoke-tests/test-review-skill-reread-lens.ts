@@ -115,6 +115,23 @@ nextResult = () => killed({ killCause: "no-progress" });
 await run();
 assert(spawnCalls.length === 1, "a no-progress-killed lens is NOT retried either");
 
+// #2644 — nor is a lens the step's hung-request lever ended: its model request hung, and a
+// re-spawn pays for the same hang.
+spawnCalls.length = 0;
+nextResult = () => killed({ killCause: "stall" });
+const stalled = await run();
+assert(spawnCalls.length === 1, "a stall-killed lens is NOT retried — a re-spawn replays the stall");
+assert(stalled.attempts === 1, "…and records one attempt");
+// The lane is reported off the RESULT's kill cause, which is what the retry decision
+// discriminated on; `incompleteLanes` stays the judge over a roster.
+const stalledLane = incompleteLanes([
+  { lens: "ERROR_HANDLING", ok: false, blocked: true, killCause: "stall" } as never,
+]).join(" ");
+assert(
+  stalledLane.includes("request-stall window"),
+  `the incomplete-lens row names the stall rather than "unknown failure" (got ${stalledLane})`,
+);
+
 // (1) findings → evidence kept, not blocked, round not incomplete.
 assert(withFindings.findings.length === 1, "a re-read-killed lens KEEPS its finding");
 assert(withFindings.blocked === false, "…and is not blocked");
@@ -214,6 +231,7 @@ assert(thinking.blocked === true, "the all-thinking placeholder does not count a
     "no-progress",
     "stuck-tool",
     "review-skill-reread",
+    "stall",
   ];
   assert(
     !causes.includes("review-post-verdict"),

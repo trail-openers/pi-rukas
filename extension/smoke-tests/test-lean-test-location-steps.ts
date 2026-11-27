@@ -41,7 +41,6 @@ import {
 } from "./lib/lean-challenge-fixture.ts";
 import {
   ROOTS,
-  SpecifyInfraError,
   git,
   makeRepo,
   redScript,

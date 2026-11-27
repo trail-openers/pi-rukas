@@ -93,7 +93,7 @@ export async function contractOf(
  * names the model that actually drafted the contract. `""` is honest for the shipped
  * default, where none is configured: a fabricated name would mislead the operator
  * reading back a bad derivation. */
-export function deriveModel(): string {
+function deriveModel(): string {
   try {
     return resolveModel("explore").model ?? "";
   } catch {

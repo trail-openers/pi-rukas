@@ -28,8 +28,7 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import { resolveHeadShaOutcome } from "../review-head-sha.ts";
-import type { ReviewDeps } from "./review.ts";
-import { ReviewInfraError } from "./review.ts";
+import { type ReviewDeps, ReviewInfraError } from "./review.ts";
 import { gitQuiet } from "./specify-reset.ts";
 import type { ContractSource } from "./state-derived-spec.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";

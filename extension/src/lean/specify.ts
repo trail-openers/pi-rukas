@@ -54,6 +54,7 @@ import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { preVerifyShare } from "./pre-verify-share.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
+import { stallArms } from "./request-stall.ts";
 import { specFor } from "./spec-for.ts";
 import { type PiSpec, readiness } from "./spec.ts";
 import { runSpecifyAttempt } from "./specify-attempt.ts";
@@ -62,8 +63,7 @@ import { RED_TEST_GAP } from "./specify-gap-switch.ts";
 import { assertRunnerCanRunTests } from "./specify-preflight.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
-import { SpecifyResetError } from "./specify-reset.ts";
-import { SpecifyInfraError } from "./specify-run.ts";
+import { SpecifyInfraError, SpecifyResetError } from "./specify-reset.ts";
 import {
   assertSpecifyWorktreeOwned,
   ensureSpecifyWorktreeWithProvision,
@@ -71,7 +71,7 @@ import {
   specifyWorktreePath,
   worktreeExists,
 } from "./specify-tree.ts";
-import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
+import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
 import type { LeanRun } from "./state.ts";
 import type { Outcome } from "./state.ts";
 import type { BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
@@ -127,16 +127,6 @@ export interface SpecifyDeps {
    */
   observeVerdict?: (v: { refused: string[]; silent: boolean }) => void;
 }
-
-/**
- * A base, a tree or a child we cannot trust. The engine turns this into 10.
- *
- * Re-exported from `specify-run.ts`, where the shared pipeline raises it, so that
- * module owns the throw without importing this step back: the class is
- * `instanceof`-tested by the specify and challenge smoke suites, and two copies
- * would make that test quietly false.
- */
-export { SpecifyInfraError } from "./specify-run.ts";
 
 /** The rules a spec fails on re-read, or [] when it still holds. Read through the
  * accessor, so a derived run is re-read against the contract it is executing; a
@@ -365,6 +355,7 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     ...(testLocation === undefined ? {} : { testLocation }),
     wanted,
     frozenByCriterion,
+    stall: stallArms(ctx),
   };
   // The first attempt is final unless it dropped a submitted row or ended
   // without submitting at all: both are things the child can fix by being told,

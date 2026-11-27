@@ -130,6 +130,18 @@ process.env.PI_ENSEMBLE_ADVERSARIAL_EMPTY_SKIP = "0";
   assert(retryLadderKillCause(r) === "no-progress", "retryLadderKillCause keeps no-progress");
 }
 
+// ── 1c. #2644 — the caller's hung-request lever takes the same parity: self-kill, no retry. A
+// re-spawn replays the request that hung, so the ladder must not run it again.
+{
+  const r = mkResult({ killCause: "stall" });
+  const cls = classifyDispatchOutcome(r);
+  assert(
+    cls.cause === "self-killed:stall" && cls.shouldRetry === false,
+    `classifyDispatchOutcome: stall -> self-killed:stall, no retry (got ${cls.cause})`,
+  );
+  assert(retryLadderKillCause(r) === "stall", "retryLadderKillCause keeps stall");
+}
+
 // ── 2. Exactly one reviewer dispatch, with no `-retry` tag.
 {
   const tags: string[] = [];

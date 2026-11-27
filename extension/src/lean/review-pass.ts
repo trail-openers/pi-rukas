@@ -3,18 +3,15 @@
  *
  * Split from `review.ts` along its own seam: these are the step's *clean* surface: everything about a pass
  * that continues the run, with no gate, no git and no dispatch. The step decides; this says what a decision
- * looks like once made — and the clipping rule below is a contract with the state loader that a reader should
- * meet once, in a file whose subject is it.
+ * looks like once made, and holds the row-bounds the state loader judges them against.
  */
 
 import { neutraliseEvidence } from "../comment-evidence.ts";
 import type { LensRound } from "./review-args.ts";
 import { passKind } from "./review-step.ts";
-import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
+import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
 import type { Outcome } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
-
-export { disclosureNote, cleanPass, postFailureNote };
 
 /**
  * The bounded summary a fixed pass owes the operator for what it DISCLOSED.
@@ -24,7 +21,7 @@ export { disclosureNote, cleanPass, postFailureNote };
  * the gate's words ride the outcome reason — bounded and neutralised, because the reason is a stored surface
  * and the gate's words are a model's reply.
  */
-function disclosureNote(disclosedRows: number, gateText: string): string {
+export function disclosureNote(disclosedRows: number, gateText: string): string {
   // Neutralised first, then clipped: the text is the adversarial pass's own reply, so it gets the treatment
   // every model-authored field gets before a stored surface, and `neutraliseEvidence`'s clip bounds it — a
   // second `slice` would be a second length rule for the same string.
@@ -42,7 +39,7 @@ function disclosureNote(disclosedRows: number, gateText: string): string {
  * of a failed residual post; this is its sibling for comments the review step posts itself. A refused comment
  * never changes the verdict — but a reader who cannot see it is missing a disclosure with nothing saying so.
  */
-function postFailureNote(owed: string): string {
+export function postFailureNote(owed: string): string {
   const what = neutraliseEvidence(owed);
   if (what === "") return "";
   return `; DISCLOSURE NOT POSTED: ${what}`;
@@ -62,7 +59,7 @@ function postFailureNote(owed: string): string {
  * disclosure post failed, so it cannot arrive on a clean verdict — but a note read by nothing is the silent
  * version of the failure it reports, and the merge guard's round-cap path refuses a merge until it is posted.
  */
-function cleanPass(
+export function cleanPass(
   round: LensRound & { head: string },
   rows: DispatchUsageRow[],
   fixed: boolean,

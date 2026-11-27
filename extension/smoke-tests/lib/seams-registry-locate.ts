@@ -94,4 +94,58 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
       importsSeam: /from "\.\.\/developer-session-continuation\.ts"/.test(source.text),
     }),
   },
+  {
+    // #2644 — the child-supervision half of the hung-request bound: the switch, the derived window,
+    // the frozen arms and the inertness line. It sits at `src/`'s top level because it is spawn
+    // policy, not engine state, and takes the lean reserve as a PARAMETER so it never imports the
+    // lean tree. Both of its production callers are `src/lean/` files — `step-budget.ts` arms the
+    // lever, `request-stall.ts` supplies the reserve, the deadline and the step's start — so the flat
+    // top-level scan that
+    // the orphan check and both importer checks use cannot see them, and the module's three
+    // smoke-tests importers make it look test-only. `locate` points the checks at the recursive corpus.
+    file: "request-stall-policy.ts",
+    pending: {},
+    testOnly: {
+      // The switch's ONE reader. No step calls it — `requestStallWindowMs` consults it — so only the
+      // truth table can pin `0` as the sole off value.
+      leanRequestStallEnabled:
+        "the switch's ONE reader; test-lean-request-stall-switch.ts pins the whole truth table and test-headless-inputs.ts pins its default",
+      // The disclosure the step traces when the lever armed nothing. `armBudget` forwards its args to
+      // it and never inspects the answer, so only the step's own trace line can pin the four causes.
+      requestStallUnarmed:
+        "the inertness disclosure; test-lean-request-stall.ts (d) pins the step traces it rather than reporting a bound that held",
+      // The whole minutes a verdict prints. Read only through `stallLever`, so the rounding rule a
+      // handback quotes needs the direct pin.
+      stallMinutes:
+        "the whole minutes a stall verdict prints; test-lean-request-stall.ts (a) pins the trio's `used` against the measured silence",
+      // The freeze from ms to the verdict's minutes, and the refusal of a window of 0 or less. No step
+      // calls it — `armBudget` does — so the refusal is pinned directly.
+      stallLever:
+        "the arms the lever freezes, and the refusal of a window of 0 or less; test-lean-request-stall.ts (c) pins no-zero-timer",
+      // The ONE decider of a stall, asked only by the spawn's poll: the in-flight exemption, the ms
+      // window, and that nothing here reads the child's turns or tokens (the arm that did ended only
+      // a child that hung before its first turn). The poll suite pins it through the real timer.
+      stallBreach:
+        "the poll's own stall decision — in-flight exemption, ms window, no turns/tokens reading; test-lean-request-stall-poll.ts (1)(2)(3)(8) and test-lean-request-stall-worked.ts (b4) pin it through the real poll",
+      // The arithmetic from (deadline, start, reserve) to the window. `stallLever` is its only
+      // production caller — a step hands over the deadline and the reserve, never a window — so the
+      // clamping near the line and the no-room refusal are pinned by the direct calls.
+      requestStallWindowMs:
+        "the derived window: the reserve with room to spare, the remainder near the line, nothing at all with no room; test-lean-request-stall.ts (c) pins all three",
+      // The ONE composer of a step's inertness line. `armBudget` is its only production caller and
+      // never inspects the answer, so the join order and the both-silent `undefined` need the direct pin.
+      inertWarning:
+        "the join of the two inertness halves, and no warning at all when both are silent; test-lean-request-stall.ts (e) pins the composition directly",
+    },
+    canary: {
+      symbol: "stallLever",
+      importer: "lean/step-budget.ts",
+    },
+    locate: (source: { name: string; text: string }) => ({
+      // The one file that ARMS the lever — it imports the module as a value and calls `stallLever`.
+      // `lean/request-stall.ts` also imports it, but only for the arms' type and the reserve.
+      production: source.name === "lean/step-budget.ts",
+      importsSeam: /from "\.\.\/request-stall-policy\.ts"/.test(source.text),
+    }),
+  },
 ];

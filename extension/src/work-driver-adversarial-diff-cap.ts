@@ -26,7 +26,7 @@
 
 import { redactClip } from "./decision-log.ts";
 import type { AdversarialOutcome } from "./work-driver-adversarial-types.ts";
-import { FAILURE_REASON_CHARS } from "./work-driver-failure-taxonomy.ts";
+import { FAILURE_REASON_CHARS } from "./work-driver-failure-text.ts";
 import type { WorkEvent } from "./workflow-state.ts";
 
 /** The failure-event shape this module reads (the non-provider member). */

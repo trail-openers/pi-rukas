@@ -29,7 +29,6 @@
 
 import { ChallengeInfraError } from "../src/lean/challenge.ts";
 import { NEWNESS_REASON } from "../src/lean/specify-tree.ts";
-import { SpecifyInfraError } from "../src/lean/specify.ts";
 import {
   ROOTS,
   challengeFixture,
@@ -41,6 +40,7 @@ import {
   submit,
 } from "./lib/lean-challenge-fixture.ts";
 import { assert, testLocationExit } from "./lib/lean-test-location-fixture.ts";
+import { SpecifyInfraError } from "../src/lean/specify-reset.ts";
 
 const EDGE = "tests/AC1-edge-new-for-round.test.sh";
 /** A test the PROJECT shipped before the run: tracked, red-herring, not frozen. */

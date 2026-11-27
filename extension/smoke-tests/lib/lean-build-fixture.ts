@@ -33,10 +33,12 @@ import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
-import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
-import type { BudgetOpts } from "../../src/lean/step-budget.ts";
+import type { BudgetOpts, DispatchUsageRow } from "../../src/lean/step-budget.ts";
+import { type QuietTickReport, type QuietTickOpts, deliverQuietTick } from "./lean-quiet-child-tick.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
-import { gitTestEnv } from "./git-test-env.ts";
+// The git contract lives in `lean-build-git.ts`; re-exported so a case imports one module.
+export { git, gitEnvFor } from "./lean-build-git.ts";
+import { git, gitEnv } from "./lean-build-git.ts";
 import {
   type ClockOpts,
   type DispatchResultOverride,
@@ -56,30 +58,6 @@ export function outsideDir(): string {
   const dir = mkdtempSync(path.join(tmpdir(), "lean-build-outside-"));
   ROOTS.push(dir);
   return dir;
-}
-
-/** The identity every git child runs with, the production commit included. */
-function gitEnv(): Record<string, string> {
-  return {
-    ...gitTestEnv(),
-    GIT_AUTHOR_NAME: "t",
-    GIT_AUTHOR_EMAIL: "t@t",
-    GIT_COMMITTER_NAME: "t",
-    GIT_COMMITTER_EMAIL: "t@t",
-  };
-}
-
-/** The same identity, for the challenge fixture's own git children. */
-export function gitEnvFor(): Record<string, string> {
-  return gitEnv();
-}
-
-/** git in `dir`, with an identity in the child's environment. */
-export function git(dir: string, ...args: string[]): string {
-  const r = spawnSync("git", args, { cwd: dir, encoding: "utf8", env: gitEnv() });
-  if (r.status !== 0)
-    throw new Error(`git ${args.join(" ")} failed in ${dir}: ${(r.stderr ?? "").trim()}`);
-  return (r.stdout ?? "").trim();
 }
 
 /** The sha256 of a string's bytes, the way the freeze records them. */
@@ -364,6 +342,12 @@ export interface RunOpts {
   dispatchResults?: DispatchResultOverride;
   /** Drives the child's progress feed, the way `spawn.ts` does at `message_end`. */
   onProgressTick?: (onProgress: BudgetOpts["onProgress"]) => void;
+  /** See {@link QuietTickOpts} (#2644): the step's own lever measures it and fires. */
+  silentMs?: number | (() => number);
+  /** See {@link QuietTickOpts} (#2644): what the child's own stream left in flight, and how many
+   *  turn ticks reached the step's hook. A case that wants to prove its fixture was live reads
+   *  this; a case that only states a duration ignores it. */
+  quietTick?: (report: QuietTickReport) => void;
   /** THE config the step reads; spread {@link configWithRunner} to keep the rest. */
   config?: WorkConfig;
   /** The child's tool calls; a function is called at the instant of dispatch. */
@@ -421,6 +405,10 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     if (!childActed) opts.child?.((childActed = true) && (spec.cwd as string));
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
+    // The child's own acts are declared BEFORE the quiet tick runs, so the tick reads what THIS
+    // dispatch's child did and nothing a later one will.
+    const tick = await deliverQuietTick(spec.role, o, opts); // #2644 — `lean-quiet-child-tick.ts`
+    opts.quietTick?.(tick);
     const over = resultOverride(opts.dispatchResults, dispatched - 1);
     const result: DispatchResult = {
       role: spec.role,
@@ -469,8 +457,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
           },
         }),
   };
-  // Everything a run observed, from the fixture it ran on — the one shape both
-  // the returned result and the thrown one carry.
+  // Everything a run observed; `threw` is NOT here — see the two returns below.
   const finish = () => ({
     dispatched,
     fetched,
@@ -486,10 +473,8 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   try {
     const { buildOutcome } = await import("../../src/lean/build.ts");
     const outcome = await buildOutcome(built.ctx, deps);
-    return {
-      outcome,
-      ...finish(),
-    };
+    // `threw` is added per return, AFTER the `finish()` spread, so it is never shadowed.
+    return { outcome, ...finish(), threw: undefined };
   } catch (err) {
     return {
       threw: err as Error,

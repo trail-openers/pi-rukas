@@ -16,6 +16,7 @@ import * as dispatchDeck from "./dispatch-deck.ts";
 import { extractFindings } from "./lens-findings-extract.ts";
 import { isProviderContextLengthFailure } from "./lens-provider-cause.ts";
 import { failedLensRow } from "./lens-review-child-failure.ts";
+import { deliverLensSteer } from "./lens-review-child-stdin.ts";
 import { lensPromptFor } from "./lens-review-format.ts";
 import { NO_TEXT_PLACEHOLDER } from "./lens-review-incomplete.ts";
 import { LENS_REPORTER_PATH, type LensDef } from "./lens-review.ts";
@@ -53,6 +54,10 @@ export async function runLensChild(opts: {
     /** #1666 — a headless /work cycle's lens children run under trust. */
     workCycleTrust?: boolean;
     childBoundMs?: number; // #1242 — the round's lens bound (default: lensChildBoundMs)
+    /** #2644 — the dispatching step's armed hung-request window, whole minutes. Threaded by lean's
+     * review step (the only caller that arms one); absent means the child is bounded by its wall
+     * clock alone. Unlike the bound above it is not clamped to an operator knob: there is none. */
+    stallWindowMinutes?: number;
     evidence?: string;
     /** #1105 — the branch's prior-findings DATA block (lens-residuals.ts). */
     priorFindings?: string;
@@ -153,6 +158,18 @@ export async function runLensChild(opts: {
   // lockstep — indistinguishable from a genuinely clean review. Failing here
   // with a named error is cheaper and unambiguous.
   const lensExtraArgs = ["--no-skills", "--extension", LENS_REPORTER_PATH];
+  // #2644 — the step's hung-request window, on the lens's own spawn: quiet past it with no tool in
+  // flight aborts the child (see `stallLever` in spawn-inactivity-poll.ts, which replaces the placeholder
+  // reader below). No window armed means no option at all, never a zero-minute timer.
+  const lensStall =
+    runOpts.stallWindowMinutes === undefined
+      ? {}
+      : {
+          stall: {
+            windowMinutes: runOpts.stallWindowMinutes,
+            silence: () => ({ sinceMs: 0, toolInFlight: false }),
+          },
+        };
   const lensReporterPath = reporterPathFromArgs(lensExtraArgs);
   if (lensReporterPath) {
     try {
@@ -265,10 +282,11 @@ export async function runLensChild(opts: {
             // (set in spawn.ts) disables auto-discovery; `--extension <path>` still
             // loads explicit paths, so the reporter is the only extension in the child.
             extraArgs: lensExtraArgs,
-            // #1564 — the lens's own run bound (spawn-child-bound.ts): a lens
+            // #1242 — the lens's own run bound (spawn-child-bound.ts): a lens
             // that never answers is steered to wrap up, then ended, instead of
             // holding the round until the 2-h spawn backstop.
             childBoundMs: boundMs,
+            ...lensStall,
             // #2127 — the diff-scaled ADVISORY turn ceiling beside the wall
             // clock, never instead of it: it arms the 50 %/80 % progress steers
             // and cannot end the lens, so the bound above stays the only
@@ -297,34 +315,7 @@ export async function runLensChild(opts: {
               // #952 — capture the handle for the onSteer closure below.
               lensStdin = stdin;
             },
-            onSteer: (message) => {
-              // #952 — write the RPC steer envelope to the captured stdin
-              // (the same handle onStdin registers). If the child has
-              // already exited, the #932 closed-stdin guard makes this a
-              // traced no-op — no throw, no EPIPE.
-              if (!lensStdin) {
-                trace(`lens steer skipped (${deckKey}): stdin not yet captured`);
-                return false;
-              }
-              if (
-                lensStdin.destroyed === true ||
-                lensStdin.writable === false ||
-                lensStdin.writableEnded === true
-              ) {
-                trace(`lens steer skipped (${deckKey}): stdin closed`);
-                return false;
-              }
-              try {
-                lensStdin.write(`${JSON.stringify({ type: "steer", message })}\n`, () => {
-                  /* #932 — the write callback swallows the write's own error; the
-                      stdin `error` listener at spawn time traces it. */
-                });
-              } catch (err) {
-                trace(`lens steer write failed (${deckKey}): ${(err as Error).message}`);
-                return false;
-              }
-              return true;
-            },
+            onSteer: (message) => deliverLensSteer(deckKey, () => lensStdin, message),
           },
         );
         if (result.ok) {
@@ -355,7 +346,11 @@ export async function runLensChild(opts: {
           result.killCause === "token-budget" ||
           result.killCause === "child-bound" ||
           result.killCause === "review-skill-reread" ||
-          result.killCause === "no-progress")
+          result.killCause === "no-progress" ||
+          // #2644 — a lens whose model request hung and was ended by the step's stall lever is
+          // the least transient death on this list: re-spawning it pays for the same hung request
+          // up to three more times and the review still comes back incomplete.
+          result.killCause === "stall")
       ) {
         break;
       }

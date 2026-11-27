@@ -47,18 +47,18 @@ import { frozenFromLog, testsFromLog } from "./build.ts";
 import { ChallengeInfraError, dispatchAdversary } from "./challenge-dispatch.ts";
 import type { ChallengeDispatch, ChallengeExec } from "./challenge-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
-import type { WorkConfig } from "./config.ts";
-import { loadWorkConfig } from "./config.ts";
+import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { challengeSkip } from "./pre-verify-share.ts";
+import { stallArms } from "./request-stall.ts";
 import { rereadSpec } from "./spec-for.ts";
 import { type PiSpec, readiness } from "./spec.ts";
 import { existsInCommit, fileProblem, pathProblem } from "./specify-path.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
 import { SpecifyResetError, resetWorktreeToBase } from "./specify-reset.ts";
-import { SpecifyInfraError, noteClause, runTestPipeline } from "./specify-run.ts";
+import { noteClause, runTestPipeline } from "./specify-run.ts";
 import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 import { changedPaths } from "./specify-tree.ts";
 import {
@@ -288,7 +288,7 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
     );
 
   // 3. The adversary, under the state's budget.
-  const budget = armBudget(budgetFor(config, "challenge"));
+  const budget = armBudget(budgetFor(config, "challenge"), stallArms(ctx));
   if (budget.warning !== undefined)
     traceWarn(`lean challenge #${String(issue)}: ${budget.warning}`);
   // The adversary's cost row rides on the throw and `settle` records it (see
@@ -433,9 +433,6 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
 
 export { ChallengeInfraError } from "./challenge-dispatch.ts";
 
-/** The infra errors the step's throws are instances of, re-exported for its tests. */
-export { SpecifyInfraError };
-
 /** The challenge step's dependencies: the outside world, injected. */
 export function challengeDeps(headless: boolean): ChallengeDeps {
   return {
@@ -455,6 +452,7 @@ export function challengeDeps(headless: boolean): ChallengeDeps {
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,
+        ...(o.stall === undefined ? {} : { stall: o.stall }),
         // The budget's kill goes through `killProcessTree`, which only reaches
         // the child's tool tree when the child leads its own group.
         processGroup: true,

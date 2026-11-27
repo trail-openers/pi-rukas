@@ -39,12 +39,8 @@ import { collapseEvents } from "./spawn-collapse-events.ts";
 import { installExitKillSeam, startExitWait } from "./spawn-exit-await-session.ts";
 
 import { discoverPackageExtensions } from "./spawn-extension-forward.ts";
-import {
-  InFlightTools,
-  attachStdoutLinePump,
-  createInactivityPoll,
-  createStdoutLineHandler,
-} from "./spawn-inflight.ts";
+import { createInactivityPoll, stallLever } from "./spawn-inactivity-poll.ts";
+import { InFlightTools, attachStdoutLinePump, createStdoutLineHandler } from "./spawn-inflight.ts";
 import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
 import { withOperatorConfigGuard } from "./spawn-operator-config.ts";
 import { planChildPermissions } from "./spawn-permission.ts";
@@ -334,6 +330,8 @@ async function spawnSpecialistInner(
       caps,
       budgetProgress,
       onProgress: opts.onProgress,
+      // #2644 — `stallLever` adds this stream's own two facts to the armed window.
+      ...(stallLever(opts, childProgress, inFlightTools) ?? {}),
       onRawEvent: opts.onRawEvent,
       onAgentEnd: (parsed) => {
         lastAgentEnd = parsed;
@@ -369,7 +367,7 @@ async function spawnSpecialistInner(
   // poll. #951 — ONE poll, two budgets (createInactivityPoll): the tool-inactivity
   // bound while a tool is in flight, the model-silence bound when none is, so
   // exactly one is armed at any poll and there is no both-expired race.
-  const stopInactivityPoll = createInactivityPoll({
+  const inactivityPoll = createInactivityPoll({
     child,
     inFlightTools,
     lastActivityAt: stdoutPump.lastActivityAt,
@@ -377,6 +375,7 @@ async function spawnSpecialistInner(
     onKill: (cause, budgetMs, toolNames) => {
       if (cause === "tool-inactivity") flags.setToolInactivityKilled(true);
       else if (cause === "no-progress") flags.setNoProgressKilled(true);
+      else if (cause === "stall") flags.setStalled(true);
       else flags.setInactivityKilled(true);
       // #951 — name the tool(s) that went silent, so the report shows
       // WHAT is in flight instead of a bare cause. Inactivity kills
@@ -408,7 +407,7 @@ async function spawnSpecialistInner(
     stopWallClockBackstop();
     childBound.stop();
     budgetProgress.stop();
-    stopInactivityPoll();
+    inactivityPoll.stop();
     caps.cleanup();
     detachAbortKill();
     stdoutPump.close(); // #1827 — why, at `attachStdoutLinePump`
@@ -464,14 +463,13 @@ async function spawnSpecialistInner(
     clamped: bound.clamped,
     killedBudgetMs: () => flags.killedBudgetMs(),
   });
-  // A killed child never completed its assignment, whatever its exit code.
-  // A post-verdict reviewer stop carries no `killCause` at all, so it falls out
-  // of `failedByKill` by construction and keeps its verdict as the result —
-  // spawn-review-bounds.ts holds the reasoning for the separation.
+  // A killed child never completed its assignment, whatever its exit code. A
+  // post-verdict reviewer stop carries no `killCause` at all, so it falls out of
+  // `failedByKill` by construction and keeps its verdict — spawn-review-bounds.ts holds
+  // that. The shape is read at THIS seam, where the lines actually arrive.
   if (failedByKill(result)) {
     result.ok = false;
-    // Only meaningful for a kill; attaching it always would imply we killed
-    // every child.
+    // Only meaningful for a kill; attaching it always would imply we killed every child.
     result.lastActivity = {
       kind: stdoutPump.lastActivityKind(),
       agoMs: Date.now() - stdoutPump.lastActivityAt(),

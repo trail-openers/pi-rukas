@@ -68,6 +68,10 @@ export function incompleteLanes(lensResults: readonly LensRunResult[] | undefine
 function laneReason(r: LensRunResult): string {
   if (!r.blocked) return "not reviewed — the lens returned neither findings nor a summary";
   if (r.killCause === "child-bound") return r.parseError ?? "not reviewed — ended at its run bound";
+  // #2644 — a lens whose request hung was ended by the step's hung-request lever, on a window the
+  // step derived. The row names the stall rather than leaving the operator on "unknown failure".
+  if (r.killCause === "stall")
+    return "not reviewed — its model request went quiet past the step's request-stall window (not retried)";
   if (r.killCause === "loop" || r.killCause === "token-budget") {
     return `stopped by the ${r.killCause} cap (not retried)`;
   }

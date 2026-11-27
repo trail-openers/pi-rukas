@@ -23,8 +23,7 @@ import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { extractBlockedReport } from "./build-blocked-extract.ts";
 import { blobAt } from "./build-git.ts";
 import { normaliseBuild } from "./build-normalise.ts";
-import type { NormaliseReport } from "./build-types.ts";
-import type { BuildExec } from "./build-types.ts";
+import type { BuildExec, NormaliseReport } from "./build-types.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import {
   type Proof,
@@ -33,16 +32,14 @@ import {
   runTestFile,
   sha256,
 } from "./specify-proof.ts";
-import { RECORD_MAX_ENTRIES, RECORD_REASON_MAX_CHARS } from "./state-outcome-maps.ts";
-import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP, frozenKeyProblem } from "./state-outcome.ts";
+import {
+  BLOCKED_PATH_CAP,
+  BLOCKED_REASON_CAP,
+  RECORD_MAX_ENTRIES,
+  RECORD_REASON_MAX_CHARS,
+} from "./state-outcome-maps.ts";
+import { frozenKeyProblem } from "./state-outcome.ts";
 import { oneLine } from "./text-fence.ts";
-
-/** How many conflicts one report may name — the record's own bound, imported from
- * the module that enforces it so the gate never runs an entry it would refuse. */
-export const BLOCKED_MAX_ENTRIES = RECORD_MAX_ENTRIES;
-
-/** How long one stated conflict may be. Same single source as the entry cap. */
-export const BLOCKED_MAX_REASON_CHARS = RECORD_REASON_MAX_CHARS;
 
 /** The cause LINE's ceiling: the renderer caps plus the sentence around them. */
 const BLOCKED_CAUSE_CAP = BLOCKED_PATH_CAP + BLOCKED_REASON_CAP + 44;
@@ -55,8 +52,8 @@ const BLOCKED_CAUSE_CAP = BLOCKED_PATH_CAP + BLOCKED_REASON_CAP + 44;
 function usableConflicts(rows: Array<{ path: string; reason: string }>): string[] {
   const seen = new Set<string>();
   for (const row of rows) {
-    if (seen.size >= BLOCKED_MAX_ENTRIES) break;
-    if (typeof row.reason !== "string" || row.reason.length > BLOCKED_MAX_REASON_CHARS) continue;
+    if (seen.size >= RECORD_MAX_ENTRIES) break;
+    if (typeof row.reason !== "string" || row.reason.length > RECORD_REASON_MAX_CHARS) continue;
     if (frozenKeyProblem(row.path) !== undefined) continue;
     seen.add(row.path);
   }

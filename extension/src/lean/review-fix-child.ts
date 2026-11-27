@@ -15,8 +15,7 @@ import { normaliseBuild } from "./build-normalise.ts";
 import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { type ReviewFixArgs, fixPrompt, fixWriteFence } from "./review-deps.ts";
-import { FIX_BOUND_MS, type FixRunId, ReviewInfraError } from "./review.ts";
-import type { ReviewDeps } from "./review.ts";
+import { FIX_BOUND_MS, type FixRunId, type ReviewDeps, ReviewInfraError } from "./review.ts";
 import { gitQuiet } from "./specify-reset.ts";
 import type { BudgetArms, BudgetFired, DispatchUsageRow } from "./step-budget.ts";
 import { FIXER_ROLE, dispatchUsageRow } from "./step-budget.ts";
@@ -28,8 +27,8 @@ export async function runFixer(
   opts: ReviewFixArgs & { rows: DispatchUsageRow[]; worktreeRunId: FixRunId },
 ): Promise<DispatchResult> {
   let result: DispatchResult;
-  // `arms` is `opts.budget.opts` with `childBoundMs` out of the object AND its type,
-  // so no spread re-supplies it and wins over `FIX_BOUND_MS` (as in `review-deps.ts`).
+  // `arms` is `opts.budget.opts` with `childBoundMs` out of the object AND its type, so no spread
+  // re-supplies it and wins over `FIX_BOUND_MS` (as in `review-deps.ts`). The `stall` arm stays in.
   const { childBoundMs: budgetBoundMs, ...arms } = opts.budget.opts;
   try {
     result = await deps.dispatch(

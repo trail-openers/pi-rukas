@@ -25,7 +25,7 @@ import { BuildInfraError } from "../src/lean/build-errors.ts";
 import { type LeanHandlers, runLean } from "../src/lean/engine.ts";
 import { errorOutcome } from "../src/lean/error-outcome.ts";
 import { loadRun } from "../src/lean/state.ts";
-import { DISPATCHES_MAX_ROWS } from "../src/lean/state-outcome.ts";
+import { DISPATCHES_MAX_ROWS } from "../src/lean/state-dispatches.ts";
 import { ROOTS, runBuild } from "./lib/lean-build-fixture.ts";
 import { tempDir } from "./lib/lean-engine-fixtures.ts";
 

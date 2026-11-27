@@ -487,6 +487,6 @@ export function fixRunId(millis: string): _FixRunId {
   return millis as _FixRunId;
 }
 export { ADVERSARIAL_GATE_ROLE } from "../../src/lean/review-gates.ts";
-export { DISPATCHES_MAX_ROWS } from "../../src/lean/state-outcome.ts";
+export { DISPATCHES_MAX_ROWS } from "../../src/lean/state-dispatches.ts";
 export { FIXER_ROLE, LENS_ROLE } from "../../src/lean/step-budget.ts";
 export type { DispatchSpec, Outcome, ReviewDeps };

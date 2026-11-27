@@ -13,6 +13,7 @@ import type { RunningState } from "./progress.ts";
 import type { WriteFenceOpt } from "./types.ts";
 
 import type { SteerDelivery } from "./dispatch-steer.ts";
+import type { StallFired } from "./request-stall-policy.ts";
 
 export interface SpawnOptions extends WriteFenceOpt {
   /**
@@ -148,6 +149,31 @@ export interface SpawnOptions extends WriteFenceOpt {
    * snapshot is a defensive copy; safe to mutate downstream.
    */
   onProgress?: (snapshot: RunningState) => void;
+  /**
+   * #2644 — the caller's stall lever: how long THIS child's stream may go quiet
+   * before the caller aborts it (it owns the `AbortController`), and the reader of
+   * whether a tool call of the child is in flight. A tool in flight is a silent
+   * bash, not a hung request, and the reader is what keeps the two apart — the
+   * spawn cannot answer it on the caller's behalf because the caller is the one
+   * that armed the abort. Set only by `lean`'s budget arm.
+   */
+  stall?: {
+    /** The window the caller armed, in whole minutes — what a verdict prints, and the threshold a
+     *  caller that carries no `windowMs` is enforced at. */
+    windowMinutes: number;
+    /** The enforced threshold, ms. The step freezes it from the derived window, so a clamped
+     *  sub-minute window is enforced as what it is and not as the whole minute above; a sibling
+     *  child handed only the minutes (a lens, the adversarial reviewer) leaves this unset. */
+    windowMs?: number;
+    /** The reader of this child's stream — the spawn supplies the stream's own stamp. */
+    silence: () => { sinceMs: number; toolInFlight: boolean };
+    /** The step freezes the verdict of its own budget here, so a stall breach is one-shot and
+     *  shared with the turns / tokens levers (`fireStall` in `lean/step-budget.ts`). The poll calls
+     *  it on its own tick, having already read the stream; a caller that forwards only the window
+     *  (a lens child, the adversarial reviewer) has no hook, and the named kill cause is the whole
+     *  record of its child's ending. */
+    fire?: (b: StallFired) => void;
+  };
   /**
    * Stdin-handle callback (#153). Fires once after the child process has
    * been spawned and its stdio attached, BEFORE the initial prompt is

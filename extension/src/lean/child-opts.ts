@@ -9,20 +9,13 @@
  * The answer is the same stamp the headless /work driver's children carry, decided by the same function —
  * `cycleChildOpts`. `leanChildOpts` is the lean run's call site of it, and the flag is **threaded, never
  * remembered**, so a second lean run in one process cannot inherit the first run's trust.
- *
- * `PI_ENSEMBLE_STRICT_PERMISSIONS=1` is honoured by `workCycleTrustEnabled()`, which refuses the stamp when
- * the operator opted into strict.
+ * `PI_ENSEMBLE_STRICT_PERMISSIONS=1` is honoured by `workCycleTrustEnabled()`, which refuses the stamp.
  */
 
 import { cycleChildOpts } from "../work-cycle-trust.ts";
 
-/**
- * The spawn options every lean dispatch adds. Spread AFTER the caller's own options at the dispatch site, so
- * no caller can opt a child out of the stamp.
- *
- * `headless` is a REQUIRED argument precisely so the thread cannot be dropped: a dispatch site that forgot to
- * carry its run's mode is a compile error.
- */
+/** Spread AFTER the caller's own options, so no caller can opt a child out of the stamp; `headless` is
+ *  REQUIRED so a dispatch site that drops its run's mode is a compile error. */
 export function leanChildOpts(headless: boolean): { workCycleTrust: boolean } {
   return cycleChildOpts({ headless });
 }

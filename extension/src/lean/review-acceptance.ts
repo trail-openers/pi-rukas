@@ -28,8 +28,7 @@ import { pendingTestEdits, testEditSection } from "./review-test-accept.ts";
 import { specFor } from "./spec-for.ts";
 import { gitQuiet } from "./specify-reset.ts";
 import type { ContractSource } from "./state-derived-spec.ts";
-import type { Step } from "./state.ts";
-import { newestDecided } from "./state.ts";
+import { type Step, newestDecided } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";
 

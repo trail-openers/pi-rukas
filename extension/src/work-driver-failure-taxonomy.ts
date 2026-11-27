@@ -182,6 +182,8 @@ function seamLabelFor(
     case "self-killed:plan-timeout":
     case "self-killed:child-bound":
     case "self-killed:no-progress":
+    // #2644 — a structured kill the rule reads exactly, so no model is asked.
+    case "self-killed:stall":
     // #1827 — a structured kill the rule reads exactly, so no model is asked.
     case "self-killed:review-skill-reread":
     case "success":
@@ -266,36 +268,10 @@ export function shadowFailureCause(
   void shadowDecide("failure-cause", req, where);
 }
 
+import { FAILURE_REASON_CHARS, clip, repeatsNote } from "./work-driver-failure-text.ts";
+
 /** #79 — observed: `404: {"message":"model \"qwen3.8-flash-next\" not found","type":"not_found"}`. */
 const MODEL_NOT_FOUND_PATTERN = /\b404\b.*not[ _]found|\bmodel\b.*\bnot found\b/i;
-
-/**
- * #1243 — the whole reason, not a prefix of it. Every reason site used to
- * `slice(0, 60)` the provider's message and the child's tail, which is why the
- * three measured cycles all read `subagent failed: Adversarial loop infrastructure
- * failure: round 2 review disp` — cut 60 characters into our OWN composite
- * text, so the number that followed was invisible and the one number that WAS
- * visible ("3m54s") read as a constant rather than that attempt's cost.
- *
- * 240 is a compromise: enough of the endpoint's own error to act on, bounded
- * enough that a stack-trailing provider body cannot dominate a scrollback line
- * or a headless `message` field (headless/failure.ts applies its own tighter
- * caps on top of this one).
- */
-export const FAILURE_REASON_CHARS = 240;
-
-/** Clip to the reason budget, preserving `undefined` — callers distinguish an
- * absent field from an empty one (`?? "connection lost"` style defaults). */
-export function clip(text: string | undefined): string | undefined {
-  if (text === undefined) return undefined;
-  return text.length > FAILURE_REASON_CHARS ? text.slice(0, FAILURE_REASON_CHARS) : text;
-}
-
-/** #79 — `×N in a row` when the loop stopped on a repeating provider error. */
-export function repeatsNote(tail: { providerRepeats?: number }): string {
-  const n = tail.providerRepeats ?? 0;
-  return n >= 2 ? ` (×${n} in a row — not re-dispatched)` : "";
-}
 
 /**
  * #1798 round 3/4 — the TERMINAL rungs of the 429 ladder live in
@@ -440,6 +416,11 @@ export function classifyFailureCause(tail: FailureTail): FailureClass {
   // after the 429 ladder and the model check, so a genuine provider cap the
   // child carried still halts the queue, but ahead of the severance fallback
   // that would retry a child pi-rukas ended itself.
+  // #2644 — the caller's hung-request lever: a re-spawn replays the same hung request, so no
+  // retry, and it is its own cause rather than `inactivity` (which one fresh attempt can clear).
+  if (tail.killCause === "stall") {
+    return { cause: "self-killed:stall", shouldRetry: false, maxRetries: 0 };
+  }
   if (tail.killCause === "no-progress") {
     return { cause: "self-killed:no-progress", shouldRetry: false, maxRetries: 0 };
   }
@@ -479,14 +460,22 @@ export function isFinalProviderFault(cls: { cause: DispatchFailureCause; shouldR
 
 /**
  * #79 — how many re-dispatches a RETRY_ONCE step may spend on this failure:
- * none for a final provider fault or a no-progress kill (a re-spawn replays
- * the stall for a whole new window), the transient budget for infra, else one.
+ * none for a final provider fault or a kill that replays its own stall (a
+ * no-progress child re-emits without progress; a stall child re-hangs in the
+ * same model request), the transient budget for infra, else one.
  */
 export function stepRetryBudget(
   cls: { cause: DispatchFailureCause; shouldRetry: boolean; maxRetries: number },
   infra: boolean,
 ): number {
-  if (isFinalProviderFault(cls) || cls.cause === "self-killed:no-progress") return 0;
+  if (
+    isFinalProviderFault(cls) ||
+    cls.cause === "self-killed:no-progress" ||
+    // #2644 — same reason as `no-progress`: the re-spawn sits the whole derived window out again.
+    // `shouldRetry: false` already stops the transient path; this is the RETRY_ONCE router's budget.
+    cls.cause === "self-killed:stall"
+  )
+    return 0;
   return infra ? cls.maxRetries : 1;
 }
 

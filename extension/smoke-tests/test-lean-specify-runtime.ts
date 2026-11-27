@@ -29,7 +29,6 @@ import path from "node:path";
 import {
   ROOTS,
   RUNNER,
-  SpecifyInfraError,
   configWith,
   git,
   makeRepo,
@@ -38,6 +37,7 @@ import {
   sha,
   submit,
 } from "./lib/lean-specify-fixture.ts";
+import { SpecifyInfraError } from "../src/lean/specify-reset.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {

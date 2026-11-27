@@ -36,8 +36,8 @@
  * is an `sh` command, no PR and no merge exist.
  */
 
-import { CI_POLL_MS } from "../src/lean/ci.ts";
 import { ciDeps } from "../src/lean/ci-deps.ts";
+import { CI_POLL_MS } from "../src/lean/ci-poll.ts";
 import { execp } from "../src/exec.ts";
 import { cleanUp, run, viewAt } from "./lib/lean-ci-recorder.ts";
 import { VerifyInfraError } from "../src/lean/verify-types.ts";

@@ -52,12 +52,12 @@ import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
 import { budgetFoldAccumulator, failingClause, foldClauses, keptClause } from "./build-reasons.ts";
 import type { BuildDispatch, BuildExec } from "./build-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
-import type { WorkConfig } from "./config.ts";
-import { loadWorkConfig, protectedPathsOf } from "./config.ts";
+import { type WorkConfig, loadWorkConfig, protectedPathsOf } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { MAX_BUILD_ATTEMPTS } from "./machine.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
+import { stallArms } from "./request-stall.ts";
 import { rereadSpec } from "./spec-for.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
@@ -289,7 +289,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   // Why the first no-work child died, kept for the throw the second one may make.
   let firstNoWorkWhy: string | undefined;
   for (let tries = 0; ; tries++) {
-    const budget = armBudget(budgetFor(config, "build"));
+    const budget = armBudget(budgetFor(config, "build"), stallArms(ctx));
     if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
     const [dispatchedChild, row] = await dispatchBuilder(deps.dispatch, {
       issue,
@@ -436,6 +436,7 @@ export function buildDeps(headless: boolean): BuildDeps {
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,
+        ...(o.stall === undefined ? {} : { stall: o.stall }),
         // The budget's kill goes through `killProcessTree`, which only reaches the
         // child's tool tree when the child leads its own group.
         processGroup: true,

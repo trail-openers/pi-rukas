@@ -51,6 +51,9 @@ export type RunPhaseOpts = {
    * loop's own abort and the step's budget arms are two different clocks.
    */
   childBoundMs?: number;
+  /** #2644 — the step's armed hung-request window, whole minutes: the one number the reviewer's own
+   *  spawn needs from `armBudget` (the abort rides `budgetSignal`). Absent = no lever armed. */
+  stallWindowMinutes?: number;
   budgetSignal?: AbortSignal;
   onProgress?: (state: RunningState) => void;
 };
@@ -69,6 +72,7 @@ export function makeRunPhase(opts: RunPhaseOpts): RunPhase {
     processGroup,
     workCycleTrust,
     childBoundMs: budgetChildBoundMs,
+    stallWindowMinutes: budgetStallWindowMinutes,
     budgetSignal,
     onProgress: onBudgetProgress,
   } = opts;
@@ -169,6 +173,21 @@ export function makeRunPhase(opts: RunPhaseOpts): RunPhase {
                   budgetChildBoundMs ?? Number.POSITIVE_INFINITY,
                   adversarialChildBoundMs(),
                 ),
+                // #2644 — the step's hung-request window, on the reviewer's own spawn. The abort is
+                // already joined above (`budgetSignal` → this child's `kill`); these are the two facts
+                // the stream pump reads to decide whether to fire it. A child whose model request never
+                // answers emits no turns, so turns/tokens never breach it — the exact shape #2644 lost
+                // cells to.
+                ...(budgetStallWindowMinutes === undefined
+                  ? {}
+                  : {
+                      stall: {
+                        windowMinutes: budgetStallWindowMinutes,
+                        // The spawn replaces this with its own stamp and in-flight set
+                        // (`stallLever` in `spawn-inactivity-poll.ts`); the pump never reads this one.
+                        silence: () => ({ sinceMs: 0, toolInFlight: false }),
+                      },
+                    }),
                 // #1827 round 4 — OPT IN to the post-verdict stop: only this
                 // dispatch speaks the `VERDICT_STATUSES` protocol (the plan gap
                 // gate spawns the same role with `READY / NEEDS_ITERATION`). Set
