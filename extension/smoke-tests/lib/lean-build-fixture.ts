@@ -34,7 +34,7 @@ import type { HandlerCtx } from "../../src/lean/engine.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import type { BudgetOpts, DispatchUsageRow } from "../../src/lean/step-budget.ts";
-import { type QuietTickOpts, deliverQuietTick } from "./lean-quiet-child-tick.ts";
+import { type QuietTickReport, type QuietTickOpts, deliverQuietTick } from "./lean-quiet-child-tick.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 // The git contract lives in `lean-build-git.ts`; re-exported so a case imports one module.
 export { git, gitEnvFor } from "./lean-build-git.ts";
@@ -344,6 +344,10 @@ export interface RunOpts {
   onProgressTick?: (onProgress: BudgetOpts["onProgress"]) => void;
   /** See {@link QuietTickOpts} (#2644): the step's own lever measures it and fires. */
   silentMs?: number | (() => number);
+  /** See {@link QuietTickOpts} (#2644): what the child's own stream left in flight, and how many
+   *  turn ticks reached the step's hook. A case that wants to prove its fixture was live reads
+   *  this; a case that only states a duration ignores it. */
+  quietTick?: (report: QuietTickReport) => void;
   /** THE config the step reads; spread {@link configWithRunner} to keep the rest. */
   config?: WorkConfig;
   /** The child's tool calls; a function is called at the instant of dispatch. */
@@ -403,7 +407,8 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
     // The child's own acts are declared BEFORE the quiet tick runs, so the tick reads what THIS
     // dispatch's child did and nothing a later one will.
-    await deliverQuietTick(spec.role, o, opts); // #2644 — see `lean-quiet-child-tick.ts`
+    const tick = await deliverQuietTick(spec.role, o, opts); // #2644 — `lean-quiet-child-tick.ts`
+    opts.quietTick?.(tick);
     const over = resultOverride(opts.dispatchResults, dispatched - 1);
     const result: DispatchResult = {
       role: spec.role,

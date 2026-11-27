@@ -127,10 +127,13 @@ export function createInactivityPoll(opts: {
     );
   const period = pollBudgetMs();
   if (period === Number.POSITIVE_INFINITY) return { stop: () => undefined, tick: () => undefined };
+  let stopped = false;
   /** One supervision pass: the poll's own budgets first, then the caller's lever. The timer below
    *  is the production driver; it is also the seam a case calls when a host's timer cadence cannot
-   *  be relied on to land a verdict inside the case's wait. */
+   *  be relied on to land a verdict inside the case's wait — and once this poll has stopped, that
+   *  seam decides nothing, which is the half of the one-shot the timer alone cannot carry. */
   const tick = (): void => {
+    if (stopped) return;
     const armed = armedBudget();
     const now = Date.now();
     // A disabled budget (ms <= 0) never fires; the other is checked in its own branch.
@@ -161,11 +164,16 @@ export function createInactivityPoll(opts: {
     if (stall !== undefined) {
       const breach = stallBreach(stall);
       // The caller's abort is one-shot, so the arm stands itself down after it fires: the poll
-      // has no reason to keep reading a stream whose child is already being ended. The kill is
-      // the poll's own — same guarded path as its silence budgets — and the cause is NAMED, so
-      // the report says a stalled request ended this child rather than leaving it unattributed.
+      // has no reason to keep reading a stream whose child is already being ended, and every
+      // later pass would re-read the silence and re-kill a process that is already gone. The
+      // `stop()` below runs BEFORE the firing rather than a bare `clearInterval` after it, and the
+      // order is the whole of the stand-down: the caller's `fire` aborts synchronously, and a caller
+      // that watches that abort can tear this poll down inside the call — after which a
+      // `clearInterval` from this pass would be a no-op on an already-cleared timer and this pass's
+      // own continuation would still run. `stopped` also makes the tick seam inert once stopped, so
+      // a pass that races the teardown decides nothing either.
       if (breach !== undefined) {
-        clearInterval(interval);
+        stop();
         stall.fire?.(breach);
         onKill("stall", stall.windowMs, inFlightTools.toolNames());
         try {
@@ -178,7 +186,11 @@ export function createInactivityPoll(opts: {
   };
   const interval = setInterval(tick, Math.min(30_000, Math.max(250, Math.floor(period / 2))));
   interval.unref();
-  return { stop: () => clearInterval(interval), tick };
+  const stop = (): void => {
+    stopped = true;
+    clearInterval(interval);
+  };
+  return { stop, tick };
 }
 
 export function stallLever(

@@ -142,6 +142,9 @@ export async function drive(opts: {
   beforeLateMs?: number;
 }): Promise<{
   checks: number;
+  /** Every time the poll handed this arm a breach. `checks` is one-shot; this is not — it is what
+   *  tells one breach from four, i.e. whether the poll stood itself down after ending its child. */
+  fires: number;
   kills: number;
   budgetMs: number;
   progress: number;
@@ -166,8 +169,16 @@ export async function drive(opts: {
   const { child, kills } = fakeChild(input, opts.diesOnce !== false);
   // The step's side of the lever: freezing the breach and aborting. In production that is
   // `armBudget`'s freezing of the verdict — one-shot, and it ends the child through the
-  // controller's kill.
+  // controller's kill. Here it is a COUNTER behind no one-shot guard, because the guard is what
+  // hides a poll that never stood itself down: `armBudget`'s `fire` returns early on a repeat, so a
+  // still-ticking poll re-firing a dead child is invisible through it. `fires` is the honest tally;
+  // `checks` keeps its one-shot meaning (did the breach reach the step at all).
+  let fires = 0;
   const fire = () => {
+    // Count the BREACHES the poll handed here, not the passes: the case drives the passes at a
+    // cadence no real timer could keep, so a pass that arrives after the poll stood down is the
+    // thing under test, and the number the case asserts is how many of them carried work to do.
+    if (armed.silence().sinceMs >= opts.windowMs && !inFlightTools.active) fires++;
     if (checks === 1) return; // the caller's abort is one-shot
     checks = 1;
     void (child as { kill?: () => boolean }).kill?.();
@@ -225,6 +236,12 @@ export async function drive(opts: {
     stall: armed,
   });
   // One supervision pass, then a short real wait — the body the poll's `setInterval` would run.
+  // One supervision pass, then a short real wait — the body the poll's `setInterval` would run.
+  // The case drives these passes itself because the poll's timer is unref'd and a test runner does
+  // not deliver one inside a case's wait. The cadence is the case's and deliberately short: a real
+  // timer could not land this many passes, which is why `fires` (above) counts BREACHES rather than
+  // passes — that is what lets a suite stay under the CI ceiling and still see a stand-down that
+  // never happened.
   const runTicks = async (n: number, ms: number): Promise<void> => {
     for (let i = 0; i < n; i++) {
       poll.tick();
@@ -280,5 +297,5 @@ export async function drive(opts: {
   poll.stop();
   pump.close();
   input.destroy();
-  return { checks, kills: kills(), budgetMs, progress, inFlight: inFlightTools, ticks: pollMs };
+  return { checks, fires, kills: kills(), budgetMs, progress, inFlight: inFlightTools, ticks: pollMs };
 }

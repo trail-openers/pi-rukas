@@ -47,6 +47,7 @@ import {
   stallEnv,
 } from "./lib/lean-request-stall-fixture.ts";
 import { runBuild } from "./lib/lean-build-fixture.ts";
+import type { QuietTickReport } from "./lib/lean-quiet-child-tick.ts";
 import { put } from "./lib/lean-build-artifacts.ts";
 import { configWithRunner } from "./lib/lean-build-asserts.ts";
 import { defaultConfig } from "../src/lean/config.ts";
@@ -84,6 +85,7 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
 // ── (a) THE PANEL ROW ────────────────────────────────────────────────────────
 {
   let hung: Awaited<ReturnType<typeof runBuild>> | undefined;
+  let hungTick: QuietTickReport | undefined;
   await withEnv(stallEnv(), async () => {
     hung = await runBuild({
       issue: 2644,
@@ -93,8 +95,21 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
       // never came back — the field's 1668 s of silence.
       child: (wt) => put(wt, "src/stall.ts", "export const stall = () => 1;\n"),
       silentMs: silent(HUNG_REQUEST_MS),
+      quietTick: (r) => {
+        hungTick = r;
+      },
     });
   });
+  // The canary that keeps this cell from being the fixture deciding its own verdict: the poll ran,
+  // supervised for its own bounded wait, and was the only thing that could have fired the arm.
+  assert(
+    hungTick?.supervised === true && hungTick.supervisedMs() > 0,
+    `(a) canary: the spawn's own poll supervised the hung child for ${String(hungTick?.supervisedMs())} ms`,
+  );
+  assert(
+    (hungTick?.fires() ?? -1) === 1,
+    `(a) the poll handed the breach to the step's freezing of the verdict exactly once (got ${String(hungTick?.fires())})`,
+  );
 
   assert(
     hung?.threw === undefined,
@@ -166,7 +181,13 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
 
 // ── (b) a tool call in flight is not a stall ─────────────────────────────────
 {
+  // The two cells are the SAME child — same edit, same declared silence — and differ only in the
+  // lines its stream carried. There is no `toolInFlight` switch to set: the in-flight reading is the
+  // real `InFlightTools`'s own, fed by the child's `toolCall` line through the real stdout pump.
+  // That is the difference between pinning #951 and describing it: an earlier fixture let a case
+  // assert the exemption and stay green with the exemption deleted from production.
   let ran: Awaited<ReturnType<typeof runBuild>> | undefined;
+  let ranTick: QuietTickReport | undefined;
   await withEnv(stallEnv(), async () => {
     ran = await runBuild({
       issue: 2645,
@@ -178,190 +199,68 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
       child: (wt) => put(wt, "src/stall.ts", "export const stall = () => 1;\n"),
       toolUses: [{ name: "bash", arguments: { command: "bun run test" } }],
       silentMs: silent(HUNG_REQUEST_MS),
+      quietTick: (r) => {
+        ranTick = r;
+      },
     });
   });
+  assert(
+    ranTick?.supervised === true,
+    "(b) canary: the spawn's own poll supervised this child (a poll that never ran is not a held fire)",
+  );
+  assert(
+    ranTick?.inFlight() === true,
+    "(b) canary: the real InFlightTools still holds the child's call open when the poll finished",
+  );
+  assert(
+    (ranTick?.fires() ?? -1) === 0,
+    `(b) canary: the poll was ASKED and answered nothing (the step's fire ran ${String(ranTick?.fires())} times)`,
+  );
   assert(
     ran?.outcome?.kind === "ok",
     `(b) a silent child WITH a tool in flight finishes its work (got ${String(ran.outcome?.kind)})`,
   );
-  // The reading above is the production reader's own — `spawn-inactivity-poll.ts`'s `stallLever` over a
-  // real `InFlightTools`, fed the child's stream events — so the arm is pinned from both sides:
-  // a stream that reports a call in flight is never quiet, whatever the case's declared silence.
+  // The other half of the pair, and the half that makes the cell above non-vacuous: the same child
+  // whose call the stream ANSWERS, under the identical silence. The tracker then holds nothing
+  // open, so nothing stands the check down and the exemption can only be what the production
+  // reading says it is.
   let live: Awaited<ReturnType<typeof runBuild>> | undefined;
+  let liveTick: QuietTickReport | undefined;
   await withEnv(stallEnv(), async () => {
     live = await runBuild({
       issue: 2646,
       config: stallOnlyConfig(),
       clock: { deadlineMs: PANEL_START_MS + PANEL_CELL_S * MINUTE_MS, now: () => PANEL_NOW },
       child: (wt) => put(wt, "src/stall.ts", "export const stall = () => 1;\n"),
-      // No declared call, but the stream says one is running — the state a child reaches while a
-      // tool result is still to come. The check must stand down on the production reading alone.
-      toolInFlight: true,
+      // The same shape as the cell above — a real `bash` call the child opened — plus the
+      // `toolResult` the cell above never sends. With the result in the stream the tracker holds
+      // NOTHING open and the reader reports the silence its own clock measured; deleting #951 from
+      // `stallBreach` cannot make this cell green, and it cannot make the cell above green either.
+      toolUses: [{ name: "bash", arguments: { command: "bun run test" } }],
+      extraLines: [
+        {
+          type: "message_end",
+          message: { role: "toolResult", toolCallId: "tc-0", toolName: "bash", isError: false },
+        },
+      ],
       silentMs: silent(HUNG_REQUEST_MS),
-    });
-  });
-  assert(
-    live?.outcome?.kind === "ok",
-    `(b) and the production reader's own in-flight bit is what stands the check down — not the case's tool list (got ${String(live.outcome?.kind)})`,
-  );
-}
-
-// ── (b2) the step's lever reaches the children whose spawn options are built elsewhere ──
-// The review step arms ONE budget and hands it to seams that build their own spawn options by
-// hand: the six lens children (`runLensChild`), the adversarial reviewer (`makeRunPhase`) and the
-// fixer (`runFixer`). A spread of `budget.opts` delivers the lever to neither of the first two —
-// those files construct a literal, they do not spread — so the window travels as data and each
-// child puts `stall` on its own spawn. Asserted on what the SPAWN RECEIVED: an assertion on the
-// arm's `opts` would pass with the threading deleted, which is how it shipped for a round.
-{
-  const calls = stubLensSpawn();
-  const { armBudget } = await import("../src/lean/step-budget.ts");
-  const { reviewDeps } = await import("../src/lean/review-deps.ts");
-  const { runLensChild } = await import("../src/lens-review-child.ts");
-  const { makeRunPhase } = await import("../src/adversarial-phase.ts");
-
-  const windowMinutes = Math.ceil(reserveMs() / MINUTE_MS);
-  /** The lever the step arms for a cell with room to spare — a real `armBudget`, not a fixture's.
-   *  A cell begun at `PANEL_START_MS` with the deadline a full cell gives it leaves the reserve
-   *  outside the handoff allowance, which is exactly when the window IS the reserve. */
-  const armStall = () =>
-    armBudget(
-      { minutes: 0, turns: 0, tokens: 0 },
-      {
-        reserveMs: REVIEW_DEADLINE_RESERVE_MS,
-        silence: () => ({ sinceMs: 0, toolInFlight: false }),
-        deadlineMs: PANEL_START_MS + PANEL_CELL_S * MINUTE_MS,
-        startedAt: PANEL_START_MS,
+      quietTick: (r) => {
+        liveTick = r;
       },
-    );
-
-  // The seam, then the child it feeds: the seam can thread a field the child drops, and a child can
-  // read an arm no seam ever sent.
-  let lensOpts: Record<string, unknown> | undefined;
-  await withEnv(stallEnv(), async () => {
-    const deps = reviewDeps(false);
-    // The seam is the LAYER BELOW `lensChildFn`: `reviewDeps().lens` builds the `runLensReview`
-    // options, and `runLensReview` is what spreads them into the per-lens child's opts. Stubbing
-    // `lensChildFn` would capture the engine's own reshaping and could not fail when the seam
-    // dropped the field, so this drives the real engine and records what IT was handed.
-    deps.lensEngine = (async (o: Record<string, unknown>) => {
-      lensOpts = o;
-      return { verdict: "APPROVED", findings: [], advisory: [], lenses: [], usage: undefined } as never;
-    }) as never;
-    await deps.lens({
-      base: "0123456789abcdef0123456789abcdef01234567",
-      head: "0123456789abcdef0123456789abcdef01234568",
-      branch: "lean/issue-2644",
-      cwd: "/tmp",
-      wave: "full",
-      pr: undefined,
-      context: "ctx",
-      evidence: undefined,
-      extraFindings: [],
-      headless: false,
-      budget: armStall(),
     });
   });
   assert(
-    lensOpts?.stallWindowMinutes === windowMinutes,
-    `(b2) the lens seam hands the per-lens child the step's armed window (captured ${JSON.stringify(
-      lensOpts?.stallWindowMinutes,
-    )}, expected ${String(windowMinutes)})`,
-  );
-
-  calls.length = 0;
-  // A real skills dir: `runLensChild` blocks a lens whose SKILL.md is missing BEFORE any spawn, so
-  // a non-existent dir would make this assertion green for the wrong reason (no spawn at all).
-  const skills = mkdtempSync(path.join(tmpdir(), "stall-skills-"));
-  installLensSkills(skills);
-  await withEnv(stallEnv(), async () => {
-    await runLensChild({
-      lens: { name: "SECURITY", skill: "code-review-security", precedence: 10 },
-      runId: "run-2644",
-      skillsDir: skills,
-      context: "",
-      roster: [],
-      opts: { diff: "", cwd: "/tmp", stallWindowMinutes: windowMinutes },
-      bumpBatch: () => {},
-    });
-  });
-  rmSync(skills, { recursive: true, force: true });
-  const lensSpawn = calls.find((c) => c.role === "code-review-specialist");
-  assert(
-    (lensSpawn?.stall as { windowMinutes?: number } | undefined)?.windowMinutes === windowMinutes,
-    `(b2) and the lens child's own spawn carried the lever — its wall clock is not the only lever it has (captured ${JSON.stringify(
-      lensSpawn?.stall,
-    )})`,
-  );
-
-  // The reviewer's phase: the same rule one layer down, on the spawn `makeRunPhase` builds itself.
-  calls.length = 0;
-  await withEnv(stallEnv(), async () => {
-    const phase = makeRunPhase({
-      runId: "run-2644",
-      signal: new AbortController().signal,
-      orchestratorJobId: "job-2644",
-      processGroup: true,
-      childBoundMs: 30 * 60_000,
-      stallWindowMinutes: windowMinutes,
-    } as never);
-    await phase("adversarial-developer", "review", "prompt", "/tmp");
-  });
-  const reviewerSpawn = calls.find((c) => c.role === "adversarial-developer");
-  assert(
-    (reviewerSpawn?.stall as { windowMinutes?: number } | undefined)?.windowMinutes ===
-      windowMinutes,
-    `(b2) the reviewer's spawn carries the lever too — a hung request in the gate is the #2644 shape (captured ${JSON.stringify(
-      reviewerSpawn?.stall,
-    )})`,
-  );
-
-  // With no lever armed nothing carries one: an absent arm stays absent rather than becoming a
-  // zero-minute timer that ends the child the instant it starts.
-  calls.length = 0;
-  await withEnv(stallEnv(), async () => {
-    const phase = makeRunPhase({
-      runId: "run-2644",
-      signal: new AbortController().signal,
-      orchestratorJobId: "job-2644",
-      processGroup: true,
-    } as never);
-    await phase("adversarial-developer", "review", "prompt", "/tmp");
-  });
-  assert(
-    calls.find((c) => c.role === "adversarial-developer")?.stall === undefined,
-    "(b2) with no armed lever the reviewer's spawn options are those it had before this change",
-  );
-
-  // (b3) the enforced threshold is the DERIVED window, not the minutes a verdict prints. A step
-  // near its deadline derives a sub-minute window; rounding it up to a whole minute and enforcing
-  // THAT would let a hung request sit past the time the deadline leaves, and the verdict would
-  // print a bound that never held. Same arms, two different fields, each carrying its own job.
-  const SUB_MINUTE_MS = 40_000;
-  const sub = armBudget(
-    { minutes: 0, turns: 0, tokens: 0 },
-    {
-      reserveMs: REVIEW_DEADLINE_RESERVE_MS,
-      silence: () => ({ sinceMs: 0, toolInFlight: false }),
-      // The deadline sits SUB_MINUTE_MS past the handoff allowance from `startedAt`, so the window
-      // the step derives — the one the poll enforces — is that sub-minute remainder.
-      deadlineMs: PANEL_NOW + PINNED_ALLOWANCE_MS + SUB_MINUTE_MS,
-      startedAt: PANEL_NOW,
-    },
-  ).opts.stall;
-  assert(
-    sub?.windowMs === SUB_MINUTE_MS,
-    `(b3) the window enforced is the one the step derived (got ${String(sub?.windowMs)} ms)`,
+    liveTick?.inFlight() === false,
+    "(b) canary: this child has nothing open, so the ONLY difference from the cell above is the stream",
   );
   assert(
-    sub?.windowMinutes === Math.ceil(SUB_MINUTE_MS / MINUTE_MS),
-    `(b3) …while the verdict still prints whole minutes, never 0 (got ${String(sub?.windowMinutes)})`,
+    (liveTick?.fires() ?? -1) === 1,
+    `(b) the same silence WITHOUT a call in flight DOES breach — the exemption is the reader's, not a value the case wrote (the step's fire ran ${String(liveTick?.fires())} times)`,
   );
   assert(
-    sub?.windowMinutes !== undefined && sub.windowMinutes * MINUTE_MS > sub.windowMs,
-    "(b3) the two disagree by construction here, so a mutant enforcing the minutes is caught",
+    live?.outcome?.kind === "budget",
+    `(b) and the frozen verdict is the stall (got ${String(live.outcome?.kind)})`,
   );
-
 }
 
 // ── (c) the window: the reserve, clamped, never zero ─────────────────────────

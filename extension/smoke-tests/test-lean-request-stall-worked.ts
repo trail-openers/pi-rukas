@@ -24,6 +24,7 @@ import {
   stallEnv,
 } from "./lib/lean-request-stall-fixture.ts";
 import { runBuild } from "./lib/lean-build-fixture.ts";
+import type { QuietTickReport } from "./lib/lean-quiet-child-tick.ts";
 import { put } from "./lib/lean-build-artifacts.ts";
 import { configWithRunner } from "./lib/lean-build-asserts.ts";
 import { defaultConfig } from "../src/lean/config.ts";
@@ -86,8 +87,11 @@ function silent(ms: number): number {
     "(b4) the worked child's patch is kept, like the panel row",
   );
 
-  // …and the two exemptions still hold for THAT child, not only for a pristine one.
+  // …and the two exemptions still hold for THAT child, not only for a pristine one. The in-flight
+  // reading is the real tracker's: the case hands the child an unanswered `toolCall` line, which is
+  // the only way to mean it now that the fixture cannot assert it.
   let live: Awaited<ReturnType<typeof runBuild>> | undefined;
+  let liveTick: QuietTickReport | undefined;
   await withEnv(stallEnv(), async () => {
     live = await runBuild({
       issue: 2649,
@@ -95,15 +99,28 @@ function silent(ms: number): number {
       clock: { deadlineMs: PANEL_START_MS + PANEL_CELL_S * MINUTE_MS, now: () => PANEL_NOW },
       child: (wt) => put(wt, "src/stall.ts", "export const stall = () => 1;\n"),
       worked: WORKED,
-      toolInFlight: true,
+      toolUses: [{ name: "bash", arguments: { command: "bun run test" } }],
       silentMs: silent(HUNG_REQUEST_MS),
+      quietTick: (r) => {
+        liveTick = r;
+      },
     });
   });
+  assert(
+    liveTick?.supervised === true && liveTick.inFlight() === true,
+    "(b4) canary: the poll supervised this child and the real tracker holds its call open",
+  );
+  assert(
+    (liveTick?.fires() ?? -1) === 0,
+    `(b4) canary: asked and answered nothing — the worked child's exemptions are the reader's (fire ran ${String(liveTick?.fires())} times)`,
+  );
   assert(
     live?.outcome?.kind === "ok",
     `(b4) the same worked child with a tool in flight is not a stall (got ${String(live.outcome?.kind)})`,
   );
   let quick: Awaited<ReturnType<typeof runBuild>> | undefined;
+  let quickTick: QuietTickReport | undefined;
+  const QUICK_SILENCE = Math.floor(HUNG_REQUEST_MS / 2);
   await withEnv(stallEnv(), async () => {
     quick = await runBuild({
       issue: 2650,
@@ -112,9 +129,27 @@ function silent(ms: number): number {
       child: (wt) => put(wt, "src/stall.ts", "export const stall = () => 1;\n"),
       worked: WORKED,
       // Half the window: inside it the lever holds its fire whatever the child did before.
-      silentMs: silent(Math.floor(HUNG_REQUEST_MS / 2)),
+      silentMs: silent(QUICK_SILENCE),
+      quietTick: (r) => {
+        quickTick = r;
+      },
     });
   });
+  // The canary the cell needs to be more than a green that means "nothing happened": the poll
+  // supervised this child AND the production reader really measured the silence the case named —
+  // inside the window, which is why holding fire is the right answer and not an absence of checking.
+  assert(
+    quickTick?.supervised === true && quickTick.supervisedMs() > 0,
+    `(b4) canary: the poll supervised this child for ${String(quickTick?.supervisedMs())} ms`,
+  );
+  assert(
+    (quickTick?.silence() ?? -1) >= QUICK_SILENCE,
+    `(b4) canary: the production reader itself measured the case's silence — ${String(quickTick?.silence())} ms, declared ${String(QUICK_SILENCE)} ms (a case's duration and the reader's measurement are the same clock)`,
+  );
+  assert(
+    (quickTick?.fires() ?? -1) === 0,
+    `(b4) and inside the window the poll really held its fire, whatever the child had done before (fire ran ${String(quickTick?.fires())} times)`,
+  );
   assert(
     quick?.outcome?.kind === "ok",
     `(b4) the same worked child, quiet inside the window, finishes (got ${String(quick.outcome?.kind)})`,

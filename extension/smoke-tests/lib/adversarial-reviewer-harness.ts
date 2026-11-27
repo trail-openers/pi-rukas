@@ -9,6 +9,7 @@
  */
 
 import { mock } from "bun:test";
+import type { SpawnOptions } from "../../src/pi-event-shapes.ts";
 import type { RunningState } from "../../src/progress.ts";
 import type { DispatchResult } from "../../src/types.ts";
 import { withEnv } from "./env-scope.ts";
@@ -26,6 +27,11 @@ export type SpawnCall = {
    * is invisible any other way, so every #1978 assertion reads these. */
   signal?: AbortSignal;
   onProgress?: (s: RunningState) => void;
+  /** #2644 — the hung-request lever, recorded for the same reason as the two arms
+   * above: the reviewer's spawn options are built by `makeRunPhase` rather than
+   * spread from the budget, so the window travels as data and only the child's own
+   * options can say whether the data arrived. */
+  stall?: SpawnOptions["stall"];
 };
 
 export const spawnCalls: SpawnCall[] = [];
@@ -88,6 +94,7 @@ mock.module(new URL("../../src/spawn.ts", import.meta.url).href, () => ({
       reviewSkillPath?: string;
       signal?: AbortSignal;
       onProgress?: (s: RunningState) => void;
+      stall?: SpawnOptions["stall"];
     },
   ) => {
     const killedChild = nextKillCause !== undefined && spec.role === "adversarial-developer";
@@ -99,6 +106,7 @@ mock.module(new URL("../../src/spawn.ts", import.meta.url).href, () => ({
       reviewSkillPath: opts.reviewSkillPath,
       signal: opts.signal,
       onProgress: opts.onProgress,
+      ...(opts.stall === undefined ? {} : { stall: opts.stall }),
       ...(killedChild ? { killCause: nextKillCause } : {}),
     });
     tick(spec.role, opts.onProgress);
@@ -150,6 +158,8 @@ export async function deliver(
     childBoundMs?: number;
     signal?: AbortSignal;
     onProgress?: (s: RunningState) => void;
+    /** #2644 — the whole minutes the step armed its hung-request lever with. */
+    stallWindowMinutes?: number;
   },
   env: Record<string, string | undefined> = {},
   killed?: DispatchResult["killCause"],

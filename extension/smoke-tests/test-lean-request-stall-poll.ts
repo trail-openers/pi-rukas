@@ -54,6 +54,10 @@ const WINDOW_ENV = { ...BUDGET_ENV, PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS: String(LI
     r = await drive({ windowMs: WINDOW, silenceMs: 0, afterEmitMs: WINDOW });
   });
   assert(r!.checks === 1, `(1) a silent child's stall lever fired on the timer (got ${String(r!.checks)} checks)`);
+  assert(
+    r!.fires === 1,
+    `(1) the arm was consulted EXACTLY ONCE per breach — the poll stands itself down instead of re-killing a dead child on every later pass (got ${String(r!.fires)} fires over ${String(r!.ticks)} ms of supervision)`,
+  );
   assert(r!.kills === 1, `(1) and the silent child was actually killed (got ${String(r!.kills)} kills)`);
   assert(
     r!.progress === 0,
