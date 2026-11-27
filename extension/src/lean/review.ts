@@ -354,8 +354,8 @@ async function reviewPass(
     // A fixer cut off at the output-token limit before it wrote anything had ONE continuation
     // spent on it (see `fixer-truncation.ts`); the wave's own record says whether, and the reason
     // line says so too, so a wave that fixed nothing after a truncation reads differently from one
-    // whose fixer read everything and changed nothing. With the switch at `0` the flag is never set
-    // and this is today's reason, byte for byte.
+    // whose fixer read everything and changed nothing. No continuation spent, no flag set, and the
+    // reason is the ordinary no-change one.
     head = await assertFixAdvanced(
       review.head,
       fix.head,

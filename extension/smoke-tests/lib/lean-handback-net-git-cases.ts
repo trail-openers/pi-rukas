@@ -1,5 +1,6 @@
 /**
- * lib/lean-handback-net-git-cases — the shared drive and the table the origin reads are judged on.
+ * lib/lean-handback-net-git-cases — the drive the origin reads are observed through, and
+ * the expectation table they are judged on.
  *
  * `src/lean/handback-rewind.ts` reads origin four times on a rewind that pushes: the
  * held head before the push, the branch and its keeping-ref after it (the `Promise.all`
@@ -11,27 +12,22 @@
  * read a passphrase from /dev/tty. Both are facts about the call, so both are asserted on
  * the call.
  *
- * Both arms drive `rewindToVerified` and `originBranchHead` with one recorder
+ * The drive runs `rewindToVerified` and `originBranchHead` against one recorder
  * (lib/lean-handback-recording-exec.ts) over one real bare origin, so the reads answer
  * for real and the recorder can be asked what it was handed. The expected env is derived
  * by calling the same `netGitEnv` production calls — an expectation typed out by hand
  * would be a second definition of the wrapper — and `GIT_SSH_COMMAND`/`GIT_SSH` are
  * pinned by the caller before the drive so the derivation has one answer.
  *
- * WHICH ENV THE OFF ARM IS JUDGED AGAINST. The three reads the rewind makes name no env
+ * WHY THE REWIND IS DRIVEN WITH `net: false`. The three reads the rewind makes name no env
  * of their own when the drive supplies none, so the value that reaches them is the step
  * env `lib/lean-verified-handback-step.ts` hands its executor — `stepGitEnv()`, recorded
  * from the drive's own push so the expectation is what was actually handed rather than a
  * re-derivation of it. The guard's own origin probe (`publish-deps.ts`) does route
  * through the wrapper, but it is a shell-form `git ls-remote --symref origin HEAD`: it is
  * not one of the four reads, and it must not be mistaken for the supplier of their env.
- * The on-arm case drives the rewind with `net: false` for the same reason — with
- * production's `net: true` every read arrives carrying `netGitEnv` before the switch is
- * consulted, and only `killGroup` is left to discriminate.
- *
- * The arms live in one module because they share the drive and the expectation table,
- * and an off arm that drifts from the call shape it is supposed to reproduce is exactly
- * what the pair exists to catch.
+ * With production's `net: true` every read arrives carrying `netGitEnv` before the wrapper
+ * is consulted, and only `killGroup` is left to discriminate.
  */
 
 import { originBranchHead, rewindToVerified } from "../../src/lean/handback-rewind.ts";
@@ -49,7 +45,7 @@ export type RecordedCall = RecordingExec["calls"][number];
 export const READ_TIMEOUT_MS = 60_000;
 /** The buffer cap each in-scope read carries, as the shipped call spells it. */
 export const READ_MAX_BUFFER = 4 * 1024 * 1024;
-/** The ssh command both arms pin, so the derived env has one answer rather than the host's. */
+/** The ssh command the caller pins, so the derived env has one answer rather than the host's. */
 export const PINNED_SSH = "/usr/bin/ssh -i /dev/null";
 
 /**
@@ -97,7 +93,7 @@ export interface DrivenReads {
  *
  * `opts.net` is passed to `rewindToVerified` verbatim, because whether the rewind's reads
  * arrive with an env already on them decides what the drive can prove: with `net: true`
- * production's net env is on every read before the switch is consulted, and only the
+ * production's net env is on every read before the wrapper is consulted, and only the
  * `killGroup` is left to discriminate.
  *
  * The pushed head is reachable either way: the rewind's own push carries the objects, so

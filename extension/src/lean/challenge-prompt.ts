@@ -50,8 +50,8 @@ export interface ChallengePromptOpts {
   /**
    * The issue body the step re-read from the forge. The frozen tests were written
    * from this text, so an edge case the issue never asked for is not a finding —
-   * the sentence the adversary can check. Absent or blank, the section is not
-   * rendered and the prompt is the pre-section shape byte for byte.
+   * the sentence the adversary can check. Absent or blank, no section is rendered
+   * and the brief carries no gap where one would have been.
    */
   issueBody?: string;
 }

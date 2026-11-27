@@ -205,9 +205,8 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
     opts.spec.problem,
     "",
     // The issue section sits between the problem and the criteria: the child
-    // reads the task statement before the list it must prove. Empty (switch off,
-    // or no body) contributes no line at all, so that render is the pre-section
-    // shape byte for byte rather than the same text with a gap where it was.
+    // reads the task statement before the list it must prove. An empty section
+    // contributes no line at all, so a body with nothing to say leaves no gap.
     ...(issueSection === "" ? [] : [issueSection, ""]),
     "## The acceptance criteria",
     "",

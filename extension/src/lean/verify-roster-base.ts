@@ -119,9 +119,9 @@ export interface BaseTestListing {
  * `verify.testGlob`. Listing at the commit rather than the disk is the rule every base read in a run
  * follows: a run that adds or deletes test files would otherwise choose the suite that judges it.
  *
- * The recursion is the fix for a project whose graded tests sit in nested packages
- * (`tests/unit/`, `tests/integration/deep/`): a listing that kept only what sat directly inside
- * `testDir` called such a base EMPTY and handed the run back for having no tests. Matching stays on
+ * The recursion is what a project whose graded tests sit in nested packages
+ * (`tests/unit/`, `tests/integration/deep/`) needs: a listing of what sits directly inside
+ * `testDir` calls such a base EMPTY and hands the run back for having no tests. Matching stays on
  * the basename, so recursion widens which directories are searched and never what counts as a test,
  * and no size of suite is refused — a repo past the record's cap is one this gate CAN judge. It is
  * THIS enumeration's boundary alone: `testLocationProblem`, which judges where the run's SUBMITTED

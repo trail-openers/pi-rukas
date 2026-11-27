@@ -2,12 +2,11 @@
  * lean/issue-prose — the issue's own words in front of Lean's three seats.
  *
  * The `specify` and `challenge` oracles and the `build` builder are each given the issue body as a fenced
- * section, between the problem and the criteria. Without it a constraint written as prose in
- * `Context & motivation` — a non-obvious "never do X", an accessibility or perf requirement no AC bullet
- * states — was invisible to all three, so either oracle could call a spec complete while the prose
- * contradicted it.
+ * section, between the problem and the criteria. A constraint written as prose in `Context & motivation` —
+ * a non-obvious "never do X", an accessibility or perf requirement no AC bullet states — is otherwise
+ * invisible to all three, so either oracle can call a spec complete while the prose contradicts it.
  *
- * Three rules make that safe:
+ * Four rules make that safe:
  *
  *   1. the pi-spec block is stripped (`stripPiSpecBlocks`) — the criteria are already rendered, verbatim, one
  *      line below, so repeating the block would hand the model a second copy of the contract to disagree with;
@@ -15,10 +14,9 @@
  *      INSIDE the code span, where it is content, not a marker the model could read as closing the section;
  *   3. the fence itself is rendered by `fencedIssueBody`, the reviewer path's renderer — every backtick run of
  *      3+ in the body is replaced by a same-width look-alike (`fenceText`), so no run inside the issue can
- *      close the block the prompt opened.
- *
- * `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` removes the section from the builder's seat ONLY: that per-seat
- * isolation is the point of the knob, and the oracle seats have no switch.
+ *      close the block the prompt opened;
+ *   4. the builder's seat refuses a body that only restates its own `problem` line (`problemFor`), which the
+ *      oracle seats do not ask about.
  */
 import { fencedIssueBody } from "../adversarial-prompts.ts";
 import { hasSurvivingSpecShapedFence, normalizeProse, stripPiSpecBlocks } from "./spec.ts";
@@ -38,19 +36,13 @@ export const LEAN_ISSUE_LEAD =
 export const LEAN_BUILD_ISSUE_LEAD =
   "The issue text below is what the acceptance criteria summarise. Where the criteria are silent it states what to build; it never overrides a frozen test.";
 
-/** Whether the BUILDER's prompt carries the issue section. Read at call time, like its sibling. */
-export function leanBuildIssueProseEnabled(): boolean {
-  const v = process.env.PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE;
-  return v !== "0";
-}
-
 /**
  * The issue section of a lean prompt, or "" when it has nothing to say.
  *
  * Two answers of "nothing" belong to every seat: the body is blank once its `pi-spec` block is stripped, or a
- * spec-SHAPED FENCE survived that strip. The builder's seat adds two of its own — its own switch, consulted at
- * its call site, and the prose being the spec's own `problem` line restated. `lead` is the seat's own
- * instruction; it defaults to the oracle's.
+ * spec-SHAPED FENCE survived that strip. The builder's seat adds a third of its own by passing `problemFor`:
+ * a body whose prose is the spec's own `problem` line restated says nothing the brief does not already print.
+ * `lead` is the seat's own instruction; it defaults to the oracle's.
  */
 export function leanIssueSection(
   issueBody: string | undefined,

@@ -212,8 +212,7 @@ export type SuiteRun =
  * The command reaches the executor in argv form, so no shell re-parses the tree's path, and
  * `killGroup` makes the wall clock real for a runner that spawns a grandchild. The per-test
  * names come from the REPORT, never from the tail: a bounded tail shows the summary and elides
- * every per-failure marker, so a roster built from one silently reports zero tests — the exact
- * pass this module exists to refuse.
+ * every per-failure marker, so a roster built from one silently reports zero tests.
  */
 export async function runProjectSuite(
   exec: VerifyExec,

@@ -5,13 +5,12 @@
  *
  * `src/lean/handback-rewind.ts` reads origin with `git ls-remote` four times on a rewind
  * that pushes — the held head, the branch after the push, the keeping-ref, and
- * `originBranchHead` for the record — and until #2279 those calls carried neither. The
- * consequence is specific and it is the bug: a read with no `killGroup` is killed only at
- * its direct child, so an ssh grandchild holding stdout outlives the ceiling and the
- * trial it belongs to is lost; a read with no `GIT_TERMINAL_PROMPT=0` and no BatchMode
- * waits on /dev/tty for a passphrase rather than failing. `test-driver-network-git-env.ts`
- * is the enumeration gate for that class, and its blind spot is why the reads shipped
- * unrouted.
+ * `originBranchHead` for the record — and a read carrying neither is the bug this pins:
+ * one with no `killGroup` is killed only at its direct child, so an ssh grandchild
+ * holding stdout outlives the ceiling and the trial it belongs to is lost; one with no
+ * `GIT_TERMINAL_PROMPT=0` and no BatchMode waits on /dev/tty for a passphrase rather than
+ * failing. `test-driver-network-git-env.ts` is the enumeration gate for that class, and
+ * its blind spot is why the reads once shipped unrouted.
  *
  * The assertions are made on the RECORDED CALL. The env-substituting rig
  * (`lib/lean-verified-handback-fixture.ts`'s exec, which overwrites `opts.env`) is not
@@ -21,19 +20,17 @@
  *
  * WHY THE REWIND IS DRIVEN WITH `net: false`. `git ls-remote origin <ref>` reaches this
  * file from exactly two places — the rewind's three reads and `originBranchHead` — and
- * both already reach the executor with the wrapper's env on the call through no help from
- * the routed arm: `runNetGit` supplies it on the routed arm, and upstream every one of
- * these callers supplies it too (`handback.ts`'s `readOrigin` →
- * `execGitWithHooks(…, { env: stepGitEnv(), … })` for the record's read; the guard seam
- * in `publish-deps.ts` for the rewind's). So a drive in which the upstream callers hand
- * over the env — production's `net: true`, which is how `report-handlers.ts` drives the
- * rewind — leaves only `killGroup` to tell the two arms apart, and a mutant that routes
- * nothing would still have looked routed. With `net: false` the rewind's reads arrive with
- * no env of their own, so the env this drive sees on them can only have come from the
- * wrapper: on both the env and the group kill, the routed arm is the only supplier, and
- * the suite goes red when it is not taken.
+ * upstream callers can supply an env of their own (`handback.ts`'s `readOrigin` hands the
+ * executor a step env for the record's read; the guard seam in `publish-deps.ts` does for
+ * the rewind's). So a drive in which the upstream callers hand over the env — production's
+ * `net: true`, which is how `report-handlers.ts` drives the rewind — leaves only
+ * `killGroup` to tell the shapes apart, and a mutant that routed nothing would still have
+ * looked routed. With `net: false` the rewind's reads arrive with no env of their own, so
+ * the env this drive sees on them can only have come from the wrapper: on both the env and
+ * the group kill, the wrapper is the only supplier, and the suite goes red when it is not
+ * taken.
  *
- * The push is asserted untouched in the same breath: this change routes reads, and a fix
+ * The push is asserted untouched in the same breath: this is about the reads, and a fix
  * that also reached the push would move the rewind's `--atomic`, lease-bound argv, which
  * ships with the rule and has no lever of its own.
  */
@@ -80,7 +77,6 @@ await withEnv(
     // Absent, so the bound the reads are clamped to is the shipped default and the
     // recorded timeout is `min(60 s, 300 s)` rather than whatever the shell pinned.
     PI_ENSEMBLE_GIT_NET_TIMEOUT_MS: undefined,
-    PI_ENSEMBLE_LEAN_HANDBACK_NET_GIT: "1",
   },
   async () => {
     // `netGitEnv` caches the repo's `core.sshCommand` for the process's lifetime, so a
@@ -142,10 +138,10 @@ await withEnv(
       }
     }
 
-    // The push is out of scope and must stay exactly as the lease switch renders it.
+    // The push is out of scope and must stay exactly as the rewind rule renders it.
     // `killGroup: true` and the 120 s ceiling are the rewind push's own literals, in the
     // argv-form call `rewindToVerified` makes directly. Its env is the one exception to
-    // "this change routed reads and nothing else", and it is named here because it is the
+    // "this is about the reads and nothing else", and it is named here because it is the
     // upstream supplier this suite has to reason about: `handback-rewind.ts` computes
     // `netGitEnv(process.env, repoRoot)` itself and hands it to the push when driven with
     // `net: true`, which is how `report-handlers.ts`'s `rewindFor` drives it in
@@ -178,17 +174,17 @@ await withEnv(
     // question — whether the suite would notice a read that stopped being routed — because
     // the enumeration gate cannot: that gate counts `runNetGit(` sites, and a site that is
     // textually present but never reached passes it. So a COPY of the module under test is
-    // driven with its one routed arm forced off (`const ran = false && …`). The copy is
-    // written to a fresh path under the system temp root, which is what keeps it out of
-    // bun's module cache (a module is keyed by resolved path, so a name no run has used is
-    // a module bun has never compiled) and, more importantly, keeps the tracked file
+    // driven with its wrapper call replaced by a direct executor call. The copy is written
+    // to a fresh path under the system temp root, which is what keeps it out of bun's
+    // module cache (a module is keyed by resolved path, so a name no run has used is a
+    // module bun has never compiled) and, more importantly, keeps the tracked file
     // unmutated: a mutation applied in place is a mutation a later run could be graded on.
     // The copy's relative imports are rewritten to absolute paths under `extension/src`, so
     // it resolves from anywhere.
     //
     // The mutant still ships its rewind — routing a read is not what makes it answer — so
-    // what is asserted is what the reads were handed. With the routed arm unreachable and
-    // the drive giving the rewind no env of its own, no supplier is left: an unrouted read
+    // what is asserted is what the reads were handed. With no wrapper on the path and the
+    // drive giving the rewind no env of its own, no supplier is left: an unrouted read
     // carries neither `killGroup` nor `GIT_TERMINAL_PROMPT`, and all four must be reported
     // as carrying neither. Green here would mean this suite was proving the drive's call
     // shape rather than the wrapper's.
@@ -201,19 +197,16 @@ await withEnv(
         new URL("../src/lean/handback-rewind.ts", import.meta.url).pathname,
         "utf8",
       );
-      const ROUTED_ARM = "const ran = leanHandbackNetGitEnabled()";
-      const arms = source.split(ROUTED_ARM).length - 1;
+      const WRAPPED_CALL = '  const ran = await runNetGit(exec, "git", {';
+      const sites = source.split(WRAPPED_CALL).length - 1;
       assert(
-        arms === 1,
-        `the module has exactly one routed arm for the mutant to switch off (found ${String(arms)})`,
+        sites === 1,
+        `the module has exactly one wrapped origin-read call for the mutant to replace (found ${String(sites)})`,
       );
       const mutantPath = join(scratchDir, "handback-rewind-unrouted.ts");
       writeFileSync(
         mutantPath,
-        absoluteImports(source).replace(
-          ROUTED_ARM,
-          "const ran = false && leanHandbackNetGitEnabled()",
-        ),
+        absoluteImports(source).replace(WRAPPED_CALL, '  const ran = await exec("git", {'),
       );
       const mutated = await import(`${mutantPath}?unrouted=${String(Date.now())}`);
       const repo = (await import("./lib/lean-verified-handback-repo.ts")).repoWithFixHead();

@@ -37,7 +37,7 @@ export async function assertFixAdvanced(
   rows: DispatchUsageRow[],
   /** The cut this wave named, or `undefined` for a wave whose fixer simply changed nothing. Present
    *  only when the fixer's recorded stop reason was `"length"` with no write call AND the wave spent
-   *  its continuation; a wave that never asked gets today's sentence, byte for byte. */
+   *  its continuation; a wave that never asked gets the ordinary no-change sentence. */
   truncated?: { outputTokens: number },
 ): Promise<string> {
   // An integration that returned neither a head nor a stop is not a round that

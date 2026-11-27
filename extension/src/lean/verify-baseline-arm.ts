@@ -9,7 +9,7 @@
  *     rule is `baselineExcuse`);
  *   - **a RED that hands the run back**: any other answer from the excuse, or a re-run that observed
  *     nothing;
- *   - **a RED whose first clause is the frozen contract**, which is the case this module exists for.
+ *   - **a RED whose first clause is the frozen contract**.
  *
  * The frozen verdict is asked FIRST, on purpose: the step's ordinary `firstFailure` never sees it once this
  * arm returns, so a run whose own acceptance tests are red cannot be graded green on the strength of a tier

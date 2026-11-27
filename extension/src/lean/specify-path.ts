@@ -105,10 +105,9 @@ export function fileProblem(wt: string, rel: string): string | undefined {
  *     is not a new file, and `fileProblem` refuses it as a test anyway;
  *   - any rejection → **throw**. The child's path never enters the judgement.
  *
- * Presence and absence are a byte count on a channel the path cannot write to. An earlier shape
- * probed with `cat-file -e` and read git's *stderr*, which interpolates the child-chosen path
- * into its message — a file named `does not exist in 'x'.ts` could make any fault read as
- * absence.
+ * Presence and absence are a byte count on a channel the path cannot write to. A probe whose answer
+ * is git's *stderr* is unusable here: that text interpolates the child-chosen path, so a file named
+ * `does not exist in 'x'.ts` could make any fault read as absence.
  *
  * `ref` is a full lowercase oid or this throws: a moving name silently changes which tree
  * newness is judged against. `--end-of-options` closes the ref, `--` separates rev from pathspec,

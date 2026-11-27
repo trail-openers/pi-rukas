@@ -180,9 +180,9 @@ export interface ReviewDeps {
    * Injected like every other outside world here, so a case can assert what the resumed child was
    * actually handed — its session file, its tree, its fence — rather than what the step intended to
    * hand it. Production is `spawnDeveloperContinuationChild`; a test that means "the continuation
-   * never happened" returns an outcome whose `ok` is false, which is the arm the step answers with
-   * today's handback. Absent means the surface does not exist, and a truncated fixer then takes
-   * today's path rather than a fresh child started in ignorance of what the first one read.
+   * never happened" returns an outcome whose `ok` is false, which is the arm the step answers
+   * with the no-change handback. Absent means the surface does not exist, and a truncated fixer
+   * then takes that same arm rather than a fresh child started in ignorance of the first one.
    */
   continueSession?: DeveloperContinuationFn;
   fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;

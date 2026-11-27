@@ -16,11 +16,9 @@
  * `test-lean-build-issue-prose-step.ts`; this file is the render, that file is
  * the step.
  *
- * The two switches are PINED rather than trusted to the ambient environment:
- * both readers go to `process.env` at call time, so an operator shell that
- * exported either `=0` would otherwise make the ON-case assertions fail red on
- * an unrelated change. `withEnv` restores exactly what was there, an absent
- * variable included.
+ * Nothing here consults `process.env`: the section is a function of the body and
+ * the spec alone, so an operator shell holding a stale value cannot change what
+ * these assertions measure.
  *
  * B8 (the issue's binding resolution): when the body carries nothing the spec
  * does not already state — the `pi-spec` block stripped, trimmed and with its
@@ -37,7 +35,6 @@ import {
   leanIssueSection,
 } from "../src/lean/issue-prose.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { SPEC_BODY, SPEC_BODY_WITH_PROSE } from "./lib/lean-build-asserts.ts";
 import { CONSTRAINT, INJECT_BODY, ISSUE_BODY, OVER_BODY } from "./lib/ticket-issue-fixture.ts";
 
@@ -76,12 +73,7 @@ const build = (issueBody?: string) =>
     ...(issueBody === undefined ? {} : { issueBody }),
   });
 
-/** The builder's switch pinned ON — the state the acceptance criteria describe. */
-const ON = {
-  PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: undefined,
-};
-
-await withEnv(ON, async () => {
+{
   const prompt = build(ISSUE_BODY);
 
   assert(
@@ -111,31 +103,17 @@ await withEnv(ON, async () => {
     "no \"undefined\" reaches the brief from the issue section",
   );
 
-  // The builder's own switch is the only one that reaches this seat: the oracle
-  // seats have no switch, so the off arm is the pre-#2228 render and nothing else
-  // moves (B3).
+  // Per-seat ISOLATION: the builder's own refusals are consulted at its own call
+  // site, so the two oracle renders — the same body through the shared renderer
+  // with the oracle's lead — are untouched by them. An operator A/B-ing the
+  // builder's brief must not be measuring two variables.
   const bare = build();
-  // Per-seat ISOLATION, which is the whole reason this knob exists at all: the
-  // builder consults it at its own call site, so the two oracle prompts keep
-  // rendering. An operator A/B-ing the builder's brief that also reverted
-  // `specify`/`challenge` would measure two variables and blame the delta on one.
-  await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: "0" }, async () => {
-    const off = build(ISSUE_BODY);
-    assert(
-      off === bare,
-      "PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0 renders byte-identically to a brief built with no body",
-    );
-    assert(
-      !off.includes(LEAN_ISSUE_HEADING) && !off.includes(CONSTRAINT),
-      "the off render carries no section heading at all, not an empty one",
-    );
-    const oracleLead = leanIssueSection(ISSUE_BODY);
-    assert(
-      oracleLead.startsWith(`${LEAN_ISSUE_HEADING}\n\n${LEAN_ISSUE_LEAD}\n\n`) &&
-        oracleLead.includes(CONSTRAINT),
-      "and the same environment leaves the ORACLE render untouched — the builder's switch reaches the builder's seat only",
-    );
-  });
+  const oracleLead = leanIssueSection(ISSUE_BODY);
+  assert(
+    oracleLead.startsWith(`${LEAN_ISSUE_HEADING}\n\n${LEAN_ISSUE_LEAD}\n\n`) &&
+      oracleLead.includes(CONSTRAINT),
+    "the ORACLE render is the shared renderer's own, lead and all, whatever the builder seat refuses",
+  );
   assert(
     leanIssueSection(ISSUE_BODY, LEAN_BUILD_ISSUE_LEAD).includes(LEAN_BUILD_ISSUE_LEAD),
     "the one renderer takes the builder's lead as a parameter",
@@ -296,6 +274,6 @@ await withEnv(ON, async () => {
       quotesTheFormat.includes("`pi-spec v1`"),
     "a valid body whose PROSE mentions pi-spec v1 keeps its section and its tail requirement — only a surviving spec-shaped fence refuses it",
   );
-});
+}
 
 process.exit(exit);

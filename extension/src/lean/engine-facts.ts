@@ -2,8 +2,7 @@
  * lean/engine-facts — the readings of a run's step log the runner consults but
  * does not itself perform: `reasonFor` words why a run ended, and the merge gate
  * (`landEarned`, its refusal wording, and the stamp check that re-asks the gate).
- * All are pure reads of the record, sharing `newestDecided` and the report-state
- * exclusion, which is why they live together.
+ * All are pure reads of the record, sharing `newestDecided` and the report-state exclusion.
  */
 
 import { REPORT_FAILED_KIND, exitCodeFor } from "./machine.ts";
@@ -73,7 +72,7 @@ function landEarned(run: LeanRun): boolean {
     newestDecided(run.steps, "ci")?.outcome?.kind !== "green"
   )
     return false;
-  // The off arm asks ONLY the kinds it asked before this field existed, byte for byte.
+  // With the roster off, the verdict KINDS above are the whole gate.
   if (!leanProjectRosterEnabled()) return true;
   return (
     rosterEarnsLand(newestDecided(run.steps, "verify")?.outcome) &&

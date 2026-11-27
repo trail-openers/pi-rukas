@@ -91,8 +91,8 @@ interface Classified {
 function inertGlobs(globs: readonly string[], changed: string[]): string[] | undefined {
   // A built-in path cannot make a configured glob count as having bitten: if the only changed path
   // a glob names is one the shipped rule already reverts, the project's rule said nothing of its
-  // own, and that is exactly the rot this list exists to expose. The built-ins are filtered out of
-  // the evidence rather than added to the disclosure — see the note above.
+  // own, and that is exactly the rot this list exists to expose. Built-in paths are filtered out of
+  // the evidence rather than added to the disclosure.
   const itsOwn = changed.filter((rel) => !isProtectedPath(rel));
   const hits = (entry: string): boolean => itsOwn.some((rel) => protectedGlobMatches(entry, rel));
   const inert = globs.filter((entry) => !hits(entry));

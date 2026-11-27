@@ -20,11 +20,6 @@ import { type HostInput, flag, input, int } from "./entry.ts";
 
 /** The lean switches, in the list's order. */
 export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
-  // #2228 — show the BUILDER the issue prose its frozen tests were written from.
-  // `0` takes the section out of the build prompt only. The oracle seats have no
-  // switch: one renderer serves all three and the section ships on.
-  // The reader is `leanBuildIssueProseEnabled` in lean/issue-prose.ts.
-  flag("LEAN_BUILD_ISSUE_PROSE", true),
   // Default OFF, on only at `1`: a repo with neither `.pi/work.json` nor `.pi/verify-cmd`
   // gets verify tiers detected at the base (pytest, or a package.json test script) instead
   // of `ready`'s setup refusal — the refusal a host's driver fallback keys on. The shared
@@ -46,14 +41,6 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // one directory of the tree the roster scanned, sparing a duplicate whole-suite run. The reader is
   // lean/full-tier-operand-switch.ts; the comparison is lean/verify-suite-command.ts.
   flag("LEAN_FULL_TIER_OPERAND", true),
-  // #2279 — the handback's four origin reads (`ls-remote` for the record's head, the held
-  // head, and the branch/keeping-ref pair that decide success) go through the driver's
-  // network-git wrapper: non-interactive env, process-group kill, bounded wait. `0` puts
-  // every one of them back on the executor in its pre-fix shape — caller's env, no group
-  // kill — for an origin that needs an interactive credential helper. The reader is
-  // `leanHandbackNetGitEnabled` in lean/handback-net-git-switch.ts; the push's argv is
-  // not in scope — its `--atomic` and its unforced lease-bound refspec ship with the rule.
-  flag("LEAN_HANDBACK_NET_GIT", true),
   // The share of the cell budget the steps BEFORE the first verify may spend together. The
   // number is a whole percent, 0 to 100, and the shipped default is 40; `0` is the ONLY off
   // value — the rule short-circuits there, so it puts the pair back on its per-child ceilings
