@@ -51,7 +51,7 @@ import type { ArmedPair } from "./lib/lean-step-bound-arms.ts";
 import { armBudget, budgetTrio } from "../src/lean/step-budget.ts";
 import { childBoundGraceMs, childBoundSchedule } from "../src/spawn-child-bound.ts";
 import { withEnv } from "./lib/env-scope.ts";
-import { put } from "./lib/lean-build-artifacts.ts";
+import { put } from "./lib/lean-build-git.ts";
 import { configWithRunner } from "./lib/lean-build-asserts.ts";
 import { git, runBuild } from "./lib/lean-build-fixture.ts";
 import {

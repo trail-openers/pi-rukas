@@ -66,10 +66,10 @@
  * run's cause would read `no transition for review + "budget"`.
  */
 import { truncatedFixerOutputTokens } from "../fixer-truncation.ts";
+import { frozenFromLog } from "../lean-log.ts";
 import { armsStepBudget, stepDispatchArms } from "../lean-step-bound.ts";
 import { isCarried } from "../lens-review-types.ts";
 import { traceWarn } from "../trace.ts";
-import { frozenFromLog } from "./build.ts";
 import { protectedPathsOf } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { acceptanceSection, assertHeadIsVerified } from "./review-acceptance.ts";

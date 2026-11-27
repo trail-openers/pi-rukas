@@ -48,7 +48,7 @@ import {
 } from "./lib/lean-request-stall-fixture.ts";
 import { runBuild } from "./lib/lean-build-fixture.ts";
 import type { QuietTickReport } from "./lib/lean-quiet-child-tick.ts";
-import { put } from "./lib/lean-build-artifacts.ts";
+import { put } from "./lib/lean-build-git.ts";
 import { configWithRunner } from "./lib/lean-build-asserts.ts";
 import { defaultConfig } from "../src/lean/config.ts";
 import { mkdtempSync, rmSync } from "node:fs";

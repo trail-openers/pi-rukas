@@ -43,10 +43,9 @@ import { PassThrough } from "node:stream";
 import {
   type ContinuationOutcome,
   continuationChildArgs,
-  continuationReplyText,
-  lastAgentEndFinalTurn,
   spawnDeveloperContinuationChild,
 } from "../src/developer-session-continuation.ts";
+import { continuationReplyText, lastAgentEndFinalTurn } from "../src/continuation-stream.ts";
 import { continuationBoundMs } from "../src/fixer-truncation.ts";
 import { KILL_GRACE_MS } from "../src/spawn-kill.ts";
 import { FIX_BOUND_MS } from "../src/lean/review.ts";

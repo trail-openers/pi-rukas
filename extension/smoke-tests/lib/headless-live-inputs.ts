@@ -22,22 +22,23 @@ import { adversarialVerdictReaskEnabled } from "../../src/adversarial-verdict-re
 import { childCodemodeEnabled, childCodemodeWorkersEnv } from "../../src/child-codemode.ts";
 import { commentRetentionEnabled } from "../../src/comment-retention.ts";
 import { COMMENT_RETENTION_PATHS } from "../../src/comment-retention.ts";
+import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { forgeReadOffGuardEnabled } from "../../src/forge-read-off-switch.ts";
 import { glabMrCreateArgvEnabled } from "../../src/gl-mr-create-switch.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
-import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.ts";
-import { leanPreVerifySharePercent } from "../../src/lean/pre-verify-share-switch.ts";
-import { leanDetectVerifyEnabled } from "../../src/lean/config-detect.ts";
-import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { leanStepDeadlineBoundEnabled } from "../../src/lean-step-deadline-bound-switch.ts";
-import { leanSpecifyGapHandbackEnabled } from "../../src/lean/specify-gap-switch.ts";
-import { leanPrefixHeadEnabled } from "../../src/lean/review-log.ts";
+// #2661 — a wasted build turn's one re-ask. Its truth table is pinned by
+// test-lean-build-reask-pure.ts, its dispatch arms by test-lean-build-reask.ts and its off-arm
+// byte-identity by test-lean-build-reask-off-arm.ts.
+import { leanBuildReaskEnabled } from "../../src/build-reask.ts";
+import { leanDetectVerifyEnabled } from "../../src/lean/config-detect.ts";
 import { leanFullTierOperandEnabled } from "../../src/lean/full-tier-operand-switch.ts";
+import { leanPreVerifySharePercent } from "../../src/lean/pre-verify-share-switch.ts";
 import { leanPreflightProbeContainEnabled } from "../../src/lean/preflight-probe-switch.ts";
-// #2644 — the bound on ONE model request inside a lean step; the reader sits at `src/`'s top level
-// because the lever is spawn policy, not engine state.
-import { leanRequestStallEnabled } from "../../src/request-stall-policy.ts";
+import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.ts";
+import { leanPrefixHeadEnabled } from "../../src/lean/review-log.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
+import { leanSpecifyGapHandbackEnabled } from "../../src/lean/specify-gap-switch.ts";
 import { leanSpecifyReaskEnabled } from "../../src/lean/specify-reask.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../../src/lens-evidence.ts";
 import { lensLargeDiffEnabled } from "../../src/lens-large-diff-switch.ts";
@@ -47,6 +48,9 @@ import { loopDetectorEnabled } from "../../src/loop-detector.ts";
 import { roundCapMergeEnabled } from "../../src/merge-guard-round-cap.ts";
 import { pendingShutdownBoundMs } from "../../src/pending-jobs-signal.ts";
 import { planCacheTtlMs } from "../../src/plan-investigation-cache.ts";
+// #2644 — the bound on ONE model request inside a lean step; the reader sits at `src/`'s top level
+// because the lever is spawn policy, not engine state.
+import { leanRequestStallEnabled } from "../../src/request-stall-policy.ts";
 import {
   developerBashBoundSeconds,
   reviewBashBoundSeconds,
@@ -63,7 +67,6 @@ import {
   lensChildBoundMs,
   settledReapMs,
 } from "../../src/spawn-child-bound.ts";
-import { exploreReaskBoundMs } from "../../src/work-driver-explore-reask.ts";
 import { spawnCap } from "../../src/spawn-semaphore.ts";
 import {
   inactivityTimeoutMs,
@@ -71,10 +74,12 @@ import {
   toolInactivityTimeoutMs,
 } from "../../src/spawn-support.ts";
 import { capKillGraceMs } from "../../src/spawn-token-budget.ts";
+import { changedPathRulesEnabled } from "../../src/verify-select-changed-paths-switch.ts";
 import { acceptanceCoverageEnabled } from "../../src/work-driver-acceptance-coverage.ts";
 import { integrationVerifyTimeoutMs } from "../../src/work-driver-commit-title.ts";
 import { convergeGateEnabled } from "../../src/work-driver-converge.ts";
 import { protectedPathsEnabled } from "../../src/work-driver-doctrine.ts";
+import { exploreReaskBoundMs } from "../../src/work-driver-explore-reask.ts";
 import { transientRetryEnabled } from "../../src/work-driver-failure-taxonomy.ts";
 import {
   burstThresholdSeconds,
@@ -104,15 +109,14 @@ import { resumeEnabled, sessionReattachEnabled } from "../../src/work-driver-res
 import { stepNoticeThresholdMs } from "../../src/work-driver-step-notice.ts";
 import { timeoutFlagPrecedenceEnabled } from "../../src/work-driver-timeout-flag-precedence-switch.ts";
 import { verifyTimeoutMs } from "../../src/work-driver-verify-budget.ts";
-import { verifyHeartbeatMs } from "../../src/work-driver-verify-heartbeat.ts";
 import { verifyPytestDisabled } from "../../src/work-driver-verify-cmd.ts";
 import { verifyCommandCriteriaEnabled } from "../../src/work-driver-verify-develop-command-criteria.ts";
-import { changedPathRulesEnabled } from "../../src/verify-select-changed-paths-switch.ts";
 import { testDeleteTolerance } from "../../src/work-driver-verify-develop-helpers.ts";
 import {
   verifyProvenanceEnabled,
   verifyProvenanceProseEnabled,
 } from "../../src/work-driver-verify-develop-provenance.ts";
+import { verifyHeartbeatMs } from "../../src/work-driver-verify-heartbeat.ts";
 import { queueOrderingEnabled } from "../../src/work-queue-scheduler.ts";
 import { queueDeferCapMs, queueHaltOnFailure } from "../../src/work-queue.ts";
 import { tierDefaultReader } from "./verify-tier-pin.ts";
@@ -222,6 +226,7 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LEAN_PRE_VERIFY_SHARE", leanPreVerifySharePercent],
   ["PI_ENSEMBLE_LEAN_PROJECT_ROSTER", leanProjectRosterEnabled],
   ["PI_ENSEMBLE_LEAN_FIXER_TRUNCATION_REASK", leanFixerTruncationReaskEnabled],
+  ["PI_ENSEMBLE_LEAN_BUILD_REASK", leanBuildReaskEnabled],
   // The full-tier skip's trailing operand. The reader is `v !== "0"`, so the gate's LIVE loop (env
   // deleted) pins "unset means on"; the arms, the off-arm golden and the docs row are pinned by
   // test-2633-full-tier-relative-operand.ts.

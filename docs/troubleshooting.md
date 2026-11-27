@@ -86,6 +86,33 @@ plain arm, the handoff names the findings that bought the wave — if a finding 
 inside the issue's scope, that is an issue-body correction (`gh issue edit <n> --body-file`), and the
 run is restarted rather than resumed.
 
+### Symptom: a lean run ends `build` as `exhausted: the developer produced no change` after a full-priced child
+
+**Symptom:** a lean run pays for a whole `build` child — minutes of wall clock, tens of thousands of
+output tokens — and the step ends `exhausted: the developer produced no change`, with nothing
+committed and no blocked report filed. The transcript for that child (`~/.pi/agent/ensemble-runs/
+<date>/`) ends in the middle of a sentence, or after one short paragraph, and contains no tool call.
+
+**Cause:** the child spent its turn reasoning and never acted. Two shapes reach this verdict: its last
+recorded turn hit the provider's output-token limit (`stopReason: "length"`) before it emitted a tool
+call, or it answered one clean turn with no tool call at all, so the change fold had nothing to commit.
+Neither is the no-work retry's to catch — that arm needs a child that DIED, and a child cut at its
+output cap reports success. The step's own re-ask recognises both: it gives that session one more turn,
+in the same tree behind the same fence, through the same seam the review fixer uses. So a reason that
+carries **`— its last turn hit the output-token limit (<n> tokens) before any tool call, and one
+continuation changed nothing`** says the ask was spent and the model still produced nothing.
+
+**Fix:** the output ceiling is the model's and its provider configuration's, and this harness never
+raises it — no `budgets.build` row and no bound has any effect on it. The clause's token count is the
+child's own recorded output, which is what distinguishes a provider cap from an early stop; a bare
+reason with no clause means the child answered one turn and declined to edit, and its transcript says
+whether it read the issue at all (a builder that read the issue and refused every acceptance criterion
+files `report_blocked` instead, so a silent decline usually means it never got that far — check the
+issue body). Narrowing the issue's scope is the useful move: a builder handed a whole feature in one
+turn is the shape that runs out of output. To take the re-ask out — every arm back to the bytes this
+build wrote before it existed, reason included — set `PI_ENSEMBLE_LEAN_BUILD_REASK=0`; each cost row
+still records its own final stop reason either way, so the step record keeps showing a cut child.
+
 ### Symptom: a lean run hands back with `frozen contract defective: <cmd> fails on frozen file <path>`
 
 **Symptom:** a lean run's `verify` step ends it as `handler error at verify: frozen

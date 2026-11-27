@@ -41,8 +41,13 @@ import {
   type QuietTickReport,
   deliverQuietTick,
 } from "./lean-quiet-child-tick.ts";
-// The git contract lives in `lean-build-git.ts`; re-exported so a case imports one module.
-export { git, gitEnvFor } from "./lean-build-git.ts";
+// The git contract and the bytes a child leaves live in `lean-build-git.ts`, the bottom of the
+// fixture family's dependency order; the re-export names them, so a case imports one module.
+import { type ReaskOpts, dispatchActs } from "./lean-build-reask-fixture.ts";
+import { git, gitEnv, headOf, putCommitted } from "./lean-build-git.ts";
+export {
+  childCommit, git, gitEnvFor, hardlinkFromOutside, put, putCommitted, putOutside, symlink,
+} from "./lean-build-git.ts";
 import {
   type ClockOpts,
   type DispatchResultOverride,
@@ -50,7 +55,6 @@ import {
   resultOverride,
 } from "./lean-build-artifacts.ts";
 import { configWithRunner, issueBodyReader } from "./lean-build-asserts.ts";
-import { git, gitEnv } from "./lean-build-git.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -266,20 +270,7 @@ function shaAll(entries: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, sha(v)]));
 }
 
-// `reRunStub` is the fixture's executor, with the blocked gate's re-run seam
-// beside the artifact writers it drives; the four writers are re-exported for
-// every fixture and case that imported them from here before the 500-line split.
-import { execObserver, headOf, putCommitted, reRunStub } from "./lean-build-artifacts.ts";
-
-export {
-  childCommit,
-  hardlinkFromOutside,
-  headOf,
-  put,
-  putCommitted,
-  putOutside,
-  symlink,
-} from "./lean-build-artifacts.ts";
+import { execObserver, reRunStub } from "./lean-build-artifacts.ts"; // the blocked gate's re-run seam
 
 export interface RunResult {
   outcome?: Outcome;
@@ -372,6 +363,12 @@ export interface RunOpts {
   clock?: ClockOpts;
   buildStartedAt?: number; // #2660 — the start the deadline's bound measures from
   armedOpts?: ArmedOptsSink; // #2660 — the arms each dispatch was handed, in order
+  reask?: ReaskOpts; // #2661 the seam the case answers + per-child acts
+  // The resumed-child seam, in the slot `buildDeps()` fills, and the run's mode as `command.ts`
+  // threads it (#2661). Not inside `reask.deps`: that bag is applied last and would overwrite a leaf
+  // a case asked to judge. An absent `headless` is an interactive run, what a quiet case expects.
+  continueSession?: BuildDeps["continueSession"];
+  headless?: boolean;
 }
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
@@ -415,7 +412,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     prompts.push(spec.prompt);
     extraArgs.push(o.extraArgs ?? []);
     opts.onProgressTick?.(o.onProgress);
-    if (!childActed) opts.child?.((childActed = true) && (spec.cwd as string));
+    childActed = dispatchActs(opts.reask, opts.child, dispatched, childActed, spec, built);
     recordArmedOpts(opts.armedOpts, o); // #2660 — the arms as the seam received them
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
@@ -449,19 +446,19 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     },
     ...(opts.captureCeiling === undefined ? {} : { captureCeiling: opts.captureCeiling }),
     ...(opts.blockedTimeoutMs === undefined ? {} : { blockedTimeoutMs: opts.blockedTimeoutMs }),
+    ...(opts.continueSession === undefined ? {} : { continueSession: opts.continueSession }), // #2661 the leaf the case chose to keep
+    ...(opts.reask?.deps ?? {}), // #2661 the case's seams, LAST
   };
   const deps: BuildDeps = {
     ...inner,
     ...(opts.afterDispatch === undefined
       ? {}
       : {
-          // The gate runs its re-runs before it looks at any git state, so firing
-          // the hook on the first NON-git exec lands it in that instant without a
-          // production seam invented for the test. It fires ONCE: a case plants a
-          // tree change for the gate to judge, and re-planting it on every later
-          // runner would make the tree depend on how many files the gate happened
-          // to execute. git calls are skipped — the step's own `clean -fdx` runs
-          // later, and planting before it would let normalisation delete the file.
+          // The gate re-runs its files before it reads any git state, so firing the hook on the
+          // first NON-git exec lands it in that instant with no production seam invented for the
+          // test. It fires ONCE: a case plants a tree change for the gate to judge, and re-planting
+          // it per runner would make the tree depend on how many files the gate happened to run.
+          // git calls are skipped — the step's own `clean -fdx` runs later and would delete it.
           exec: async (cmd, o) => {
             if (cmd !== "git" && !planted) {
               planted = true;
@@ -486,7 +483,8 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   });
   try {
     const { buildOutcome } = await import("../../src/lean/build.ts");
-    const outcome = await buildOutcome(built.ctx, deps);
+    // Required: the step's own stamp of its children and of the continuation it starts (#2661).
+    const outcome = await buildOutcome(built.ctx, deps, opts.headless ?? false);
     // `threw` is added per return, AFTER the `finish()` spread, so it is never shadowed.
     return { outcome, ...finish(), threw: undefined };
   } catch (err) {

@@ -36,21 +36,38 @@
  * The re-entry context comes from the log too, clipped to 4 KB.
  */
 import { existsSync } from "node:fs";
+import { askBuildReask } from "../build-reask-child.ts";
+import {
+  BUILD_REASK_BOUND_MS,
+  buildReaskClause,
+  buildReaskPrompt,
+  buildTurnWasWasted,
+} from "../build-reask.ts";
+import { spawnDeveloperContinuationChild } from "../developer-session-continuation.ts";
+import type { DeveloperContinuationFn } from "../developer-session-continuation.ts";
 import { execp } from "../exec.ts";
+import { continuationBoundMs, continuationRow } from "../fixer-truncation.ts";
+import {
+  addedByChallengeFromLog,
+  budgetStopFromLog,
+  frozenFromLog,
+  reentryFromLog,
+  testsFromLog,
+} from "../lean-log.ts";
 import { armsStepBudget, stepDispatchArms, stopReasonClause } from "../lean-step-bound.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
-import type { DispatchSpec } from "../types.ts";
+import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { foldStoppedBuild, judgeBlockedReport } from "./build-blocked.ts";
-import { dispatchBuilder } from "./build-dispatch.ts";
+import { buildWriteFence, dispatchBuilder } from "./build-dispatch.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
 import { budgetFoldAccumulator, failingClause, foldClauses, keptClause } from "./build-reasons.ts";
-import type { BuildDispatch, BuildExec } from "./build-types.ts";
+import type { BuildDispatch, BuildExec, NormaliseReport } from "./build-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import { type WorkConfig, loadWorkConfig, protectedPathsOf } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
@@ -61,9 +78,10 @@ import { rereadSpec } from "./spec-for.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { Outcome, Step } from "./state.ts";
-import type { DispatchUsageRow } from "./step-budget.ts";
 import {
+  type BudgetArms,
   type BudgetOpts,
+  type DispatchUsageRow,
   armBudget,
   budgetFor,
   budgetSentence,
@@ -71,10 +89,6 @@ import {
   readDispatched,
 } from "./step-budget.ts";
 import { joinNotes } from "./text-fence.ts";
-import { RED_REASON_CLIP, clipReason } from "./verify-deps.ts";
-
-/** How many names one reason line lists, and how many the fold re-runs. */
-const LIST_CLIP = 20;
 
 export interface BuildDeps {
   exec: BuildExec;
@@ -86,98 +100,20 @@ export interface BuildDeps {
   /** The bound on the driver's re-runs of a frozen test — the blocked report's loop
    * and the stopped build's sweep alike. A test shortens it to watch a hang. */
   blockedTimeoutMs?: number;
-}
-
-/** Is this step one that froze tests: a decided `specify:ok` or `challenge:new-tests`. */
-function frozeTests(step: Step): boolean {
-  return (
-    (step.state === "specify" && step.outcome?.kind === "ok") ||
-    (step.state === "challenge" && step.outcome?.kind === "new-tests")
-  );
-}
-
-/** The step log's frozen map: every `specify:ok` / `challenge:new-tests`, in order. */
-export function frozenFromLog(steps: Step[]): Record<string, string> {
-  const frozen: Record<string, string> = {};
-  for (const step of steps.filter(frozeTests))
-    for (const [rel, sha] of Object.entries(step.outcome?.frozen ?? {})) frozen[rel] = sha;
-  return frozen;
-}
-
-/**
- * The criterion -> tests map, unioned over every step that recorded one. The
- * run-level file quota seeds from here: `MAX_TEST_FILES_PER_CRITERION` bounds what
- * a criterion ENDS UP WITH across the run, and only this map knows what an earlier
- * round already froze for it.
- */
-export function testsFromLog(steps: Step[]): Record<string, string[]> {
-  const tests: Record<string, string[]> = {};
-  for (const step of steps.filter(frozeTests)) {
-    for (const [id, files] of Object.entries(step.outcome?.tests ?? {})) {
-      const seen = new Set(tests[id] ?? []);
-      for (const f of files) seen.add(f);
-      tests[id] = [...seen];
-    }
-  }
-  return tests;
-}
-
-/** The newest decided `state` + `kind` step's reason, clipped for a prompt. */
-function reasonFromLog(
-  steps: Step[],
-  state: "verify" | "ci" | "build",
-  kind: "red" | "budget",
-): string | undefined {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const oc = steps[i]?.state === state ? steps[i]?.outcome : undefined;
-    if (oc?.kind !== kind) continue;
-    const reason = oc.reason ?? oc.message;
-    if (typeof reason !== "string" || reason.trim() === "") continue;
-    return clipReason(reason);
-  }
-  return undefined;
-}
-
-/**
- * Why this round exists, in the gate's own words: the newest decided `verify:red`,
- * else the newest `ci:red`, clipped. A round that came back from added tests is
- * told by {@link addedByChallengeFromLog} instead.
- */
-export function reentryFromLog(steps: Step[]): string | undefined {
-  return reasonFromLog(steps, "verify", "red") ?? reasonFromLog(steps, "ci", "red");
-}
-
-/**
- * What stopped the PREVIOUS attempt and what still fails: the newest decided
- * `build:budget` reason, which that step composed from its ceiling and the files
- * it re-ran red. No gate judged a killed builder, so `reentryFromLog` is silent
- * and a child told only "the last round stopped" re-derives the feature.
- */
-function budgetStopFromLog(steps: Step[]): string | undefined {
-  return reasonFromLog(steps, "build", "budget");
-}
-
-/**
- * What the adversary added, in the builder's own brief: the frozen paths of the
- * newest decided `challenge:new-tests` step. No gate judged them — the adversary
- * only made the contract bigger — so they are named rather than quoted.
- */
-function addedByChallengeFromLog(steps: Step[]): string | undefined {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i];
-    if (step?.state !== "challenge" || step.outcome?.kind !== "new-tests") continue;
-    const paths = Object.keys(step.outcome.frozen ?? {});
-    if (paths.length === 0) continue;
-    const kept = paths.slice(0, LIST_CLIP).map((p) => `- \`${p}\``);
-    const more = paths.length > LIST_CLIP ? `\n- …and ${paths.length - LIST_CLIP} more` : "";
-    const line = `the adversary's challenge round added these frozen tests:\n${kept.join("\n")}${more}`;
-    return line.length > RED_REASON_CLIP ? `${line.slice(0, RED_REASON_CLIP)}…` : line;
-  }
-  return undefined;
+  /** The resumed-child seam a wasted build turn gets ONE ask through (see `askBuildReask`);
+   * production is `spawnDeveloperContinuationChild`, the same seam the review fixer's wave uses. */
+  continueSession?: DeveloperContinuationFn;
 }
 
 /** The `build` step. Returns `ok` | `exhausted` | `blocked`; THROWS on infrastructure. */
-export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Outcome> {
+export async function buildOutcome(
+  ctx: HandlerCtx,
+  deps: BuildDeps,
+  /** The run's permission stamp, REQUIRED so a caller that owns the mode cannot drop it by omission:
+   *  it stamps both this step's children and the continuation it starts. A dropped stamp is the
+   *  permission-denied second turn `leanChildOpts` exists to prevent. */
+  headless: boolean,
+): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
 
   // 1. The contract, out of the run's own record.
@@ -285,14 +221,26 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   // A child that did no work gets its one free re-dispatch of this visit: it
   // bought nothing, so it bills no round and advances no `tries`.
   let noWorkRetryUsed = false;
+  // The dispatch's own builder, so the continuation gets no wider fence than the child it resumes.
+  const fence = buildWriteFence(wt, repoRoot, issue);
   // Why the first no-work child died, kept for the throw the second one may make.
   let firstNoWorkWhy: string | undefined;
+  // The config row the arms are built from, read once: the loop and the ask both arm from this read.
+  const buildRow = budgetFor(config, "build");
+  const buildRowMs = (buildRow?.minutes ?? 0) * 60_000;
+  // The child the re-ask detector reads: the last one the loop broke on, read once after the fold.
+  let lastChildResult: DispatchResult | undefined;
+  // The arms that child was bought with, kept for the detector's `budgetFired` read after the break.
+  let lastBudget: BudgetArms | undefined;
+  const budgetFired = (): boolean =>
+    lastChildResult !== undefined && lastBudget?.fired(lastChildResult) !== undefined;
   for (let tries = 0; ; tries++) {
     const budget = armsStepBudget(
-      budgetFor(config, "build"),
+      buildRow,
       // #2660: both levers from one read of the step log.
-      stepDispatchArms(ctx, (budgetFor(config, "build")?.minutes ?? 0) * 60_000, "build"),
+      stepDispatchArms(ctx, buildRowMs, "build"),
     );
+    lastBudget = budget;
     if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
     const [dispatchedChild, row] = await dispatchBuilder(deps.dispatch, {
       issue,
@@ -341,6 +289,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     const read = readDispatched(dispatchedChild);
     if (!("stop" in read)) {
       toolUses = read.result.toolUses ?? [];
+      lastChildResult = read.result;
       break;
     }
     // Its own ceiling stopped it: fold the work into this attempt's commit and
@@ -368,7 +317,7 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       reason: joinNotes([
         budgetSentence("build", read.stop),
         // Which ceiling ended the child, in the deadline's own words when it was the deadline.
-        stopReasonClause(ctx, "build", (budgetFor(config, "build")?.minutes ?? 0) * 60_000) ?? "",
+        stopReasonClause(ctx, "build", buildRowMs) ?? "",
         ...(atCap ? [`after ${String(dispatchedBefore + tries + 1)} build attempts`] : []),
         failingClause(failing),
         keptClause(kept.files),
@@ -383,6 +332,10 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   // 4b. The child's own "these cannot all pass together", if it made one: a CLAIM,
   //     honoured only once the driver ran the named frozen tests on its tree and saw
   //     one come back red. An ignored report traces a line and records nothing.
+  //
+  //     A wasted turn is asked for its continuation FIRST, and the claim the cut-off turn
+  //     filed is judged exactly as today: the seam loads no `report_blocked` companion, so
+  //     the first turn's report stands and the continuation cannot file one.
   const blocked = await judgeBlockedReport({
     exec: deps.exec,
     wt,
@@ -402,17 +355,92 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
     };
   }
 
-  // 5 + 6. Capture, reset, rewrite, commit — or say there was nothing to commit.
+  // 5 + 6. Capture, reset, rewrite, commit — or ask the cut turn for one more turn first.
   const report = await normaliseBuild({
     ...fold(label),
     budget: new CaptureBudget(deps.captureCeiling),
   });
-  if (report.files.length === 0)
-    return {
-      kind: "exhausted",
-      reason: joinNotes(["the developer produced no change", waitNote()]),
-      dispatches: rows,
-    };
+  // A turn that made NO tool call and left no change is not a builder that declined to edit: it hit
+  // the output cap mid-reasoning, or answered one clean turn without acting. Both get the fixer's ONE
+  // continuation, judged AFTER the fold ("no change" is the fold's answer, not a child field) and
+  // before the verdict. `tries` and `noWorkRetryUsed` are untouched; the ask is one-shot by being
+  // asked once here. `budgetFired` is read off the arms that child was bought with — `dispatchBuilder`
+  // consults `budget.fired(result)` on EVERY child (turns, tokens, stall and the deadline-derived
+  // minutes lever alike) and a breach returns a BudgetStop that this loop folds and returns or retries,
+  // so the single `break` is the only edge reaching here and no fired ceiling can (case (2b)).
+  const noChange = report.files.length === 0;
+  // `undefined` when no real result was ever read: fields this visit never saw are not facts to
+  // fabricate into a CHILD record.
+  // The budget arm is the REAL read, not a swallowed constant: `buildTurnWasWasted` refuses an ask
+  // whenever a ceiling had already fired, and `armsStepBudget` freezes that breach on the child's own
+  // record, so the arms that child was bought with answer it here.
+  const wasted =
+    lastChildResult !== undefined && noChange
+      ? buildTurnWasWasted(lastChildResult, { budgetFired: budgetFired(), noChange })
+      : undefined;
+  // `undefined` covers the un-wasted arm and every refusal, all of them before a child was paid for.
+  const asked =
+    wasted?.wasted === true && lastChildResult !== undefined
+      ? await askBuildReask(deps.continueSession, {
+          child: lastChildResult,
+          trigger: wasted.trigger,
+          issue,
+          worktree: wt,
+          writeFence: fence,
+          // The bound is armed AT THE ASK INSTANT, with the same call a dispatch arms with: the room
+          // is what the deadline leaves NOW, not what it left when the last child was bought. A
+          // provider wait or a no-work retry sits between that arm and this ask, and an arms object
+          // frozen before them both is a bound measured in the past — the overrun #2660 was filed
+          // for, one site later. The child this reaches (`developer-session-continuation.ts`) runs a
+          // bare timer with NO grace phase, so bound + no grace means the kill lands AT the bound:
+          // a bound clamped to deadline minus the allowance kills before the line, with room left.
+          boundMs: continuationBoundMs(
+            armsStepBudget(buildRow, stepDispatchArms(ctx, buildRowMs, "build")),
+            BUILD_REASK_BOUND_MS,
+          ),
+          prompt: buildReaskPrompt(issue, wasted.trigger),
+          rowFor: (outcome, role) => continuationRow(outcome, role, undefined),
+          // The run's stamp, from the function that decides it — not re-derived here.
+          ...leanChildOpts(headless),
+        })
+      : undefined;
+  if (asked !== undefined) {
+    rows.push(asked.row);
+    // A fold that throws is infrastructure the FIRST fold never saw: the verdict that fold earned
+    // stands, so this one's failure falls through rather than replacing it.
+    let again: NormaliseReport | undefined;
+    try {
+      again = await normaliseBuild({
+        ...fold(label),
+        budget: new CaptureBudget(deps.captureCeiling),
+      });
+    } catch {
+      again = undefined;
+    }
+    if (again !== undefined && again.files.length > 0) return okVerdict(again, rows, waitNote);
+  }
+  if (!noChange) return okVerdict(report, rows, waitNote);
+  return {
+    kind: "exhausted",
+    reason: joinNotes([
+      "the developer produced no change",
+      waitNote(),
+      // ONE short clause, LAST, and only when the ask was spent: the head and the wait note keep
+      // their bytes for every arm that never asked, which the existing literals pin.
+      asked !== undefined && wasted !== undefined && wasted.wasted
+        ? buildReaskClause(wasted.trigger, wasted.outputTokens)
+        : "",
+    ]),
+    dispatches: rows,
+  };
+}
+
+/** The verdict for a visit whose tree holds a change: one `ok` with the fold's account. */
+function okVerdict(
+  report: NormaliseReport,
+  rows: DispatchUsageRow[],
+  waitNote: () => string,
+): Outcome {
   return {
     kind: "ok",
     reason: joinNotes([
@@ -453,5 +481,8 @@ export function buildDeps(headless: boolean): BuildDeps {
       }),
     fetchIssueBody,
     loadConfig: (repoRoot, baseSha) => loadWorkConfig(execp, repoRoot, baseSha),
+    // The same resumed-child seam the review fixer's wave asks through: the build seat's cut turn is
+    // the same child shape with the same roster, fence and tree.
+    continueSession: spawnDeveloperContinuationChild,
   };
 }

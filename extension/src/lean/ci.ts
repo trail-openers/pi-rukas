@@ -29,7 +29,7 @@
  * against the newest decided `verify`'s `verifiedHead`, HEAD must still sit on the
  * run's branch, and the tree must pass lean's clean-tree gate (`assertTreeClean`).
  */
-import { testsFromLog } from "./build.ts";
+import { testsFromLog } from "../lean-log.ts";
 import type { CiDeps } from "./ci-deps.ts";
 import { CI_FULL_TIER, fullTierExcuse } from "./ci-excuse.ts";
 import type { GlForge } from "./ci-forge-gl.ts";

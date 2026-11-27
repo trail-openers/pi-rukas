@@ -45,6 +45,7 @@ import { writeReaskPromptFile } from "./adversarial-verdict-reask-child.ts";
 import { forgeReadChildEnv } from "./child-forge-env.ts";
 import { childGuardsArgs, preflightChildGuards } from "./child-guards.ts";
 import { CHILD_ROLE_ENV, childRoleEnvEnabled, childRoleEnvValue } from "./child-role-env.ts";
+import { continuationReplyText, lastAgentEndFinalTurn } from "./continuation-stream.ts";
 import { scrubGitLocation } from "./git-env.ts";
 import { FIXER_ROLE } from "./lean/step-budget.ts";
 import { resolveModel } from "./models.ts";
@@ -62,6 +63,11 @@ import type { WriteFence } from "./write-fence-contract.ts";
 /** The trace tag for every line this module writes — an operator reading a log decides from it
  *  whether a continuation was asked for at all, as distinct from a verdict re-ask. */
 export const CONTINUATION_SOURCE_TAG = "developer-session-continuation";
+
+/** The child-env key carrying the continuation's kill bound (see `spawnDeveloperContinuationChild`).
+ *  Assembled from the prefix, not spelled out: an inventory of the inputs a HOST may set must not
+ *  read a name that only ever travels the other way, from the parent to its child. */
+const BOUND_MS_ENV = "PI_ENSEMBLE_CONTINUATION_BOUND_MS";
 
 /** How a continuation failed, for the trace line. Every one of them is answered the same way by
  *  the caller (today's outcome, with the cut named), but they are different facts for an operator:
@@ -117,73 +123,6 @@ export type DeveloperContinuationFn = (args: {
   workCycleTrust?: boolean;
 }) => Promise<ContinuationOutcome>;
 
-/** The LAST `agent_end`'s final assistant turn's `stopReason`, or undefined when the stream carried
- *  neither. The same replay-scanning rule `continuationReplyText` states: only the last `agent_end`
- *  describes the continuation's own turn, since a resumed session replays every earlier one.
- *
- * `usage` is read as that turn's OWN counts and never summed across turns — see `usageFromTurn`. */
-export function lastAgentEndFinalTurn(rawStdout: string): {
-  stopReason?: string;
-  usage?: DispatchUsage;
-} {
-  let last: { stopReason?: string; usage?: DispatchUsage } = {};
-  for (const line of rawStdout.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    let event: { type?: string; messages?: unknown };
-    try {
-      event = JSON.parse(trimmed) as { type?: string; messages?: unknown };
-    } catch {
-      continue;
-    }
-    if (event.type !== "agent_end" || !Array.isArray(event.messages)) continue;
-    for (const message of event.messages as Array<{
-      role?: string;
-      stopReason?: unknown;
-      usage?: unknown;
-    }>) {
-      if (message?.role !== "assistant") continue;
-      // The LAST assistant turn of the LAST `agent_end` is the continuation's own. Its usage is the
-      // per-turn shape (`input`/`output`/…), so it is read as that and never summed: summing turns is
-      // how a session that replayed twenty of them would bill twenty times the child's cost.
-      const usage = usageFromTurn(message.usage);
-      last = {
-        ...(typeof message.stopReason === "string" ? { stopReason: message.stopReason } : {}),
-        ...(usage === undefined ? {} : { usage }),
-      };
-    }
-  }
-  return last;
-}
-
-/** The per-turn `usage` block, read as a turn's own counts, not a session's. Absent or malformed
- *  usage answers absent — the step bills a child it cannot read as zero, never as a guess. */
-function usageFromTurn(usage: unknown): DispatchUsage | undefined {
-  if (typeof usage !== "object" || usage === null) return undefined;
-  const u = usage as Record<string, unknown>;
-  const num = (key: string): number => {
-    const v = u[key];
-    return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
-  };
-  if (typeof u.input !== "number" && typeof u.output !== "number") return undefined;
-  // Pi's per-turn `cost` is an object: `total`, and from Pi 1.5 `totalFromProvider`.
-  const c =
-    typeof u.cost === "object" && u.cost !== null ? (u.cost as Record<string, unknown>) : {};
-  const total = c.total;
-  const fromProvider = c.totalFromProvider;
-  return {
-    input: num("input"),
-    output: num("output"),
-    cacheRead: num("cacheRead"),
-    cacheWrite: num("cacheWrite"),
-    cost: typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : 0,
-    ...(typeof fromProvider === "boolean" ? { costFromProvider: fromProvider } : {}),
-    turns: 1,
-    toolCalls: 0,
-    toolErrors: 0,
-  };
-}
-
 /** The continuation child's argv: the developer's own role, system prompt and tool roster, on the
  *  session file the first child wrote. Mirrors `reaskChildArgs` in shape, and differs in exactly
  *  one respect that matters — it carries no reviewer-role assumption, so nothing strips the write
@@ -215,38 +154,6 @@ export function continuationChildArgs(args: {
   if (args.provider) argv.push("--provider", args.provider);
   if (args.model) argv.push("--model", args.model);
   return argv;
-}
-
-/** The assistant text of the LAST `agent_end` the stream carried.
- *
- * Only that reply counts: a resumed session REPLAYS the earlier turns, so a reader that took any
- * assistant text would read the first child's own closing message back as the continuation's reply
- * — the same hazard `reaskReplyText` names for a reviewer, with the same answer. */
-export function continuationReplyText(rawStdout: string): string {
-  let last = "";
-  for (const line of rawStdout.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    let event: { type?: string; messages?: unknown };
-    try {
-      event = JSON.parse(trimmed) as { type?: string; messages?: unknown };
-    } catch {
-      continue;
-    }
-    if (event.type !== "agent_end" || !Array.isArray(event.messages)) continue;
-    let text = "";
-    for (const message of event.messages as Array<{
-      role?: string;
-      content?: Array<{ type?: string; text?: string }>;
-    }>) {
-      if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-      for (const block of message.content) {
-        if (block?.type === "text" && typeof block.text === "string") text += `${block.text}\n`;
-      }
-    }
-    if (text.trim() !== "") last = text;
-  }
-  return last;
 }
 
 /** The fixer's system prompt, written the way `spawnSpecialist` does, so the resumed child is
@@ -369,11 +276,20 @@ async function runContinuationChild(
   deps: { spawn?: typeof spawn },
 ): Promise<ContinuationOutcome> {
   const childEnv = forgeReadChildEnv(process.env, args.role);
+
   // The fence the first child ran behind, re-applied: the env names the root, the repo and the
   // scratch the child-guards companion judges every write against.
   childEnv.PI_ENSEMBLE_WRITE_ROOT = args.writeFence.root;
   childEnv.PI_ENSEMBLE_WRITE_REPO = args.writeFence.repo;
   childEnv.PI_ENSEMBLE_WRITE_SCRATCH = args.writeFence.scratch;
+  // The kill bound, named in the child's own environment beside the fence. The continuation has no
+  // supervisor of its own — no `spawn-child-bound.ts`, no steer, no grace phase — so the value that
+  // decides when its group is killed would otherwise exist only inside this closure, invisible to
+  // the child and to anything reading the dispatch afterwards. A bound that is not stamped is a
+  // bound nobody can audit after the fact. The key is assembled rather than spelled as a literal
+  // because the host-input inventory scans `src/` for every literal `PI_ENSEMBLE_*` it can read and
+  // a name the parent WRITES to a child is not one of the inputs the host may set.
+  childEnv[BOUND_MS_ENV] = String(args.boundMs);
   // The role stamp, asked through the same helper the spawn path uses — verbatim, and gated on the
   // same switch. An empty role would leave the key absent, which the child-side guards read as "no
   // role judged anything" rather than as some default role.

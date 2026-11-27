@@ -20,6 +20,16 @@ import { type HostInput, flag, input, int } from "./entry.ts";
 
 /** The lean switches, in the list's order. */
 export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
+  // A build child whose recorded turn ended at the model's output-token limit with no tool call — or
+  // one clean turn with no tool call and nothing for the change fold to commit — is asked for ONE more
+  // turn in its own session, through the same continuation seam the review fixer's wave uses, before
+  // the step writes `exhausted: the developer produced no change`. The detector reads the child's own
+  // recorded `stopReason`, its own tool calls and the FOLD's answer, never its prose; a kill cause, an
+  // error stop, a budget the step's ceiling already fired, any tool call, or a child whose session path
+  // is gone takes today's path. `0` restores today's behaviour byte for byte — no detection, no ask,
+  // and the exhausted reason keeps its bytes. The ask is one extra developer cost row and no bound,
+  // budget or ceiling changes. The reader is `leanBuildReaskEnabled` in build-reask.ts.
+  flag("LEAN_BUILD_REASK", true),
   // Default OFF, on only at `1`: a repo with neither `.pi/work.json` nor `.pi/verify-cmd`
   // gets verify tiers detected at the base (pytest, or a package.json test script) instead
   // of `ready`'s setup refusal — the refusal a host's driver fallback keys on. The shared

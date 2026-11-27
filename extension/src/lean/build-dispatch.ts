@@ -11,6 +11,7 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import { statReporterPath } from "../reporter-preflight.ts";
 import type { DispatchResult } from "../types.ts";
+import type { WriteFence } from "../write-fence-contract.ts";
 import { BLOCKED_REPORTER_PATH } from "./build-blocked-reporter.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { buildPrompt } from "./build-prompt.ts";
@@ -90,6 +91,22 @@ export function didNoWork(result: DispatchResult): boolean {
 }
 
 /**
+ * The build seat's write fence: the tree the child was dispatched to, the repo that owns it, and the
+ * run's scratch dir. ONE expression, exported, because the dispatch and the session continuation a
+ * wasted turn gets must be fenced to the same three paths — a hand-built copy at either site is one
+ * that can drift its `scratch` while still passing every assertion that reads `root`.
+ */
+export function buildWriteFence(wt: string, repoRoot: string, issue: number): WriteFence {
+  return {
+    root: wt,
+    repo: repoRoot,
+    // `<repoRoot>/tmp/lean-<issue>`: the worktree's parent is `.worktrees`, so one `..` from it is
+    // the repo root — the scratch dir the scratch hygiene convention names.
+    scratch: path.join(path.dirname(wt), "..", "tmp", `lean-${String(issue)}`),
+  };
+}
+
+/**
  * Dispatch one developer. A budget breach comes back as {@link BudgetStop}, a dead-but-idle child the
  * taxonomy calls transient as {@link NoWorkCrash}; every other dead child is infrastructure and throws.
  *
@@ -116,13 +133,7 @@ export async function dispatchBuilder(
   const result = await dispatch(
     { role: "developer", prompt, cwd: opts.wt },
     {
-      writeFence: {
-        root: opts.wt,
-        repo: opts.repoRoot,
-        // `<repoRoot>/tmp/lean-<issue>`: the worktree's parent is `.worktrees`, so one `..` from it is
-        // the repo root — the scratch dir the scratch hygiene convention names.
-        scratch: path.join(path.dirname(opts.wt), "..", "tmp", `lean-${opts.issue}`),
-      },
+      writeFence: buildWriteFence(opts.wt, opts.repoRoot, opts.issue),
       ...opts.budget.opts,
       extraArgs: ["--no-skills", "--extension", BLOCKED_REPORTER_PATH],
     },
