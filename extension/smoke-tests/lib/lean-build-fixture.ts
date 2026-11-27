@@ -46,14 +46,7 @@ import {
 import { type ReaskOpts, dispatchActs } from "./lean-build-reask-fixture.ts";
 import { git, gitEnv, headOf, putCommitted } from "./lean-build-git.ts";
 export {
-  childCommit,
-  git,
-  gitEnvFor,
-  hardlinkFromOutside,
-  put,
-  putCommitted,
-  putOutside,
-  symlink,
+  childCommit, git, gitEnvFor, hardlinkFromOutside, put, putCommitted, putOutside, symlink,
 } from "./lean-build-git.ts";
 import {
   type ClockOpts,
@@ -277,9 +270,7 @@ function shaAll(entries: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, sha(v)]));
 }
 
-// `reRunStub` is the fixture's executor, with the blocked gate's re-run seam beside it; the writers
-// it drives, and `headOf`, come from `lean-build-git.ts`.
-import { execObserver, reRunStub } from "./lean-build-artifacts.ts";
+import { execObserver, reRunStub } from "./lean-build-artifacts.ts"; // the blocked gate's re-run seam
 
 export interface RunResult {
   outcome?: Outcome;
@@ -373,15 +364,10 @@ export interface RunOpts {
   buildStartedAt?: number; // #2660 — the start the deadline's bound measures from
   armedOpts?: ArmedOptsSink; // #2660 — the arms each dispatch was handed, in order
   reask?: ReaskOpts; // #2661 the seam the case answers + per-child acts
-  /**
-   * THE resumed-child seam, in the same slot `buildDeps()` fills (#2661). A case that wants to judge
-   * the PRODUCTION leaf hands the production function; a case that records the call hands a spy,
-   * which it passes through `reask.deps` instead. Split from that bag because the bag's `deps` are
-   * applied last and would silently overwrite a leaf a case asked to keep.
-   */
+  // The resumed-child seam, in the slot `buildDeps()` fills, and the run's mode as `command.ts`
+  // threads it (#2661). Not inside `reask.deps`: that bag is applied last and would overwrite a leaf
+  // a case asked to judge. An absent `headless` is an interactive run, what a quiet case expects.
   continueSession?: BuildDeps["continueSession"];
-  /** The run's mode, threaded to the step exactly as `command.ts` threads it to its handler (#2661).
-   *  Absent means an interactive run, which is what every case that says nothing about it expects. */
   headless?: boolean;
 }
 
@@ -497,10 +483,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   });
   try {
     const { buildOutcome } = await import("../../src/lean/build.ts");
-    // The run's permission stamp rides with the case that asked for it and is REQUIRED by the step:
-    // `buildOutcome`'s third argument is the ONLY thing that decides whether a lean child (and the
-    // continuation it starts) is trusted, so a fixture that hardcoded `false` would leave the
-    // headless arm unexercised — and dropping the argument at all is now a compile error.
+    // Required: the step's own stamp of its children and of the continuation it starts (#2661).
     const outcome = await buildOutcome(built.ctx, deps, opts.headless ?? false);
     // `threw` is added per return, AFTER the `finish()` spread, so it is never shadowed.
     return { outcome, ...finish(), threw: undefined };

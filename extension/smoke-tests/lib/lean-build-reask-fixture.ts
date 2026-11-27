@@ -67,7 +67,11 @@ export function refused(reason: "no-session" | "unverified-role" | "spawn-failed
  */
 /** The re-ask knobs a case hands {@link runBuild} as one bag, so the plain build fixture carries
  *  none of them: what each child does in the tree, and any build dep the case replaces (the
- *  resumed-child seam a recording leaf stands in for). */
+ *  resumed-child seam a recording leaf stands in for).
+ *
+ *  The seam a case wants to KEEP (production's `spawnDeveloperContinuationChild`, when the case judges
+ *  the leaf) is set on `RunOpts.continueSession` instead of in `deps`: this bag's `deps` are applied
+ *  LAST and would silently overwrite a leaf the case asked to judge. */
 export type ReaskOpts = {
   childActs?: (n: number, wt: string) => void;
   deps?: Partial<BuildDeps>;

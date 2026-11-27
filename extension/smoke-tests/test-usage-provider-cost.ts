@@ -13,7 +13,7 @@
  * Offline and pure.
  */
 import { createUsageTally } from "../src/adversarial-usage.ts";
-import { lastAgentEndFinalTurn } from "../src/developer-session-continuation.ts";
+import { lastAgentEndFinalTurn } from "../src/continuation-stream.ts";
 import { continuationRow } from "../src/fixer-truncation.ts";
 import { buildCapabilities } from "../src/headless/capabilities.ts";
 import { validatedDispatches } from "../src/lean/state-dispatches.ts";
