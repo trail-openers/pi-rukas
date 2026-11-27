@@ -29,9 +29,11 @@ Every state in that walk has a handler. A review that fixed its head re-enters
 | `land` | driver | The one irreversible act. Refuses unless `.pi/work.json` **at the run's base** grants `autoMerge: true`, the forge's merge evidence is clean, and the PR head equals the verified head; then merges squashed through the adapter, pinned to that head, and reads the result back. `merged` or `refused`; it never throws. |
 | `handback` | driver | Ships the last verified head, then posts one issue comment saying what the run still needs and ends the run. |
 
-Three refusals sit beside the main line: `decline` posts the rules an unreadable
+Four refusals sit beside the main line: `decline` posts the rules an unreadable
 or unready spec failed and ends the run `not-ready` (a test `specify`'s own child
-could not prove red is a handback, not one of these), a `setup` refusal at `ready`
+could not prove red is a handback, not one of these), a `no-spec` refusal at `ready`
+(an issue with no `pi-spec v1` block, none derived) ends it `not-ready` posting
+nothing, a `setup` refusal at `ready`
 ends it `handed-back` naming the repository's fault and posting nothing, and any
 handler that throws ends the run `handed-back` with `handler error at <state>: …`.
 
@@ -202,7 +204,8 @@ an authored one is worth:
   is present but **malformed** — the author took a position on the contract and wrote
   it wrong, and a model quietly writing a better one would hide the defect. A
   non-blank body with no block at all is exactly what `derive` exists for: `require`
-  declines it (`no pi-spec v1 block`, headless `failure.kind: "no-spec"`), `derive`
+  refuses it `not-ready` at exit 11 without posting (`no pi-spec v1 block`, headless
+  `failure.kind: "no-spec"`, the key a host runs another driver on), `derive`
   drafts its contract.
 - **A failed derivation is a handback, not a decline.** A dead child, a fired
   budget, an empty reply or an unparsable reply all `handback` naming their own

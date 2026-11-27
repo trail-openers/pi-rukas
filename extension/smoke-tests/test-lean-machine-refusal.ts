@@ -15,10 +15,10 @@
  *     `specify + no-red-test`. A third state routing there would report a
  *     refusal the table never judged; either of those two losing its edge
  *     would send a refusal to the forge never having been named.
- *   - nothing but `decline` routes to `not-ready`. A direct edge would end a
- *     run at exit 11 with no comment on the issue, which is the exact bug the
- *     dual-role state produced and the reason the terminal state now has no
- *     handler at all.
+ *   - nothing but `decline` and `ready + no-spec` routes to `not-ready`. A
+ *     direct edge ends a run at exit 11 with no comment on the issue, which is
+ *     right only for an issue with no block (a host runs another driver on it)
+ *     and is the exact bug the dual-role state produced anywhere else.
  *
  * Both are enumerated over every declared (state, kind) pair AND every counter
  * combination, because the loop guards are where a misroute hides: at the
@@ -95,8 +95,8 @@ assert(
   })`,
 );
 assert(
-  toNotReadyDirect.length === 0,
-  `nothing routes to not-ready directly — every refusal is reported first (found: ${
+  toNotReadyDirect.join(", ") === "ready+no-spec",
+  `only ready + no-spec routes to not-ready directly — every other refusal is reported first (found: ${
     toNotReadyDirect.join(", ") || "none"
   })`,
 );

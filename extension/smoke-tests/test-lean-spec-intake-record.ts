@@ -171,7 +171,7 @@ function json(value: unknown): string {
     const stored = recordOf(driven.dir);
     const readyKind = stored?.steps.find((s) => s.state === "ready")?.outcome?.kind;
     assert(
-      readyKind === "fail",
+      readyKind === "no-spec",
       `a require-mode run really refused the prose ticket (got ${json(readyKind)})`,
     );
     assert(

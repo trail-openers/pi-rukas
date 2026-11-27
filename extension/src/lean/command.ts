@@ -40,7 +40,7 @@ import { type LeanSeed, leanSeed } from "./seed.ts";
 import { type DeriveDeps, type DeriveDispatch, deriveDeps, traceDerive } from "./spec-derive.ts";
 import type { SpecIntake } from "./spec-intake-switch.ts";
 import { contractOf } from "./spec-intake.ts";
-import { type PiSpec, readiness } from "./spec.ts";
+import { NO_BLOCK_RULE, type PiSpec, readiness } from "./spec.ts";
 import { type SpecifyDeps, specifyOutcome } from "./specify.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { BudgetArms, BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
@@ -138,14 +138,15 @@ export function readyDeps(headless: boolean): ReadyDeps {
  * merely had a locked index would tell the operator to fix something that is not broken.
  * The third kind, `infra`, is the intake's: a derivation that failed, which is not the
  * author's fault, so the machine routes it to `handback` rather than `decline`. The fourth,
- * `setup`, is the repository's (`ready-setup.ts`), and posts nothing at all.
+ * `setup`, is the repository's (`ready-setup.ts`); the fifth, `no-spec`, is an issue with no block
+ * and none derived, which a host runs another driver on. Neither posts anything at all.
  */
 export async function readyOutcome(
   repoRoot: string,
   issue: number,
   base: Pick<LeanSeed, "baseSha" | "why" | "infra"> & { specIntake?: SpecIntake },
   deps: ReadyDeps = readyDeps(false),
-): Promise<{ kind: "ok" | "fail" | "infra" | "setup"; facts: ReadyFacts }> {
+): Promise<{ kind: "ok" | "fail" | "infra" | "setup" | "no-spec"; facts: ReadyFacts }> {
   const d = deps;
   // The base is the run's, resolved once by `leanSeed` and pinned on the run record: re-probing
   // here would let a `ready` that ran after origin/HEAD moved judge the run against a commit the
@@ -212,7 +213,8 @@ export async function readyOutcome(
   const rowsFacts = rows.length === 0 ? {} : { dispatches: rows };
   if ("rule" in contract)
     return {
-      kind: contract.infra === true ? "infra" : "fail",
+      kind:
+        contract.infra === true ? "infra" : contract.rule === NO_BLOCK_RULE ? "no-spec" : "fail",
       facts: {
         failedRules: [contract.rule],
         ...(contract.infra === true ? { infra: true } : {}),

@@ -198,10 +198,10 @@ const textOf = (g: ShareGolden): string => comparable(g);
   let pairs = 0;
   for (const state of HANDLER_STATES) for (const kind of OUTCOME_KINDS[state]) pairs++;
   assert(
-    pairs === 28 &&
+    pairs === 29 &&
       captured?.machine.pairs === 27 &&
       OUTCOME_KINDS.challenge.every((k) => hasTransition("challenge", k)),
-    `(d) one edge per new kind, and the pair count moved from the capture's 27 to the registry's 28 (got ${String(
+    `(d) one edge per new kind, and the pair count moved from the capture's 27 to the registry's 29, ready's no-spec included (got ${String(
       pairs,
     )})`,
   );

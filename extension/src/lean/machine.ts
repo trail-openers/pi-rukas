@@ -20,9 +20,9 @@ export const OUTCOME_KINDS = {
   // `infra` is `ready`'s only route to `handback` that is not the author's fault:
   // in `derive` intake mode the contract comes from a model call, and a call that
   // died, timed out or came back unparsable is a retryable handback — not a
-  // comment on the issue telling someone their ticket is unready. `setup` is the repository's
-  // fault (`ready-setup.ts`): it ends the run without a reporting step, so nothing is posted.
-  ready: ["ok", "fail", "infra", "setup"],
+  // comment on the issue telling someone their ticket is unready. `setup` (the repository's fault,
+  // `ready-setup.ts`) and `no-spec` (no block, none derived) end the run unreported: nothing is posted.
+  ready: ["ok", "fail", "infra", "setup", "no-spec"],
   // `red-test-gap` is specify's own child failing to prove a criterion red: the run's failure, so a
   // handback, where `no-red-test` is a refused spec.
   specify: ["ok", "no-red-test", "red-test-gap", "budget"],
@@ -104,6 +104,9 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           // The repository cannot run lean: straight to `handed-back` (exit 10), no comment on an issue that
           // is not at fault, and a host falls back on `failure.kind: "setup"`.
           return to(run, "handed-back");
+        case "no-spec":
+          // Refused (exit 11) unreported: a host runs another driver on the issue, so nothing is posted.
+          return to(run, "not-ready");
       }
       break;
 

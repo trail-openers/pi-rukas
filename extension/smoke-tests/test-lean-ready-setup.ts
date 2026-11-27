@@ -145,12 +145,16 @@ for (const [tag, body, state, intake] of [
       doc.failure?.kind !== "setup",
     `issue cause ${tag}: ends ${state} without the setup kind (${result.state}, ${JSON.stringify(doc.failure)})`,
   );
-  // Only a missing block under `require` is `no-spec`, at exit 11 and before any child ran.
+  // Only a missing block under `require` is `no-spec`: exit 11, no child, no reporting step, no post.
   const noSpec = tag === "no-block";
   assert(
     (doc.failure?.kind === "no-spec") === noSpec &&
-      (!noSpec || (result.code === 11 && calls.children === 0)),
-    `issue cause ${tag}: no-spec ${noSpec ? "at exit 11, no child" : "absent"} (${result.code}, ${JSON.stringify(doc.failure)}, ${calls.children} children)`,
+      (!noSpec ||
+        (result.code === 11 &&
+          calls.children === 0 &&
+          calls.posts === 0 &&
+          result.run.steps.length === 1)),
+    `issue cause ${tag}: no-spec ${noSpec ? "at exit 11, no child, nothing posted" : "absent"} (${result.code}, ${JSON.stringify(doc.failure)}, ${JSON.stringify(calls)}, ${result.run.steps.length} steps)`,
   );
 }
 

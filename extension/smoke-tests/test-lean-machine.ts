@@ -112,7 +112,7 @@ for (const state of HANDLER_STATES) {
   }
 }
 assert(
-  pairs === 28,
+  pairs === 29,
   `all ${pairs} forward-routed pairs enumerated — the registry grew or shrank, check the spec`,
 );
 
@@ -238,6 +238,10 @@ assert(
 assert(
   next(run("ready"), { kind: "setup" }).state === "handed-back",
   "ready setup → handed-back (no reporting step, nothing posted)",
+);
+assert(
+  next(run("ready"), { kind: "no-spec" }).state === "not-ready",
+  "ready no-spec → not-ready (no reporting step, nothing posted)",
 );
 assert(next(run("specify"), { kind: "ok" }).state === "build", "specify ok → build");
 assert(
