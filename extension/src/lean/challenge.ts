@@ -460,8 +460,11 @@ export function challengeDeps(headless: boolean): ChallengeDeps {
         // Forwarded so the ceiling binds the child, `budgetTurns` included: it is the
         // turns ceiling read as the denominator of the budget-progress steer, and a seam
         // that forwards the arms key by key must forward that one too or the adversary
-        // is killed at its ceiling never told where it stood.
+        // is killed at its ceiling never told where it stood. The grace is key-by-key
+        // forwarded beside the bound for the same reason: dropping it leaves the child on
+        // the configured grace, past the line the bound was placed to protect.
         childBoundMs: o.childBoundMs,
+        childBoundGraceMs: o.childBoundGraceMs,
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,

@@ -219,6 +219,10 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
         ...(o.childBoundMs === undefined ? {} : { childBoundMs: o.childBoundMs }),
+        // The grace the deadline left, beside the bound above: forwarded key by key like
+        // every other arm here, and dropped it would put this child's kill a full configured
+        // grace past the line the bound was placed to protect.
+        ...(o.childBoundGraceMs === undefined ? {} : { childBoundGraceMs: o.childBoundGraceMs }),
         budgetTurns: o.budgetTurns,
         ...(o.stall === undefined ? {} : { stall: o.stall }),
         ...(o.signal === undefined ? {} : { signal: o.signal }),

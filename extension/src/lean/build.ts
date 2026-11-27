@@ -436,8 +436,12 @@ export function buildDeps(headless: boolean): BuildDeps {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
         // Forwarded so the ceiling binds the child; `budgetTurns` is the same
-        // ceiling the budget-progress steer counts down from.
+        // ceiling the budget-progress steer counts down from. The grace rides beside the
+        // bound: a bound with no grace of its own gets the configured 10 minutes, and a
+        // deadline-derived bound killed a full grace later is the overrun this step is
+        // bounded against. Pinned on the leaf by test-lean-step-deadline-bound-seams.ts.
         childBoundMs: o.childBoundMs,
+        childBoundGraceMs: o.childBoundGraceMs,
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,
