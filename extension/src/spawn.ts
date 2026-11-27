@@ -331,7 +331,7 @@ async function spawnSpecialistInner(
       budgetProgress,
       onProgress: opts.onProgress,
       // #2644 — `stallLever` adds this stream's own two facts to the armed window.
-      ...(stallLever(opts, childProgress, inFlightTools, runningState) ?? {}),
+      ...(stallLever(opts, childProgress, inFlightTools) ?? {}),
       onRawEvent: opts.onRawEvent,
       onAgentEnd: (parsed) => {
         lastAgentEnd = parsed;

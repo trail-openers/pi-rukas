@@ -142,8 +142,29 @@ async function drive(opts: {
    *  the other kill is a no-op on a dead process. Without this the two paths double-count, and
    *  the tally measures the fake child rather than the supervision stack. */
   diesOnce?: boolean;
-}): Promise<{ checks: number; kills: number; budgetMs: number; progress: number; inFlight: InFlightTools }> {
+  /** Deliver assistant turns through the real pump AFTER the stream went quiet past the window —
+   *  the first message back, each carrying a tool call. The tracker has not seen those lines when
+   *  the tick that carries them runs, so the reader still reports the stale silence; the turn tick
+   *  must not be read as a stall. */
+  lateTurnAfterQuiet?: number;
+  /** The turn/token counts that late turn carries — the field shape #2644 lost cells with. */
+  worked?: { turns: number; totalTokens: number };
+  /** Advance the clock past the window BEFORE the late turn, so the case is the quiet-then-reply
+   *  shape rather than a live child. */
+  beforeLateMs?: number;
+}): Promise<{
+  checks: number;
+  kills: number;
+  budgetMs: number;
+  progress: number;
+  inFlight: InFlightTools;
+  /** How long the case drove the poll, so a canary can tell a missing tick from a missing decision. */
+  ticks: number;
+}> {
   const inFlightTools = new InFlightTools();
+  // The tick cadence the case drives below: the poll's own interval is unref'd, and Bun's runner
+  // does not deliver one inside a case's wait, so the case takes the supervision passes itself.
+  let pollMs = 0;
   // The case's simulated clock, stated as an offset from the real instant the child started:
   // `ChildProgress` and the poll both stamp with `Date.now()`, and a clock that starts at 0 would
   // read as decades of silence against the poll's budgets.
@@ -153,6 +174,13 @@ async function drive(opts: {
   let checks = 0;
   let budgetMs = 0;
   let progress = 0;
+  // The step's side of the lever: freezing the breach and aborting. In production that is
+  // `armBudget`'s `fireStall` — one-shot, and it ends the child through the controller's kill.
+  const fire = () => {
+    if (checks === 1) return; // the caller's abort is one-shot
+    checks = 1;
+    void (child as { kill?: () => boolean }).kill?.();
+  };
   const armed = {
     windowMinutes: opts.windowMs / 60_000,
     windowMs: opts.windowMs,
@@ -160,16 +188,9 @@ async function drive(opts: {
       sinceMs: now - childProgress.lastProgressAt,
       toolInFlight: inFlightTools.active,
     }),
-    // The caller's progress hook — `armBudget`'s hook is what aborts, and the poll calls THIS.
-    // Counted as fired-or-not, not as a tally: the caller's abort is one-shot, and the poll ticks
-    // several times inside a case's wait, so a count would assert on the harness's timing.
-    // It ends the child too, because in production this hook IS the abort (`armBudget`'s
-    // `controller.abort()`, which `attachAbortKill` turns into a kill).
-    check: () => {
-      if (checks === 1) return; // the caller's abort is one-shot
-      checks = 1;
-      void (child as { kill?: () => boolean }).kill?.();
-    },
+    // The poll decides on its own tick and hands the breach here; counted as fired-or-not, not as
+    // a tally: the abort is one-shot and the poll ticks several times inside a case's wait.
+    fire,
   };
   const runningState = emptyRunningState("developer");
   const handler = createStdoutLineHandler({
@@ -214,13 +235,63 @@ async function drive(opts: {
     },
     stall: armed,
   });
+  // One supervision pass, then a short real wait — the body the poll's `setInterval` would run.
+  const runTicks = async (n: number, ms: number): Promise<void> => {
+    for (let i = 0; i < n; i++) {
+      poll.tick();
+      await wait(ms);
+      pollMs += ms;
+    }
+  };
   await emit();
-  if (opts.afterEmitMs !== undefined) now += opts.afterEmitMs;
-  await wait(4 * LINE + 100);
+  if (opts.afterEmitMs !== undefined) {
+    // The clock moves first, then the passes: a case that means "quiet for WINDOW - LINE" must be
+    // ticked inside the window, not fired by a pass that landed before the move.
+    now += opts.afterEmitMs;
+    await runTicks(4, Math.max(20, LINE / 2));
+  }
+  if (opts.lateTurnAfterQuiet !== undefined && opts.lateTurnAfterQuiet > 0) {
+    // The child was quiet past the window. Its first message back arrives through the real pump:
+    // that tick is the stream's, and the tracker has not seen the line yet, so the reader still
+    // reports the stale silence. A lever that decided off the turn's counts, or off the reader on
+    // a turn tick, would end this child — the field shape the guard at issue here got wrong.
+    if (opts.beforeLateMs !== undefined) now += opts.beforeLateMs;
+    const worked = opts.worked ?? { turns: 1, totalTokens: 0 };
+    for (let i = 0; i < opts.lateTurnAfterQuiet; i++) {
+      turnSeq++;
+      const line = JSON.stringify({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          stopReason: "toolUse",
+          content: [
+            { type: "text", text: `still here ${String(turnSeq)}` },
+            {
+              type: "toolCall",
+              id: `late-${String(i)}`,
+              name: "bash",
+              arguments: { command: `sleep ${String(turnSeq)}` },
+            },
+          ],
+          usage: {
+            input: Math.floor(worked.totalTokens / 2),
+            output: Math.ceil(worked.totalTokens / 2),
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0,
+          },
+        },
+      });
+      input.push(`${line}\n`);
+      // The pump reads synchronously on push; the reply itself is one instant.
+      await wait(20);
+    }
+  }
+  await runTicks(4, LINE);
   poll.stop();
   pump.close();
   input.destroy();
-  return { checks, kills: kills(), budgetMs, progress, inFlight: inFlightTools };
+  return { checks, kills: kills(), budgetMs, progress, inFlight: inFlightTools, ticks: pollMs };
 }
 
 const WINDOW_ENV = { ...BUDGET_ENV, PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS: String(LINE * 10) };
@@ -350,8 +421,9 @@ const WINDOW_ENV = { ...BUDGET_ENV, PI_ENSEMBLE_INACTIVITY_TIMEOUT_MS: String(LI
       windowMinutes: WINDOW / 60_000,
       windowMs: WINDOW,
       silence: () => ({ sinceMs: now - childProgress.lastProgressAt, toolInFlight: inFlightTools.active }),
-      // The caller's hook in this cell does nothing on purpose: the cell asks what the POLL
-      // contributes when the lever fires — a named cause, and a guarded kill of its own.
+      // The caller's freezing of the verdict does nothing on purpose in this cell: the cell asks
+      // what the POLL contributes when the lever fires — a named cause, and a guarded kill of its
+      // own — with the step's own hook absent, as it is for every caller that only forwards a window.
     },
   });
   now = t0 + WINDOW;
@@ -372,7 +444,6 @@ await withEnv(BUDGET_ENV, async () => {
     { stall: { windowMinutes: 2, silence: () => ({ sinceMs: 0, toolInFlight: false }) } } as never,
     childProgress,
     inFlightTools,
-    emptyRunningState("developer"),
   );
   assert(arm !== undefined, "(7) the spawn builds a lever from the caller's armed window");
   assert(
@@ -406,6 +477,38 @@ await withEnv(BUDGET_ENV, async () => {
   assert(
     quiet.toolInFlight === false && quiet.sinceMs >= justClosed.sinceMs,
     `(7) and the silence it reports grows with the wall clock since that last piece of progress (${String(quiet.sinceMs)} ms, from ${String(justClosed.sinceMs)} ms)`,
+  );
+});
+
+// ── (8) the turn tick after a long quiet is never a stall, whatever the child had done.
+await withEnv(WINDOW_ENV, async () => {
+  // The exact shape the removed guard was imitating: the child worked for turns and tokens, went
+  // quiet past the window, and its FIRST message back carries a tool call. On that tick the
+  // tracker has not yet seen the line, so the reader still reports the whole silence — and the
+  // turn carries counts. Neither may make it a stall, because a turn tick is not the poll's tick.
+  const r = await drive({
+    windowMs: WINDOW,
+    silenceMs: 0,
+    // Silence well past the window, then the reply; the poll ticks inside the window first, so the
+    // only thing that could end this child is the reply itself being misread.
+    afterEmitMs: 0,
+    lateTurnAfterQuiet: 3,
+    beforeLateMs: WINDOW,
+    worked: { turns: 12, totalTokens: 40_000 },
+    // The reply's tool calls are never answered, so the child is left with work in flight — the
+    // case asserts the child is still alive below rather than counting kills alone.
+  });
+  assert(
+    r!.progress >= 3,
+    `(8) the late turns really reached the spawn's own progress hook (progress ${String(r!.progress)})`,
+  );
+  assert(
+    r!.checks === 0,
+    `(8) a turn tick after a long quiet fires no stall — the tracker has not seen this line (got ${String(r!.checks)} checks)`,
+  );
+  assert(
+    r!.inFlight.active === true,
+    "(8) and the child is the shape it was: a tool call of its own still open",
   );
 });
 

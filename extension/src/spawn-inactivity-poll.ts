@@ -36,8 +36,8 @@ import type { ChildProcess } from "node:child_process";
 import type { ChildProgress } from "./child-progress.ts";
 import { progressSilenceMs } from "./child-progress.ts";
 import type { SpawnOptions } from "./pi-event-shapes.ts";
-import type { RunningState } from "./progress.ts";
 import type { StallOpts } from "./request-stall-policy.ts";
+import { stallBreach } from "./request-stall-policy.ts";
 import type { InFlightTools } from "./spawn-inflight.ts";
 import { killProcessTree } from "./spawn-kill.ts";
 import { inactivityTimeoutMs, toolInactivityTimeoutMs } from "./spawn-support.ts";
@@ -64,11 +64,13 @@ export type PollKillCause = "inactivity" | "tool-inactivity" | "no-progress" | "
  * no progress. Silence is checked first, so a silent child keeps its silence
  * cause; with the knob unset the arm never fires and the poll is unchanged.
  *
- * #2644 — the same tick is ALSO the only place the caller's hung-request lever can be read: a
+ * #2644 — the same tick is ALSO the only place the caller's hung-request lever is evaluated: a
  * request that hangs emits no line at all, so a check on the stream's own cadence is a check that
  * never runs on exactly the shape the lever exists for. `stall` is the step's armed window and the
- * caller's `check` (the abort); the poll fires it on a timer tick, after its own budgets, so a
- * silence the poll itself ends keeps its own cause.
+ * reader of its stream; the poll asks it on a timer tick, after its own budgets, so a silence the
+ * poll itself ends keeps its own cause. The poll contributes the reading, the cadence and the
+ * guarded kill, and hands the breach to the caller's `fire` — which freezes the verdict and owns
+ * the abort; nothing on this path reads the child's turns or tokens.
  */
 export interface InactivityPoll {
   /** Stop the timer. */
@@ -85,7 +87,7 @@ export function createInactivityPoll(opts: {
   childProgress: ChildProgress;
   onKill: (cause: PollKillCause, budgetMs: number, toolNames: string[]) => void;
   /** #2644 — the caller's hung-request lever: the enforced window in ms, the reader of THIS
-   *  child's stream, and the hook that aborts the child. Absent means no stall arm, which is
+   *  child's stream (which the poll asks on its own tick), and the caller's `fire` for the breach. Absent means no stall arm, which is
    *  every caller that bounds its child some other way. */
   stall?: StallOpts;
   /** The two silence budgets, in the shape the operator's knobs arrive in. The spawn passes none and
@@ -152,18 +154,19 @@ export function createInactivityPoll(opts: {
       return;
     }
     // #2644 — the caller's hung-request lever, on this tick and nowhere else: a hung request
-    // emits nothing, so nothing else ticks. A tool in flight is a running bash — work, not
-    // silence — and is never a stall (#951). The caller owns the abort, so the poll contributes
-    // only the reading and the cadence.
-    if (stall !== undefined && !inFlightTools.active) {
-      const quiet = stall.silence();
+    // emits nothing, so nothing else ticks, and a turn tick must not evaluate it — the tracker has
+    // not yet seen the line that just arrived, so the first message back (which can carry a tool
+    // call) would be judged on stale silence. The caller owns the abort, so the poll contributes
+    // the reading, the cadence and the kill; the breach itself is the caller's, frozen once.
+    if (stall !== undefined) {
+      const breach = stallBreach(stall);
       // The caller's abort is one-shot, so the arm stands itself down after it fires: the poll
       // has no reason to keep reading a stream whose child is already being ended. The kill is
       // the poll's own — same guarded path as its silence budgets — and the cause is NAMED, so
       // the report says a stalled request ended this child rather than leaving it unattributed.
-      if (quiet.sinceMs >= stall.windowMs) {
+      if (breach !== undefined) {
         clearInterval(interval);
-        stall.check?.();
+        stall.fire?.(breach);
         onKill("stall", stall.windowMs, inFlightTools.toolNames());
         try {
           killProcessTree(child);
@@ -182,7 +185,6 @@ export function stallLever(
   opts: SpawnOptions,
   childProgress: ChildProgress,
   inFlightTools: InFlightTools,
-  runningState: RunningState,
 ): SpawnOptions["stall"] {
   if (opts.stall === undefined) return undefined;
   const windowMs = opts.stall.windowMs ?? opts.stall.windowMinutes * 60_000;
@@ -196,6 +198,9 @@ export function stallLever(
       sinceMs: Date.now() - childProgress.lastProgressAt,
       toolInFlight: inFlightTools.active,
     }),
-    check: () => opts.onProgress?.({ ...runningState, usage: { ...runningState.usage } }),
+    // The step's own freezing of the verdict, when a step armed the lever. The spawn never decides
+    // what a breach means, and a caller with no hook (a lens child, the adversarial reviewer) has
+    // no verdict to freeze beyond the named kill cause the poll itself stamps.
+    ...(opts.stall.fire === undefined ? {} : { fire: opts.stall.fire }),
   };
 }

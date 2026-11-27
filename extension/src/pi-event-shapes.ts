@@ -12,6 +12,7 @@
 import type { RunningState } from "./progress.ts";
 import type { WriteFenceOpt } from "./types.ts";
 
+import type { StallFired } from "./request-stall-policy.ts";
 import type { SteerDelivery } from "./dispatch-steer.ts";
 
 export interface SpawnOptions extends WriteFenceOpt {
@@ -166,9 +167,12 @@ export interface SpawnOptions extends WriteFenceOpt {
     windowMs?: number;
     /** The reader of this child's stream — the spawn supplies the stream's own stamp. */
     silence: () => { sinceMs: number; toolInFlight: boolean };
-    /** The caller's progress hook, which is what aborts the child it armed. The spawn
-     *  supplies it from `stallLever`; a caller forwarding only the arm needs nothing else. */
-    check?: () => void;
+    /** The step freezes the verdict of its own budget here, so a stall breach is one-shot and
+     *  shared with the turns / tokens levers (`fireStall` in `lean/step-budget.ts`). The poll calls
+     *  it on its own tick, having already read the stream; a caller that forwards only the window
+     *  (a lens child, the adversarial reviewer) has no hook, and the named kill cause is the whole
+     *  record of its child's ending. */
+    fire?: (b: StallFired) => void;
   };
   /**
    * Stdin-handle callback (#153). Fires once after the child process has

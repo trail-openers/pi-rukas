@@ -2,17 +2,18 @@
  * The build fixture's fake-child quiet tick (#2644): a case says only HOW LONG its child was
  * quiet, and the spawn's OWN inactivity poll (`createInactivityPoll`, spawn-inactivity-poll.ts) is
  * what measures the silence and fires the arm. The case no longer calls the step's progress hook:
- * the tick that decides a stall is the poll's timer, and the arm's `check` is the hook — the same
- * composition `stallLever` builds in production. A tool in flight is work, never a stall (#951),
- * and that reading too comes from the real `InFlightTools`, not from a value the case writes.
+ * the tick that decides a stall is the poll's timer, and the arm's `fire` is the step's freezing of
+ * the verdict — the same composition `stallLever` builds in production. A tool in flight is work,
+ * never a stall (#951), and that reading too comes from the real `InFlightTools`, not from a value
+ * the case writes.
  */
 
 import { ChildProgress } from "../../src/child-progress.ts";
-import type { StallOpts } from "../../src/request-stall-policy.ts";
+import type { SpawnOptions } from "../../src/pi-event-shapes.ts";
 import type { BudgetOpts } from "../../src/lean/step-budget.ts";
 import type { PiJsonEvent } from "../../src/pi-event-shapes.ts";
 import { emptyRunningState } from "../../src/progress.ts";
-import { createInactivityPoll, stallLever } from "../../src/spawn-inactivity-poll.ts";
+import { createInactivityPoll, stallLever as spawnStallLever } from "../../src/spawn-inactivity-poll.ts";
 import { InFlightTools } from "../../src/spawn-inflight.ts";
 import type { ChildProcess } from "node:child_process";
 import type { DispatchResult } from "../../src/types.ts";
@@ -62,11 +63,12 @@ function childStream(declared: unknown[]): PiJsonEvent[] {
 /**
  * Whether this child's stream was quiet past the armed window, and the abort it produced.
  *
- * The two readings are the production ones: `stallLever` (`spawn-inactivity-poll.ts`) builds the arm over
- * a real `ChildProgress` and a real `InFlightTools` fed the child's own events, and
- * `createInactivityPoll` is what decides — on its timer, never on a turn the child emitted — that
- * the silence is a stall, and calls `check`. The case supplies only the two facts only it knows:
- * how long its child sat quiet, and which lines it emitted before it stopped.
+ * The two decisions are the production ones. The ARMS are the step's — `armBudget` froze the window
+ * and owns the abort — and the reading is the spawn's: the same two trackers `spawn.ts` builds over
+ * the child's lines, the same `stallLever` that turns them into the arm, and `createInactivityPoll`
+ * which alone decides that a silence is a stall and hands the breach to the arm's `fire`. The case
+ * supplies only the two facts only it knows: how long its child sat quiet, and which lines it
+ * emitted before it stopped.
  */
 export async function deliverQuietTick(
   role: DispatchResult["role"],
@@ -82,17 +84,14 @@ export async function deliverQuietTick(
   const inFlight = new InFlightTools();
   for (const event of childStream(declared)) inFlight.observe(event);
   const progress = new ChildProgress(() => now);
-  // `stallLever` is the spawn's own composer of the arm — the function `spawn.ts` calls over the
-  // child's two trackers. The case states the window the step froze, in the shape the caller hands
-  // the spawn; everything else about the arm (the enforced threshold, the reader, the hook) is the
-  // production code's, and the fixture cannot widen it.
-  const arm: StallOpts = stallLever(
-    { stall: { ...o.stall, silence: () => ({ sinceMs: 0, toolInFlight: false }) } } as never,
-    progress,
-    inFlight,
-    emptyRunningState(role),
-  ) as StallOpts;
-  if (arm === undefined) throw new Error("stallLever armed nothing for a declared stall");
+  // The spawn's own composer of the arm over the spawn's own two trackers: this is the function
+  // `spawn.ts` calls, so the enforced threshold, the minutes a verdict prints, the reader's stamp,
+  // the in-flight bit and the step's `fire` are all production's, and the fixture cannot widen them
+  // (only the placeholder reader the step handed the spawn, which the spawn replaces in production,
+  // is overwritten below with this case's own length of silence).
+  const arm = spawnStallLever({ stall: o.stall } as SpawnOptions, progress, inFlight);
+  if (arm === undefined) throw new Error("the spawn armed no lever for a declared stall");
+  const armWindowMs = arm.windowMs ?? arm.windowMinutes * 60_000;
   const forced = typeof opts.toolInFlight === "function" ? opts.toolInFlight() : opts.toolInFlight;
   const toolInFlight = () => forced ?? inFlight.active;
   const quiet = (): { sinceMs: number; toolInFlight: boolean } => ({
@@ -100,10 +99,16 @@ export async function deliverQuietTick(
     sinceMs: toolInFlight() ? 0 : now - progress.lastProgressAt + silent,
     toolInFlight: toolInFlight(),
   });
+  // The one fact the case owns is the length of its own silence; everything else about the reading,
+  // the threshold and the verdict is the production composition's.
+  o.stall.silence = quiet;
+  arm.silence = quiet;
   const check = (): void => {
-    // The snapshot `spawn.ts` builds by ingesting the child's own lines: the case's declared
-    // turns and tokens, not zeros. A lever that decides off these fields is judged on the
-    // reading a real spawn hands it, which is what the fixture used to fake away.
+    // A turn tick still reaches the step's hook, and it carries the counts `spawn.ts` builds by
+    // ingesting the child's own lines — the case's declared turns and tokens, not zeros. A lever
+    // that looked at these fields must be judged on the reading a real spawn hands it, which is
+    // what this fixture used to fake away. The fixture's own tick calls it once, after the stream's
+    // turn has arrived, so a case that arms no poll still sees its hook exercised.
     const worked = opts.worked ?? { turns: 0, totalTokens: 0 };
     o.onProgress?.({
       ...emptyRunningState(role),
@@ -118,9 +123,7 @@ export async function deliverQuietTick(
     });
   };
   arm.silence = quiet;
-  arm.check = check;
-  o.stall.silence = arm.silence;
-  o.stall.check = arm.check;
+  o.stall.silence = quiet;
   // The spawn's own poll, on the case's short budgets (`QUIET_TICK_ENV`, applied by the case):
   // its tick is what reads the silence and calls the arm. The case waits long enough for several
   // ticks and then stops the poll itself.
@@ -136,11 +139,12 @@ export async function deliverQuietTick(
     // case never armed — long before the lever's own window closed.
     budgets: () => ({ inactivityMs: 0, toolInactivityMs: 0 }),
     onKill: () => undefined,
-    // The arm as the spawn composes it, with the two facts only the case knows: how long its
-    // child sat quiet, and that the caller's hook is what ends it.
-    stall: { ...arm, silence: quiet, check },
+    // The arm as the spawn composes it, with the one fact only the case knows: how long its child
+    // sat quiet. The step's `fire` — the hook that freezes the verdict and aborts — is the step's.
+    stall: { ...arm, windowMs: armWindowMs, silence: quiet },
   });
   now += TICK_MS; // the child's own turn arrives, then the stream goes quiet.
+  check();
   // The poll's own supervision pass makes the decision — the same body its `setInterval` runs, and
   // driven here because Bun's runner does not deliver an unref'd timer inside a case's wait. The
   // fixture never re-implements the decision: it calls the poll and observes what the poll did.

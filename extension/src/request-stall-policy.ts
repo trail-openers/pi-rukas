@@ -14,7 +14,6 @@
  * abort, and takes the reserve it needs as a parameter so it never imports the lean tree.
  */
 
-import type { RunningState } from "./progress.ts";
 import { capsEnabled } from "./spawn-child-bound.ts";
 import { handoffDispatchTimeoutMs } from "./work-driver-handoff.ts";
 
@@ -132,10 +131,12 @@ export interface StallOpts {
    *  not as a whole minute that can run past the time the deadline leaves. */
   windowMs: number;
   silence: StreamSilence;
-  /** The caller's progress hook, which is what aborts the child it armed. The spawn composes it from
-   *  its own stream (`stallLever` in `spawn-inactivity-poll.ts`); the step arms none, and a caller that
-   *  forwards only the window needs nothing else. */
-  check?: () => void;
+  /** The step's own verdict of this tick — the same trio its turns / tokens levers freeze — which
+   *  is what the poll fires when it ends the child, so a stall breach is frozen ONCE and never
+   *  re-derived. Set by `armBudget`, which owns the abort; a caller that only forwards the window
+   *  (a lens child, the adversarial reviewer) has no hook to freeze through, and the spawn's kill
+   *  cause is the whole record of its own ending. */
+  fire?: (b: StallFired) => void;
 }
 
 /**
@@ -160,16 +161,19 @@ export function stallLever(arms: StallArms | undefined): StallOpts | undefined {
 }
 
 /**
- * The stall arm of the progress hook, on the SAME tick the turns / tokens levers are checked:
- * a tool in flight is work, not silence, so it is never a stall (#951); a window of 0 or less is
- * the engine's boundary stop, never a timer that ends the child the instant it starts. The breach
- * is returned, never raised: the caller freezes it and fires the one abort.
+ * The ONE decider of a stall, asked by the POLL and nowhere else: a hung request emits no line,
+ * so a check on the stream's own cadence is a check that never runs on the shape the lever exists
+ * for — and a turn tick must never evaluate it, because the tracker has not yet observed the line
+ * that just arrived and its first message back can carry a tool call. A tool in flight is work,
+ * not silence (#951), and a window of 0 or less is the engine's boundary stop, never a timer that
+ * ends the child the instant it starts. Nothing here reads the child's turns or tokens: a real
+ * cell child works for dozens of turns before its request hangs, and a lever that exempted them
+ * would catch none of the cells this exists for.
+ *
+ * The breach is returned, never raised: the caller freezes it and fires the one abort.
  */
-export function stallBreach(
-  stall: StallOpts | undefined,
-  s: Pick<RunningState, "turns" | "totalTokens">,
-): StallFired | undefined {
-  if (stall === undefined || s.turns !== 0 || s.totalTokens !== 0) return undefined;
+export function stallBreach(stall: StallOpts | undefined): StallFired | undefined {
+  if (stall === undefined) return undefined;
   const quiet = stall.silence();
   return !quiet.toolInFlight && quiet.sinceMs >= stall.windowMs
     ? { limit: "stall", value: stall.windowMinutes, used: stallMinutes(quiet.sinceMs) }

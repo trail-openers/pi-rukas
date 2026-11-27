@@ -11,7 +11,7 @@
 
 import type { LensRunResult } from "../lens-review-types.ts";
 import type { RunningState } from "../progress.ts";
-import type { BudgetLimit, StallArms, StallOpts } from "../request-stall-policy.ts";
+import type { BudgetLimit, StallArms, StallFired, StallOpts } from "../request-stall-policy.ts";
 import {
   inertWarning,
   requestStallUnarmed,
@@ -198,6 +198,15 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
     };
   }
   const controller = new AbortController();
+  // The stall breach comes from the POLL, never from a turn tick (see `stallBreach`); freezing it
+  // here is what keeps the one verdict shared with the turns / tokens levers and one-shot, whoever
+  // reads the ceiling first.
+  const fireStall = (b: BudgetFired): void => {
+    if (hit !== undefined) return;
+    hit = b;
+    controller.abort();
+    traceBreach(b, "stopping the child");
+  };
   // The sink sits on BOTH arms of this hook, so every write goes through one catcher; each line
   // prints once per ARM, not per tick (the hook below runs once per child turn).
   let hookFailureTraced = false;
@@ -222,7 +231,7 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
       if (turns > 0 && s.turns > turns) breach = { limit: "turns", value: turns, used: s.turns };
       else if (tokens > 0 && s.totalTokens > tokens)
         breach = { limit: "tokens", value: tokens, used: s.totalTokens };
-      else breach = stallBreach(stallOpts, s) as BudgetFired | undefined;
+      else breach = undefined; // The stall is NOT a turn-tick decision — see `stallBreach`. #2644.
     } catch (err) {
       traceHookFailureOnce(err);
       return;
@@ -239,7 +248,9 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
       onProgress,
       // The steer's denominator, present only when a turns ceiling exists.
       ...(turns > 0 ? { budgetTurns: turns } : {}),
-      ...(stallOpts === undefined ? {} : { stall: stallOpts }),
+      ...(stallOpts === undefined
+        ? {}
+        : { stall: { ...stallOpts, fire: (b: StallFired) => fireStall(b as BudgetFired) } }),
     },
     fired,
     ...(inert === undefined ? {} : { warning: inert }),
