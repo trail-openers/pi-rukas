@@ -33,7 +33,6 @@ import { neededFromLog } from "../src/lean/handback.ts";
 import { leanIssueResult } from "../src/headless/work-lean-result.ts";
 import { INITIAL_COUNTERS, type LeanRun, type Outcome, type Step } from "../src/lean/state.ts";
 import { requestStallWindowMs } from "../src/request-stall-policy.ts";
-import { stallArms } from "../src/lean/request-stall.ts";
 import { REVIEW_DEADLINE_RESERVE_MS } from "../src/lean/review-bound.ts";
 import { MINUTE_MS } from "../src/lean/deadline.ts";
 import { withEnv } from "./lib/env-scope.ts";
@@ -222,17 +221,17 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
   const { makeRunPhase } = await import("../src/adversarial-phase.ts");
 
   const windowMinutes = Math.ceil(reserveMs() / MINUTE_MS);
-  /** The step's own arms, at a stated instant — `lean/request-stall.ts`'s reader of the policy. */
-  const stallArmsFor = (run: { deadlineMs: number }, now: number) => stallArms({ run, now });
-  /** The lever the step arms for a cell with room to spare — a real `armBudget`, not a fixture's. */
+  /** The lever the step arms for a cell with room to spare — a real `armBudget`, not a fixture's.
+   *  A cell begun at `PANEL_START_MS` with the deadline a full cell gives it leaves the reserve
+   *  outside the handoff allowance, which is exactly when the window IS the reserve. */
   const armStall = () =>
     armBudget(
       { minutes: 0, turns: 0, tokens: 0 },
       {
-        windowMs: reserveMs(),
+        reserveMs: REVIEW_DEADLINE_RESERVE_MS,
         silence: () => ({ sinceMs: 0, toolInFlight: false }),
         deadlineMs: PANEL_START_MS + PANEL_CELL_S * MINUTE_MS,
-        now: PANEL_NOW,
+        startedAt: PANEL_START_MS,
       },
     );
 
@@ -342,10 +341,12 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
   const sub = armBudget(
     { minutes: 0, turns: 0, tokens: 0 },
     {
-      windowMs: SUB_MINUTE_MS,
+      reserveMs: REVIEW_DEADLINE_RESERVE_MS,
       silence: () => ({ sinceMs: 0, toolInFlight: false }),
-      deadlineMs: PANEL_START_MS + PANEL_CELL_S * MINUTE_MS,
-      now: PANEL_NOW,
+      // The deadline sits SUB_MINUTE_MS past the handoff allowance from `startedAt`, so the window
+      // the step derives — the one the poll enforces — is that sub-minute remainder.
+      deadlineMs: PANEL_NOW + PINNED_ALLOWANCE_MS + SUB_MINUTE_MS,
+      startedAt: PANEL_NOW,
     },
   ).opts.stall;
   assert(

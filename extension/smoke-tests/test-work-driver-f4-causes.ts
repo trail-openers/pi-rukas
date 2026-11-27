@@ -73,6 +73,10 @@ for (const [cause, killCause] of [
   ["self-killed:review-skill-reread", "review-skill-reread"],
   // The opt-in progress-silence kill: a retry replays the stall.
   ["self-killed:no-progress", "no-progress"],
+  // #2644 — the caller's hung-request lever: a re-spawn sits the whole window out again, so like
+  // `no-progress` it is a self-kill that buys nothing. Its sibling `inactivity` DOES retry, and
+  // this row is what tells the two apart.
+  ["self-killed:stall", "stall"],
 ] as const) {
   const cls = classifyFailureCause(mkEvent({ killCause, kind: "dispatch-failed" }));
   assert(
@@ -91,6 +95,9 @@ for (const [cause, killCause] of [
     budget("no-progress") === 0,
     `no-progress: RETRY_ONCE budget 0 (got ${budget("no-progress")})`,
   );
+  // #2644 — the same zero budget for a stall kill: the re-spawn would sit the whole window out
+  // again, so a semantic retry buys nothing.
+  assert(budget("stall") === 0, `stall: RETRY_ONCE budget 0 (got ${budget("stall")})`);
   assert(budget("loop") === 1, `loop: RETRY_ONCE budget unchanged at 1 (got ${budget("loop")})`);
 }
 
@@ -145,6 +152,9 @@ for (const [cause, killCause] of [
   // #1827 — the reviewer-bound causes each need their own defined reason line.
   ["self-killed:review-skill-reread", "review-skill-reread"],
   ["self-killed:no-progress", "no-progress"],
+  // #2644 — the caller's hung-request lever needs a defined reason line too; a missing switch
+  // case in either renderer returns undefined, which is what this table catches.
+  ["self-killed:stall", "stall"],
 ] as const) {
   const cls = classifyFailureCause(mkEvent({ killCause, kind: "dispatch-failed" }));
   const reason = failureCauseReason(mkEvent({ killCause, kind: "dispatch-failed" }));
@@ -184,6 +194,9 @@ for (const [cause, killCause] of [
     // harness". The post-verdict stop has NO row by design — it never reaches
     // killDetail, which selects a `dispatch-failed` carrying a cause.
     ["review-skill-reread", "skill file"],
+    // #2644 — a stall kill names its own bound the way every sibling self-kill does; without a
+    // WHY row the lookup falls to the generic "was killed by the harness".
+    ["stall", "request-stall"],
   ] as const) {
     const state = {
       ...base,

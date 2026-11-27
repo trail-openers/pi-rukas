@@ -15,7 +15,7 @@
  */
 
 import type { ReviewBoundRecord } from "./review-bound.ts";
-import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
+import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 export class ReviewInfraError extends Error {

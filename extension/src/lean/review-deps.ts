@@ -74,8 +74,8 @@ export function reviewDeps(headless: boolean): ReviewDeps {
       // and the step's armed bound can only TIGHTEN it. Asserted on the value the reviewer
       // dispatch received in `test-adversarial-reviewer-bound.ts`.
       // `stall` comes out of `arms` for the same reason: the reviewer's spawn options are built by
-      // `adversarial-phase.ts`, which knows the loop's params and not the lean arm, so a spread would
-      // deliver nothing — the frozen whole minutes ride there as `stallWindowMinutes`.
+      // `adversarial-phase.ts`, which knows the loop's params and not the lean arm, so the frozen whole
+      // minutes ride there as `stallWindowMinutes`.
       const { childBoundMs: budgetBoundMs, stall: budgetStall, ...arms } = a.budget.opts;
       return runAdversarialLoop(
         {
@@ -109,8 +109,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           ...arms,
           childBoundMs: Math.min(budgetBoundMs ?? Number.POSITIVE_INFINITY, loopChildBoundMs()),
           // #2644 — the step's hung-request lever, as the frozen whole minutes: the reading that
-          // decides whether the child is quiet (its abort already rides `arms.signal`), so a reviewer
-          // whose model request never answered is not bounded only by its wall clock.
+          // decides whether the child is quiet (its abort already rides `arms.signal`).
           ...(budgetStall === undefined ? {} : { stallWindowMinutes: budgetStall.windowMinutes }),
           ...leanChildOpts(a.headless),
         },
@@ -125,9 +124,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
       // Taking the key out of the type too makes a future spread that could carry it a
       // compile error. Asserted on the delivered value in `test-lean-review-deps-bound.ts`.
       // `stall` is taken out beside `childBoundMs` for the same reason: `runLensReview` hands its
-      // options to `runLensChild`, which builds its own spawn options, so only the frozen window
-      // travels. A stall window is no wall clock and has no lens knob, so the step's armed value is
-      // handed straight to the child that hangs.
+      // options to `runLensChild`, which builds its own spawn options, so only the frozen window travels.
       const { childBoundMs: budgetBoundMs, stall: budgetStall, ...arms } = a.budget.opts;
       const summary = await (deps.lensEngine ?? runLensReview)({
         base: a.base,
@@ -165,8 +162,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // The test-only lens-child seam (see `ReviewDeps.lensChildFn`).
         ...(deps.lensChildFn === undefined ? {} : { lensChildFn: deps.lensChildFn }),
         // #2644 — the same lever for the six lens children: the reading that decides whether a lens
-        // is quiet (its abort already rides `arms.signal`), so a hung lens request is not bounded
-        // only by the lens's wall clock.
+        // is quiet (its abort already rides `arms.signal`).
         ...(budgetStall === undefined ? {} : { stallWindowMinutes: budgetStall.windowMinutes }),
         ...arms,
         ...leanChildOpts(a.headless),

@@ -320,6 +320,10 @@ export function recordKillBudgets(
     case "inactivity":
     case "tool-inactivity":
     case "no-progress":
+    // #2644 — the caller's hung-request lever: the poll records the derived window it fired on
+    // through the same seam as its own silence budgets, so the report names it rather than
+    // falling to the no-budget arm.
+    case "stall":
       result.killBudgetMs = budgets.killedBudgetMs();
       return;
   }

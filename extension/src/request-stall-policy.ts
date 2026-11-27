@@ -29,13 +29,17 @@ export interface StallFired {
   used: number;
 }
 
-/** #2644: what a step hands `armBudget` — the window {@link requestStallWindowMs} derived, this
- *  child's stream reader, and the clock the arm discloses its own inertness from. */
+/** #2644: what a step hands `armBudget` — the reserve the window is capped by, this child's stream
+ *  reader, and the two times the window is measured between. `startedAt` is **when the step began**,
+ *  read from the same durable step entry the step's own bound measures from (`stepBound`), not a
+ *  fresh clock read at arm time: a step whose clock is scripted
+ *  (`test-lean-review-bound-record.ts`) counts reads, and one extra slot would move its stop.
+ *  Omit it and the lever is measured from now, which is what a caller outside a step gets. */
 export interface StallArms {
-  windowMs: number | undefined;
+  reserveMs: number;
   silence?: StreamSilence;
   deadlineMs?: number;
-  now?: number;
+  startedAt?: number;
 }
 
 /** Reads THIS child's stream: how long quiet, and whether a tool call is running. */
@@ -49,12 +53,14 @@ export type StreamSilence = () => { sinceMs: number; toolInFlight: boolean };
 export const leanRequestStallEnabled = (): boolean =>
   process.env.PI_ENSEMBLE_LEAN_REQUEST_STALL !== "0";
 
-/** Why the lever armed nothing, or `undefined` when it did arm. */
-function unarmed(deadlineMs: number | undefined, now: number) {
+/** Why the lever armed nothing, or `undefined` when it did arm. `startedAt` is the instant the step
+ *  read its own clock for the bound beside this lever — the disclosure's caller supplies it, so the
+ *  lever's own arming never touches a clock. */
+function unarmed(deadlineMs: number | undefined, startedAt: number) {
   if (!leanRequestStallEnabled()) return "switch" as const;
   if (deadlineMs === undefined) return "deadline" as const;
   if (!capsEnabled()) return "caps" as const;
-  return deadlineMs - now - handoffDispatchTimeoutMs() > 0 ? undefined : ("room" as const);
+  return deadlineMs - startedAt - handoffDispatchTimeoutMs() > 0 ? undefined : ("room" as const);
 }
 
 /** The silence a model request may sit out, ms; `undefined` = inert, never a zero window. */
@@ -76,7 +82,7 @@ export function requestStallWindowMs(
  */
 export function requestStallUnarmed(
   deadlineMs: number | undefined,
-  now: number,
+  startedAt: number,
 ): string | undefined {
   const causes = {
     caps: "PI_ENSEMBLE_DISPATCH_CAPS=0",
@@ -84,7 +90,7 @@ export function requestStallUnarmed(
     room: "no room outside the handoff allowance",
     switch: "PI_ENSEMBLE_LEAN_REQUEST_STALL=0",
   } as const;
-  const reason = unarmed(deadlineMs, now);
+  const reason = unarmed(deadlineMs, startedAt);
   return reason === undefined ? undefined : `request stall bound is inert: ${causes[reason]}`;
 }
 
@@ -118,14 +124,17 @@ export interface StallOpts {
  * a sibling child's spawn is armed with, so the two cannot disagree. `undefined` is the whole of
  * "this step armed no stall lever", which is why no caller needs a second field saying the same
  * thing.
+ *
+ * The window is DERIVED HERE, at the freeze, from the arms the step supplied: the deadline it runs
+ * against and the instant its own bound measures from, so the lever and the wall clock are measured
+ * between the same two times and arming the stall reads no clock at all.
  */
-export function stallLever(
-  windowMs: number | undefined,
-  silence: StreamSilence | undefined,
-): StallOpts | undefined {
-  return silence === undefined || windowMs === undefined || windowMs <= 0
+export function stallLever(arms: StallArms | undefined): StallOpts | undefined {
+  const startedAt = arms?.startedAt ?? Date.now();
+  const windowMs = requestStallWindowMs(arms?.deadlineMs, startedAt, arms?.reserveMs ?? 0);
+  return arms?.silence === undefined || windowMs === undefined || windowMs <= 0
     ? undefined
-    : { windowMinutes: stallMinutes(windowMs), windowMs, silence };
+    : { windowMinutes: stallMinutes(windowMs), windowMs, silence: arms.silence };
 }
 
 /**

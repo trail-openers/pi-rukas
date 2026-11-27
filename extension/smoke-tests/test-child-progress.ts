@@ -433,6 +433,14 @@ const result = (id: string): PiJsonEvent => ({
     result.killBudgetMs === 7,
     `a no-progress kill records the window it fired on (got ${result.killBudgetMs})`,
   );
+  // #2644 — the caller's hung-request lever records the window the poll computed through the SAME
+  // seam; without the case the completion event loses the bound and prints the no-budget arm.
+  const stalled = { killCause: "stall" } as DispatchResult;
+  recordKillBudgets(stalled, { timeoutMs: 1, clamped: false, killedBudgetMs: () => 9 });
+  assert(
+    stalled.killBudgetMs === 9,
+    `a stall kill records the window it fired on (got ${stalled.killBudgetMs})`,
+  );
   if (saved === undefined) delete process.env[IDLE];
   else process.env[IDLE] = saved;
 }

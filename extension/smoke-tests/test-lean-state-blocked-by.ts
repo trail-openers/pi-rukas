@@ -19,9 +19,9 @@
 
 import { REPORTING_STATES } from "../src/lean/state-outcome.ts";
 import {
-  BLOCKED_MAX_ENTRIES,
-  BLOCKED_MAX_REASON_CHARS,
-} from "../src/lean/build-blocked.ts";
+  RECORD_MAX_ENTRIES,
+  RECORD_REASON_MAX_CHARS,
+} from "../src/lean/state-outcome-maps.ts";
 import { INITIAL_COUNTERS, REPORT_STATES, leanStateFile, loadRun } from "../src/lean/state.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { FIXTURE_BASE_SHA, makeAssert, tempDir } from "./lib/lean-engine-fixtures.ts";
@@ -231,8 +231,8 @@ assert(
 // record alone would leave the gate refusing entries the loader accepts, and a
 // gate wider than the record spends a runner on an entry that cannot be saved.
 assert(
-  BLOCKED_MAX_ENTRIES === 32 && BLOCKED_MAX_REASON_CHARS === 300,
-  `the gate's bounds still equal the record's 32 / 300 (got ${String(BLOCKED_MAX_ENTRIES)} / ${String(BLOCKED_MAX_REASON_CHARS)})`,
+  RECORD_MAX_ENTRIES === 32 && RECORD_REASON_MAX_CHARS === 300,
+  `the gate's bounds still equal the record's 32 / 300 (got ${String(RECORD_MAX_ENTRIES)} / ${String(RECORD_REASON_MAX_CHARS)})`,
 );
 
 process.exit(failures());

@@ -5,10 +5,8 @@
  * `killCause: "child-bound"`; **turns / tokens / stall** → one `AbortController` off the progress
  * stream. A breach is a VERDICT — the child worked and the ceiling stopped it — so the step returns
  * `{kind: "budget"}` to be routed by the table. Only a turns / tokens breach may be named from a
- * `child-bound` cause, and never the stall lever: that abort is measured in the stream and frozen in
- * {@link BudgetArms.fired} at the tick it happened, so a cause the wall clock stamped is not a stall
- * this arm observed. Callers ask {@link readDispatched} BEFORE their infra throw: a stop read as an
- * infra failure never reaches the routing and the run loses the cause the ceiling produced.
+ * `child-bound` cause; the stall verdict is only ever what the progress hook froze. Ask
+ * {@link readDispatched} BEFORE a caller's infra throw, so a stop is never read as a failure.
  */
 
 import type { LensRunResult } from "../lens-review-types.ts";
@@ -38,7 +36,7 @@ export interface BudgetOpts {
   signal?: AbortSignal;
   onProgress?: (s: RunningState) => void;
   budgetTurns?: number;
-  /** #2644: quiet this long with nothing in flight is a hung request (#951). */
+  /** #2644: quiet this long with nothing in flight is a hung request (#951). Absent = lever not armed. */
   stall?: StallOpts;
 }
 
@@ -109,7 +107,7 @@ export function budgetTrio(oc: Outcome | undefined): BudgetFired | undefined {
   return { limit, value, used };
 }
 
-/** One budget line, the same words for all three levers. The trace sink is caught: not ours to trust. */
+/** One budget line, the same words for all four levers. The trace sink is caught: not ours to trust. */
 function traceBreach(fired: BudgetFired, phrase: string): void {
   try {
     traceWarn(
@@ -124,9 +122,9 @@ function traceBreach(fired: BudgetFired, phrase: string): void {
 export type BudgetArms = {
   opts: BudgetOpts;
   /**
-   * The verdict this arm saw: the turns/tokens/stall the progress hook froze, else the minutes lever
-   * inferred from a `child-bound` kill cause — a cause that names a wall clock, so it never names the
-   * stall lever, which is only ever what `onProgress` froze in `hit`.
+   * The verdict this arm saw: what the progress hook froze, else the minutes lever inferred from a
+   * `child-bound` kill cause — a cause the wall clock stamped, so it can name turns / tokens but never
+   * the stall lever, which the stream itself measured.
    */
   fired: (result: DispatchResult) => BudgetFired | undefined;
   /** Set when a wall clock was armed that the runtime will not enforce (`PI_ENSEMBLE_DISPATCH_CAPS=0`). */
@@ -138,16 +136,17 @@ export type BudgetArms = {
  *
  * The `minutes` lever is `childBoundMs`, enforced by `spawn-child-bound.ts` — the kill lands AFTER its
  * grace period and the reported `ms` overshoots, so {@link minutesUsed} rounds up. The `stall` lever
- * aborts through the same controller as turns / tokens and reads back as a `budget` verdict, so a
- * hung request is never a user cancel.
+ * aborts through the same controller as turns / tokens, and its verdict is a `budget` stop — never a
+ * user cancel.
  */
 export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms {
   const minutes = b?.minutes ?? 0;
   const turns = b?.turns ?? 0;
   const tokens = b?.tokens ?? 0;
   const boundMs = minutes > 0 ? minutes * 60_000 : undefined;
-  // Frozen HERE: a running child's bound must not move with a later clock read.
-  const stallOpts = stallLever(stall?.windowMs, stall?.silence);
+  // Frozen HERE: a running child's bound must not move with a later clock read. The lever derives
+  // its own window from the arms, so arming it reads no clock and cannot shift this bound.
+  const stallOpts = stallLever(stall);
   // Which limit ended the child, frozen at the FIRST breach: a later tick must not rewrite it.
   let hit: BudgetFired | undefined;
   let minutesTraced = false;
@@ -168,11 +167,11 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
     // A turns / tokens / stall breach the hook measured outranks anything read from the cause.
     if (hit !== undefined) return hit;
     if (result.killCause !== CHILD_BOUND_CAUSE) return undefined;
-    // The minutes lever, inferred from the cause `applyChildBound` stamps — or, when no wall clock was
-    // armed, named by a turns / tokens signal. The stall lever's abort rides the SAME controller, so a
-    // `child-bound` cause — this arm's bound, a sibling's tighter one, or the stub `adversarial-phase.ts`
-    // leaves on a child it refused to buy — NEVER names the stall: the lever measured its own breach in
-    // `onProgress` and froze it in `hit`, already returned above.
+    // The minutes lever, inferred from the cause `applyChildBound` stamps — or, with no wall clock
+    // armed, a turns / tokens signal. The stall lever's abort rides the SAME controller, so a
+    // `child-bound` cause — this arm's bound, a sibling's tighter one, or the stub
+    // `adversarial-phase.ts` leaves on a child it refused to buy — NEVER names the stall: that lever
+    // froze its own breach in `hit`, already returned above.
     if (boundMs === undefined) {
       if (turns <= 0 && tokens <= 0) return undefined;
       return turns > 0
@@ -181,16 +180,16 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
     }
     return minutesBreach(result);
   };
-  // `armChildBound` returns early under `PI_ENSEMBLE_DISPATCH_CAPS=0` — arming it there buys nothing
-  // — and the stall lever's inertness rides the SAME warning instead of going quiet per step.
+  // `armChildBound` returns early under `PI_ENSEMBLE_DISPATCH_CAPS=0`, where arming buys nothing; the
+  // stall lever's inertness rides the SAME warning instead of going quiet per step.
   const inert =
     [
       ...(boundMs !== undefined && !capsEnabled()
         ? [`${String(minutes)}-minute budget is inert: PI_ENSEMBLE_DISPATCH_CAPS=0`]
         : []),
-      ...(stall?.deadlineMs === undefined || stall.now === undefined
+      ...(stall?.deadlineMs === undefined || stall.startedAt === undefined
         ? []
-        : [requestStallUnarmed(stall.deadlineMs, stall.now) ?? ""]),
+        : [requestStallUnarmed(stall.deadlineMs, stall.startedAt) ?? ""]),
     ]
       .filter(Boolean)
       .join("; ") || undefined;

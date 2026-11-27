@@ -37,12 +37,7 @@ import {
   validatedPreexistingFailures,
   validatedProjectRoster,
 } from "./state-outcome-maps.ts";
-// The two print caps for a `blockedBy` entry live with the validator that enforces the
-// record's own bound; re-exported so a caller need not know which file holds them.
-export { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./state-outcome-maps.ts";
 import type { LeanState, Outcome } from "./state.ts";
-// Re-exported so every consumer's import site stays where it was.
-export { DISPATCHES_MAX_ROWS, validatedDispatches } from "./state-dispatches.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
 /**

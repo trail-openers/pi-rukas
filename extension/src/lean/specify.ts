@@ -71,7 +71,7 @@ import {
   specifyWorktreePath,
   worktreeExists,
 } from "./specify-tree.ts";
-import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
+import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
 import type { LeanRun } from "./state.ts";
 import type { Outcome } from "./state.ts";
 import type { BudgetOpts, DispatchUsageRow } from "./step-budget.ts";

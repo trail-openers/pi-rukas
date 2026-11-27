@@ -176,16 +176,15 @@ export function makeRunPhase(opts: RunPhaseOpts): RunPhase {
                 // #2644 — the step's hung-request window, on the reviewer's own spawn. The abort is
                 // already joined above (`budgetSignal` → this child's `kill`); these are the two facts
                 // the stream pump reads to decide whether to fire it. A child whose model request never
-                // answers emits no turns, so turns/tokens never breach it and the wall clock below is
-                // the only thing that would end it — the exact shape #2644 lost cells to.
+                // answers emits no turns, so turns/tokens never breach it — the exact shape #2644 lost
+                // cells to.
                 ...(budgetStallWindowMinutes === undefined
                   ? {}
                   : {
                       stall: {
                         windowMinutes: budgetStallWindowMinutes,
                         // The spawn replaces this with its own stamp and in-flight set
-                        // (`stallLever` in `spawn-inflight.ts`); this placeholder is the shape the
-                        // option requires and is never what the pump reads.
+                        // (`stallLever` in `spawn-inflight.ts`); the pump never reads this one.
                         silence: () => ({ sinceMs: 0, toolInFlight: false }),
                       },
                     }),

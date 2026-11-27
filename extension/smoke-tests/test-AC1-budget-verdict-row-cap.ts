@@ -15,7 +15,7 @@
  * Offline: pure seam, nothing spawned, no temp repo.
  */
 import { budgetVerdictWithRows, type DispatchUsageRow } from "../src/lean/step-budget.ts";
-import { DISPATCHES_MAX_ROWS } from "../src/lean/state-outcome.ts";
+import { DISPATCHES_MAX_ROWS } from "../src/lean/state-dispatches.ts";
 import { dispatchesProblem } from "../src/lean/state-dispatches.ts";
 
 let exit = 0;

@@ -121,6 +121,11 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
       // calls it — `armBudget` does — so the refusal is pinned directly.
       stallLever:
         "the arms the lever freezes, and the refusal of a window of 0 or less; test-lean-request-stall.ts (c) pins no-zero-timer",
+      // The arithmetic from (deadline, start, reserve) to the window. `stallLever` is its only
+      // production caller — a step hands over the deadline and the reserve, never a window — so the
+      // clamping near the line and the no-room refusal are pinned by the direct calls.
+      requestStallWindowMs:
+        "the derived window: the reserve with room to spare, the remainder near the line, nothing at all with no room; test-lean-request-stall.ts (c) pins all three",
     },
     canary: {
       symbol: "stallLever",
@@ -128,7 +133,7 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
     },
     locate: (source: { name: string; text: string }) => ({
       // The one file that ARMS the lever — it imports the module as a value and calls `stallLever`.
-      // `lean/request-stall.ts` also imports it, but only to derive the window it hands over.
+      // `lean/request-stall.ts` also imports it, but only for the arms' type and the reserve.
       production: source.name === "lean/step-budget.ts",
       importsSeam: /from "\.\.\/request-stall-policy\.ts"/.test(source.text),
     }),

@@ -9,7 +9,7 @@
 import { neutraliseEvidence } from "../comment-evidence.ts";
 import type { LensRound } from "./review-args.ts";
 import { passKind } from "./review-step.ts";
-import { DISPATCHES_MAX_ROWS } from "./state-outcome.ts";
+import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
 import type { Outcome } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 

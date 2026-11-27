@@ -460,14 +460,22 @@ export function isFinalProviderFault(cls: { cause: DispatchFailureCause; shouldR
 
 /**
  * #79 — how many re-dispatches a RETRY_ONCE step may spend on this failure:
- * none for a final provider fault or a no-progress kill (a re-spawn replays
- * the stall for a whole new window), the transient budget for infra, else one.
+ * none for a final provider fault or a kill that replays its own stall (a
+ * no-progress child re-emits without progress; a stall child re-hangs in the
+ * same model request), the transient budget for infra, else one.
  */
 export function stepRetryBudget(
   cls: { cause: DispatchFailureCause; shouldRetry: boolean; maxRetries: number },
   infra: boolean,
 ): number {
-  if (isFinalProviderFault(cls) || cls.cause === "self-killed:no-progress") return 0;
+  if (
+    isFinalProviderFault(cls) ||
+    cls.cause === "self-killed:no-progress" ||
+    // #2644 — same reason as `no-progress`: the re-spawn sits the whole derived window out again.
+    // `shouldRetry: false` already stops the transient path; this is the RETRY_ONCE router's budget.
+    cls.cause === "self-killed:stall"
+  )
+    return 0;
   return infra ? cls.maxRetries : 1;
 }
 
