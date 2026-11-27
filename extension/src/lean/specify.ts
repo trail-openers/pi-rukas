@@ -1,3 +1,4 @@
+import { testsFromLog } from "../lean-log.ts";
 /**
  * lean/specify — the step that proves the acceptance tests are red before anybody
  * writes the implementation.
@@ -49,7 +50,6 @@ import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
-import { testsFromLog } from "../lean-log.ts";
 import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { preVerifyShare } from "./pre-verify-share.ts";

@@ -33,6 +33,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { execp } from "../exec.ts";
+import { frozenFromLog, testsFromLog } from "../lean-log.ts";
 import {
   armsStepBudget,
   stepBoundOf,
@@ -46,7 +47,6 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
-import { frozenFromLog, testsFromLog } from "../lean-log.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact } from "./build-normalise.ts";
 import { ChallengeInfraError, dispatchAdversary } from "./challenge-dispatch.ts";
