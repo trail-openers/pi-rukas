@@ -86,7 +86,7 @@ interface SpecifyAttemptArgs {
   /** See {@link SpecifyPromptOpts.resubmit}: retry with the fixed "you never
    * submitted" note instead of the drop reasons. */
   resubmit?: boolean;
-  /** #2644 — the hung-request lever the caller derived from the run's deadline. */
+  /** The hung-request lever the caller derived from the run's deadline. */
   stall?: Parameters<typeof armBudget>[1];
 }
 

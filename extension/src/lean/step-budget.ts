@@ -36,7 +36,7 @@ export interface BudgetOpts {
   signal?: AbortSignal;
   onProgress?: (s: RunningState) => void;
   budgetTurns?: number;
-  /** #2644: quiet this long with nothing in flight is a hung request (#951). Absent = lever not armed. */
+  /** Quiet this long with nothing in flight is a hung request. Absent = lever not armed. */
   stall?: StallOpts;
 }
 
