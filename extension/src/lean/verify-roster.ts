@@ -1,7 +1,11 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
-import { linkShareableDeps } from "../worktree-provision.ts";
+import { runHookProvisioning } from "../worktree-provision-hook.ts";
+import { WORKTREE_SETUP_HOOK, linkShareableDeps } from "../worktree-provision.ts";
 import { testLocationOf } from "./config-test-location.ts";
 import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
+import { leanRosterBaseSetupEnabled } from "./roster-base-setup-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
 import {
@@ -38,10 +42,11 @@ function none(reason: string): ProjectRosterOutcome {
 /**
  * The project suite at the base commit, in a throwaway checkout.
  *
- * The tree is at `probeWorktreePath`, under the repo's `.worktrees/`. Dependencies are
- * symlinked only (`linkShareableDeps` — the project's `.pi/worktree-setup` is arbitrary code and
- * this probe never runs it). The report is read BEFORE the `finally` removes the tree: a roster
- * re-read after teardown is a roster read from nothing.
+ * The tree is at `probeWorktreePath`, under the repo's `.worktrees/`. A project with a
+ * `.pi/worktree-setup` gets it run there, as its own worktree did: a base missing what the hook
+ * generates fails the tests that need it, and a head failure on them would then be excused. Without
+ * one, dependencies are symlinked (`linkShareableDeps`). The report is read BEFORE the `finally`
+ * removes the tree: a roster re-read after teardown is a roster read from nothing.
  */
 async function runProjectSuiteAtBase(opts: {
   exec: VerifyExec;
@@ -99,23 +104,32 @@ async function runProjectSuiteAtBase(opts: {
     // So the checkout is asked directly, in its own cwd, before it is believed: every dependency the
     // repo carries at its root or in a package dir must be a directory here. A project with nothing to
     // link has no expected locations, no problem, and is not this refusal.
-    const provisioned = await linkShareableDeps(exec, repoRoot, abs).catch(
+    const hook = path.join(repoRoot, WORKTREE_SETUP_HOOK);
+    const viaHook = leanRosterBaseSetupEnabled() && existsSync(hook);
+    const provisioned = await (viaHook
+      ? runHookProvisioning(exec, repoRoot, abs, hook)
+      : linkShareableDeps(exec, repoRoot, abs)
+    ).catch(
       (err: unknown) =>
         ({
           problem: `the provisioner itself failed: ${(err as Error)?.message ?? String(err)}`,
         }) as const,
     );
+    // On the hook path only the hook's own failure refuses: its other problems are judged against
+    // repoRoot (a hook that installs from scratch has no source there), which the run's own worktree
+    // only traces, and `undeliveredDeps` below asks what this checkout actually received.
+    const problem = viaHook && !("hookFailed" in provisioned) ? undefined : provisioned.problem;
     const undelivered = await undeliveredDeps(exec, repoRoot, baseSha, abs);
     if (undelivered === undefined)
       return {
         ran: false,
         reason: `the base commit's dependency listing could not be read at ${baseSha.slice(0, 12)}, so no base run may excuse a head failure`,
       };
-    if (provisioned.problem !== undefined || undelivered.length > 0)
+    if (problem !== undefined || undelivered.length > 0)
       return {
         ran: false,
         reason: `the base checkout ${abs} never received the project's dependencies (${
-          provisioned.problem ?? `never arrived: ${clip(undelivered)}`
+          problem ?? `never arrived: ${clip(undelivered)}`
         }), so its suite could not have run and no head failure may be excused against it`,
       };
     return await runProjectSuite(exec, { cwd: abs, ...run, timeoutMs, reportCwd: abs });

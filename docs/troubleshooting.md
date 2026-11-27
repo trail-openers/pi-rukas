@@ -4715,7 +4715,10 @@ missing, and it is one of:
   was skipped names no test either. `at the base commit: the base commit's dependency listing could
   not be read` is git refusing to list which dependency directories the base tracks (a broken object
   store, a sha it cannot resolve): the gate cannot tell whether the base checkout could import its
-  suite, so it does not run it. Repair the clone (`git fsck`) and re-run.
+  suite, so it does not run it. Repair the clone (`git fsck`) and re-run. `at the base commit: the
+  base checkout … never received the project's dependencies (.pi/worktree-setup failed …)` is the
+  project's setup hook failing in the base checkout, which is provisioned like the run's own
+  worktree: fix the hook so it runs on a fresh checkout of the base commit.
 - **`the base versions of …`** — a pre-existing test file the run edited could not be read at the
   base commit, so its base version cannot be run against the head code; or more than 20 edited
   files' base versions fail against it, more than a review may accept.
