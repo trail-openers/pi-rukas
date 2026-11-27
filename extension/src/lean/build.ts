@@ -357,8 +357,10 @@ export async function buildOutcome(
   // the output cap mid-reasoning, or answered one clean turn without acting. Both get the fixer's ONE
   // continuation, judged AFTER the fold ("no change" is the fold's answer, not a child field) and
   // before the verdict. `tries` and `noWorkRetryUsed` are untouched; the ask is one-shot by being
-  // asked once here. `budgetFired` is false because a ceiling that had fired was answered inside the
-  // dispatch loop — no stop reaches here with the budget already spent.
+  // asked once here. `budgetFired` is a constant false, not a swallowed read: `dispatchBuilder`
+  // consults `budget.fired(result)` on EVERY child — turns, tokens, stall and the deadline-derived
+  // minutes lever — and a breach returns a BudgetStop that this loop folds and returns or retries,
+  // so the single `break` is the only edge reaching here and no fired ceiling can (case (2b)).
   const noChange = report.files.length === 0;
   const wasted =
     noChange && lastChildResult !== undefined
