@@ -258,8 +258,13 @@ async function deliver(
     );
 
   // The window the step's own arms imply, from the SAME reader the lever uses: the expectation is the
-  // rule's answer, not a literal the fixture agrees with.
-  const expectedMinutes = Math.ceil(requestStallWindowMs(deadlineMs, startedAt, 10 * MINUTE)! / MINUTE);
+  // rule's answer, not a literal the fixture agrees with. Written `?? 0` rather than the non-null
+  // assertion: a `/` straight after `!` is where the selector's lexer
+  // (`src/work-driver-verify-select-lex.ts`) cannot tell division from a regex opening, and a file it
+  // refuses sends every develop round to the full suite. A missing window is 0 here and the arm
+  // assertions below are what catch it — `deliver` is armed with the same number they read back.
+  const windowMs = requestStallWindowMs(deadlineMs, startedAt, 10 * MINUTE) ?? 0;
+  const expectedMinutes = Math.ceil(windowMs / MINUTE);
   const armed = await deliver({ stallWindowMinutes: expectedMinutes });
   assert(
     armed.reviewer !== undefined,
