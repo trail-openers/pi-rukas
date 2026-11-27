@@ -14,8 +14,8 @@
  *         the tier is not executed again, and the step is still green.
  *   AC2 — the step's record says `fullSatisfied`, and the reason carries the same fact as a clause a
  *         reader can tell from a passed tier; the clause survives the reason clip and the PR body clip.
- *   AC3 — every other arm is untouched: a different full tier, a red roster head, an unreadable
- *         roster report, and the roster switched off all run the tier exactly as they do today.
+ *   AC3 — every other arm is untouched: a different full tier, a red roster head and an unreadable
+ *         roster report all run the tier exactly as they do today.
  *
  * The counter that makes AC1 observable is `suiteTierRuns`: the exec stub bumps it for a head run of the
  * case's own tier command, so "0" is the evidence that the tier was not run rather than an absence of
@@ -33,7 +33,6 @@ import type { ProjectRosterRecord } from "../src/lean/state-outcome-maps.ts";
 import { outcomeProblem } from "../src/lean/state-outcome.ts";
 import { RED_REASON_CLIP } from "../src/lean/verify-deps.ts";
 import { deriveSuiteTemplate } from "../src/lean/verify-roster-command.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { ROOTS, runVerify } from "./lib/lean-verify-fixture.ts";
 import { FROZEN_FILE } from "./lib/lean-verify-frozen.ts";
 import { PASS_TIER } from "./lib/lean-verify-tiers.ts";
@@ -228,37 +227,6 @@ const CONFIG = { fast: PASS_TIER, test: "sh {file}" } as const;
   assert(
     unreadable.suiteTierRuns === 0,
     `(ac3) and it hands back before the tier, as it did today (${String(unreadable.suiteTierRuns)})`,
-  );
-}
-
-// ------------------------------------------------ AC3: the roster switched off
-{
-  // Off is today's behaviour: the tier runs, and no roster-side claim of any kind is written. The
-  // tier configured here is one the roster WOULD have satisfied, so the lever is the only difference
-  // between this case and the AC1 cases above.
-  let off!: Awaited<ReturnType<typeof runVerify>>;
-  await withEnv({ PI_ENSEMBLE_LEAN_PROJECT_ROSTER: "0" }, async () => {
-    off = await runVerify({
-      issue: 2644,
-      implement: true,
-      config: { ...CONFIG },
-      full: RUNNER,
-      suiteTier: RUNNER,
-      roster: GREEN_ROSTER,
-    });
-  });
-  assert(
-    off.outcome?.kind === "green",
-    `(ac3) with the roster off the case is green (got ${off.outcome?.kind ?? `threw: ${off.threw?.message?.slice(0, 100)}`})`,
-  );
-  assert(
-    off.suiteTierRuns === 1,
-    `(ac3) with the roster off the full tier ran (${String(off.suiteTierRuns)})`,
-  );
-  assert(off.rosterHeadRuns === 0, `(ac3) and no roster ran (${String(off.rosterHeadRuns)})`);
-  assert(
-    !Object.hasOwn(off.outcome ?? {}, "projectRoster"),
-    "(ac3) and the off arm writes no roster record",
   );
 }
 

@@ -46,7 +46,7 @@
 
 import { redactClip } from "../decision-log.ts";
 import { NO_BLOCK_RULE } from "../lean/spec.ts";
-import { RED_TEST_GAP } from "../lean/specify-gap-switch.ts";
+import { RED_TEST_GAP } from "../lean/specify-attempt.ts";
 import { specifyBranch } from "../lean/specify-tree.ts";
 import { type LeanRun, type Outcome, REPORT_STATES, type Step } from "../lean/state.ts";
 import { budgetSentence, budgetTrio } from "../lean/step-budget.ts";
@@ -67,7 +67,7 @@ import { leanGates, reviewBoundSentence } from "./work-lean-gates.ts";
 import { leanHandoff } from "./work-lean-handoff.ts";
 import { prStateOf, prUrlOf, publishedHeadOf, reviewCompleteOf } from "./work-lean-pr.ts";
 
-/** The full head the newest `review` fix wave started from (`PI_ENSEMBLE_LEAN_PREFIX_HEAD`); absent when
+/** The full head the newest `review` fix wave started from; absent when
  * no review recorded one. Lean-only, so it is typed here rather than on the shared `IssueResult`. */
 type LeanOnly = { preFixHead?: string };
 

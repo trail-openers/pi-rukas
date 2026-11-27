@@ -37,7 +37,7 @@ export interface ReviewPosts {
   /** The bound record this attempt wrote, or `undefined` when every lane was judged and
    * there is nothing to disclose. */
   readonly bound: ReviewBoundRecord | undefined;
-  /** `fix range <pre>..<head>` once a fix wave pushed, on `PI_ENSEMBLE_LEAN_PREFIX_HEAD`. */
+  /** `fix range <pre>..<head>` once a fix wave pushed. */
   readonly fixRange?: string;
 }
 

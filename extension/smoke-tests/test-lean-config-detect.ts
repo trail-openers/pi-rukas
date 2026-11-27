@@ -64,7 +64,7 @@ for (const value of [undefined, "0", "true"]) {
 }
 
 await withEnv(
-  { PI_ENSEMBLE_LEAN_DETECT_VERIFY: "1", PI_ENSEMBLE_LEAN_PROJECT_ROSTER: undefined },
+  { PI_ENSEMBLE_LEAN_DETECT_VERIFY: "1" },
   async () => {
     // ── Detected: each signal, the values, and the validators the loader holds a config to.
     const cases: [string, Record<string, string>, string, string, string][] = [

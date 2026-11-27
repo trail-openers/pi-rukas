@@ -32,7 +32,7 @@
  *
  * The kinds are deliberately apart. `no-red-test` is a VERDICT — the run ends
  * `not-ready` with named rules. `red-test-gap` is this step's own child failing to
- * prove a criterion red, which hands the run back (`specify-gap-switch.ts`). A THROW
+ * prove a criterion red, which hands the run back (`specify-attempt.ts`). A THROW
  * is infrastructure — an unhealthy base, a worktree the step does not own, a
  * dispatch that died, a commit that did not contain what it was told to — and the
  * engine turns it into handed-back exit 10 without blaming the issue.
@@ -56,9 +56,8 @@ import { preVerifyShare } from "./pre-verify-share.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
 import { specFor } from "./spec-for.ts";
 import { type PiSpec, readiness } from "./spec.ts";
-import { runSpecifyAttempt } from "./specify-attempt.ts";
+import { RED_TEST_GAP, runSpecifyAttempt } from "./specify-attempt.ts";
 import type { CaptureResult } from "./specify-capture.ts";
-import { RED_TEST_GAP } from "./specify-gap-switch.ts";
 import { assertRunnerCanRunTests } from "./specify-preflight.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";

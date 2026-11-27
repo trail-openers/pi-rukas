@@ -1,26 +1,21 @@
 #!/usr/bin/env bun
 /**
- * #2212 / R1 — the reset the review fix round runs issues no submodule call with the switch at `0`.
+ * The reset the review fix round runs asks git to populate the submodules its clean emptied.
  *
  * The fix round is the third caller outside `specify` (the others are `build`'s
  * fold and `challenge`). `integrate()` brings the run's own branch to the fixer's
  * head with `resetWorktreeToBase` — the primitive that owns the submodule
- * initialisation and therefore the one that honours
- * `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` — and then re-provisions. So this is a
- * reset in a place a reader of `specify-reset.ts` cannot see being reached, and a
- * per-caller gate (the shape #2212 replaces) would look identical from here if it
- * were moved back out.
+ * initialisation — and then re-provisions. So this is a reset in a place a reader
+ * of `specify-reset.ts` cannot see being reached.
  *
- *   (a) with the switch at `0`, a fix round over a base whose submodule source is
- *       GONE integrates: no submodule call in the git argv the step issued, the
- *       fixer's commit reaches origin, and the gitlink stays empty;
- *   (b) the control, outside the `withEnv`: the same round throws, naming the
- *       submodule step, and issues the call the off arm never made.
+ *   (a) the retired `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` is ignored: the round still
+ *       issues the submodule call and pushes the fixer's commit;
+ *   (b) over a base whose submodule source is GONE the round issues the call, and the
+ *       call puts nothing back.
  *
- * Both arms run the identical round — one blocking finding, one fixer that commits
- * — because the property under test is the switch and nothing else. `runStep` is
- * the step's own entry, so the reset reached here is the one the step makes, not
- * one this file calls.
+ * Every case runs the identical round — one blocking finding, one fixer that commits.
+ * `runStep` is the step's own entry, so the reset reached here is the one the step
+ * makes, not one this file calls.
  *
  * Real temp repos, real git, stubbed models; no child spawned.
  */
@@ -73,7 +68,7 @@ async function drive(tag: string, preflight?: "0") {
   // inside it, and origin is fast-forwarded to that commit. So the superrepo never
   // held `.git/modules/…` for this module: there is no cache for `submodule update
   // --init` to recover from, and the step's own call is the only thing that could
-  // put the file back. That is what makes (b) a control rather than a restatement.
+  // put the file back.
   const runWt = path.join(repoRoot, ".worktrees", "lean-7");
   const remote = remoteRepo(`review-off-${tag}`);
   attachSubmodule(runWt, remote, "chore: vendor the submodule");
@@ -112,7 +107,7 @@ async function drive(tag: string, preflight?: "0") {
       },
     }));
   };
-  // The outer gate decides whether the integration's reset asks git about submodules at all.
+  // `preflight` is the retired switch, which must read as unset.
   await (
     preflight === undefined
       ? round()
@@ -125,53 +120,29 @@ async function drive(tag: string, preflight?: "0") {
     origin: git(repoRoot, "rev-parse", `origin/${BRANCH}`),
     baseSha,
     // The run's own tree as the step left it: `inside` says whether the
-    // integration's reset put the submodule back, which is the half only the
-    // on-arm can answer — and it is read after the step returned, so it is the
+    // integration's reset put the submodule back — read after the step returned, so it is the
     // OUTCOME of the call, not a promise about it.
     insideAfter: existsSync(path.join(runWt, INSIDE)),
   };
 }
 
-// ── (a) off: the round integrates, pushes, and never asked git about submodules
+// ── (a) the retired switch at "0" is ignored
 {
-  let ran: Awaited<ReturnType<typeof drive>> | undefined;
-  let boom: Error | undefined;
-  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0" }, async () => {
-    try {
-      ran = await drive("off");
-    } catch (err) {
-      boom = err as Error;
-    }
-  });
-  assert(boom === undefined, `(a) the off arm ran to completion (${boom?.message ?? "clean"})`);
+  const zero = await drive("zero", "0");
   assert(
-    ran?.threw === undefined,
-    `(a) the fix round integrated over a submodule it was never asked to fetch (${ran?.threw?.message?.split("\n")[0] ?? "clean"})`,
-  );
-  assert(
-    (ran?.submoduleArgv.length ?? -1) === 0,
-    `(a) and the round issued no submodule call of any kind (got ${JSON.stringify(ran?.submoduleArgv)})`,
-  );
-  assert(
-    ran !== undefined && ran.origin !== ran.baseSha,
-    `(a) and the fixer's commit still reached origin — the round did its job (origin at ${ran?.origin.slice(0, 12)})`,
-  );
-  assert(
-    ran?.insideAfter === false,
-    `(a) and the submodule the integration's clean emptied stayed empty afterwards (found ${String(ran?.insideAfter)})`,
+    zero.submoduleArgv.length > 0 && zero.threw === undefined && zero.origin !== zero.baseSha,
+    `(a) "0" still issues the submodule call and pushes (got ${JSON.stringify(zero.submoduleArgv.map((a) => a.slice(-3)))}, ${zero.threw?.message?.split("\n")[0] ?? "clean"})`,
   );
 }
 
-// ── (b) the control: the same round on the arm that really did ask git
+// ── (b) the round's reset asks git
 {
-  // (a) is the OUTER switch at `0`, whose claim is that the step then issues nothing about
-  // submodules; the control has to be the same round on the arm that DOES ask git. A sabotaged
-  // submodule with no local copy is a disclosure rather than a failure, so what separates the
-  // two arms is the CALL the reset issued and what it proved, not whether the round survived.
+  // A sabotaged submodule with no local copy is a disclosure rather than a failure, so what is
+  // pinned is the CALL the reset issued and what it proved, not whether the round survived.
   const on = await drive("on");
   assert(
     on.submoduleArgv.length > 0,
-    `(b) the same round DID issue the submodule call the off arm never made (got ${JSON.stringify(on.submoduleArgv.map((a) => a.slice(-3)))})`,
+    `(b) the round issued the submodule call (got ${JSON.stringify(on.submoduleArgv.map((a) => a.slice(-3)))})`,
   );
   assert(
     on.insideAfter === false,
@@ -181,7 +152,7 @@ async function drive(tag: string, preflight?: "0") {
 
 // ── (c) #2319 Resolution 4: the fix round says the disclosure in the step's OWN reason
 {
-  // The arm that owes it: preflight ON, so a pass ran and had something to report. A fix
+  // A pass ran and had something to report. A fix
   // integrated from a tree whose submodule was never populated is a fix nobody can re-run, and
   // the reason the caller composes is what lands on the run record, the PR and the handoff — the
   // surfaces an operator who never opens the log sees. Deleting the `submodules` field from

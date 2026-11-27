@@ -21,14 +21,11 @@ import type { TestLocation } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
 import { throwIfDispatchFailed } from "./dispatch-verdict.ts";
 import { type ProviderWaitClass, providerFaultOf } from "./provider-wait.ts";
-import { leanRunnerPreflightEnabled } from "./runner-preflight-switch.ts";
 import type { Criterion, PiSpec } from "./spec.ts";
-import { RED_TEST_GAP, leanSpecifyGapHandbackEnabled } from "./specify-gap-switch.ts";
 import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { specifyPrompt } from "./specify-prompt.ts";
 import {
   adversaryDispatchOpts,
-  leanSpecifyReaskEnabled,
   missingCriteria,
   reaskMissing,
   withReaskNote,
@@ -50,6 +47,13 @@ import {
 } from "./step-budget.ts";
 import { extractSubmitTests } from "./submit-tests-extract.ts";
 import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
+
+/**
+ * The outcome kind for a gap the step's own child left: it hands the run back (exit 10), because a test
+ * that passes on the base may equally mean the criterion already holds there. The refusals made before
+ * any dispatch stay `no-red-test`.
+ */
+export const RED_TEST_GAP = "red-test-gap";
 
 /**
  * The size refusals — the sentences in `test-size.ts` that say a file is too long, too big, or not a
@@ -140,7 +144,7 @@ async function dispatchAdversary(
     refusal?: string[];
     /** See {@link SpecifyAttemptArgs.resubmit}. */
     resubmit?: boolean;
-    /** The child's session id, minted only when its re-ask is switched on. */
+    /** The child's session id, minted only for the first attempt, so its re-ask can resume it. */
     runId?: string;
   },
 ): Promise<[DispatchResult | BudgetStop | NoWorkProviderFault, DispatchUsageRow]> {
@@ -180,8 +184,7 @@ async function dispatchAdversary(
  * BASE, and commit — once.
  *
  * The ref is the base: `specify`'s claim is that it froze the tests ON the base, so the child's work is
- * undone back to the commit `ready` resolved. A coverage gap is `red-test-gap` (`no-red-test` with the
- * gap switch off), and there is no third verdict: the pipeline's partial-red case is a refusal here, not
+ * undone back to the commit `ready` resolved. A coverage gap is `red-test-gap`, and there is no third verdict: the pipeline's partial-red case is a refusal here, not
  * a partial freeze.
  *
  * Returns the boundary's drop reasons and whether the attempt submitted nothing at all — the two
@@ -198,10 +201,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   if (budget.warning !== undefined) traceWarn(`lean specify #${String(issue)}: ${budget.warning}`);
   // Minted here, before the child exists, so its re-ask can open the same session. A retry attempt
   // gets none: the step's ceiling is one child, one follow-up and one fresh retry.
-  const runId =
-    leanSpecifyReaskEnabled() && refusal === undefined && resubmit !== true
-      ? makeRunId()
-      : undefined;
+  const runId = refusal === undefined && resubmit !== true ? makeRunId() : undefined;
   const dispatched = await dispatchAdversary(deps, {
     issue,
     spec,
@@ -353,13 +353,11 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       silent: false,
       dispatched: rows,
     };
-  // The child's own gap — not a refused spec — so the switch picks its kind (see `specify-gap-switch.ts`).
-  const gapKind = leanSpecifyGapHandbackEnabled() ? RED_TEST_GAP : "no-red-test";
   if (pipeline.kind === "uncovered")
     return {
       outcome: withReaskNote(
         {
-          kind: gapKind,
+          kind: RED_TEST_GAP,
           failedRules: pipeline.uncovered,
           reason: pipeline.reason,
           dispatches: rows,
@@ -380,17 +378,14 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   // The verdict's two gating values, reported before either is folded into the
   // outcome — see `SpecifyDeps.observeVerdict`.
   observeVerdict?.({ refused: [...refused], silent });
-  // The switch changes the WORDING of this one rule and nothing else: the silence predicate and the
-  // single retry it gates both exist in the release the off arm restores.
-  const generic =
-    silent && leanRunnerPreflightEnabled()
-      ? ["the child never submitted a test: it ended without calling submit_tests"]
-      : wanted.map((c) => `criterion ${c.id} has no red test`);
+  const generic = silent
+    ? ["the child never submitted a test: it ended without calling submit_tests"]
+    : wanted.map((c) => `criterion ${c.id} has no red test`);
   const rules = [...generic, ...sizeRefused];
   return {
     outcome: withReaskNote(
       {
-        kind: gapKind,
+        kind: RED_TEST_GAP,
         failedRules: rules,
         // `reason` opens with the GENERIC rules only: `rules` is what `failedRules` carries, and a
         // reason that repeated every size drop the notes already spell would say it twice.

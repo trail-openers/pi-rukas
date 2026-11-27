@@ -76,7 +76,7 @@ async function drive(
     handlers.specify = async () => ({ kind: "budget", reason: "out of scope" });
     let result: Awaited<ReturnType<typeof runLean>> | undefined;
     await withEnv(
-      { PI_ENSEMBLE_LEAN_SPEC_INTAKE: intake, PI_ENSEMBLE_LEAN_PROJECT_ROSTER: undefined },
+      { PI_ENSEMBLE_LEAN_SPEC_INTAKE: intake },
       async () => {
         result = await runLean({
           repoRoot: dir,

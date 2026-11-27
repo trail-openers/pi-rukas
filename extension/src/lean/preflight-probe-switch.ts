@@ -1,9 +1,7 @@
 /**
- * lean/preflight-probe-switch — the switch on the runner probe's containment, kept apart from
- * `runner-preflight-switch.ts` because the two answer different questions and must move apart: that one
- * decides whether the probe is RUN AT ALL (and with it the reset's submodule init); this one decides what
- * the probe's parent directory is CHECKED against, so an operator who finds the containment wrong can
- * keep the preflight and drop only the check.
+ * lean/preflight-probe-switch — the switch on the runner probe's containment: it decides what the
+ * probe's parent directory is CHECKED against, so an operator who finds the containment wrong can keep
+ * the preflight and drop only the check.
  *
  * Before the probe is written, its parent directory is resolved with `realpath` and must lie inside
  * `realpath(worktree)`: the config cannot be trusted to name a directory that is really one of this

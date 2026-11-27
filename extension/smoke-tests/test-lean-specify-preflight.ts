@@ -27,13 +27,12 @@
  *       bound is observable and a preflight cannot wedge the cycle;
  *   (e) no `verify.test` at all keeps its old verdict and its old wording, and
  *       still dispatches nobody;
- *
- * The OFF arm of all three throws — `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` — is
- * `test-lean-specify-preflight-off.ts`, split for the 500-line gate (AGENTS §12).
+ *   (a3) the retired `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` is ignored: (a) still hands back.
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { withEnv } from "./lib/env-scope.ts";
 import {
   ROOTS,
   type RunResult,
@@ -146,6 +145,15 @@ async function runWithProbe(
     "(a) the base health check still ran — the preflight is its sibling, not its replacement",
   );
 }
+
+// ── (a3) the retired switch at "0" changes nothing
+await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0" }, async () => {
+  const r = await runWithProbe(151, "broken-runner.sh", BROKEN_RUNNER);
+  assert(
+    r.threw instanceof SpecifyInfraError && r.dispatched === 0,
+    `(a3) "0" still hands an exit-4 runner back before any dispatch (got ${r.threw?.message ?? r.outcome?.kind})`,
+  );
+});
 
 // ── (a2) exit 4 that NAMES the file: still infrastructure, because the status decides
 {

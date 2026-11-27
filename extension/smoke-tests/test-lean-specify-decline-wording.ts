@@ -16,17 +16,13 @@
  *   (6) the boundary DROPPED the child's only row -> not silent either: the verdict
  *       the step observed says `silent: false` on both attempts, the decline leads
  *       with the coverage rule, and the retry quotes the drop rather than the nudge;
- *   (7) the nudge is fixed text, so the refusal channel keeps its own header;
- *   (8) `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` — the same two silent runs decline on
- *       v0.14.71's wording, with the one silent retry unchanged: the switch reaches
- *       this rule's WORDING only, never the silence predicate or the retry it gates.
+ *   (7) the nudge is fixed text, so the refusal channel keeps its own header.
  *
  * Real temp repos, real git, a fake child: no token spent.
  */
 
 import { rmSync } from "node:fs";
 import { refusalFeedback } from "../src/lean/specify-prompt.ts";
-import { withEnv } from "./lib/env-scope.ts";
 // The constants and the shared assertion come from the fixture the silent-reprompt
 // pair also imports, so no two files can drift apart about what the nudge text or the
 // decline clause is — a pair that disagrees about its needle asserts nothing.
@@ -34,7 +30,6 @@ import {
   CONFIG,
   NEVER_SUBMITTED,
   NUDGE,
-  RETRY_NOTE,
   ROOTS,
   type RunResult,
   TEST_REL,
@@ -196,121 +191,7 @@ const REFUSED = "Your previous submission was refused";
 }
 
 // ── (7) the nudge is fixed text, so the refusal channel keeps its own header ─
-{
-  assert(refusalFeedback([]) === "", "(7) no reasons still means no refusal section to reuse");
-}
-
-// ── (8) the switch off: the same two silent runs decline on v0.14.71's wording
-{
-  // Only the WORDING of the generic decline rule is switched. The silence predicate and
-  // the one retry it gates already exist in v0.14.71, so both must hold UNCHANGED on
-  // this arm: same dispatch count, same nudge on the second prompt, same `no-red-test`
-  // kind. What differs is the rule the operator reads, and it must be the release's —
-  // `criterion AC1 has no red test`, with no trace of the never-submitted clause in
-  // either field.
-  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0", PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK: "0" }, async () => {
-    // (8a) the both-attempts-silent shape: decline on the release's rule.
-    const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
-    const prompts: string[] = [];
-    const r = await runSpecify({
-      repoRoot,
-      baseSha,
-      issue: 18,
-      config: CONFIG,
-      prompts,
-      writes: (wt) => {
-        writeTest(wt, redScript());
-      },
-      toolUses: () => [],
-    });
-    report(r, "(8a)");
-    assert(
-      r.outcome?.kind === "no-red-test",
-      `(8a) still no-red-test after the retry (got ${r.outcome?.kind})`,
-    );
-    assert(
-      r.dispatched === 2,
-      `(8a) the silent retry is UNCHANGED by the switch — exactly two dispatches (got ${r.dispatched})`,
-    );
-    assert(
-      prompts.length === 2 &&
-        prompts[0]?.includes(NUDGE) !== true &&
-        prompts[1]?.includes(NUDGE) === true,
-      "(8a) and the nudge still fires once, on the re-prompt only, as it does on",
-    );
-    assert(
-      r.outcome?.failedRules?.[0] === "criterion AC1 has no red test",
-      `(8a) the leading rule is v0.14.71's, not the never-submitted clause (got ${r.outcome?.failedRules?.[0]})`,
-    );
-    assert(
-      (r.outcome?.failedRules ?? []).every((x) => !x.includes(NEVER_SUBMITTED)) === true,
-      `(8a) and no rule mentions a submission the switch just suppressed (got ${JSON.stringify(r.outcome?.failedRules)})`,
-    );
-    assert(
-      (r.outcome?.reason ?? "").startsWith("criterion AC1 has no red test") === true,
-      `(8a) the reason leads with the same clause (got ${r.outcome?.reason})`,
-    );
-    assert(
-      (r.outcome?.reason ?? "").includes(RETRY_NOTE) === true,
-      `(8a) and still carries the retry marker (got ${r.outcome?.reason})`,
-    );
-
-    // (8b) the silent-then-submits shape: the freeze must be identical on both arms —
-    // the switch never reaches a successful run.
-    const submitRoot = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
-    const prompts2: string[] = [];
-    const ok = await runSpecify({
-      repoRoot: submitRoot.repoRoot,
-      baseSha: submitRoot.baseSha,
-      issue: 19,
-      config: CONFIG,
-      prompts: prompts2,
-      writes: (wt) => {
-        writeTest(wt, redScript());
-      },
-      toolUses: (dispatch) => (dispatch === 1 ? [] : [submit("AC1", [TEST_REL])]),
-    });
-    report(ok, "(8b)");
-    assert(ok.dispatched === 2, `(8b) re-dispatched once, exactly as on (got ${ok.dispatched})`);
-    assert(
-      ok.outcome?.kind === "ok",
-      `(8b) the re-prompted test freezes on this arm too (got ${ok.outcome?.kind})`,
-    );
-    assert(
-      Object.keys(ok.outcome?.frozen ?? {}).join() === TEST_REL,
-      `(8b) and the frozen set is identical (got ${Object.keys(ok.outcome?.frozen ?? {}).join()})`,
-    );
-    assert(prompts2[1]?.includes(NUDGE) === true, "(8b) and the re-prompt carries the same nudge");
-
-    // (8c) the boundary's drop notes are NOT switched: with a row the boundary refused,
-    // the decline still names the drop rather than a generic clause, so a mutant that
-    // gated the whole `generic` computation on the switch (rather than the silence arm)
-    // would not survive here.
-    const dropRoot = makeRepo({
-      "src/retry.ts": "export const retry = () => {};\n",
-      [TEST_REL]: redScript(),
-    });
-    const drop = await runSpecify({
-      repoRoot: dropRoot.repoRoot,
-      baseSha: dropRoot.baseSha,
-      issue: 20,
-      config: CONFIG,
-      writes: (wt) => {
-        writeTest(wt, redScript());
-      },
-      toolUses: [submit("AC2", [TEST_REL])],
-    });
-    report(drop, "(8c)");
-    assert(
-      (drop.outcome?.failedRules ?? []).some((x) => x.startsWith("criterion AC1 has no red test")),
-      `(8c) the coverage rule survives off, exactly as it does on (got ${JSON.stringify(drop.outcome?.failedRules)})`,
-    );
-    assert(
-      (drop.outcome?.reason ?? "").includes(NOT_A_TEST_CRITERION) === true,
-      `(8c) and the boundary's own drop reason still reaches the operator (got ${drop.outcome?.reason})`,
-    );
-  });
-}
+assert(refusalFeedback([]) === "", "(7) no reasons still means no refusal section to reuse");
 
 for (const dir of ROOTS) {
   try {

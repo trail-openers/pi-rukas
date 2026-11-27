@@ -1,26 +1,21 @@
 #!/usr/bin/env bun
 /**
- * #2212 / R1 — the reset `build`'s fold runs issues no submodule call with the switch at `0`.
+ * The reset `build`'s fold runs asks git to populate the submodules its clean emptied.
  *
  * `build` reaches `resetWorktreeToBase` through `normaliseBuild`, the fold that
  * discards the developer's commits, untracks what it should not have touched, and
  * rewrites only the files it keeps. That reset is where the submodule
- * initialisation lives, so it is where `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` is
- * honoured — and this file is what says the fold still goes through it.
+ * initialisation lives, and this file is what says the fold still goes through it.
  *
- *   (a) with the switch at `0`, the fold resets the tree over a base whose
- *       submodule source is GONE: no submodule call appears in the git argv the
- *       step issued, the fold still commits the child's file, and the submodule
- *       directory the clean emptied stays empty;
- *   (b) the control, outside the `withEnv`: the same fold throws, naming the
- *       submodule step, and issues the call the off arm never made.
+ *   (a) the retired `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` is ignored: the fold still
+ *       issues the submodule call and commits;
+ *   (b) over a base whose submodule source is GONE the fold issues the call, and the
+ *       call puts nothing back.
  *
- * Both arms run the identical round, because the property under test is the switch
- * and nothing else: a child that commits a real new file, so the fold has something
+ * Every case runs the identical round: a child that commits a real new file, so the fold has something
  * to keep (a fold with nothing to commit never reaches the commit the assertion
  * reads) and the reset is the last claim it makes before it reports — a reset that
- * fails there cannot be forgiven, which is what makes (b) a control rather than a
- * restatement of (a).
+ * fails there cannot be forgiven.
  */
 
 import { existsSync, rmSync } from "node:fs";
@@ -55,9 +50,7 @@ function assert(cond: boolean, msg: string): void {
  */
 async function drive(
   issue: number,
-  // The OUTER gate. `"0"` makes the step ask git to populate nothing at all — which is (a)'s
-  // claim, and also why the disclosure cannot be asserted there: with no pass there is nothing
-  // to disclose, and the switch's whole contract is that the run looks as if it never had one.
+  // The retired switch, which must read as unset.
   preflight?: "0",
 ): Promise<{
   threw?: Error;
@@ -88,7 +81,7 @@ async function drive(
     throw new Error(
       `the build submodule fixture read its head from a tree the run does not work in (${headBefore})`,
     );
-  // The sabotage, and it has to be complete before the switch's control arm runs: the
+  // The sabotage, and it has to be complete before the round runs: the
   // source deleted, the checkout emptied, and the SUPERPROJECT's own copy of the objects
   // gone too. Any local copy left behind and the seeding arm of #2319 restores the
   // submodule, the fold does not throw, and the control below reads "no throw" as though
@@ -134,7 +127,7 @@ async function drive(
     submoduleArgv: submoduleCalls(r?.gitArgvs ?? []),
     committed: r?.headAfter ?? "",
     // Read after the step returned, so it is the OUTCOME of the reset rather than
-    // a claim about it: the switch-on arm's call ran and did not put the file back.
+    // a claim about it: the call ran and did not put the file back.
     insideAfter: existsSync(path.join(built.worktree, INSIDE)),
   };
 }
@@ -154,51 +147,23 @@ function commit(wt: string, message: string): void {
   git(wt, "commit", "-q", "-m", message);
 }
 
-// ── (a) off: the fold commits its file and never asked git about submodules
+// ── (a) the retired switch at "0" is ignored
 {
-  let ran: Awaited<ReturnType<typeof drive>> | undefined;
-  let boom: Error | undefined;
-  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0" }, async () => {
-    try {
-      ran = await drive(911);
-    } catch (err) {
-      boom = err as Error;
-    }
-  });
-  assert(boom === undefined, `(a) the off arm ran to completion (${boom?.message ?? "clean"})`);
+  const zero = await drive(911, "0");
   assert(
-    ran?.threw === undefined,
-    `(a) the fold did not throw over a submodule it was never asked to fetch (${ran?.threw?.message?.split("\n")[0] ?? "clean"})`,
-  );
-  assert(
-    (ran?.submoduleArgv.length ?? -1) === 0,
-    `(a) and the fold issued no submodule call of any kind (got ${JSON.stringify(ran?.submoduleArgv)})`,
-  );
-  assert(
-    ran?.outcome?.kind === "ok",
-    `(a) and the fold still did its job — the child's file was kept and committed (got ${JSON.stringify(ran?.outcome?.kind)})`,
-  );
-  assert(
-    ran !== undefined && ran.committed !== "",
-    `(a) and the run's branch moved to a commit the step made (${ran?.committed ?? "no head"})`,
-  );
-  assert(
-    ran?.insideAfter === false,
-    `(a) and the submodule the fold's clean emptied stayed empty afterwards (found ${String(ran?.insideAfter)})`,
+    zero.submoduleArgv.length > 0 && zero.outcome?.kind === "ok",
+    `(a) "0" still issues the submodule call and commits (got ${JSON.stringify(zero.submoduleArgv.map((a) => a.slice(-3)))}, ${String(zero.outcome?.kind)})`,
   );
 }
 
-// ── (b) the control: the same fold whose reset really did ask git
+// ── (b) the fold's reset asks git
 {
-  // (a) is the OUTER switch at `0` — the claim being that the step then issues nothing about
-  // submodules. The control has to be the same fold on the arm that DOES ask git, and under the
-  // seeding rule an absent submodule is a DISCLOSURE rather than a hand-back, so what separates
-  // the two arms is the CALL: the reset asked git about the submodule here and asked it nothing
-  // in (a).
+  // Under the seeding rule an absent submodule is a DISCLOSURE rather than a hand-back, so what
+  // is pinned is the CALL.
   const on = await drive(912);
   assert(
     on.submoduleArgv.length > 0,
-    `(b) the same fold DID issue the submodule call the off arm never made (got ${JSON.stringify(on.submoduleArgv.map((a) => a.slice(-3)))})`,
+    `(b) the fold issued the submodule call (got ${JSON.stringify(on.submoduleArgv.map((a) => a.slice(-3)))})`,
   );
   assert(
     on.insideAfter === false,
@@ -208,8 +173,7 @@ function commit(wt: string, message: string): void {
 
 // ── (c) #2319 Resolution 4: the fold says the disclosure in its OWN reason
 {
-  // The arm that owes it: preflight ON, so a pass actually ran and had something to report, and
-  // a missing submodule is a disclosure rather than a hand-back. The
+  // A pass ran and had something to report, and a missing submodule is a disclosure rather than a hand-back. The
   // fold commits bytes built against a tree with nothing at that path, and the reason line is the
   // only surface a reader judging the commit has — the log is not it. Deleting the
   // `report.submodules ?? ""` entry from the fold's `joinNotes` in `build.ts` turns this red.

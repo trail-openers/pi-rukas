@@ -2,65 +2,33 @@
 /**
  * A specify child that cannot prove a criterion red hands the run back (exit 10); it is not a refused spec.
  *
- *   (a) the switch's `docs/configuration.md` row exists, and only the literal `"0"` turns it off;
- *   (b) on (unset): a child whose test passes on the base ends `handed-back` at exit 10, with ONE comment —
- *       the handback — carrying the gap rule, the dropped-file evidence and the second reading, and the
+ *   (b) a child whose test passes on the base ends `handed-back` at exit 10, with ONE comment — the
+ *       handback — carrying the gap rule, the dropped-file evidence and the second reading, and the
  *       headless projection classifies it as `failure.kind: "red-test-gap"`; the result reason is the gap
  *       rule; the record equals `on`;
- *   (c) off (`"0"`): the record — terminal state, code, reason, every step's outcome and the `not-ready`
- *       comment — equals `off`, captured from the tree before the switch existed;
+ *   (c) the five retired specify-path switches set to `"0"` are ignored: the record is still `on`;
  *   (d) a handback comment that failed to post rides on the gap reason, a host-channel one does not;
  *   (e) a gap whose reason already spells a rule prints that rule once, beside the rules it does not spell.
  *
- * Both arms drive the real `runLean` over the real phase-1 handlers (`lib/lean-specify-gap-golden.ts`).
+ * Both runs drive the real `runLean` over the real phase-1 handlers (`lib/lean-specify-gap-golden.ts`).
  */
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { reasonFor } from "../src/lean/engine-facts.ts";
 import { neededFromLog } from "../src/lean/handback.ts";
-import { leanSpecifyGapHandbackEnabled } from "../src/lean/specify-gap-switch.ts";
 import type { Step } from "../src/lean/state.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { GAP_FIXTURE, type GapRecord, driveGapRun } from "./lib/lean-specify-gap-golden.ts";
 
 const { assert, failures } = makeAssert();
-const KNOB = "PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK";
-const root = path.resolve(import.meta.dirname, "..", "..");
 const golden = JSON.parse(
   readFileSync(path.resolve(import.meta.dirname, GAP_FIXTURE), "utf8"),
-) as Record<"on" | "off", GapRecord>;
+) as Record<"on", GapRecord>;
 
-// ── (a) the row and the truth table
+// ── (b) a handback, not a decline
 {
-  const row =
-    readFileSync(path.join(root, "docs", "configuration.md"), "utf8")
-      .split("\n")
-      .find((l) => l.includes(`\`${KNOB}\``)) ?? "";
-  assert(
-    row.includes("exit 10") && row.includes("exit 11"),
-    `(a) docs/configuration.md has a ${KNOB} row naming both exits`,
-  );
-  for (const [value, want] of [
-    [undefined, true],
-    ["1", true],
-    ["", true],
-    ["false", true],
-    ["0", false],
-  ] as const) {
-    await withEnv({ [KNOB]: value }, async () => {
-      assert(
-        leanSpecifyGapHandbackEnabled() === want,
-        `(a) ${KNOB}=${JSON.stringify(value)} reads ${String(want)}`,
-      );
-    });
-  }
-}
-
-// ── (b) on: a handback, not a decline
-{
-  const on = await driveGapRun(2360, undefined);
+  const on = await driveGapRun(2360);
   assert(
     on.state === "handed-back" && on.code === 10,
     `(b) the gap hands back at exit 10 (got ${on.state} exit ${String(on.code)})`,
@@ -91,12 +59,21 @@ const golden = JSON.parse(
   );
 }
 
-// ── (c) off: today's not-ready, byte for byte
+// ── (c) the retired switches set to "0" change nothing
 {
-  const off = await driveGapRun(2360, "0");
+  const retired = Object.fromEntries(
+    [
+      "SPECIFY_GAP_HANDBACK",
+      "PROJECT_ROSTER",
+      "RUNNER_PREFLIGHT",
+      "PREFIX_HEAD",
+      "SPECIFY_REASK",
+    ].map((k) => [`PI_ENSEMBLE_LEAN_${k}`, "0"]),
+  );
+  const zero = await driveGapRun(2360, retired);
   assert(
-    JSON.stringify(off) === JSON.stringify(golden.off),
-    `(c) the off record is the pre-switch golden\n    want: ${JSON.stringify(golden.off)}\n    got:  ${JSON.stringify(off)}`,
+    JSON.stringify(zero) === JSON.stringify(golden.on),
+    `(c) with all five at "0" the record is the on golden\n    got:  ${JSON.stringify(zero)}`,
   );
 }
 

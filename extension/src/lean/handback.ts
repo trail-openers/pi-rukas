@@ -15,7 +15,7 @@ import { frozenFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { NO_GATE_VERDICT, handbackHeads, newestDecidedWorkStep } from "./handback-heads.ts";
 import { NO_HEAD, type Rewind, originBranchHead } from "./handback-rewind.ts";
-import { RED_TEST_GAP } from "./specify-gap-switch.ts";
+import { RED_TEST_GAP } from "./specify-attempt.ts";
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP, validPrUrl } from "./state-outcome.ts";
 import type { Outcome, Step } from "./state.ts";
 import { budgetSentence, budgetTrio } from "./step-budget.ts";

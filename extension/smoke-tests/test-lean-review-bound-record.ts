@@ -141,8 +141,6 @@ const pastItsBudget = () => runNow() + 61 * MIN;
   // Slots: pair (pre-1), fixer (pre-fix), re-review (pre-re-review), and thereafter.
   const times = [0, 0, 0, 24 * MIN, 24 * MIN];
   let tick = 0;
-  // The fix range's own comment is `test-lean-prefix-head.ts`'s; this case counts the bound's.
-  process.env.PI_ENSEMBLE_LEAN_PREFIX_HEAD = "0";
   const { outcome, threw } = await runStep(
     ctxWithPr(repoRoot, baseSha, BRANCH, {
       startedAt: 0,
@@ -151,14 +149,14 @@ const pastItsBudget = () => runNow() + 61 * MIN;
     }),
     waveDeps(fixerThatCommits("bound-fix"), 20, posts),
   );
-  delete process.env.PI_ENSEMBLE_LEAN_PREFIX_HEAD;
   const rec = outcome?.reviewBound;
   assert(
     threw === undefined &&
       outcome?.kind === "fixed" &&
       rec?.wave === "fix" &&
       rec.unreviewedLanes.includes("adversarial re-review") &&
-      disclosed(posts),
+      // The fix range's own comment is `test-lean-prefix-head.ts`'s; this case counts the bound's.
+      disclosed(posts.filter((p) => !p.body.startsWith("work-lean review: one fix wave"))),
     `(d) a stop after the pushed fix routes \`fixed\` — not \`done\` over a head the gate never re-read — records the wave and the unjudged re-review, and posts ONE count-bounded comment on the PR \`publish\` recorded (${threw?.message ?? `kind ${String(outcome?.kind)}, ${JSON.stringify(rec)}, PRs ${JSON.stringify(posts.map((p) => p.pr))}`})`,
   );
 }

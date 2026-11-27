@@ -18,15 +18,11 @@
  * so the widening cannot outlive the call. A deeper submodule with no local copy is disclosed by path.
  *
  * A submodule the superproject never had is not fetched either: a DISCLOSURE, not a failure.
- *
- * One gate decides the call: with `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` the runner is untrusted, so no
- * submodule code runs at all — no listing, no seeding, no disclosure read.
  */
 
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";
-import { leanRunnerPreflightEnabled } from "./runner-preflight-switch.ts";
 import { trim } from "./specify-proof.ts";
 import { NO_HOOKS, SpecifyInfraError } from "./specify-reset.ts";
 import type { SubmoduleEntry } from "./submodule-entries.ts";
@@ -202,8 +198,6 @@ export async function initSubmodules(
   wt: string,
   beforeInit?: (wt: string) => void | Promise<void>,
 ): Promise<SubmoduleNote[]> {
-  // The outer gate: with the runner untrusted there is no listing, no seeding and no disclosure read.
-  if (!leanRunnerPreflightEnabled()) return [];
   if (!existsSync(path.join(wt, ".gitmodules"))) return [];
   const listed = await listSubmodules(exec, wt);
   if (listed === undefined) return [];
@@ -274,7 +268,7 @@ async function seedFromSuperproject(
       });
       continue;
     }
-    // Two commands. The WHY of the pair, the licence and the depth rule is the switch header's; what this
+    // Two commands. The WHY of the pair, the licence and the depth rule is the module header's; what this
     // code holds locally is that the source and the licence are BOTH command-line `-c`, so neither can
     // outlive the invocation that used it.
     const registered = await run(exec, wt, [...NO_HOOKS, "submodule", "init", "--", entry.path]);

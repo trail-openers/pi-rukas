@@ -1,27 +1,21 @@
 #!/usr/bin/env bun
 /**
- * #2212 / R1 — the reset `challenge` runs issues no submodule call with the switch at `0`.
+ * The reset `challenge` runs asks git to populate the submodules its clean emptied.
  *
  * `challenge` is one of the three callers outside `specify` that reach
  * `resetWorktreeToBase` (its siblings here are `build`'s fold and the review fix
- * round, each with this same file). R1 moved the submodule initialisation inside
- * the switch at the primitive, so the guarantee is made once — but "once, at the
- * primitive" is worth nothing if a caller stopped going through it, and a
- * per-caller gate (the shape #2212 replaces) would look identical from here if one
- * were moved back out. So each file drives its own real step over a base whose
- * submodule source is GONE and reads the git argv the step itself issued.
+ * round, each with this same file). The submodule initialisation lives in the
+ * primitive, which is worth nothing if a caller stopped going through it. So each
+ * file drives its own real step over a base whose submodule source is GONE and reads
+ * the git argv the step itself issued.
  *
- *   (a) with the switch at `0`: the round runs, no submodule call appears in the
- *       argv the step issued, and the submodule the reset's `clean -fdx` emptied
- *       stays EMPTY after the step returned;
- *   (b) the control, outside the `withEnv`: the same round issues the call, and the
- *       submodule is POPULATED after it — the fetch is what made the difference.
+ *   (a) the retired `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` is ignored: the round still
+ *       issues the submodule call and freezes its test;
+ *   (b) the round issues the call, and the call cannot put the gone source back.
  *
- * Without (b)'s second half, (a) would be consistent with a fixture that merely
- * never populated anything, and the argv assertion alone would be the only thing
- * separating the arms. Both arms run the identical round — a child that writes the
- * red test the pipeline freezes, so the reset is the pipeline's own step-3
- * `prepare`, the reset a real committed round makes.
+ * Every case runs the identical round — a child that writes the red test the pipeline
+ * freezes, so the reset is the pipeline's own step-3 `prepare`, the reset a real
+ * committed round makes.
  *
  * Real temp repos, real git, the real `execp`; only the model is stubbed.
  */
@@ -61,8 +55,7 @@ const TEST_REL = "tests/AC1-submodule.test.sh";
 /** One challenge round over a base that carries a submodule with no source left. */
 async function drive(
   issue: number,
-  // The OUTER gate. `"0"` is (a)'s arm; (c) needs it ON, because with no pass there is nothing
-  // to disclose and the switch's contract is that the run looks as if it never had one.
+  // The retired switch, which must read as unset.
   preflight?: "0",
   // `"green"` makes the adversary's file pass at the base, which is what routes the round down
   // the `empty` arm — the one that sweeps with `challenge`'s own reset instead of the pipeline's.
@@ -119,62 +112,33 @@ async function drive(
   };
 }
 
-// ── (a) off: the round runs, no call in the argv, and the submodule stays empty
+// ── (a) the retired switch at "0" is ignored
 {
-  let ran: Awaited<ReturnType<typeof drive>> | undefined;
-  let boom: Error | undefined;
-  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0" }, async () => {
-    try {
-      ran = await drive(901);
-    } catch (err) {
-      boom = err as Error;
-    }
-  });
-  assert(boom === undefined, `(a) the off arm ran to completion (${boom?.message ?? "clean"})`);
+  const zero = await drive(901, "0");
   assert(
-    ran?.threw === undefined,
-    `(a) the challenge round did not hand back over a submodule it was never asked to fetch (${ran?.threw?.message?.split("\n")[0] ?? "clean"})`,
-  );
-  assert(
-    (ran?.submoduleArgv.length ?? -1) === 0,
-    `(a) and the round issued no submodule call of any kind (got ${JSON.stringify(
-      ran?.submoduleArgv.map((a) => a.slice(-3)),
-    )})`,
-  );
-  assert(
-    ran?.insideAfter === false,
-    `(a) and the gitlink the reset emptied stayed empty for the whole round (found ${String(ran?.insideAfter)})`,
-  );
-  assert(
-    ran?.outcome?.kind === "new-tests",
-    `(a) and the round still did its job — the adversary's red test was frozen (got ${JSON.stringify(ran?.outcome?.kind)})`,
+    zero.submoduleArgv.length > 0 && zero.outcome?.kind === "new-tests",
+    `(a) "0" still issues the submodule call and freezes the test (got ${JSON.stringify(zero.submoduleArgv.map((a) => a.slice(-3)))}, ${String(zero.outcome?.kind)})`,
   );
 }
 
-// ── (b) the control: the same round, on the arm that really did ask git
+// ── (b) the round's reset asks git
 {
-  // The switch these files pin is the OUTER one, and the (a) arm is the release's argv with
-  // that switch at `0` — the claim being that the step then issues NOTHING about submodules.
-  // The control has to be the same reset on the arm that DOES ask git, or it is not a control:
-  // a sabotaged submodule with no local copy is a disclosure rather than a failure, so what
-  // separates the arms is the CALL the reset issued, not whether the round survived.
+  // A sabotaged submodule with no local copy is a disclosure rather than a failure, so what is
+  // pinned is the CALL the reset issued, not whether the round survived.
   const on = await drive(902);
   assert(
     on.submoduleArgv.length > 0,
-    `(b) the same round DID issue the submodule call with the outer gate open (got ${JSON.stringify(on.submoduleArgv.map((a) => a.slice(-3)))})`,
+    `(b) the round issued the submodule call (got ${JSON.stringify(on.submoduleArgv.map((a) => a.slice(-3)))})`,
   );
-  // The call it made found nothing to seed, which is the other half of the control: (a)'s empty
-  // tree is the switch not asking, not this file's setup, because on this arm the pass ran over
-  // the same gone source and still put nothing back.
   assert(
     on.insideAfter === false,
-    `(b) and the call it issued could not put the submodule back (found ${String(on.insideAfter)}) — the source is gone for BOTH arms`,
+    `(b) and the call it issued could not put the submodule back (found ${String(on.insideAfter)}) — the source is gone`,
   );
 }
 
 // ── (c) #2319 Resolution 4: the round says the disclosure in its OWN reason
 {
-  // The arm that owes it: preflight ON, so a pass ran and had something to report. `challenge`
+  // A pass ran and had something to report. `challenge`
   // pays an adversary to attack tests it may not be able to collect, so "the tree had no
   // submodule at `vendor/lib`" belongs beside the verdict, not in another step's log.
   //

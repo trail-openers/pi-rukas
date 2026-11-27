@@ -142,14 +142,6 @@ export function prNumberFromLog(steps: Step[]): number | undefined {
 }
 
 /**
- * Whether a review fix wave saves the head it starts from. Read at call time; only
- * `"0"` turns it off, and off the step neither saves nor names the head.
- */
-export function leanPrefixHeadEnabled(): boolean {
-  return process.env.PI_ENSEMBLE_LEAN_PREFIX_HEAD !== "0";
-}
-
-/**
  * The head THIS attempt's fix wave started from, as the step saved it before dispatching the fixer, or
  * undefined. Keyed on the attempt's own step key: after a crash origin holds the fixer's push, so the
  * pre-fix head is recoverable from this record alone, and another attempt's wave is a different range.
@@ -159,19 +151,18 @@ function preFixHeadFromLog(steps: Step[], key: string): string | undefined {
 }
 
 /**
- * The fix wave's lower bound: on the switch, the attempt's saved head or `head`, saved before it returns so
- * the fixer is never dispatched over an unrecorded head. Off, `head` and nothing written.
+ * The fix wave's lower bound: the attempt's saved head or `head`, saved before it returns so the fixer is
+ * never dispatched over an unrecorded head.
  */
 export function holdPreFixHead(ctx: HandlerCtx, head: string): string {
-  if (!leanPrefixHeadEnabled()) return head;
   const preFixHead = preFixHeadFromLog(ctx.steps, ctx.stepKey) ?? head;
   ctx.noteProgress?.({ preFixHead });
   return preFixHead;
 }
 
-/** The fix range a pushed wave names, or undefined when the switch is off. */
-export function fixRangeClause(preFixHead: string, head: string): string | undefined {
-  return leanPrefixHeadEnabled() ? `fix range ${preFixHead}..${head}` : undefined;
+/** The fix range a pushed wave names. */
+export function fixRangeClause(preFixHead: string, head: string): string {
+  return `fix range ${preFixHead}..${head}`;
 }
 
 /**

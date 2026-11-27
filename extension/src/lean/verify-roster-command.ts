@@ -10,7 +10,6 @@ import { lstatSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { failureLines } from "../work-driver-verify-failures.ts";
-import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
 import type { VerifyExec, VerifyRosterConfig } from "./verify-types.ts";
 
 const JUNIT_REPORT_FILE = ".lean-roster-report.xml";
@@ -83,12 +82,11 @@ export function deriveSuiteTemplate(test: string): string {
  * too, and spells the same command as its `verify.roster`.
  */
 export function rosterStartProblem(config: VerifyRosterConfig): string | undefined {
-  if (!leanProjectRosterEnabled()) return undefined;
   if (config.roster !== undefined) return escapingReportProblem(config.roster);
   if (config.test === undefined) return undefined;
   if (config.test.split(/\s+/).some((word) => /^py\.?test$/.test(path.basename(word))))
     return undefined;
-  return "verify.roster is unset and verify.test is not pytest, so the derived --junitxml={report} writes no JUnit report: set verify.roster to write one to {report}, or PI_ENSEMBLE_LEAN_PROJECT_ROSTER=0 for a project with no suite to roster";
+  return "verify.roster is unset and verify.test is not pytest, so the derived --junitxml={report} writes no JUnit report: set verify.roster to write one to {report}";
 }
 
 /**

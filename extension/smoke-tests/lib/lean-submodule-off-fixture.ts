@@ -1,21 +1,16 @@
 /**
- * lib/lean-submodule-off-fixture — the shared plumbing for #2212's three
- * per-path submodule-off files (`test-lean-challenge-submodule-off.ts`,
- * `test-lean-build-submodule-off.ts`, `test-lean-review-submodule-off.ts`).
+ * lib/lean-submodule-off-fixture — the shared plumbing for the three per-path submodule
+ * files (`test-lean-challenge-submodule-off.ts`, `test-lean-build-submodule-off.ts`,
+ * `test-lean-review-submodule-off.ts`).
  *
- * R1 puts the switch inside `resetWorktreeToBase`, so one gate covers every
- * caller. These files exist because R1 also asks for a case at each caller
- * OUTSIDE specify: a reader of the reset alone cannot see that `build`'s fold and
- * the review fix round reach it at all, and a per-caller gate — the shape #2212
- * replaces — would look identical from the outside if one caller were moved back
- * outside it. So each file drives its own step over a base whose submodule source
- * is GONE, reads the git argv the step itself issued, and asserts both halves: no
- * submodule call, and no throw.
+ * The submodule initialisation lives inside `resetWorktreeToBase`, so one place covers every
+ * caller. These files exist because a reader of the reset alone cannot see that `build`'s fold
+ * and the review fix round reach it at all. So each file drives its own step over a base whose
+ * submodule source is GONE and reads the git argv the step itself issued.
  *
  * The source is deleted rather than the tree merely emptied, because that is what
- * makes the call FAIL: with no cached object and no reachable remote, git cannot
- * populate the gitlink, so a step that issued the command hands its run back and
- * a step that did not is the switch working. Silence is then evidence, not luck.
+ * makes the call find nothing: with no cached object and no reachable remote, git
+ * cannot populate the gitlink, so a populated tree can only be the step's own doing.
  */
 
 import { spawnSync } from "node:child_process";

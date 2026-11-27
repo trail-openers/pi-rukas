@@ -7,9 +7,8 @@
  */
 
 import { REPORT_FAILED_KIND, exitCodeFor } from "./machine.ts";
-import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
 import { unacceptedTestEdits, unacceptedTestEditsRefusal } from "./review-test-accept.ts";
-import { RED_TEST_GAP } from "./specify-gap-switch.ts";
+import { RED_TEST_GAP } from "./specify-attempt.ts";
 import { type LeanRun, type LeanState, type Outcome, isTerminal, newestDecided } from "./state.ts";
 import { ROSTER_LAND_REFUSAL } from "./verify-roster.ts";
 
@@ -59,7 +58,7 @@ export function reasonFor(
  * Has this run earned the merge? Its own record must currently say so: the newest DECIDED
  * `verify` AND the newest DECIDED `ci` both green, and no `draft` marker left standing.
  *
- * Behind the roster switch the green `verify` is read as a RECORD, not only as a kind: the merge is
+ * The green `verify` is read as a RECORD, not only as a kind: the merge is
  * the irreversible act, so it fails closed on a log whose green carries no roster — including a
  * hand-built or resumed one that never ran the project's suite. What the record must additionally
  * name is an edited test whose failing base version the newest review did not accept on the verified
@@ -73,8 +72,6 @@ function landEarned(run: LeanRun): boolean {
     newestDecided(run.steps, "ci")?.outcome?.kind !== "green"
   )
     return false;
-  // The off arm asks ONLY the kinds it asked before this field existed, byte for byte.
-  if (!leanProjectRosterEnabled()) return true;
   return (
     rosterEarnsLand(newestDecided(run.steps, "verify")?.outcome) &&
     unacceptedTestEdits(run.steps).length === 0
@@ -105,13 +102,9 @@ function landRefusal(run: LeanRun): string {
   const lastCi = newestDecided(run.steps, "ci");
   // A rosterless green names the roster, not "verify not green": the second sends an operator to
   // a gate that reported green.
-  if (
-    leanProjectRosterEnabled() &&
-    lastVerify?.outcome?.kind === "green" &&
-    !rosterEarnsLand(lastVerify.outcome)
-  )
+  if (lastVerify?.outcome?.kind === "green" && !rosterEarnsLand(lastVerify.outcome))
     return `land refused: ${ROSTER_LAND_REFUSAL}`;
-  const unaccepted = leanProjectRosterEnabled() ? unacceptedTestEdits(run.steps) : [];
+  const unaccepted = unacceptedTestEdits(run.steps);
   if (lastVerify?.outcome?.kind === "green" && unaccepted.length > 0)
     return `land refused: ${unacceptedTestEditsRefusal(unaccepted)}`;
   return `land refused: verify not green (draft=${run.counters.draft}, last verify=${

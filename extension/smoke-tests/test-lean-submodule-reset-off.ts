@@ -1,23 +1,17 @@
 #!/usr/bin/env bun
 /**
- * The `resetWorktreeToBase` arms of #2212's submodule switch, off.
+ * The `resetWorktreeToBase` submodule initialisation, called on the primitive directly.
  *
  * `test-lean-specify-submodule.ts` holds the step-level cases (a)–(e): what a specify
  * run does with a gitlink, with no gitlink, and when the recorded source is gone. The
- * two cases here call the reset PRIMITIVE directly, which is where the gate's actual
- * claim lives — the switch sits inside `resetWorktreeToBase`, not at its six call
- * sites, so proving it there is what makes the per-path files
- * (`test-lean-submodule-reset-off.ts`) consequences rather than separate promises.
+ * cases here call the reset PRIMITIVE, which is where the initialisation lives, so the
+ * per-path files are consequences rather than separate promises.
  *
  *   (f) the reset re-populates a submodule its OWN `clean -fdx` emptied — the property
  *       every caller of the reset depends on, and the one a reset whose initialisation
  *       sat outside it does not have;
- *   (g) with `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` no reset asks git to populate
- *       anything: a base whose submodule remote is gone does not throw, the recorded
- *       git argvs hold no submodule call, and the gitlink stays an empty directory
- *       exactly as v0.14.71 left it. The control runs the same tree shape with the
- *       switch unset, so the arm is about the switch and not about a remote git could
- *       have fetched anyway.
+ *   (g) the retired `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` is ignored: the reset still
+ *       asks git to populate the submodule, and leaves it populated.
  *
  * Real temp repos, real git, the real `execp`; nothing stubbed but the model these
  * steps do not use.
@@ -169,19 +163,11 @@ const submoduleCalls = (argvs: readonly (readonly string[])[]): readonly (readon
   );
 }
 
-// ── (g) off: no reset anywhere asks git to populate anything
+// ── (g) the retired switch at "0" is ignored
 {
-  // The off arm asserts ABSENCE from what the step actually asked git to run — the
-  // recorded argv — rather than any submodule OUTCOME: an un-populated submodule is
-  // exactly what v0.14.71 handed the child, so "the directory is empty" is the pass
-  // condition here and the failure condition in (f).
   const remote = remoteRepo();
   const { repoRoot, baseSha } = repoWithSubmodule(remote);
-  // Un-populate the checkout `submodule add` made and remove the source, so the only
-  // way to the content is a clone that is about to be impossible.
-  const wt = worktreeAt(repoRoot, baseSha, "lean-153");
-  rmSync(path.join(wt, SUB), { recursive: true, force: true });
-  rmSync(remote, { recursive: true, force: true });
+  const wt = worktreeAt(repoRoot, baseSha, "lean-154");
   const { exec, argvs } = watcher();
   let threw: Error | undefined;
   await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0" }, async () => {
@@ -192,38 +178,10 @@ const submoduleCalls = (argvs: readonly (readonly string[])[]): readonly (readon
     }
   });
   assert(
-    threw === undefined,
-    `(g) resetting a tree whose submodule remote is gone does not throw with the switch at 0 (${threw ? `${threw.name}: ${threw.message.split("\n")[0]}` : "clean"})`,
+    threw === undefined && submoduleCalls(argvs).length > 0,
+    `(g) "0" still asks git to populate the submodule (${threw?.message?.split("\n")[0] ?? JSON.stringify(submoduleCalls(argvs))})`,
   );
-  assert(
-    submoduleCalls(argvs).length === 0,
-    `(g) and the reset issued no submodule call of any kind (got ${JSON.stringify(submoduleCalls(argvs))})`,
-  );
-  assert(
-    existsSync(path.join(wt, INSIDE)) === false,
-    "(g) and the gitlink stayed an empty directory, exactly as v0.14.71 left it",
-  );
-
-  // The control, OUTSIDE the `withEnv` above: the same tree shape with the switch
-  // unset. Without it (g) could be about a remote git would have fetched anyway.
-  const remote2 = remoteRepo();
-  const on = repoWithSubmodule(remote2);
-  const onWt = worktreeAt(on.repoRoot, on.baseSha, "lean-154");
-  const onExec = watcher();
-  let onThrew: Error | undefined;
-  try {
-    await resetWorktreeToBase(onExec.exec, onWt, on.baseSha, "");
-  } catch (err) {
-    onThrew = err as Error;
-  }
-  assert(
-    onThrew === undefined && submoduleCalls(onExec.argvs).length > 0,
-    `(g/ON) the same reset DOES ask git to populate the submodule with the switch on (${onThrew?.message?.split("\n")[0] ?? JSON.stringify(submoduleCalls(onExec.argvs))})`,
-  );
-  assert(
-    existsSync(path.join(onWt, INSIDE)) === true,
-    "(g/ON) and it left the submodule populated",
-  );
+  assert(existsSync(path.join(wt, INSIDE)) === true, "(g) and it left the submodule populated");
 }
 
 process.exit(exit);

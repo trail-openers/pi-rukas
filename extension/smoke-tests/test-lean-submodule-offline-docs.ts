@@ -10,10 +10,6 @@
  * host never held is a disclosure naming the path rather than a hand-back. Prose nobody reads at
  * runtime only stays true if something greps it (R8), and the needle here is the exact sentence
  * that was wrong — a rewrite that quietly restores it fails this file.
- *
- * The other half of the pair is the switch's own name in both documents: an operator who reaches
- * for `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` to escape a submodule hand-back has reached for the
- * OUTER gate, and the docs have to say that the source of the seeding is a different knob.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -56,13 +52,6 @@ assert(
 assert(
   /disclos/.test(bullet) && /never\s+held/.test(bullet),
   "(troubleshooting) and says a submodule this host never had is disclosed, not fetched",
-);
-
-// The closing paragraph of the same entry, which named only the outer gate.
-assert(
-  /PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT.*OUTER|OUTER\s*\n?\s*gate/s.test(troubleshooting) ||
-    /that switch is the OUTER/.test(troubleshooting),
-  "(troubleshooting) the entry says the runner-preflight switch is the outer gate",
 );
 
 // The step table row an operator reads before they read the troubleshooting entry at all.

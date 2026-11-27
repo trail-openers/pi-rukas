@@ -49,10 +49,9 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import { porcelain } from "./build-git.ts";
 import { frozenFromLog, testsFromLog } from "./build.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
-import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
+import type { PreexistingTierRecord } from "./state-outcome-maps.ts";
 import type { Outcome } from "./state.ts";
 import { baselineRedArm } from "./verify-baseline-arm.ts";
 import { preexistingReason } from "./verify-baseline-excuse.ts";
@@ -193,37 +192,27 @@ export async function verifyOutcome(ctx: HandlerCtx, deps: VerifyDeps): Promise<
   // 5. The project's OWN pre-existing tests, at head and at the base, before any tier runs: their verdict
   // ranks with the frozen contract's, and a run that produced no roster must hand back rather than reach
   // a tier that could grade it green. The base side runs in its own throwaway checkout, so it pays for
-  // itself once and is the only base read a GREEN depends on. The off arm runs NONE of this: no
-  // enumeration, no suite run, no roster on the record, and the land gate asks only the verdict kinds it
-  // asked before.
-  let roster: ProjectRosterRecord | undefined;
-  let rostered: Executed | undefined;
-  // A roster red's record rides only on the step's red: the tiers below arbitrate on a green roster alone.
-  let redRoster: ProjectRosterRecord | undefined;
-  if (leanProjectRosterEnabled()) {
-    const built = await buildProjectRoster({
-      exec: deps.exec,
-      repoRoot,
-      wt,
-      baseSha: ctx.run.baseSha,
-      issue,
-      timeoutMs: deps.timeoutMs ?? TIER_TIMEOUT_MS,
-      config: config.verify,
-      fullTier: config.verify.full,
-      frozen,
-    });
-    if (built.status === "none") throw new VerifyInfraError(rosterHandbackReason(built.reason));
-    if (built.status === "red") {
-      // Builder-fixable, and it names the tests: the round that can fix it is the point.
-      rostered = { kind: "fail", reason: built.reason };
-      redRoster = built.record;
-    } else {
-      roster = built.record;
-    }
-  }
+  // itself once and is the only base read a GREEN depends on.
+  const built = await buildProjectRoster({
+    exec: deps.exec,
+    repoRoot,
+    wt,
+    baseSha: ctx.run.baseSha,
+    issue,
+    timeoutMs: deps.timeoutMs ?? TIER_TIMEOUT_MS,
+    config: config.verify,
+    fullTier: config.verify.full,
+    frozen,
+  });
+  if (built.status === "none") throw new VerifyInfraError(rosterHandbackReason(built.reason));
+  // A roster red is builder-fixable and names the tests: the round that can fix it is the point. Its
+  // record rides only on the step's red: the tiers below arbitrate on a green roster alone.
+  const rostered: Executed | undefined =
+    built.status === "red" ? { kind: "fail", reason: built.reason } : undefined;
+  const roster = built.status === "roster" ? built.record : undefined;
 
   // Every red carries the roster the step observed, so a red the suite caused is never published as "no roster".
-  const onRed = roster ?? redRoster;
+  const onRed = built.record;
   const redRosterField = onRed === undefined ? {} : { projectRoster: onRed };
 
   // 6. The project's own tiers, fast before full — the first red tier ends the loop, and its clause is

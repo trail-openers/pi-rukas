@@ -1,13 +1,8 @@
 /**
  * lib/lean-prefix-head-scenario — one lean run whose review buys a fix wave the re-review refuses, driven
  * through `runLean` in a real temp repo, for `test-lean-prefix-head.ts`.
- *
- * It imports only what the pre-change build already exported, so the off arm's golden digest is captured by
- * running this same file against the base commit's source: a golden produced by the code under change would
- * prove nothing.
  */
 
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { leanResultDocument } from "../../src/headless/work-lean-result.ts";
 import { runLean } from "../../src/lean/engine.ts";
@@ -37,7 +32,7 @@ export interface Scenario {
   comments: string[];
   /** The `since` every fix-wave lens call was handed. */
   sinces: (string | undefined)[];
-  /** The state file's bytes and the host document, sha-normalised, for the golden digest. */
+  /** The state file's bytes and the host document, sha-normalised. */
   normalised: string;
 }
 
@@ -122,8 +117,4 @@ function normalise(text: string, repoRoot: string): string {
     if (!short.has(prefix)) short.set(prefix, `<SHORT${String(short.size)}>`);
     return short.get(prefix) as string;
   });
-}
-
-export function digest(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
 }

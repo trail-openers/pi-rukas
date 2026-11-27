@@ -145,6 +145,8 @@ const section = (head: string): string => renderAcceptanceSection(logFor(head), 
     const deps = depsWith({
       fetchIssueBody: async () => ISSUE_BODY,
       prComment: async (_repo, _pr, bodyText) => {
+        // The fix range's own comment is `test-lean-prefix-head.ts`'s; this case counts the two disclosures.
+        if (bodyText.startsWith("work-lean review: one fix wave")) return;
         posts.push(bodyText);
         const wantFail = fail === "both" || (fail === "first" && failed === 0);
         if (wantFail) {
@@ -183,10 +185,7 @@ const section = (head: string): string => renderAcceptanceSection(logFor(head), 
         outcome: { kind: "ok", prUrl: "https://github.com/o/r/pull/11", publishedHead: head },
       },
     );
-    // The fix range's own comment is `test-lean-prefix-head.ts`'s; this case counts the two disclosures.
-    process.env.PI_ENSEMBLE_LEAN_PREFIX_HEAD = "0";
     const { outcome, threw } = await runStep(ctx, deps);
-    delete process.env.PI_ENSEMBLE_LEAN_PREFIX_HEAD;
     return { posts, outcome, threw };
   };
 

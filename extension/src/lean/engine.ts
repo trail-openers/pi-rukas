@@ -25,7 +25,6 @@ import { errorOutcome } from "./error-outcome.ts";
 import { acquireLock } from "./lock.ts";
 import { exitCodeFor, hasTransition, next } from "./machine.ts";
 import { verifiedPosition } from "./resume.ts";
-import { leanPrefixHeadEnabled } from "./review-log.ts";
 import { progressProblem } from "./state-outcome.ts";
 import {
   type LeanRun,
@@ -261,11 +260,8 @@ async function settle(
   } catch (err) {
     outcome = errorOutcome(state, err);
   }
-  // What the step saved before it decided rides its outcome on every arm, a throw included. Progress
-  // holds only the pre-fix head, so the switch off drops one an earlier attempt saved before it.
-  const progress = leanPrefixHeadEnabled()
-    ? current.steps.find((s) => s.key === key)?.progress
-    : undefined;
+  // What the step saved before it decided rides its outcome on every arm, a throw included.
+  const progress = current.steps.find((s) => s.key === key)?.progress;
   const logged = withOutcome(current, key, { ...progress, ...outcome }, now());
   // `ready`'s verdict also has to land on the RUN, not only its step record:
   // `derivedSpec` is the only copy of a contract that exists on no issue. Keyed on the

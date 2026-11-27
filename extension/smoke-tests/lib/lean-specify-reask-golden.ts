@@ -3,9 +3,7 @@
  *
  * Eight `verify: "test"` criteria, one in-cap red file each, submitted for AC1-AC4 only, so the boundary
  * refuses nothing and the only gap is the four ids the child never declared. `test-lean-specify-reask.ts`
- * drives it on both arms, and `fixtures/lean-state/capture-specify-reask-off.ts` drove it ONCE against
- * the pre-feature tree to record the off arm's outcome (`specify-reask-off-v0.15.1.json`): a capture and
- * a test that built the run differently would pin nothing.
+ * drives it.
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -55,24 +53,4 @@ export function runPartial(
     toolUses: (d: number) => (d === 1 ? submitted(SUBMITTED) : []),
     ...opts,
   });
-}
-
-/** The fields the off arm is compared on. */
-export interface OffRecord {
-  kind?: string;
-  reason?: string;
-  failedRules?: string[];
-  dispatched: number;
-}
-
-/** The AC1-AC4 child, recorded as the off arm compares it. */
-export async function driveOff(issue: number): Promise<OffRecord> {
-  const r = await runPartial(issue);
-  const o = r.outcome as { kind?: string; reason?: string; failedRules?: string[] } | undefined;
-  return {
-    kind: o?.kind,
-    reason: o?.reason,
-    failedRules: o?.failedRules,
-    dispatched: r.dispatched,
-  };
 }

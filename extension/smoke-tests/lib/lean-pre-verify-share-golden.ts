@@ -21,9 +21,8 @@
  *   - **the machine tables** — `OUTCOME_KINDS.challenge` and the registry's forward-routed pair
  *     count, which a leaked kind or a quiet extra edge would move.
  *
- * Every clock-derived field and every sha (full or 12-char) and the version stamp is masked, the way
- * `lib/lean-specify-off-golden.ts` masks them: the base sha rides in a reason line, the short sha in
- * `publish`'s, and a fixture repo built afresh has new ones each run. The machine's two registry
+ * Every clock-derived field and every sha (full or 12-char) and the version stamp is masked: the base
+ * sha rides in a reason line, the short sha in `publish`'s, and a fixture repo built afresh has new ones each run. The machine's two registry
  * fields — `OUTCOME_KINDS.challenge` and the forward-routed pair count — are masked on BOTH sides,
  * because the change under review adds the `skipped` kind and its edge to them by design: a golden
  * that compared them could only pass by having been captured from this branch. `test-lean-machine.ts`

@@ -4,7 +4,8 @@
  *
  *   (a) a derived roster for a non-pytest `verify.test` is refused at `ready`, naming
  *       `verify.roster` and `{report}`, instead of handing back at every verify after build;
- *       a pytest `verify.test`, an explicit `verify.roster` and the roster's off arm all start;
+ *       a pytest `verify.test` and an explicit `verify.roster` start, and the retired
+ *       `PI_ENSEMBLE_LEAN_PROJECT_ROSTER=0` refuses as unset does;
  *   (b) the base version of an edited test runs at the file's OWN path, so a runner that only
  *       runs a file where it lives (a cargo wrapper, pytest's conftest) gets no false red, and
  *       the head copy — bytes, mode and mtime — is back afterwards with the tree clean.
@@ -47,8 +48,7 @@ for (const test of [
 for (const test of ["cargo test {file}", "sh runner.sh {file}", "scripts/pytest.sh {file}"]) {
   const said = rosterStartProblem({ test }) ?? "";
   assert(
-    said.includes("set verify.roster to write one to {report}") &&
-      said.includes("PI_ENSEMBLE_LEAN_PROJECT_ROSTER=0"),
+    said.includes("set verify.roster to write one to {report}"),
     `(a) ${test} is refused naming verify.roster and {report} (${said})`,
   );
 }
@@ -58,8 +58,8 @@ assert(
 );
 await withEnv({ PI_ENSEMBLE_LEAN_PROJECT_ROSTER: "0" }, async () => {
   assert(
-    rosterStartProblem({ test: "cargo test {file}" }) === undefined,
-    "(a) the roster's off arm asks nothing",
+    rosterStartProblem({ test: "cargo test {file}" }) !== undefined,
+    "(a) the retired switch set to 0 still refuses",
   );
 });
 

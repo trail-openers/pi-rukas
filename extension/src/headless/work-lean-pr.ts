@@ -21,7 +21,6 @@
 
 import { isFullCommitSha } from "../commit-sha.ts";
 import type { OutcomeKind } from "../lean/machine.ts";
-import { leanProjectRosterEnabled } from "../lean/project-roster-switch.ts";
 import { unacceptedTestEdits } from "../lean/review-test-accept.ts";
 import { reviewRoundProblem } from "../lean/state-outcome-gates.ts";
 import { validPrUrl } from "../lean/state-outcome.ts";
@@ -229,7 +228,7 @@ const REVIEW_FIXED: OutcomeKind<"review"> = "fixed";
 export function reviewCompleteOf(steps: Step[]): boolean {
   const review = lastAttempt(steps, "review");
   if (review < 0) return false;
-  if (leanProjectRosterEnabled() && unacceptedTestEdits(steps).length > 0) return false;
+  if (unacceptedTestEdits(steps).length > 0) return false;
   const outcome = steps[review]?.outcome;
   if (outcome?.reviewBound !== undefined) return false;
   if (outcome?.kind !== REVIEW_DONE && outcome?.kind !== REVIEW_FIXED) return false;

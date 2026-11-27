@@ -31,9 +31,8 @@
  *
  * It costs one runner invocation, and the probe is removed on every path — including the throw. The retry
  * does NOT re-probe: a runner that broke between attempts is caught by the shared pipeline's per-file infra
- * throw (`assertRan`). The whole check lives here so `runner-preflight-switch.ts` has one gate to close.
- * An empty git submodule is one shape this catches, fixed where
- * caused: `initSubmodules`, behind the same switch.
+ * throw (`assertRan`). An empty git submodule is one shape this
+ * catches, fixed where caused: `initSubmodules`.
  */
 
 import { existsSync, realpathSync } from "node:fs";
@@ -42,7 +41,6 @@ import type { ExecFn } from "../worktree.ts";
 import type { TestLocation } from "./config-test-location.ts";
 import { globMatches, globNamesPythonFiles } from "./config-test-location.ts";
 import { leanPreflightProbeContainEnabled } from "./preflight-probe-switch.ts";
-import { leanRunnerPreflightEnabled } from "./runner-preflight-switch.ts";
 import { probeRejected, probeWrite, removeProbe } from "./specify-preflight-write.ts";
 import type { Proof, TestRunLimits } from "./specify-proof.ts";
 import { runTestFile, trim } from "./specify-proof.ts";
@@ -204,9 +202,6 @@ export async function assertRunnerCanRunTests(
   /** Test-only override of the run call, so a case can make the RUN itself raise. */
   seams: { runFile?: RunProbeFile } = {},
 ): Promise<string | undefined> {
-  // The switch's ONE gate: off, the probe is never written and the runner never asked, so none of this
-  // file's throws are reachable. Read at call time.
-  if (!leanRunnerPreflightEnabled()) return;
   // One placement decision, then ONE sequence: write, run, classify, remove. Placement and the READING of a
   // 4 are decided together — both are facts about the name the probe carries — so it is decided once here.
   const placed = probeRelative(opts.wt, opts.testLocation);

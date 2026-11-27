@@ -1,7 +1,6 @@
 import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { linkShareableDeps } from "../worktree-provision.ts";
 import { testLocationOf } from "./config-test-location.ts";
-import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
 import {
@@ -342,7 +341,6 @@ export function arbitrateTierWithRoster(opts: {
   baseSha: string;
   cmd: string;
 }): RosterArbitration {
-  if (!leanProjectRosterEnabled()) return { kind: "uninvolved" };
   const roster = opts.roster;
   if (roster === undefined) return { kind: "uninvolved" };
   if (opts.headFailed.length === 0) return { kind: "uninvolved" };

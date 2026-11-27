@@ -40,14 +40,6 @@ import { type SubmitTestsRow, extractSubmitTests } from "./submit-tests-extract.
 import { SUBMIT_TESTS_REPORTER_PATH } from "./submit-tests-reporter.ts";
 import { joinNotes } from "./text-fence.ts";
 
-/**
- * The ONE reader of the switch. Default on; only the literal `"0"` takes the re-ask out, and then an
- * attempt dispatches exactly as before it existed. Read at CALL time, so a smoke file can pin an arm.
- */
-export function leanSpecifyReaskEnabled(): boolean {
-  return process.env.PI_ENSEMBLE_LEAN_SPECIFY_REASK !== "0";
-}
-
 /** The options every specify dispatch — the adversary and its re-ask — is sent with. */
 export function adversaryDispatchOpts(o: {
   wt: string;
@@ -109,8 +101,8 @@ export type ReaskResult =
   | { stop: BudgetFired; row: DispatchUsageRow };
 
 /**
- * Re-ask the child behind `first` for the `missing` ids, once. `undefined` when no re-ask ran: the
- * switch is off or this is the retry attempt (no `runId`), nothing is missing, the child declared
+ * Re-ask the child behind `first` for the `missing` ids, once. `undefined` when no re-ask ran: this
+ * is the retry attempt (no `runId`), nothing is missing, the child declared
  * nothing at all (the silent retry's case), a call was unreadable or the boundary `refuses` a declared
  * row (the refusal retry's case: asking would nag about a file the boundary refuses again), or its
  * session cannot be named again.

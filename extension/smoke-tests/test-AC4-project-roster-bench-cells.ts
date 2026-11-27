@@ -13,30 +13,13 @@
  *  passes, and the hidden run restores the original and fails. A gate that runs only what is in the
  *  tree certifies a green over a contract the run rewrote.
  *
- * Each cell is asserted twice: once as the gate must answer it NOW (roster on), and once as the
- * switch's off arm answers it — which is the shape that shipped before, and the reason AC5's
- * byte-identical claim matters.
+ * Each cell is asserted as the gate must answer it.
  */
 import { rmSync } from "node:fs";
 import type { ProjectRosterRecord } from "../src/lean/state-outcome-maps.ts";
 import { ROOTS, runVerify } from "./lib/lean-verify-fixture.ts";
 import { NO_REPORT_SENTINEL } from "./lib/lean-verify-roster.ts";
 import { PASS_TIER } from "./lib/lean-verify-tiers.ts";
-import { withEnv } from "./lib/env-scope.ts";
-
-/**
- * Run one case with the roster lever taken off, and put the environment back exactly as it was.
- *
- * `withEnv` owns the restore, including putting an absent variable back ABSENT rather than blank —
- * the distinction that decides whether the next case reads "unset" or "the empty string".
- */
-async function withRosterOff<T>(body: () => Promise<T>): Promise<T> {
-  let out!: T;
-  await withEnv({ PI_ENSEMBLE_LEAN_PROJECT_ROSTER: "0" }, async () => {
-    out = await body();
-  });
-  return out;
-}
 
 const SELF = "test-AC4-project-roster-bench-cells.ts";
 let exit = 0;
@@ -82,34 +65,6 @@ function assert(cond: boolean, msg: string): void {
     `(cell 1) the project's suite ran once in the run's worktree and once in the base checkout, not just the run's (${String(caught.rosterHeadRuns)} head, ${String(caught.rosterBaseRuns)} base)`,
   );
 
-  // The same tree with the roster lever taken off: no suite runs, and the step answers the way it
-  // did before Part A — a green off the tiers alone. This is the shape the cell was red in, made
-  // explicit, and the lever remains the operator's way to get it (#2438 R4 keeps it retained).
-  const blind = await withRosterOff(() =>
-    runVerify({
-      issue: 2461,
-      implement: true,
-      config: { fast: PASS_TIER },
-      roster: {
-        files: [FILE],
-        basePassed: [OK, BROKEN],
-        headPassed: [OK],
-        headFailed: [BROKEN],
-      },
-    }),
-  );
-  assert(
-    blind.outcome?.kind === "green",
-    `(cell 1/off) with the lever off the project's suite never runs and the tiers alone decide (got ${blind.outcome?.kind ?? `threw: ${blind.threw?.message}`})`,
-  );
-  assert(
-    blind.rosterRuns === 0,
-    `(cell 1/off) and not one project test ran — which is the hole AC4 records (${String(blind.rosterRuns)})`,
-  );
-  assert(
-    blind.outcome?.projectRoster === undefined,
-    "(cell 1/off) the off arm records no roster at all",
-  );
 }
 
 {
@@ -134,25 +89,6 @@ function assert(cond: boolean, msg: string): void {
     `(cell 2) an edited test whose base version fails the head code is recorded for review (got ${edited.outcome?.kind ?? "threw"}; ${JSON.stringify(edited.outcome?.projectRoster?.baseVersionRed)})`,
   );
 
-  // Off: the step runs the edited copy, sees it pass, and has no idea the original ever failed.
-  const blind = await withRosterOff(() =>
-    runVerify({
-      issue: 2463,
-      implement: true,
-      config: { fast: PASS_TIER },
-      roster: { files: [FILE], basePassed: [NAME], headPassed: [NAME] },
-      editProjectTests: { [FILE]: "#!/bin/sh\nexit 0\n" },
-      baseProjectTestFails: true,
-    }),
-  );
-  assert(
-    blind.outcome?.kind === "green",
-    `(cell 2/off) with the lever off the edited copy alone is what passes for the suite (got ${blind.outcome?.kind ?? `threw: ${blind.threw?.message}`})`,
-  );
-  assert(
-    blind.outcome?.projectRoster === undefined,
-    "(cell 2/off) and no roster records what was skipped",
-  );
 }
 
 {

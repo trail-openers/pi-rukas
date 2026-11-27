@@ -164,7 +164,6 @@ back rather than declining the issue at exit 11. A spec that fails readiness is 
 describes behaviour the base already has; if the criterion already holds, the issue is done or its
 criterion needs restating; otherwise remove the finished run's `.pi/lean-state/<issue>.json` (a
 finished record answers a second run with its stamped result) and re-run.
-`PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK=0` restores the exit-11 decline for a host that keys on it.
 
 ### Symptom: a lean step says `the child never submitted a test` although its files are in the tree
 
@@ -191,10 +190,8 @@ and `test-lean-nested-submit-steps.ts` (the pin).
 `the test runner could not run a test file: <the rendered verify.test command> — <the runner's first
 lines>`, with no adversary dispatched and no test frozen. The sibling shape of the same hand-back is
 `the worktree's submodules could not be initialised in <worktree>: git submodule update --init
---recursive — …`. Both are exit **10**, and both are one switch: `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0`
-restores v0.14.71, which ran no probe and no submodule initialisation at all — the same run then ends
-on the red proof's gap: a handback at exit 10 (`failure.kind: "red-test-gap"`), or, with
-`PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK=0` as well, `not-ready` at exit 11 with the ordinary decline.
+--recursive — …`. Both are exit **10**, and neither has a switch: the probe and the submodule
+initialisation always run.
 
 **Cause:** the step asked the project's own runner one question before paying an adversary — *can you
 run a test file at all?* — and the runner could not. It is handed an EMPTY test file (removed again on
@@ -216,10 +213,7 @@ and the reason was the probe's own name rather than anything about the project's
 inside `verify.testDir` (checked against the project's own `testGlob` so the runner can never collect
 the probe as one of its tests), and an exit 4 there is read as *the runner rejected the probe file* —
 recorded on the step's reason and the run goes on to the adversary, since the bench answered and this
-step's filename is what did not. **On an older release the workaround is
-`PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0`**, which runs no probe at all: the run is then judged by the red
-proof alone and ends on its gap (`red-test-gap`, exit 10; the exit-11 decline with
-`PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK=0` too) rather than on the preflight's hand-back.
+step's filename is what did not; the fix is to upgrade.
 `PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN=0` restores only the probe parent's containment check; the
 Python probe's name and its exit-4 reading have no lever — they are the behaviour. Before this check existed, none of those printed anything naming the file, so the red
 proof graded the run "unclear", `specify` declined with `criterion ACn has no red test`, and the issue
@@ -268,19 +262,16 @@ A missing `verify.test` is NOT this hand-back: `ready` refuses it first, as a se
 ([`failure.kind: "setup"`](#symptom-work-lean-hands-back-at-once-with-failurekind-setup)).
 Note also that the probe is not the only place this step can hand back on the environment: a base
 whose submodules cannot be populated fails earlier, in the worktree preparation that runs
-before it. Both are `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` away, and that switch is the OUTER
-gate — with it at `0` no lean reset asks git to populate a submodule at all (not specify's, not
-`build`'s fold, not the review fix round's), so the run looks as if it never had a submodule pass.
-With the gate open the run is seeded from the superproject, so an un-populated submodule is a
-DISCLOSURE naming the path, not a hand-back. A runner that dies on
-the probe-shaped file is graded by the red proof alone, exactly as v0.14.71 graded it.
+before it. Every lean reset (specify's, `build`'s fold, `challenge`'s and the review fix round's) is
+seeded from the superproject, so an un-populated submodule is a DISCLOSURE naming the path, not a
+hand-back.
 
 ### Symptom: a derived lean run stops on `criterion ACn has no red test; … exited 0 on base` for a "still passes" line
 
 **Cause:** the derived contract made a ticket line that only asks existing checks to keep passing
 ("the existing checks and the build still pass") into a criterion of its own. Such a line is green
 on the base, so no red test for it can exist, and `specify` ends the run on that gap (a handback at
-exit 10, or the exit-11 decline with `PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK=0`).
+exit 10).
 
 **Fix (shipped):** derive sets such lines aside as regression guards, which the run's full verify
 tier enforces at `ci` — so the project needs a full tier (`verify.full` or `.pi/verify-cmd`). A wording the guard rule does not recognise
@@ -4740,14 +4731,14 @@ template by deleting one whole-word `{file}` and appending `--junitxml={report} 
 Before #2439 the derivation only appended, the literal `{file}` survived into the argv, and the
 runner exited 4 on a file that does not exist: the symptom was this hand-back and the wording blamed
 the missing report. Set `verify.roster` when the project's report invocation differs from its
-per-file one. With the roster on, `ready` refuses a run whose `verify.roster` is unset and whose
+per-file one. `ready` refuses a run whose `verify.roster` is unset and whose
 `verify.test` names no `pytest`/`py.test` word (`verify.roster is unset and verify.test is not
 pytest …`, a [`setup` refusal](#symptom-work-lean-hands-back-at-once-with-failurekind-setup):
 handed-back at exit 10, nothing posted), so a runner that cannot take `--junitxml` is caught before build
-rather than at every verify; the shell and `cargo nextest` recipes are in [lean.md](lean.md). A project with no `verify.testDir`/`verify.testGlob` pair (the bare `sh {file}` runner) has no suite for a `verify.roster` to report, so its way out is the lever below. `{report}` is the absolute path the runner must write its JUnit XML to and `{dir}` the
+rather than at every verify; the shell and `cargo nextest` recipes are in [lean.md](lean.md). A project with no `verify.testDir`/`verify.testGlob` pair (the bare `sh {file}` runner) has no suite for a `verify.roster` to report: give it one. `{report}` is the absolute path the runner must write its JUnit XML to and `{dir}` the
 tree it runs in; both must
 appear as whole words, and the command is argv form, never a shell — a `;`, `|`, `$`, backtick or
-quote in it is refused at load. With the roster on, `ready` also refuses a `verify.roster` whose
+quote in it is refused at load. `ready` also refuses a `verify.roster` whose
 `--junitxml` path is absolute or climbs out with `..` (a `setup` refusal): each run reads its report
 from inside its own tree, so name the report `{report}`. A test the report lists more than once
 (a retrying runner) counts as failed if any attempt failed, and so does a `<testcase>` carrying any
@@ -4755,18 +4746,16 @@ child other than `skipped`, `properties`, `system-out` or `system-err`. Keep the
 project already does for its `test.xml`): the step demands a clean tree afterwards and will
 otherwise report its own scratch bytes as a tier leaving the worktree dirty.
 
-For a project that genuinely has no runnable pre-existing suite, the lever is
-`PI_ENSEMBLE_LEAN_PROJECT_ROSTER=0`: no project test runs, no roster is required, and the land gate
-asks only the verdict kinds it asked before this gate existed. It is the whole arm in one knob —
-there is no way to keep the roster's red and drop its hand-back, which is deliberate: a gate whose
-refusal is optional is a gate that reports green on the tests it skipped.
+The roster has no off switch, deliberately: a gate whose refusal is optional is a gate that reports green on the
+tests it skipped. A project with no runnable pre-existing suite needs one — a `verify.testDir` +
+`verify.testGlob` pair naming at least one test, and a `verify.roster` that reports on it.
 
 **Related symptom — the merge refuses with "the newest green verify carries no project-test
 roster".** Same cause, one step later: `landEarned` reads the newest decided green `verify`'s
 RECORD rather than trusting its kind, so a hand-built or resumed step log that carries `verify:
 green` with no `projectRoster` does not reach `landed`. The refusal names the roster and not
 "verify not green", because the second sends an operator to a gate that reported green. Re-run
-`verify` with the roster configured, or set the lever above if the project has no suite. The land
+`verify` with the roster configured. The land
 gate also refuses a roster that ran nothing (`total` below one).
 
 **Related symptom — the merge refuses with "the base versions of these edited pre-existing test
@@ -4790,7 +4779,7 @@ merge cap is not offered on a head land refuses.
 
 Source: `extension/src/lean/verify-roster.ts` (enumeration, both runs, the report parser, the
 base-version runs), `extension/src/lean/verify.ts` (the hand-backs), `extension/src/lean/engine-facts.ts`
-(the land gate), `extension/src/lean/project-roster-switch.ts` (the lever); pinned by
+(the land gate); pinned by
 `extension/smoke-tests/test-AC1-project-roster-handback.ts` and friends.
 
 ### Symptom: `work-lean` hands back at once with `failure.kind: "setup"`

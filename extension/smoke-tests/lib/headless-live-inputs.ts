@@ -25,19 +25,14 @@ import { COMMENT_RETENTION_PATHS } from "../../src/comment-retention.ts";
 import { forgeReadOffGuardEnabled } from "../../src/forge-read-off-switch.ts";
 import { glabMrCreateArgvEnabled } from "../../src/gl-mr-create-switch.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
-import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.ts";
 import { leanPreVerifySharePercent } from "../../src/lean/pre-verify-share-switch.ts";
 import { leanDetectVerifyEnabled } from "../../src/lean/config-detect.ts";
 import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
 import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
 
-import { leanSpecifyGapHandbackEnabled } from "../../src/lean/specify-gap-switch.ts";
 import { leanBuildIssueProseEnabled } from "../../src/lean/issue-prose.ts";
-import { leanPrefixHeadEnabled } from "../../src/lean/review-log.ts";
 import { leanFullTierOperandEnabled } from "../../src/lean/full-tier-operand-switch.ts";
 import { leanPreflightProbeContainEnabled } from "../../src/lean/preflight-probe-switch.ts";
-import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
-import { leanSpecifyReaskEnabled } from "../../src/lean/specify-reask.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../../src/lens-evidence.ts";
 import { lensLargeDiffEnabled } from "../../src/lens-large-diff-switch.ts";
 import { lensIncompleteForcesFull } from "../../src/lens-review-incomplete-switch.ts";
@@ -201,28 +196,14 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // gate's LIVE loop (env deleted) pins "unset means on". (#2439 retired the probe's
   // COLLECTABLE switch, keeping its default: `preflight-probe-switch.ts`.)
   ["PI_ENSEMBLE_LEAN_PREFLIGHT_PROBE_CONTAIN", leanPreflightProbeContainEnabled],
-  // The lean review seats' spec split. The reader is `v !== "0"`, so the LIVE
-  // assertion in the gate (env deleted) pins "unset means on".
-  ["PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT", leanRunnerPreflightEnabled],
-  // The specify re-ask for unsubmitted criteria; its arms are pinned by test-lean-specify-reask.ts.
-  ["PI_ENSEMBLE_LEAN_SPECIFY_REASK", leanSpecifyReaskEnabled],
   // Default OFF: the reader is `v === "1"`, so the LIVE loop pins "unset means off".
   ["PI_ENSEMBLE_LEAN_DETECT_VERIFY", leanDetectVerifyEnabled],
-  // The specify gap's handback. The reader is `v !== "0"`, so the gate's LIVE loop (env
-  // deleted) pins "unset means on"; the truth table, docs row and both arms' goldens are
-  // pinned by test-lean-specify-gap-handback.ts.
-  ["PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK", leanSpecifyGapHandbackEnabled],
   // The truncated-fixer continuation: its default is pinned here, its truth table by
   // `test-lean-review-fix-reask-pure.ts` and its off arm by
   // `test-lean-review-fixer-truncation-off-arm.ts`.
-  // #2428 — `verify` judges the project's own pre-existing tests. The reader is
-  // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth
-  // table, the off arm's bytes and the docs row are pinned by
-  // test-AC5-project-roster-switch.ts and test-AC7-project-roster-docs.ts.
   // The pre-verify share: its default is pinned here, its truth table, its inert arms and its
   // docs row by `test-lean-pre-verify-share-switch.ts`.
   ["PI_ENSEMBLE_LEAN_PRE_VERIFY_SHARE", leanPreVerifySharePercent],
-  ["PI_ENSEMBLE_LEAN_PROJECT_ROSTER", leanProjectRosterEnabled],
   ["PI_ENSEMBLE_LEAN_FIXER_TRUNCATION_REASK", leanFixerTruncationReaskEnabled],
   // The full-tier skip's trailing operand. The reader is `v !== "0"`, so the gate's LIVE loop (env
   // deleted) pins "unset means on"; the arms, the off-arm golden and the docs row are pinned by
@@ -233,9 +214,6 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // table, the docs row and the off-arm call shape are pinned by
   // test-lean-handback-net-git-switch.ts.
   ["PI_ENSEMBLE_LEAN_HANDBACK_NET_GIT", leanHandbackNetGitEnabled],
-  // #2199 — the review fix wave's saved pre-fix head; truth table and off arm in
-  // test-lean-prefix-head.ts.
-  ["PI_ENSEMBLE_LEAN_PREFIX_HEAD", leanPrefixHeadEnabled],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],
   // #2223 — the delta reader's incomplete-row rule. The reader is `v !== "0"`, so

@@ -19,7 +19,6 @@
 import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";
-import { leanRunnerPreflightEnabled } from "./runner-preflight-switch.ts";
 import {
   type SubmoduleNote,
   initSubmodules,
@@ -234,8 +233,7 @@ export function writeCaptured(wt: string, captured: Map<string, Buffer>): void {
  *
  * `git clean -fdx` de-populates every submodule the base carries, and a test importing from one fails before
  * collection — so a runner that cannot collect is blamed on the adversary. `initSubmodules` runs inside this
- * function because every reset must restore them, and `PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT=0` is honoured HERE for
- * the same reason: the one place that makes no reset ask git to populate anything.
+ * function because every reset must restore them.
  *
  * Throws `SpecifyResetError` unless `rev-parse HEAD` equals `baseSha` and `status --porcelain` reports nothing —
  * that confirmation IS the function: the commands are routine, and the only failure that matters is the one
@@ -281,10 +279,6 @@ export async function resetWorktreeToBase(
   // de-populator a submodule has. What the pass did, kept for the caller: `challenge` and the review fix round fold it into their reason,
   // since an unseeded submodule is a fact about the tree they judge. The clean-tree proof below runs AFTER the
   // pass, so the tree it proves is the one the child gets — including any gitlink this step left empty.
-  //
-  // The outer gate is honoured HERE, not only inside the pass: with the runner untrusted the switch's claim is
-  // that the step asks git to populate NOTHING. The case pinning this reads the argv the step issued.
-  if (!leanRunnerPreflightEnabled()) return [];
   const notes = await initSubmodules(exec, wt, beforeSubmoduleInit);
   // Nothing seeded: with no populating call there is no pass to disbelieve — the test is asked of the
   // pass's OWN account, not the file system.

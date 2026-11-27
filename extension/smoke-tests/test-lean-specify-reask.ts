@@ -9,8 +9,7 @@
  *   (2) the re-asked child still does not submit: the specify gap for exactly those ids, two dispatches;
  *   (3) a child that submitted every test criterion is never re-asked;
  *   (4) the re-ask is bounded by the step's budget: a re-ask past the turns ceiling is a budget stop;
- *   (5) `PI_ENSEMBLE_LEAN_SPECIFY_REASK=0` is the record captured from v0.15.1, field by field, with no
- *       session id minted (with `PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK=0`, since v0.15.1 declined a gap);
+ *   (5) the retired `PI_ENSEMBLE_LEAN_SPECIFY_REASK=0` is ignored: the child is still re-asked;
  *   (6) an attempt the boundary refuses a row of takes the refusal retry, and the retry is never
  *       re-asked: two dispatches;
  *   (7) an attempt with an unreadable call is not re-asked;
@@ -19,7 +18,7 @@
  * Real temp repos, real git, the real runner; the fake child is the only stub.
  */
 
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { DEFAULT_BUDGETS } from "../src/lean/config.ts";
 import { reaskMissing, reaskPrompt } from "../src/lean/specify-reask.ts";
@@ -35,9 +34,7 @@ import {
 import {
   IDS,
   MISSING,
-  type OffRecord,
   SUBMITTED,
-  driveOff,
   runPartial,
   submitted,
   writeAll,
@@ -146,24 +143,14 @@ const marked = (reason: string | undefined): boolean =>
   assert(r.outcome?.dispatches?.length === 2, "(4) both children are billed");
 }
 
-// ── (5) the switch off is the record captured from v0.15.1 ──────────────────
-const off = { PI_ENSEMBLE_LEAN_SPECIFY_REASK: "0", PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK: "0" };
-await withEnv(off, async () => {
-  const golden = JSON.parse(
-    readFileSync(
-      path.resolve(import.meta.dirname, "fixtures/lean-state/specify-reask-off-v0.15.1.json"),
-      "utf8",
-    ),
-  ) as OffRecord;
-  const got = await driveOff(35);
-  for (const k of ["kind", "reason", "failedRules", "dispatched"] as const)
-    assert(
-      JSON.stringify(got[k]) === JSON.stringify(golden[k]),
-      `(5) ${k} is v0.15.1's (got ${JSON.stringify(got[k])}, want ${JSON.stringify(golden[k])})`,
-    );
+// ── (5) the retired switch set to "0" is ignored ─────────────────────────────
+await withEnv({ PI_ENSEMBLE_LEAN_SPECIFY_REASK: "0" }, async () => {
   const runIds: (string | undefined)[] = [];
-  await runPartial(36, { runIds });
-  assert(runIds.length === 1 && runIds[0] === undefined, "(5) no session id is handed to spawn");
+  const r = await runPartial(36, { runIds });
+  assert(
+    r.dispatched === 2 && runIds[0] !== undefined && runIds[1] === runIds[0],
+    `(5) "0" still re-asks on the first child's session (got ${r.dispatched}, ${JSON.stringify(runIds)})`,
+  );
 });
 
 // ── (6) a refused row takes the refusal retry, and the retry is never re-asked ─

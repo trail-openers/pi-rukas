@@ -63,10 +63,6 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // no-dispatch stop on `specify`'s retry and the `challenge` skip with its recorded reason — is
   // lean/pre-verify-share.ts. It never cuts a child already running.
   int("LEAN_PRE_VERIFY_SHARE", 40),
-  // A review fix wave saves the head it starts from before the fixer runs, and the
-  // range rides the step's reason, a PR comment, the handback and `issues[].preFixHead`. `0`
-  // saves and names nothing. The reader is `leanPrefixHeadEnabled` in lean/review-log.ts.
-  flag("LEAN_PREFIX_HEAD", true),
   // #2202 — containment for the probe's parent directory: `"0"` skips the realpath
   // check that the folder the write goes into lies inside `realpath(worktree)`, so a
   // base-committed `verify.testDir` that is really a symlink out of the checkout
@@ -74,23 +70,6 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // worktree root (itself containment-checked, and infrastructure if THAT fails).
   // The reader is `leanPreflightProbeContainEnabled` in the same module.
   flag("LEAN_PREFLIGHT_PROBE_CONTAIN", true),
-  // The project's OWN pre-existing tests as a fourth thing `verify` judges: the suite the
-  // config's `verify.testDir` + `verify.testGlob` name is run at HEAD and at the run's base
-  // commit, its per-test verdicts read from the runner's report, and the BASE version of every
-  // pre-existing test file the run edited re-run against the head code. The verdict outranks the
-  // whole-line baseline excuse, and the land gate reads the roster off the record rather than
-  // trusting the verdict kind. `0` runs none of it and restores the pre-roster pass byte for byte.
-  // The reader is `leanProjectRosterEnabled` in lean/project-roster-switch.ts; the enumeration,
-  // both runs and the comparison are lean/verify-roster.ts.
-  flag("LEAN_PROJECT_ROSTER", true),
-  // The executed acceptance table in front of the lean review seats and on the run's
-  // PR: each criterion, the frozen test the run recorded for it, and what the
-  // newest green `verify` reported for it at the certified head. The table is READ,
-  // never executed, and is composed once per attempt by `lean/review-acceptance.ts`.
-  // #2212 — #2179's runner preflight and the reset's submodule init, both off
-  // only on `"0"`, which restores v0.14.71's specify (no probe, no submodule
-  // call, exit 11 where the preflight would have handed back at 10).
-  flag("LEAN_RUNNER_PREFLIGHT", true),
   // Where a lean run's contract comes from when its issue carries no `pi-spec v1`
   // block: `require` (the default) declines, exactly as every run before this knob
   // existed; `derive` sends the prose to one bounded read-only child, which returns
@@ -99,14 +78,4 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // `require` would decline tickets the operator meant to run. The reader is
   // `resolveSpecIntake` in lean/spec-intake-switch.ts.
   input("LEAN_SPEC_INTAKE", "enum", null, "cycle", { values: ["require", "derive"] }),
-  // A criterion `specify`'s own child could not prove red hands the run back (exit 10,
-  // `failure.kind: "red-test-gap"`) instead of declining the spec (exit 11). `0` restores the
-  // decline byte for byte. The reader is `leanSpecifyGapHandbackEnabled` in
-  // lean/specify-gap-switch.ts.
-  flag("LEAN_SPECIFY_GAP_HANDBACK", true),
-  // A specify child that submitted some test criteria and not others is asked once, on its
-  // own session, for the rest before readiness is judged. `0` dispatches as before: the
-  // unsubmitted criteria end the run. The reader is `leanSpecifyReaskEnabled` in
-  // lean/specify-reask.ts.
-  flag("LEAN_SPECIFY_REASK", true),
 ];
