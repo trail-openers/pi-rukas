@@ -32,6 +32,12 @@ export interface QuietTickOpts {
    *  asked once per dispatch, so a case that means its FIRST child cannot leak the reading into
    *  every later one. */
   toolInFlight?: boolean | (() => boolean);
+  /** The child's own counts when the poll asks the lever: the turns it had completed and the
+   *  tokens it had spent. EVERY real cell child has both — a developer works for dozens of turns
+   *  before its request hangs — and the snapshot the hook receives must carry them, because an
+   *  arm that read `turns`/`totalTokens` off a hand-made zero snapshot would be judged on a
+   *  reading no production spawn ever handed it. */
+  worked?: { turns: number; totalTokens: number };
 }
 
 /** The child's stream in the shape Pi stamps it: the assistant turn that opened each call. With
@@ -95,10 +101,21 @@ export async function deliverQuietTick(
     toolInFlight: toolInFlight(),
   });
   const check = (): void => {
-    // The spawn's own snapshot, zeros but for the clock — `stallBreach` reads `turns` /
-    // `totalTokens` off it, and a hand-made shape with those missing is not the reading the
-    // step's hook ever sees.
-    o.onProgress?.({ ...emptyRunningState(role), elapsedMs: silent });
+    // The snapshot `spawn.ts` builds by ingesting the child's own lines: the case's declared
+    // turns and tokens, not zeros. A lever that decides off these fields is judged on the
+    // reading a real spawn hands it, which is what the fixture used to fake away.
+    const worked = opts.worked ?? { turns: 0, totalTokens: 0 };
+    o.onProgress?.({
+      ...emptyRunningState(role),
+      turns: worked.turns,
+      totalTokens: worked.totalTokens,
+      usage: {
+        ...emptyRunningState(role).usage,
+        turns: worked.turns,
+        input: worked.totalTokens,
+      },
+      elapsedMs: silent,
+    });
   };
   arm.silence = quiet;
   arm.check = check;
