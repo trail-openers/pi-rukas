@@ -187,7 +187,6 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
   // One line, minutes half first: the ceiling the runtime will not enforce under
   // `PI_ENSEMBLE_DISPATCH_CAPS=0`, and the stall lever that armed nothing.
   const inert = inertWarning(
-    // `boundMs`, not `minutes`, says a minutes lever exists — the switch must not report a budget that has none.
     boundMs === undefined ? 0 : minutes,
     requestStallUnarmed(stall?.deadlineMs, stall?.startedAt),
   );
