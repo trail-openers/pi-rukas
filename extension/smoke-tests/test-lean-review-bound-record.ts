@@ -138,8 +138,9 @@ const pastItsBudget = () => runNow() + 61 * MIN;
   // the pair is bought (R1) instead of once per child, so a positional script that
   // counted the old two pass-1 reads would trip the bound in the middle of pass 1
   // and the case would measure a handback rather than the post-push stop it names.
-  // Slots: pair (pre-1), fixer (pre-fix), re-review (pre-re-review), and thereafter.
-  const times = [0, 0, 0, 24 * MIN, 24 * MIN];
+  // Slots: the step's per-child arms (which read the clock for the deadline-derived bound,
+  // #2660), pair (pre-1), fixer (pre-fix), re-review (pre-re-review), and thereafter.
+  const times = [0, 0, 0, 0, 24 * MIN, 24 * MIN];
   let tick = 0;
   // The fix range's own comment is `test-lean-prefix-head.ts`'s; this case counts the bound's.
   process.env.PI_ENSEMBLE_LEAN_PREFIX_HEAD = "0";
@@ -346,7 +347,7 @@ cleanupRoots();
   const saved = process.env.PI_ENSEMBLE_HANDOFF_CHANNEL;
   process.env.PI_ENSEMBLE_HANDOFF_CHANNEL = "host";
   try {
-    const times = [0, 0, 0, 24 * MIN, 24 * MIN];
+    const times = [0, 0, 0, 0, 24 * MIN, 24 * MIN];
     let tick = 0;
     const r = await captureWarns("STEP stopped", warns, async () => {
       outcome = (await runStep(

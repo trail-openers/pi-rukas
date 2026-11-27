@@ -304,6 +304,9 @@ function specBody(criteria: string[]): string {
       run: { deadlineMs: DEADLINE },
       steps: [{ state: "review", startedAt: AT, key: "7:review:0" }],
       stepKey: "7:review:0",
+      // The bound measures its room from the dispatch instant, so a ctx handed to the lever
+      // must carry the clock the engine always gives a step (`HandlerCtx.now`).
+      now: () => AT,
     } as never,
     45 * 60_000,
     "review",
