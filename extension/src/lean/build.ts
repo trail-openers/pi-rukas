@@ -374,11 +374,11 @@ export async function buildOutcome(
   const noChange = report.files.length === 0;
   // `undefined` when no real result was ever read: fields this visit never saw are not facts to
   // fabricate into a CHILD record.
+  // The budget arm is the REAL read, not a swallowed constant: `buildTurnWasWasted` refuses an ask
+  // whenever a ceiling had already fired, and `armsStepBudget` freezes that breach on the child's own
+  // record, so the arms that child was bought with answer it here.
   const wasted =
     lastChildResult !== undefined && noChange
-      // The budget arm is the REAL read, not a swallowed constant: `buildTurnWasWasted` refuses an
-      // ask whenever a ceiling had already fired, and `armsStepBudget` freezes that breach on the
-      // child's own record (`lastChildResult`), so the reader answers it here.
       ? buildTurnWasWasted(lastChildResult, {
           budgetFired: lastBudget?.fired(lastChildResult) !== undefined,
           noChange,
