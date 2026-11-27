@@ -98,11 +98,13 @@ export function buildTurnWasWasted(
   // Absent is not "stop": guessing a wasted turn from an unwatched finish is how a gate starts
   // reporting a confident wrong answer.
   if (typeof stop !== "string") return notWasted("no-final-turn");
-  // Any tool call means the child acted; a builder that wrote bytes before the cap has work the fold
-  // owns.
-  if ((result.toolUses?.length ?? 0) > 0 || (result.observedToolCalls ?? 0) > 0) {
+  // POSITIVE evidence of no calls, not the absence of a record: `toolUses` must be an array (empty is
+  // proof, absent is not — a result that never wrote the field vouches for nothing), and the live
+  // counter must not contradict it. The field is required on the production `DispatchResult` and the
+  // collapse path always initialises it, so an absent array here is a hand-built result, not a child.
+  if (!Array.isArray(result.toolUses) || (result.toolUses as unknown[]).length > 0)
     return notWasted("made-tool-call");
-  }
+  if ((result.observedToolCalls ?? 0) > 0) return notWasted("made-tool-call");
   if (stop === TRUNCATED_STOP_REASON) {
     return { wasted: true, trigger: "length", outputTokens: result.usage?.output ?? 0 };
   }

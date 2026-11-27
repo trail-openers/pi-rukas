@@ -29,6 +29,7 @@ import {
 	type ContinuationCalls,
 	answered,
 	reaskDeps,
+	refused,
 	silent,
 } from "./lib/lean-build-reask-fixture.ts";
 import { commitPaths } from "./lib/lean-build-asserts.ts";
@@ -107,6 +108,28 @@ import { commitPaths } from "./lib/lean-build-asserts.ts";
 	assert(
 		(r.outcome?.dispatches ?? []).length === 1,
 		`(5) and the refused ask billed no row (${String((r.outcome?.dispatches ?? []).length)})`,
+	);
+}
+
+// ── (5b) a seam that refused WITHOUT spawning bills nothing and spends nothing ─
+for (const reason of ["no-session", "unverified-role", "spawn-failed"] as const) {
+	const calls: ContinuationCalls = [];
+	const r = await runBuild({
+		issue: 2687,
+		dispatchResults: [{ ...CUT, transcriptPath: sessionFor(2687, 1) }],
+		reask: { deps: reaskDeps({ calls, answers: [refused(reason)] }) },
+	});
+	assert(
+		r.threw === undefined && r.outcome?.kind === "exhausted",
+		`(5b) a seam that answered ${reason} still ends the visit (${r.threw?.message ?? String(r.outcome?.kind)})`,
+	);
+	assert(
+		(r.outcome?.dispatches ?? []).length === 1,
+		`(5b) and ${reason} billed no row — no child was ever bought (${String((r.outcome?.dispatches ?? []).length)})`,
+	);
+	assert(
+		r.outcome?.reason === "the developer produced no change",
+		`(5b) with today's reason: an ask that never happened earns no clause (${JSON.stringify(r.outcome?.reason)})`,
 	);
 }
 

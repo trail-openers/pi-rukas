@@ -367,12 +367,12 @@ for (const value of ["", "false", "NO", " 0 ", "00", "one"]) {
     `(7) with no armed bound it runs under the re-ask's own ceiling, never unbounded (${String(stamped[0]?.boundMs)})`,
   );
 
-  // A failed continuation was still one that was tried — which is what makes the exhausted clause
-  // honest — and it still cost what it spent.
+  // A continuation that RAN and came back broken was still one that spent tokens — which is what makes
+  // the exhausted clause honest — so its usage is billed on the failed arm too.
   const dead = await askBuildReask(
     async () => ({
-      ok: false as const,
-      error: "child killed",
+      ok: true as const,
+      text: "",
       ms: 900,
       usage: DEAD_USAGE,
     }),
@@ -388,10 +388,32 @@ for (const value of ["", "false", "NO", " 0 ", "00", "one"]) {
     },
   );
   assert(
-    dead !== undefined &&
-      dead.outcome.ok === false &&
-      JSON.stringify(dead.row.usage) === JSON.stringify(DEAD_USAGE),
-    `(7) a continuation that FAILED was still one that was tried, and its tokens are billed — the clause says the ask was spent, and a dead child billed as free would make that a lie (${JSON.stringify(dead?.row)})`,
+    dead !== undefined && JSON.stringify(dead.row.usage) === JSON.stringify(DEAD_USAGE),
+    `(7) a continuation that ran was one that was tried, and its tokens are billed — the clause says the ask was spent, and a child billed as free would make that a lie (${JSON.stringify(dead?.row)})`,
+  );
+
+  // A seam that REFUSED without spawning a child is the other case: nothing was bought, so nothing is
+  // billed, no clause is owed, and the step falls through to today's exhausted verdict.
+  let rowCalls = 0;
+  const refused = await askBuildReask(
+    async () => ({ ok: false as const, reason: "no-session" as const }),
+    {
+      child: { ...child(CUT), transcriptPath: "/runs/e.json" },
+      trigger: "length",
+      issue: 2661,
+      worktree: "/wt",
+      writeFence: fence,
+      boundMs: continuationBoundMs({ opts: {} }, BUILD_REASK_BOUND_MS),
+      prompt: buildReaskPrompt(2661, "length"),
+      rowFor: (outcome, role) => {
+        rowCalls++;
+        return continuationRow(outcome, role, undefined);
+      },
+    },
+  );
+  assert(
+    refused === undefined && rowCalls === 0,
+    `(7) a continuation the seam refused bills NO row and spends no ask — a refusal is not an attempt (${JSON.stringify(refused)}, ${String(rowCalls)} rows built)`,
   );
 
   // The refusal is traced into the step's own log (`traceWarn` writes through `console.error`), so an

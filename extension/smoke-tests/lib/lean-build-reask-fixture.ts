@@ -49,9 +49,15 @@ export function answered(
   return merged.ok === true ? merged : base;
 }
 
-/** A continuation that answered nothing — the seam's own failure outcome, still one that was tried. */
+/** A continuation that ran and answered nothing — the seam's own empty reply, still one that was tried
+ *  and still one that spent tokens. */
 export function silent(): ContinuationAnswer {
-  return { ok: false, reason: "no-answer" };
+  return { ok: true, text: "", ms: 1000, usage: undefined };
+}
+
+/** A seam that refused without spawning a child: the ask never happened, so it bills nothing. */
+export function refused(reason: "no-session" | "unverified-role" | "spawn-failed" = "no-session"): ContinuationAnswer {
+  return { ok: false, reason };
 }
 
 /**
