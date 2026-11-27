@@ -184,7 +184,7 @@ export function makeRunPhase(opts: RunPhaseOpts): RunPhase {
                       stall: {
                         windowMinutes: budgetStallWindowMinutes,
                         // The spawn replaces this with its own stamp and in-flight set
-                        // (`stallLever` in `spawn-inflight.ts`); the pump never reads this one.
+                        // (`stallLever` in `spawn-inactivity-poll.ts`); the pump never reads this one.
                         silence: () => ({ sinceMs: 0, toolInFlight: false }),
                       },
                     }),

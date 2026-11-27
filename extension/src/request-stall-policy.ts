@@ -111,7 +111,7 @@ export interface StallOpts {
   windowMs: number;
   silence: StreamSilence;
   /** The caller's progress hook, which is what aborts the child it armed. The spawn composes it from
-   *  its own stream (`stallLever` in `spawn-inflight.ts`); the step arms none, and a caller that
+   *  its own stream (`stallLever` in `spawn-inactivity-poll.ts`); the step arms none, and a caller that
    *  forwards only the window needs nothing else. */
   check?: () => void;
 }

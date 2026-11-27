@@ -159,7 +159,7 @@ export async function runLensChild(opts: {
   // with a named error is cheaper and unambiguous.
   const lensExtraArgs = ["--no-skills", "--extension", LENS_REPORTER_PATH];
   // #2644 — the step's hung-request window, on the lens's own spawn: quiet past it with no tool in
-  // flight aborts the child (see `stallLever` in spawn-inflight.ts, which replaces the placeholder
+  // flight aborts the child (see `stallLever` in spawn-inactivity-poll.ts, which replaces the placeholder
   // reader below). No window armed means no option at all, never a zero-minute timer.
   const lensStall =
     runOpts.stallWindowMinutes === undefined
