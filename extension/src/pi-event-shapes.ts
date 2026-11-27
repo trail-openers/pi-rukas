@@ -12,8 +12,8 @@
 import type { RunningState } from "./progress.ts";
 import type { WriteFenceOpt } from "./types.ts";
 
-import type { StallFired } from "./request-stall-policy.ts";
 import type { SteerDelivery } from "./dispatch-steer.ts";
+import type { StallFired } from "./request-stall-policy.ts";
 
 export interface SpawnOptions extends WriteFenceOpt {
   /**

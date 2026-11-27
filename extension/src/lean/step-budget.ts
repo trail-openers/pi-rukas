@@ -2,22 +2,18 @@
  * lean/step-budget — make a `.pi/work.json` budget real.
  *
  * A per-state ceiling becomes four levers: **minutes** → `childBoundMs`, whose kill arrives as
- * `killCause: "child-bound"`; **turns / tokens / stall** → one `AbortController` off the progress
- * stream. A breach is a VERDICT — the child worked and the ceiling stopped it — so the step returns
+ * `killCause: "child-bound"`; **turns / tokens** → one `AbortController` off the progress stream;
+ * **stall** → the same controller, its breach frozen here from the spawn's inactivity poll. A
+ * breach is a VERDICT — the child worked and the ceiling stopped it — so the step returns
  * `{kind: "budget"}` to be routed by the table. Only a turns / tokens breach may be named from a
- * `child-bound` cause; the stall verdict is only ever what the progress hook froze. Ask
- * {@link readDispatched} BEFORE a caller's infra throw, so a stop is never read as a failure.
+ * `child-bound` cause; the stall verdict is only ever what the poll's breach froze.
+ * Ask {@link readDispatched} BEFORE a caller's infra throw, so a stop is never read as a failure.
  */
 
 import type { LensRunResult } from "../lens-review-types.ts";
 import type { RunningState } from "../progress.ts";
 import type { BudgetLimit, StallArms, StallFired, StallOpts } from "../request-stall-policy.ts";
-import {
-  inertWarning,
-  requestStallUnarmed,
-  stallBreach,
-  stallLever,
-} from "../request-stall-policy.ts";
+import { inertWarning, requestStallUnarmed, stallLever } from "../request-stall-policy.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchUsage } from "../types.ts";
 import type { Budget, WorkConfig } from "./config.ts";
@@ -111,25 +107,28 @@ export function budgetTrio(oc: Outcome | undefined): BudgetFired | undefined {
   return { limit, value, used };
 }
 
-/** One budget line, the same words for all four levers. The trace sink is caught: not ours to trust. */
-function traceBreach(fired: BudgetFired, phrase: string): void {
+/** One write to the trace sink, caught: a sink that throws must never cost a child its verdict. */
+function traceOnce(msg: string): void {
   try {
-    traceWarn(
-      `lean budget: ${fired.limit} ${String(fired.value)} exceeded (used ${String(fired.used)}); ${phrase}`,
-    );
+    traceWarn(msg);
   } catch {
     // A sink we cannot write to cannot be written to; nothing to say about it.
   }
 }
 
+/** One budget line, the same words for all four levers. */
+function traceBreach(fired: BudgetFired, phrase: string): void {
+  traceOnce(
+    `lean budget: ${fired.limit} ${String(fired.value)} exceeded (used ${String(fired.used)}); ${phrase}`,
+  );
+}
+
 /** The arms a step hands its dispatch seam: what the child gets, and the reader. */
 export type BudgetArms = {
   opts: BudgetOpts;
-  /**
-   * The verdict this arm saw: what the progress hook froze, else the minutes lever inferred from a
-   * `child-bound` kill cause — a cause the wall clock stamped, so it can name turns / tokens but never
-   * the stall lever, which the stream itself measured.
-   */
+  /** The verdict this arm saw: what a ceiling breach froze, else the minutes lever inferred from a
+   *  `child-bound` kill cause — a cause the wall clock stamped, so it can name turns / tokens but
+   *  never the stall, which only the poll's breach ever names. */
   fired: (result: DispatchResult) => BudgetFired | undefined;
   /** Set when a wall clock was armed that the runtime will not enforce (`PI_ENSEMBLE_DISPATCH_CAPS=0`). */
   warning?: string;
@@ -139,19 +138,18 @@ export type BudgetArms = {
  * Arm the levers of one state's budget, or nothing when it has none.
  *
  * The `minutes` lever is `childBoundMs`, enforced by `spawn-child-bound.ts` — the kill lands AFTER its
- * grace period and the reported `ms` overshoots, so {@link minutesUsed} rounds up. The `stall` lever
- * aborts through the same controller as turns / tokens, and its verdict is a `budget` stop — never a
- * user cancel.
+ * grace period and the reported `ms` overshoots, so {@link minutesUsed} rounds up. `turns` / `tokens` /
+ * `stall` abort through one controller, and a breach of any of them is a `budget` stop, never a cancel.
  */
 export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms {
   const minutes = b?.minutes ?? 0;
   const turns = b?.turns ?? 0;
   const tokens = b?.tokens ?? 0;
   const boundMs = minutes > 0 ? minutes * 60_000 : undefined;
-  // Frozen HERE: a running child's bound must not move with a later clock read. The lever derives
-  // its own window from the arms, so arming it reads no clock and cannot shift this bound.
+  // Frozen HERE: a running child's bound must not move with a later clock read, and the lever
+  // derives its own window from the arms, so arming it reads no clock and cannot shift this bound.
   const stallOpts = stallLever(stall);
-  // Which limit ended the child, frozen at the FIRST breach: a later tick must not rewrite it.
+  // Which ceiling ended the child, frozen at the FIRST breach either path reports.
   let hit: BudgetFired | undefined;
   let minutesTraced = false;
   const minutesBreach = (result: DispatchResult): BudgetFired => {
@@ -198,48 +196,34 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
     };
   }
   const controller = new AbortController();
-  // The stall breach comes from the POLL, never from a turn tick (see `stallBreach`); freezing it
-  // here is what keeps the one verdict shared with the turns / tokens levers and one-shot, whoever
-  // reads the ceiling first.
-  const fireStall = (b: BudgetFired): void => {
+  // The one verdict, frozen at the FIRST breach either path reports: the hook below (turns /
+  // tokens, on a turn tick) or `fire` on the arm the spawn's poll asks when the stream is quiet.
+  let hookFailureTraced = false;
+  const fire = (b: BudgetFired): void => {
     if (hit !== undefined) return;
     hit = b;
+    // The abort comes before the trace: a sink we cannot write to must not cost a live child its kill.
     controller.abort();
     traceBreach(b, "stopping the child");
   };
-  // The sink sits on BOTH arms of this hook, so every write goes through one catcher; each line
-  // prints once per ARM, not per tick (the hook below runs once per child turn).
-  let hookFailureTraced = false;
-  const traceOnce = (msg: string): void => {
-    try {
-      traceWarn(msg);
-    } catch {
-      // A sink we cannot write to cannot be written to; nothing to say about it.
-    }
-  };
+  // A ceiling check that throws must not cost the dispatch; one failure line per ARM.
   const traceHookFailureOnce = (err: unknown): void => {
     if (hookFailureTraced) return;
     hookFailureTraced = true;
     traceOnce(`lean budget: progress hook failed: ${(err as Error).message}`);
   };
-  // `spawn.ts` calls this from its stdout handler on the same tick it parses a child line: an exception
-  // here costs the dispatch. Nothing may escape, and the ABORT comes BEFORE the trace.
+  // `spawn.ts` calls this from its stdout handler on the same tick it parses a child line. The stall
+  // is NOT decided here: only the poll asks it, since a hung request emits no line and a turn tick
+  // has not yet seen the line it carries (the first message back can open a tool call).
   const onProgress = (s: RunningState): void => {
-    let breach: BudgetFired | undefined;
     try {
       if (hit !== undefined) return;
-      if (turns > 0 && s.turns > turns) breach = { limit: "turns", value: turns, used: s.turns };
+      if (turns > 0 && s.turns > turns) fire({ limit: "turns", value: turns, used: s.turns });
       else if (tokens > 0 && s.totalTokens > tokens)
-        breach = { limit: "tokens", value: tokens, used: s.totalTokens };
-      else breach = undefined; // The stall is NOT a turn-tick decision — see `stallBreach`. #2644.
+        fire({ limit: "tokens", value: tokens, used: s.totalTokens });
     } catch (err) {
       traceHookFailureOnce(err);
-      return;
     }
-    if (breach === undefined) return;
-    hit = breach;
-    controller.abort();
-    traceBreach(breach, "stopping the child");
   };
   return {
     opts: {
@@ -250,7 +234,7 @@ export function armBudget(b: Budget | undefined, stall?: StallArms): BudgetArms 
       ...(turns > 0 ? { budgetTurns: turns } : {}),
       ...(stallOpts === undefined
         ? {}
-        : { stall: { ...stallOpts, fire: (b: StallFired) => fireStall(b as BudgetFired) } }),
+        : { stall: { ...stallOpts, fire: (b: StallFired) => fire(b as BudgetFired) } }),
     },
     fired,
     ...(inert === undefined ? {} : { warning: inert }),

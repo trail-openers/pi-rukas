@@ -140,6 +140,11 @@ export async function reaskMissing(args: {
     traceWarn(`lean specify #${String(args.issue)}: the child's session moved; no re-ask`);
     return undefined;
   }
+  // The re-ask arms the SAME ceilings as its retry and the first child — turns, tokens, minutes —
+  // and deliberately NO stall lever: it takes no `StallArms`, so `armBudget` freezes no window, and
+  // a re-ask is one short prompt for criteria the child already knows about, on a session that has
+  // already streamed. A hung request here is ended by the spawn's silence budgets like any other
+  // child the step bounds without a window.
   const budget = armBudget(args.budget);
   let result: DispatchResult;
   try {
