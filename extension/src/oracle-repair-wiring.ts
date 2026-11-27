@@ -13,19 +13,19 @@
  * checkouts.
  */
 import { execp } from "./exec.ts";
-import { spawnSpecialist } from "./spawn.ts";
-import type { DispatchSpec } from "./types.ts";
+import type { BuildExec } from "./lean/build-types.ts";
 import { leanChildOpts } from "./lean/child-opts.ts";
-import { NO_HOOKS } from "./lean/specify-reset.ts";
-import { ensureSpecifyWorktreeWithProvision } from "./lean/specify-tree.ts";
 import { type WorkConfig, loadWorkConfig } from "./lean/config.ts";
 import { fetchIssueBody } from "./lean/io.ts";
-import type { BudgetOpts } from "./lean/step-budget.ts";
 import type { RepairDeps } from "./lean/repair.ts";
-import type { BuildExec } from "./lean/build-types.ts";
-import type { WriteFence } from "./write-fence-contract.ts";
-import { verifyHostEnv } from "./work-driver-verify-cmd.ts";
+import { NO_HOOKS } from "./lean/specify-reset.ts";
+import { ensureSpecifyWorktreeWithProvision } from "./lean/specify-tree.ts";
+import type { BudgetOpts } from "./lean/step-budget.ts";
+import { spawnSpecialist } from "./spawn.ts";
 import { traceWarn } from "./trace.ts";
+import type { DispatchSpec } from "./types.ts";
+import { verifyHostEnv } from "./work-driver-verify-cmd.ts";
+import type { WriteFence } from "./write-fence-contract.ts";
 
 /** Where the judge's throwaway base checkout lives, one path per issue so two runs cannot share one. */
 export function repairBaseTreePath(repoRoot: string, issue: number): string {

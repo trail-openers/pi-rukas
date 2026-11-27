@@ -271,7 +271,10 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
     if (typeof c[key] !== "boolean") bad(`counters.${key} must be a boolean`);
   }
   // Optional on load: a record from before the round has spent none. Present-but-wrong is corruption.
-  if (c.repairsSpent !== undefined && (typeof c.repairsSpent !== "number" || !Number.isInteger(c.repairsSpent) || c.repairsSpent < 0))
+  if (
+    c.repairsSpent !== undefined &&
+    (typeof c.repairsSpent !== "number" || !Number.isInteger(c.repairsSpent) || c.repairsSpent < 0)
+  )
     bad("counters.repairsSpent must be a non-negative integer");
   if (r.oracleRepair !== undefined && typeof r.oracleRepair !== "boolean")
     bad("oracleRepair must be a boolean");

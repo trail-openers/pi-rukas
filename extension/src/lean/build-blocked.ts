@@ -1,3 +1,4 @@
+import { BLOCKED_EVIDENCE_OUTPUT_CAP, type EvidenceLine } from "../oracle-repair-record.ts";
 /**
  * lean/build-blocked — the anti-forgery gate for the build child's "these frozen tests cannot all pass
  * together" report.
@@ -38,7 +39,6 @@ import {
   RECORD_REASON_MAX_CHARS,
 } from "./state-outcome-maps.ts";
 import { frozenKeyProblem } from "./state-outcome.ts";
-import { BLOCKED_EVIDENCE_OUTPUT_CAP, type EvidenceLine } from "../oracle-repair-record.ts";
 import { oneLine } from "./text-fence.ts";
 
 /** The cause LINE's ceiling: the renderer caps plus the sentence around them. */
@@ -259,7 +259,9 @@ export async function judgeBlockedReport(opts: {
   toolUses: unknown[];
   issue: number;
   timeoutMs?: number;
-}): Promise<{ reason: string; blockedBy: Record<string, string>; evidence: EvidenceLine[] } | undefined> {
+}): Promise<
+  { reason: string; blockedBy: Record<string, string>; evidence: EvidenceLine[] } | undefined
+> {
   const extracted = extractBlockedReport(opts.toolUses);
   if (extracted.rows.length === 0) {
     if (extracted.skipped > 0)
@@ -311,7 +313,10 @@ export async function judgeBlockedReport(opts: {
  * file's output is carried — the other vetted files came back green, which argues nothing about the conflict
  * and would only widen a child's prompt.
  */
-function executedEvidence(template: string, proved: { red: string; output: string }): EvidenceLine[] {
+function executedEvidence(
+  template: string,
+  proved: { red: string; output: string },
+): EvidenceLine[] {
   return [
     {
       path: proved.red,

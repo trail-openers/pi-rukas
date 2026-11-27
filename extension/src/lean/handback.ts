@@ -10,6 +10,7 @@
  */
 import { execp } from "../exec.ts";
 import { frozenFromLog } from "../lean-log.ts";
+import { repairCause } from "../oracle-repair-disclose.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { NO_GATE_VERDICT, handbackHeads, newestDecidedWorkStep } from "./handback-heads.ts";
@@ -17,7 +18,6 @@ import { NO_HEAD, type Rewind, originBranchHead } from "./handback-rewind.ts";
 import { RED_TEST_GAP } from "./specify-gap-switch.ts";
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./state-outcome-maps.ts";
 import { validPrUrl } from "./state-outcome.ts";
-import { repairCause } from "../oracle-repair-disclose.ts";
 import type { Outcome, Step } from "./state.ts";
 import { budgetSentence, budgetTrio } from "./step-budget.ts";
 import { fenceText, oneLine } from "./text-fence.ts";

@@ -78,9 +78,7 @@ export interface RunLeanOpts {
   /** Injected clock; the engine's only clock. */
   now?: () => number;
   /** Fields a brand-new run starts with; ignored when a state file exists. */
-  seed?: Partial<
-    Pick<LeanRun, "version" | "models" | "baseSha" | "branch" | "oracleRepair">
-  >;
+  seed?: Partial<Pick<LeanRun, "version" | "models" | "baseSha" | "branch" | "oracleRepair">>;
   /** Safety net for a table that loops on a bug of its own. Never a feature. */
   maxSteps?: number;
   /**

@@ -1,3 +1,4 @@
+import { TEST_RUNNER_PLACEHOLDER } from "./lean/config.ts";
 /**
  * oracle-repair-brief — the repair seat's prompt, and the closed list of what it may contain.
  *
@@ -18,7 +19,6 @@
  */
 import { criteriaBlock, scopeBlock } from "./lean/spec-blocks.ts";
 import type { PiSpec } from "./lean/spec.ts";
-import { TEST_RUNNER_PLACEHOLDER } from "./lean/config.ts";
 import type { EvidenceRow, HeadEvidenceRow } from "./oracle-repair-evidence.ts";
 
 /** The heading a repair brief carries and no other lean brief contains. */
@@ -78,7 +78,9 @@ export function repairPrompt(o: RepairBriefOpts): string {
     "",
     "These are the driver's own runs of the named files with the project's runner, on the builder's tree. They are the evidence, not your opinion of it.",
     "",
-    o.evidence.length === 0 ? "- (the driver recorded no runner output)" : o.evidence.map(evidenceLine).join("\n"),
+    o.evidence.length === 0
+      ? "- (the driver recorded no runner output)"
+      : o.evidence.map(evidenceLine).join("\n"),
     "",
     "## Your working tree",
     "",

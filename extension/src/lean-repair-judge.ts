@@ -1,3 +1,5 @@
+import type { BuildExec } from "./lean/build-types.ts";
+import { runTestFile, sha256 } from "./lean/specify-proof.ts";
 /**
  * lean-repair-judge — the mechanical gate a repaired frozen test must pass before it may replace the
  * contract, plus the throwaway base checkout it is judged in.
@@ -24,8 +26,6 @@
  * judgement over a checkout, not engine state, and it never imports the machine.
  */
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
-import { runTestFile, sha256 } from "./lean/specify-proof.ts";
-import type { BuildExec } from "./lean/build-types.ts";
 
 /** How long one base run gets before it counts as having observed nothing. */
 const BASE_RUN_TIMEOUT_MS = 120_000;

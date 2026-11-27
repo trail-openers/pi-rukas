@@ -16,12 +16,9 @@
  * edge that enters the step, so a run that spent it and handed back cannot buy another.
  */
 import { isFullCommitSha } from "./commit-sha.ts";
-import {
-  blockedEvidenceProblem,
-  validatedBlockedEvidence,
-} from "./oracle-repair-record.ts";
 import { BLOCKED_PATH_CAP, RECORD_MAX_ENTRIES } from "./lean/state-outcome-maps.ts";
 import { frozenKeyProblem } from "./lean/state-outcome.ts";
+import { blockedEvidenceProblem, validatedBlockedEvidence } from "./oracle-repair-record.ts";
 
 /** One repaired frozen test, as the record and the disclosure print it. */
 export interface RepairRecord {
@@ -36,7 +33,10 @@ export interface RepairRecord {
 }
 
 /** Why a loaded `repair` field is not a record, or `undefined` when it is one. */
-export function repairRecordProblem(v: unknown, frozen: Record<string, string> | undefined): string | undefined {
+export function repairRecordProblem(
+  v: unknown,
+  frozen: Record<string, string> | undefined,
+): string | undefined {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return "repair must be an object";
   const o = v as Record<string, unknown>;
   if (typeof o.round !== "number" || !Number.isInteger(o.round) || o.round < 1)
@@ -63,7 +63,12 @@ export function repairRecordProblem(v: unknown, frozen: Record<string, string> |
 
 /** Rebuild a validated record, so a loaded object never keeps an unchecked member. */
 export function validatedRepairRecord(v: unknown): RepairRecord {
-  const o = v as { round: number; baseSha: string; originalHashes: Record<string, string>; passedAtHead: Record<string, boolean> };
+  const o = v as {
+    round: number;
+    baseSha: string;
+    originalHashes: Record<string, string>;
+    passedAtHead: Record<string, boolean>;
+  };
   return {
     round: o.round,
     baseSha: o.baseSha,
@@ -85,7 +90,8 @@ function replacementMapProblem(
     return `${field} must hold at most ${RECORD_MAX_ENTRIES} files`;
   for (const [path, hash] of entries) {
     const key = frozenKeyProblem(path);
-    if (key !== undefined) return `${field} key ${path.slice(0, BLOCKED_PATH_CAP)} is not a valid test path: ${key}`;
+    if (key !== undefined)
+      return `${field} key ${path.slice(0, BLOCKED_PATH_CAP)} is not a valid test path: ${key}`;
     if (typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash))
       return `${field}[${path.slice(0, BLOCKED_PATH_CAP)}] must be a content hash`;
     if (frozen === undefined || !(path in frozen))

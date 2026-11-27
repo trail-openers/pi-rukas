@@ -60,11 +60,14 @@ function rowProblem(row: unknown): string | undefined {
     if (typeof r[key] !== "string") return `outcome blockedEvidence row needs a string ${key}`;
   }
   const path = r.path as string;
-  if (path.length > BLOCKED_PATH_CAP) return `outcome blockedEvidence path is over ${BLOCKED_PATH_CAP} characters`;
+  if (path.length > BLOCKED_PATH_CAP)
+    return `outcome blockedEvidence path is over ${BLOCKED_PATH_CAP} characters`;
   const key = frozenKeyProblem(path);
-  if (key !== undefined) return `outcome blockedEvidence path ${path.slice(0, BLOCKED_PATH_CAP)} is not a valid test path: ${key}`;
+  if (key !== undefined)
+    return `outcome blockedEvidence path ${path.slice(0, BLOCKED_PATH_CAP)} is not a valid test path: ${key}`;
   const cmd = r.cmd as string;
-  if (cmd.length > BLOCKED_PATH_CAP) return `outcome blockedEvidence cmd is over ${BLOCKED_PATH_CAP} characters`;
+  if (cmd.length > BLOCKED_PATH_CAP)
+    return `outcome blockedEvidence cmd is over ${BLOCKED_PATH_CAP} characters`;
   const output = r.output as string;
   if (output.length > BLOCKED_EVIDENCE_OUTPUT_CAP)
     return `outcome blockedEvidence output is over ${BLOCKED_EVIDENCE_OUTPUT_CAP} characters`;

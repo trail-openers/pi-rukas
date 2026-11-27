@@ -1,3 +1,4 @@
+import { newestDecidedWorkStep } from "./lean/handback-heads.ts";
 /**
  * oracle-repair-disclose — what a run says about a repair round it spent.
  *
@@ -7,10 +8,9 @@
  * builder's code stands. Lives outside `src/lean/` with the round's other readers.
  */
 import { BLOCKED_PATH_CAP } from "./lean/state-outcome-maps.ts";
-import { newestDecidedWorkStep } from "./lean/handback-heads.ts";
-import type { RepairRecord } from "./oracle-repair-fields.ts";
 import type { Step } from "./lean/state.ts";
 import { oneLine } from "./lean/text-fence.ts";
+import type { RepairRecord } from "./oracle-repair-fields.ts";
 
 /** The handback's cause line for a run whose repair round did not save it, or `undefined` when none ran.
  *  It counts only at the newest WORK step, the same position the other causes hold. */

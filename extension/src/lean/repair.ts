@@ -1,3 +1,6 @@
+import { frozenFromLog } from "../lean-log.ts";
+import { type RepairRoundDeps, runRepairRound } from "../oracle-repair-dispatch.ts";
+import { blockedEvidenceLines, headEvidenceFromStep } from "../oracle-repair-evidence.ts";
 /**
  * lean/repair — the step that buys ONE adversary round to correct a frozen oracle the driver proved wrong.
  *
@@ -18,16 +21,13 @@
  * verdict into the kinds the table routes.
  */
 import { traceWarn } from "../trace.ts";
-import { runRepairRound, type RepairRoundDeps } from "../oracle-repair-dispatch.ts";
-import { blockedEvidenceLines, headEvidenceFromStep } from "../oracle-repair-evidence.ts";
-import { frozenFromLog } from "../lean-log.ts";
 import { buildWriteFence } from "./build-dispatch.ts";
 import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
+import { rereadSpec } from "./spec-for.ts";
 import { SpecifyInfraError } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import { type Outcome, type Step, newestDecided } from "./state.ts";
-import { rereadSpec } from "./spec-for.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 import { joinNotes } from "./text-fence.ts";
 
@@ -42,7 +42,9 @@ export interface RepairDeps extends Omit<RepairRoundDeps, "baseTree" | "ensureTr
 }
 
 /** The arms this step's seat carries. */
-const repairChildOpts = (headless: boolean): { workCycleTrust: boolean } => ({ workCycleTrust: headless });
+const repairChildOpts = (headless: boolean): { workCycleTrust: boolean } => ({
+  workCycleTrust: headless,
+});
 
 /** The `repair` step. A refusal is a `refused` kind, routed by the table; only git it cannot account for throws. */
 export async function repairOutcome(
@@ -121,10 +123,7 @@ function rowsKey(rows: DispatchUsageRow[]): { dispatches?: DispatchUsageRow[] } 
 }
 
 /** The verdict a refused round leaves: the builder goes again against the same contract. */
-function refusedVerdict(
-  r: { why: string; rows: DispatchUsageRow[] },
-  blocked: Step,
-): Outcome {
+function refusedVerdict(r: { why: string; rows: DispatchUsageRow[] }, blocked: Step): Outcome {
   return {
     kind: "refused",
     reason: joinNotes([

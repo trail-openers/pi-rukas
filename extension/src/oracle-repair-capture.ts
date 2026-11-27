@@ -1,3 +1,4 @@
+import { readOneDescriptor } from "./lean/specify-capture.ts";
 /**
  * oracle-repair-capture — the ONLY read of the repair seat's submitted bytes.
  *
@@ -11,7 +12,6 @@
  * be read is a repair nobody judged.
  */
 import { MAX_TEST_BYTES } from "./lean/test-size.ts";
-import { readOneDescriptor } from "./lean/specify-capture.ts";
 
 /** What the round captured, or the one reason it captured nothing. */
 export interface CapturedSubmission {
@@ -26,7 +26,8 @@ export function readRepairSubmission(wt: string, paths: readonly string[]): Capt
   for (const rel of paths) {
     const one = readOneDescriptor(joinUnder(wt, rel));
     if ("why" in one) return { bytes: [], refused: `${rel}: ${one.why}` };
-    if (one.bytes.length === 0) return { bytes: [], refused: `${rel}: the submitted file is empty` };
+    if (one.bytes.length === 0)
+      return { bytes: [], refused: `${rel}: the submitted file is empty` };
     if (one.bytes.length > MAX_TEST_BYTES)
       return { bytes: [], refused: `${rel}: the submitted file is over the test size cap` };
     bytes.push({ path: rel, bytes: one.bytes });
@@ -40,7 +41,6 @@ function joinUnder(wt: string, rel: string): string {
   // The boundary rule is `specify`'s own (`frozenKeyProblem` on the record, `pathProblem` at capture); this
   // is the last gate before a read of the filesystem, so the escape check is spelled here rather than
   // assumed from a name a caller normalised.
-  if (rel.startsWith("/") || rel.startsWith("\\") || rel.includes(".."))
-    return `\0refuse-${rel}`;
+  if (rel.startsWith("/") || rel.startsWith("\\") || rel.includes("..")) return `\0refuse-${rel}`;
   return abs;
 }

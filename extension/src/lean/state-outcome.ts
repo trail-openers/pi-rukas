@@ -11,9 +11,9 @@
  * wrong shape is a record that reads as evidence and never matches.
  */
 import { isFullCommitSha } from "../commit-sha.ts";
+import { repairOutcomeProblem, validatedRepairFields } from "../oracle-repair-fields.ts";
 import { HANDOFF_CHANNELS } from "../work-driver-handoff-channel.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
-import { repairOutcomeProblem, validatedRepairFields } from "../oracle-repair-fields.ts";
 import { canonicalDerivedSpec } from "./state-derived-spec.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";
 import { derivedSpecProblem } from "./state-derived-spec.ts";

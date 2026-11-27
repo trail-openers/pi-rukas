@@ -15,9 +15,9 @@
  * Lives outside `src/lean/` for the line budget, and because it is prompt text, not engine state.
  */
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./lean/state-outcome-maps.ts";
-import { BLOCKED_EVIDENCE_OUTPUT_CAP } from "./oracle-repair-record.ts";
 import type { Step } from "./lean/state.ts";
 import { oneLine } from "./lean/text-fence.ts";
+import { BLOCKED_EVIDENCE_OUTPUT_CAP } from "./oracle-repair-record.ts";
 
 /** How many evidence lines one brief carries, so a 32-file report does not become a wall. */
 const EVIDENCE_LINE_CAP = 8;

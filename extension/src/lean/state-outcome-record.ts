@@ -1,3 +1,5 @@
+import type { RepairRecord } from "../oracle-repair-fields.ts";
+import type { EvidenceLine } from "../oracle-repair-record.ts";
 /**
  * lean/state-outcome-record — what a step's handler returned.
  *
@@ -10,8 +12,6 @@ import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { RedRecord, ReviewRecord } from "./state-outcome-gates.ts";
 import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
-import type { EvidenceLine } from "../oracle-repair-record.ts";
-import type { RepairRecord } from "../oracle-repair-fields.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 /**
  * What a step's handler returned. The engine routes on `kind` and reads the rest

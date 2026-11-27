@@ -23,31 +23,31 @@
  * A refusal is a verdict with a reason, never a throw. Only a tree or git the step cannot account for
  * throws, and then as `SpecifyInfraError`, which the engine turns into a handback.
  */
-import { armsStepBudget, stepDispatchArms, type StepArmsCtx } from "./lean-step-bound.ts";
+import { type StepArmsCtx, armsStepBudget, stepDispatchArms } from "./lean-step-bound.ts";
+import type { BuildExec } from "./lean/build-types.ts";
+import type { WorkConfig } from "./lean/config.ts";
+import type { PiSpec } from "./lean/spec.ts";
+import { commitTestFiles, committedBlob } from "./lean/specify-commit.ts";
+import { fileProblem, normaliseRelPath } from "./lean/specify-path.ts";
+import { runTestFile, sha256 } from "./lean/specify-proof.ts";
+import { writeCaptured } from "./lean/specify-reset.ts";
+import { SpecifyInfraError } from "./lean/specify-reset.ts";
+import type { ensureSpecifyWorktreeWithProvision } from "./lean/specify-tree.ts";
 import {
+  type DispatchUsageRow,
   budgetFor,
   dispatchUsageRow,
   readDispatched,
-  type DispatchUsageRow,
 } from "./lean/step-budget.ts";
-import type { BuildExec } from "./lean/build-types.ts";
-import type { WorkConfig } from "./lean/config.ts";
-import { commitTestFiles, committedBlob } from "./lean/specify-commit.ts";
-import { writeCaptured } from "./lean/specify-reset.ts";
-import { runTestFile, sha256 } from "./lean/specify-proof.ts";
-import { fileProblem, normaliseRelPath } from "./lean/specify-path.ts";
-import { SpecifyInfraError } from "./lean/specify-reset.ts";
-import { ensureSpecifyWorktreeWithProvision } from "./lean/specify-tree.ts";
 import { extractSubmitTests } from "./lean/submit-tests-extract.ts";
 import { SUBMIT_TESTS_REPORTER_PATH } from "./lean/submit-tests-reporter.ts";
+import { repairPrompt } from "./oracle-repair-brief.ts";
+import { readRepairSubmission } from "./oracle-repair-capture.ts";
+import type { EvidenceRow, HeadEvidenceRow } from "./oracle-repair-evidence.ts";
+import { judgeRepairSubmission } from "./oracle-repair-judge.ts";
 import { statReporterPath } from "./reporter-preflight.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
-import { judgeRepairSubmission } from "./oracle-repair-judge.ts";
-import { readRepairSubmission } from "./oracle-repair-capture.ts";
-import { repairPrompt } from "./oracle-repair-brief.ts";
-import type { PiSpec } from "./lean/spec.ts";
-import type { EvidenceRow, HeadEvidenceRow } from "./oracle-repair-evidence.ts";
 
 /** The repair round's verdict, in the shape the `repair` step turns into an `Outcome`. */
 export type RepairOutcome =
@@ -98,7 +98,7 @@ export interface RepairRoundOpts {
   issue: number;
   baseSha: string;
   /** The build head the replacements are re-run at for the record. */
-  headBefore: string;  /** The seat's tree: the run's specify worktree, which this round resets. */
+  headBefore: string /** The seat's tree: the run's specify worktree, which this round resets. */;
   wt: string;
   /** The run's branch, which the reset puts the frozen commit ON. */
   branch: string;
@@ -146,7 +146,10 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
 
   // 2. The blind child, on the specify row and the run's deadline.
   const row = budgetFor(config, "specify");
-  const budget = armsStepBudget(row, stepDispatchArms(ctx, (row?.minutes ?? 0) * 60_000, "specify"));
+  const budget = armsStepBudget(
+    row,
+    stepDispatchArms(ctx, (row?.minutes ?? 0) * 60_000, "specify"),
+  );
   let result: DispatchResult;
   try {
     await (deps.statReporter ?? statReporterPath)(SUBMIT_TESTS_REPORTER_PATH);
@@ -221,10 +224,7 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
   //    no commit carries, because every later tamper check reads a blob.
   const replaced = judged.verdicts.map((v) => v.path);
   try {
-    writeCaptured(
-      wt,
-      new Map(judged.verdicts.map((v) => [v.path, v.bytes])),
-    );
+    writeCaptured(wt, new Map(judged.verdicts.map((v) => [v.path, v.bytes])));
     await commitTestFiles(
       deps.exec,
       wt,

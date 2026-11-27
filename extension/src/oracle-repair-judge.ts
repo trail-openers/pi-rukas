@@ -1,3 +1,4 @@
+import type { BuildExec } from "./lean/build-types.ts";
 /**
  * oracle-repair-judge — the mechanical gate a repaired frozen test must pass before it may replace the
  * contract.
@@ -24,7 +25,6 @@
  */
 import { runTestFile, sha256 } from "./lean/specify-proof.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
-import type { BuildExec } from "./lean/build-types.ts";
 
 /** The case the driver watched fail at the base, and the facts a reader needs to audit the acceptance. */
 export interface AcceptedReplacement {
@@ -47,7 +47,9 @@ export interface ReplacementInput {
 }
 
 /** Why the whole submission is refused, or `undefined` when every file was accepted. */
-export type Judgement = { accepted: true; verdicts: AcceptedReplacement[] } | { accepted: false; why: string };
+export type Judgement =
+  | { accepted: true; verdicts: AcceptedReplacement[] }
+  | { accepted: false; why: string };
 
 /** The round's whole-submission refusal: a file outside the named set condemns the round. */
 export function submissionScopeProblem(
@@ -112,7 +114,10 @@ async function judgeOne(
     wt: opts.baseTree,
     template: opts.template,
     file: r.path,
-    limits: { env: verifyChildEnv(), ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }) },
+    limits: {
+      env: verifyChildEnv(),
+      ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
+    },
   });
   if (proof.kind === "green")
     return refuse(
