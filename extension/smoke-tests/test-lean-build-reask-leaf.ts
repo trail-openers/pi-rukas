@@ -32,6 +32,7 @@ import { ROOTS, runBuild } from "./lib/lean-build-fixture.ts";
 import { CUT, WROTE, sessionFor } from "./lib/lean-build-reask-cases.ts";
 import { reaskDeps } from "./lib/lean-build-reask-fixture.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
+import { withEnv } from "./lib/env-scope.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -111,25 +112,35 @@ const env = {
   // The headless lean run's children carry the /work-cycle trust stamp; the continuation must carry
   // it too, or the second turn is permission-denied while the first ran free. The strict opt-in is
   // the one thing that refuses that stamp, so the case pins it off rather than trusting the host.
+  // The leaf asks `isParentInTrustMode()` BESIDE the cycle stamp (`spawn-permission.ts`), so the two
+  // host levers that answer it — the sandbox marker and an inherited trust marker — are pinned off
+  // too, or the trusted arm would pass on a host that was trusted anyway.
   PI_ENSEMBLE_STRICT_PERMISSIONS: undefined,
+  PI_ENSEMBLE_SANDBOX_MODE: undefined,
+  PI_ENSEMBLE_TRUST_MODE: undefined,
   PI_ENSEMBLE_CHILD_ROLE_ENV: "1",
 };
 
-/** `runBuild` with the run's permission stamp threaded, the way `command.ts`'s handler does:
+/** `runBuild` threading the run's permission stamp, the way `command.ts`'s handler does:
  *  `buildOutcome(ctx, buildDeps(headless), headless)`. The stamp a continuation carries is decided by
  *  that third argument and nothing else, so a harness that omitted it would leave the headless arm
  *  permanently unexercised. */
 async function runBuildHeadless(opts: Parameters<typeof runBuild>[0]) {
-  return runBuild({ ...opts, headless: true });
+  return runBuild(opts);
 }
 
 /** One visit: the field's cut child, the production ask, and what the leaf handed the child. */
-async function visit(issue: number, minutes: number) {
+async function visit(issue: number, minutes: number, headless = true) {
   box.seen = undefined;
   box.prompt = "";
   const session = sessionFile(issue);
-  const r = await runBuildHeadless({
-    issue,
+  // The host's own permission levers are pinned off for the whole visit (`env` above), so the stamp
+  // this asserts is the run's and nothing the machine happened to export.
+  let r: Awaited<ReturnType<typeof runBuild>>;
+  await withEnv(env, async () => {
+    r = await runBuildHeadless({
+      issue,
+      headless,
     // The PRODUCTION leaf, in the same slot `buildDeps()` fills (the way `command.ts` wires the
     // handler): `headless: true`, so `deps.continueSession` IS `spawnDeveloperContinuationChild`
     // and the stamp is the run's. It goes on `RunOpts` rather than in `reask.deps` because the bag
@@ -142,6 +153,7 @@ async function visit(issue: number, minutes: number) {
     config: seat(minutes),
     dispatchResults: [{ ...CUT, transcriptPath: session }],
     reask: { childActs: (n, wt) => void (n === -1 && WROTE(wt)) },
+    });
   });
   return { r, session, seen: box.seen };
 }
@@ -259,6 +271,22 @@ async function visit(issue: number, minutes: number) {
   assert(
     bound > 0 && bound <= 4 * 60_000,
     `(tight) a TIGHTER seat wins: the leaf's bound came from the step's armed budget, not the ask's constant (${String(bound)} <= ${String(4 * 60_000)})`,
+  );
+}
+
+/** The stamp is REQUIRED and its value is the run's: an interactive visit must leave the trusted key
+ *  out of the child's env, so a stamp hardcoded on (or a `headless` default that silently trusted an
+ *  interactive run) reddens this arm while the arm above stays green. */
+{
+  const { r, seen } = await visit(2712, 120, false);
+  const e = seen?.env ?? {};
+  assert(
+    r.threw === undefined && seen !== undefined,
+    `(stamp) the interactive visit ran and asked (${String(r.threw?.message)})`,
+  );
+  assert(
+    e.PI_ENSEMBLE_TRUST_MODE === undefined,
+    `(stamp) an INTERACTIVE visit's continuation carries no /work-cycle trust stamp (${JSON.stringify(e.PI_ENSEMBLE_TRUST_MODE)})`,
   );
 }
 

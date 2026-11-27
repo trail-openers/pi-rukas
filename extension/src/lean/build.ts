@@ -36,7 +36,6 @@
  * The re-entry context comes from the log too, clipped to 4 KB.
  */
 import { existsSync } from "node:fs";
-import path from "node:path";
 import { askBuildReask } from "../build-reask-child.ts";
 import {
   BUILD_REASK_BOUND_MS,
@@ -63,7 +62,7 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { foldStoppedBuild, judgeBlockedReport } from "./build-blocked.ts";
-import { dispatchBuilder } from "./build-dispatch.ts";
+import { buildWriteFence, dispatchBuilder } from "./build-dispatch.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
@@ -80,6 +79,7 @@ import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { Outcome, Step } from "./state.ts";
 import {
+  type BudgetArms,
   type BudgetOpts,
   type DispatchUsageRow,
   armBudget,
@@ -109,10 +109,10 @@ export interface BuildDeps {
 export async function buildOutcome(
   ctx: HandlerCtx,
   deps: BuildDeps,
-  /** The run's permission stamp, threaded by the caller that owns the mode (see `buildDeps`). A
-   *  continuation the step starts is stamped exactly as its parent child was — an unstamped second
-   *  turn is permission-denied on the arm where the first ran free. */
-  headless = false,
+  /** The run's permission stamp, REQUIRED so a caller that owns the mode cannot drop it by omission:
+   *  it stamps both this step's children and the continuation it starts. A dropped stamp is the
+   *  permission-denied second turn `leanChildOpts` exists to prevent. */
+  headless: boolean,
 ): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
 
@@ -222,8 +222,7 @@ export async function buildOutcome(
   // bought nothing, so it bills no round and advances no `tries`.
   let noWorkRetryUsed = false;
   // The builder's own fence, named once so the dispatch and the continuation cannot disagree about
-  // what the resumed child may write (the fixer wave asks its seam the same question, see
-  // `fixWriteFence`).
+  // what the resumed child may write: the SAME builder the dispatch fences itself with.
   const fence = buildWriteFence(wt, repoRoot, issue);
   // Why the first no-work child died, kept for the throw the second one may make.
   let firstNoWorkWhy: string | undefined;
@@ -234,12 +233,17 @@ export async function buildOutcome(
   // The child whose recorded turn the re-ask detector reads — the last one the dispatch loop broke
   // on. Set at the break and read only once, after the fold.
   let lastChildResult: DispatchResult | undefined;
+  // The arms the LAST child was bought with: the reader that says whether a ceiling had already
+  // fired when the wasted-turn detector is asked (its `budgetFired` argument). Assigned in the loop,
+  // read once after the break — the break leaves the loop's own `budget` binding out of scope.
+  let lastBudget: BudgetArms | undefined;
   for (let tries = 0; ; tries++) {
     const budget = armsStepBudget(
       buildRow,
       // #2660: both levers from one read of the step log.
       stepDispatchArms(ctx, buildRowMs, "build"),
     );
+    lastBudget = budget;
     if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
     const [dispatchedChild, row] = await dispatchBuilder(deps.dispatch, {
       issue,
@@ -363,19 +367,28 @@ export async function buildOutcome(
   // the output cap mid-reasoning, or answered one clean turn without acting. Both get the fixer's ONE
   // continuation, judged AFTER the fold ("no change" is the fold's answer, not a child field) and
   // before the verdict. `tries` and `noWorkRetryUsed` are untouched; the ask is one-shot by being
-  // asked once here. `budgetFired` is a constant false, not a swallowed read: `dispatchBuilder`
-  // consults `budget.fired(result)` on EVERY child — turns, tokens, stall and the deadline-derived
-  // minutes lever — and a breach returns a BudgetStop that this loop folds and returns or retries,
+  // asked once here. `budgetFired` is read off the arms that child was bought with — `dispatchBuilder`
+  // consults `budget.fired(result)` on EVERY child (turns, tokens, stall and the deadline-derived
+  // minutes lever alike) and a breach returns a BudgetStop that this loop folds and returns or retries,
   // so the single `break` is the only edge reaching here and no fired ceiling can (case (2b)).
   const noChange = report.files.length === 0;
+  // `undefined` when the loop never broke on a real result: the detector reads a CHILD record, and
+  // fields this visit never saw are not facts to fabricate into one — the detector's own
+  // `no-final-turn` refusal is the honest answer for an absent child.
   const wasted =
-    noChange && lastChildResult !== undefined
-      ? buildTurnWasWasted(lastChildResult, { budgetFired: false, noChange: true })
-      : ({ wasted: false, reason: "no-final-turn" } as const);
+    lastChildResult !== undefined && noChange
+      // The budget arm is the REAL read, not a swallowed constant: `buildTurnWasWasted` refuses an
+      // ask whenever a ceiling had already fired, and `armsStepBudget` freezes that breach on the
+      // child's own record (`lastChildResult`), so the reader answers it here.
+      ? buildTurnWasWasted(lastChildResult, {
+          budgetFired: lastBudget?.fired(lastChildResult) !== undefined,
+          noChange,
+        })
+      : undefined;
   // `undefined` covers both the un-wasted arm and the ask's own refusals (no seam, no session path):
   // refused before a child was paid for, so nothing is billed and only the trace says why.
   const asked =
-    wasted.wasted && lastChildResult !== undefined
+    wasted?.wasted === true && lastChildResult !== undefined
       ? await askBuildReask(deps.continueSession, {
           child: lastChildResult,
           trigger: wasted.trigger,
@@ -401,11 +414,19 @@ export async function buildOutcome(
       : undefined;
   if (asked !== undefined) {
     rows.push(asked.row);
-    const again = await normaliseBuild({
-      ...fold(label),
-      budget: new CaptureBudget(deps.captureCeiling),
-    });
-    if (again.files.length > 0) return okVerdict(again, rows, waitNote);
+    // Only a continuation that RAN can have moved the head, and only its own fold may say so. A second
+    // fold that throws is infrastructure the first fold never saw: the work the first fold proved stays
+    // the verdict, so the failure falls through to today's exhausted answer rather than replacing it.
+    let again: NormaliseReport | undefined;
+    try {
+      again = await normaliseBuild({
+        ...fold(label),
+        budget: new CaptureBudget(deps.captureCeiling),
+      });
+    } catch {
+      again = undefined;
+    }
+    if (again !== undefined && again.files.length > 0) return okVerdict(again, rows, waitNote);
   }
   if (!noChange) return okVerdict(report, rows, waitNote);
   return {
@@ -415,22 +436,11 @@ export async function buildOutcome(
       waitNote(),
       // ONE short clause, LAST, and only when the ask was spent: the head and the wait note keep
       // their bytes for every arm that never asked, which the existing literals pin.
-      asked !== undefined && wasted.wasted
+      asked !== undefined && wasted !== undefined && wasted.wasted
         ? buildReaskClause(wasted.trigger, wasted.outputTokens)
         : "",
     ]),
     dispatches: rows,
-  };
-}
-
-/** The seat's fence — the root, repo and scratch the child was fenced by, so the continuation is
- *  never handed a wider one than the dispatch it resumes. */
-function buildWriteFence(wt: string, repoRoot: string, issue: number): WriteFence {
-  return {
-    root: wt,
-    repo: repoRoot,
-    // `<repoRoot>/tmp/lean-<issue>` — one `..` from the worktree's parent, per scratch hygiene.
-    scratch: path.join(path.dirname(wt), "..", "tmp", `lean-${String(issue)}`),
   };
 }
 

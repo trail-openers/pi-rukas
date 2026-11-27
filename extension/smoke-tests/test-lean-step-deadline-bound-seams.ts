@@ -19,7 +19,7 @@
  * a key dropped inside the literal was invisible to them, which is how the gap shipped.
  * Here `mock.module` replaces `src/spawn.ts` itself, so the recorder sees exactly the
  * object `spawnSpecialist` is handed, through the real `<step>Deps()` the engine wires
- * (`command.ts`'s `handlers.build = (ctx) => buildOutcome(ctx, buildDeps(headless))`).
+ * (`command.ts`'s `handlers.build = (ctx) => buildOutcome(ctx, buildDeps(headless), headless)`).
  * The same leaf-recorder convention `test-lean-review-deps-grace.ts` established.
  *
  * Offline: no model, no child, no token. The leaf returns canned results.

@@ -372,7 +372,7 @@ export function phase1Handlers(
     return { kind, failedRules: facts.failedRules, ...rowsField(facts) };
   };
   handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps(headless));
-  handlers.build = (ctx) => buildOutcome(ctx, buildDeps(headless));
+  handlers.build = (ctx) => buildOutcome(ctx, buildDeps(headless), headless);
   handlers.challenge = (ctx) => challengeOutcome(ctx, challengeDeps(headless));
   handlers.verify = (ctx) => verifyOutcome(ctx, verifyDeps());
   // The two post-publish steps, in the same one-line shape as the ones above: the step body is

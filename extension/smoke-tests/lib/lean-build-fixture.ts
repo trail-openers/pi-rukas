@@ -497,9 +497,10 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
   });
   try {
     const { buildOutcome } = await import("../../src/lean/build.ts");
-    // The run's permission stamp rides with the case that asked for it: `buildOutcome`'s third
-    // argument is the ONLY thing that decides whether a lean child (and the continuation it starts)
-    // is trusted, so a fixture that hardcoded `false` would leave the headless arm unexercised.
+    // The run's permission stamp rides with the case that asked for it and is REQUIRED by the step:
+    // `buildOutcome`'s third argument is the ONLY thing that decides whether a lean child (and the
+    // continuation it starts) is trusted, so a fixture that hardcoded `false` would leave the
+    // headless arm unexercised — and dropping the argument at all is now a compile error.
     const outcome = await buildOutcome(built.ctx, deps, opts.headless ?? false);
     // `threw` is added per return, AFTER the `finish()` spread, so it is never shadowed.
     return { outcome, ...finish(), threw: undefined };
