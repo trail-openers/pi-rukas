@@ -41,7 +41,6 @@
  * to is the only difference. Everything outside the pure parts is injected, so the
  * test drives a real temp git repo through the same seams production uses.
  */
-
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { guardCompilerIntegrity, packageDirFor } from "../work-driver-toolchain-canary.ts";

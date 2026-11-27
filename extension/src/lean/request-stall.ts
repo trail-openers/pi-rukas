@@ -4,7 +4,6 @@
  * switch, window, inertness line, frozen arms — lives in `src/request-stall-policy.ts`: spawn
  * policy, not engine state.
  */
-
 import type { StallArms } from "../request-stall-policy.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { REVIEW_DEADLINE_RESERVE_MS } from "./review-bound.ts";

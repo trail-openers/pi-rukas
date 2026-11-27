@@ -12,7 +12,6 @@
  * The shipped table has a row for every state the machine can visit. A key that is not in the table is refused
  * at load.
  */
-
 import type { execp } from "../exec.ts";
 import { detectVerify, leanDetectVerifyEnabled } from "./config-detect.ts";
 import { validateTestDir, validateTestGlob } from "./config-test-location.ts";

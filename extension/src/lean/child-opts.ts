@@ -12,7 +12,6 @@
  * process inherit the first run's trust.
  * `PI_ENSEMBLE_STRICT_PERMISSIONS=1` is honoured by `workCycleTrustEnabled()`, which refuses the stamp.
  */
-
 import { cycleChildOpts } from "../work-cycle-trust.ts";
 
 /** Spread AFTER the caller's own options, so no caller can opt a child out of the stamp; `headless` is

@@ -16,7 +16,7 @@
  *      that read returned — so a rewrite is legitimate only because it was bound to
  *      an observed sha and survived the PR check; success is decided afterwards by
  *      reading origin again, never by parsing porcelain. The one unsettled row this
- *      run opened itself may be exempted — but only against all three reads at once
+ *      run opened itself may be exempted, but only against all three reads at once
  *      (origin's ref, this run's own step log, and the forge's rows), in
  *      `publish-republish.ts`.
  *   5. the forge is asked for an OPEN PR on the branch FIRST and only then told to
@@ -29,9 +29,6 @@
  * the wrong place. The recorded outcome carries `prUrl` and nothing else:
  * `state-outcome.ts` refuses that field on any other step, so it stays the run's only
  * evidence that a PR exists at an address.
- *
- * The step's own preconditions read the run's persisted state, so the push target is
- * data rather than a decision — `assertPublishableBranch` in `publish-deps.ts`.
  */
 import { existsSync } from "node:fs";
 import type { NormalizedPullRequest } from "../forge-types.ts";

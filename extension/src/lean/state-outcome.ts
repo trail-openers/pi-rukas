@@ -10,7 +10,6 @@
  * PR head, and `prUrl` is the address `handback` prints. A value that is present but the
  * wrong shape is a record that reads as evidence and never matches.
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import { HANDOFF_CHANNELS } from "../work-driver-handoff-channel.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
@@ -147,16 +146,16 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // The two steps that REPORT how a run ended are the only ones that may claim a comment
   // reached the forge.
   posted: REPORTING_STATES,
-  // …and only `handback` may carry the comment it built: a gate that stamped one would put
+  // Only `handback` may carry the comment it built: a gate that stamped one would put
   // a child's prose on the record as the run's own closing statement.
   report: "handback",
-  // …and the only ones that may name the channel they reported on.
+  // The only steps that may name the channel they reported on.
   channel: REPORTING_STATES,
   dispatches: DISPATCH_STATES,
   // Only `ready` may record a derived contract: a step that never ran the deriving
   // child has no evidence for a contract no author wrote.
   derivedSpec: "ready",
-  // …and the same for the commit the run was judged at: a step stamping its own
+  // The same for the commit the run was judged at: a step stamping its own
   // `baseSha` would anchor a diff, a config read and a verify verdict to a commit the
   // run never seeded.
   baseSha: "ready",

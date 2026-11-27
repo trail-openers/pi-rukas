@@ -13,7 +13,6 @@
  * The bound here is a bound on ONE VALIDATION: `validateSubmitRows` calls `sizeJudgement` once per candidate.
  * What a run finally HOLDS is bounded separately, at the capture.
  */
-
 import { lstatSync } from "node:fs";
 import { readOneDescriptor } from "./specify-capture.ts";
 import {

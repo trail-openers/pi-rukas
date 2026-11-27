@@ -12,7 +12,6 @@
  *     value through — what lets a CI fix round re-enter build without clearing the red a verify step
  *     recorded. A boolean would collapse "do not opine" into "clear it".
  */
-
 import type { LeanRun, LeanState, RunCounters } from "./state.ts";
 
 export interface Transition {

@@ -15,7 +15,6 @@
  * `extraArgs` (`build-dispatch.ts`) on top of the shared child argv, which itself carries
  * `--no-extensions` (`buildChildArgs`); never auto-discovered.
  */
-
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

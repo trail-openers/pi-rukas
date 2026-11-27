@@ -9,7 +9,6 @@
  * `verify.test` runner) and a provider fault on the final attempt are `no-red-test` on either arm. Only the
  * literal `"0"` turns it off, read at CALL time.
  */
-
 /** The specify outcome kind for a gap the step's own child left. */
 export const RED_TEST_GAP = "red-test-gap";
 

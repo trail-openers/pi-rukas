@@ -5,14 +5,13 @@
  * `engine.ts`'s arrival gate (`landEarned`) refuses an arrival whose newest
  * decided `verify` or `ci` is not green. Neither is restated here — a second
  * copy of that judgement is the bloat this step exists to avoid. What is left is
- * the two things only this step can observe:
+ * the three things only this step can observe:
  *
  *   1. **May it merge at all?** `autoMerge`, read from `.pi/work.json` AT the
  *      run's `baseSha` through `loadWorkConfig`. Two refusals, because the two
  *      causes need different operator actions: `autoMerge` absent or false →
  *      `refused` naming the missing grant; a config that could not be READ →
- *      also `refused`, but naming the unreadable config. An unreadable config
- *      never silently resolves to `autoMerge: false`, because "the project
+ *      also `refused`, but naming the unreadable config, since "the project
  *      declined to grant it" and "nobody could tell what it said" send the
  *      operator to different files.
  *   2. **Is it merging the head that was verified?** The forge's own merge
@@ -23,24 +22,22 @@
  *      listed in `.pi/merge-authors` at the run's `baseSha` — the same gate file,
  *      the same base commit, and the same shared function (`heldForMergeAuthor`,
  *      via `deps.checkAuthor`) the `/work` driver's `merged` step and the merge
- *      guard call. An allowlist that is absent,
- *      unreadable or empty, and an author the forge did not report, all →
- *      `refused`. No override reaches it: `autoMerge` grants that the project
- *      permits landing, not that this person's PR may be landed.
+ *      guard call. An allowlist that is absent, unreadable or empty, and an
+ *      author the forge did not report, all → `refused`. No override reaches it:
+ *      `autoMerge` grants that the project permits landing, not that this
+ *      person's PR may be landed.
  *
  * The merge goes through the adapter's `prMerge`, which pins to the verified
  * head and refuses an unpinned call, and carries an explicit squash subject
- * (`landDeps()` builds it the way the driver builds its own commit title —
- * `deriveConsolidationSubject` over the issue title), because the squash
- * subject BECOMES the commit record on main and release-please derives the
- * version bump and changelog entry from it.
+ * (`landDeps()` builds it the way the driver builds its own commit title),
+ * because the squash subject BECOMES the commit record on main and release-please
+ * derives the version bump and changelog entry from it.
  *
  * The result is READ BACK: `merged` is a claim about the forge, not about the
  * call's return value. If the merge cannot be performed exactly and confirmed,
  * this step returns `refused` — never an approximation (no unpinned merge, no
  * method guess, no fallback).
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import { authorFromRead, evidenceAuthorRead } from "./../merge-guard-author.ts";
 import type { HandlerCtx } from "./engine.ts";

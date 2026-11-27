@@ -16,7 +16,6 @@
  * itself — is left to the child, which sees the ticket; and a mixed sentence ("X returns 3 and
  * the build still passes") stays a criterion.
  */
-
 import { criterionText } from "../pi-spec-map.ts";
 
 /** The most guards a derived record carries. */

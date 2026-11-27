@@ -12,7 +12,6 @@
  * The record is omitted, not emptied, when neither half can be named: `red: { tiers: [], criteria: [] }` would
  * read as "the gate checked these and found none".
  */
-
 import type { RedRecord } from "./state-outcome-gates.ts";
 import {
   RED_CRITERIA_MAX,

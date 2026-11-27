@@ -13,7 +13,6 @@
  * The entry cap is the WHOLE extraction's, not one call's: the durable record holds one bounded `blockedBy`
  * map, and rows past the bound are dropped and counted in `skipped`.
  */
-
 /** One reported conflict: a frozen path and the child's stated contradiction. */
 interface BlockedRow {
   path: string;

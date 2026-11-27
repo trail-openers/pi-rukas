@@ -7,7 +7,6 @@
  * All leaves: `budgetStopped` throws the error `review-errors.ts` already defines, and importing
  * the handler to throw that error would be a cycle for the sake of one `throw`.
  */
-
 import { neutraliseEvidence } from "../comment-evidence.ts";
 import type { Severity } from "../lens-review-format.ts";
 import { isCarried } from "../lens-review-types.ts";

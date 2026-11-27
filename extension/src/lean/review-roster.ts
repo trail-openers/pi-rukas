@@ -6,7 +6,6 @@
  * the base did not fail. A run with no roster says so in a line, on every run and whatever the
  * acceptance switch says: a seat told nothing cannot tell "the suite never ran" from "it passed".
  */
-
 import { ROSTER_NAMES_CAP, rosterNewlyFailing } from "./state-outcome-maps.ts";
 import { type Step, newestDecided } from "./state.ts";
 import { clipList, promptText } from "./text-fence.ts";

@@ -10,7 +10,6 @@
  * checkout. Off, the path is used as the config and fallback rules say, with the write still refusing a
  * link or non-file at the name. Only the literal `"0"` turns it off, read at CALL time.
  */
-
 /** One environment's answer, as a parameter so a case pins it without touching `process.env`. */
 function enabled(env: Record<string, string | undefined>, key: string): boolean {
   return env[key] !== "0";

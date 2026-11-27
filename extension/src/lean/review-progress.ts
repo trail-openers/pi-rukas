@@ -13,7 +13,6 @@
  * so re-reviewing would re-review the identical commit the gate just read, and a step that did that
  * would report a head it never actually looked at twice.
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import { truncationClause } from "../fixer-truncation.ts";
 import { ReviewInfraError } from "./review-errors.ts";
@@ -36,8 +35,8 @@ export async function assertFixAdvanced(
   after: string | undefined,
   rows: DispatchUsageRow[],
   /** The cut this wave named, or `undefined` for a wave whose fixer simply changed nothing. Present
-   *  only when the fixer's recorded stop reason was `"length"` with no write call AND the wave spent
-   *  its continuation; a wave that never asked gets the ordinary no-change sentence. */
+   *  only when the fixer stopped at `"length"` with no write call AND the wave spent its
+   *  continuation. */
   truncated?: { outputTokens: number },
 ): Promise<string> {
   // An integration that returned neither a head nor a stop is not a round that

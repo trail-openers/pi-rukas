@@ -22,7 +22,6 @@
  * tier's report — leaves the line rule in charge. The two judgements are never combined: a roster
  * red is never made green by a line match, and a roster excuse is recorded rather than re-argued.
  */
-
 import { PREEXISTING_NAME_MAX_CHARS, type PreexistingTierRecord } from "./state-outcome-maps.ts";
 import { baselineExcuse, failureLinesOf } from "./verify-baseline-excuse.ts";
 import { baselineProbeWorktreePath } from "./verify-baseline.ts";

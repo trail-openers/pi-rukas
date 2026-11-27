@@ -19,7 +19,6 @@
  * the validator, and the writer clips rather than throwing — a gate must not lose its verdict
  * over the length of a name it was quoting.
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import { GATE_SEVERITIES, type GateSeverity } from "./gate-severities.ts";
 import type { ReviewBoundRecord } from "./review-bound.ts";

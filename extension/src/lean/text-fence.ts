@@ -14,7 +14,6 @@
  *
  * `joinNotes` runs the other way: it composes a reason from the clauses that existed, leaving no bare `; `.
  */
-
 /** Control characters that still read as text inside a fence: newline and tab. */
 const FENCE_KEEP = /[\n\t]/;
 /**

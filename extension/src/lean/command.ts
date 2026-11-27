@@ -16,7 +16,6 @@
  * comment naming the rules that failed before the run ends `not-ready`. One comment
  * per run, because the step log guarantees the step that posted it never runs twice.
  */
-
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";

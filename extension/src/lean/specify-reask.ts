@@ -21,7 +21,6 @@
  * submitted, and a reply the child could not complete — dead, killed, rejected — changes nothing: the
  * attempt ends as it would have without the re-ask. Its cost is billed either way.
  */
-
 import path from "node:path";
 import { transcriptPathFor } from "../spawn-support.ts";
 import { traceWarn } from "../trace.ts";

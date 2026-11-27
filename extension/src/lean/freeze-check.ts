@@ -20,7 +20,6 @@
  * Attribution runs the same command at the base with no candidates in place: the only "the gate was fine and
  * your files were not" the step will assert.
  */
-
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { neverStarted, wasKilled } from "./specify-proof.ts";
 import type { DropLabel } from "./specify-run.ts";

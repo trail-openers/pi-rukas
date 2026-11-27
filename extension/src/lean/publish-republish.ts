@@ -110,8 +110,7 @@ export function ownPublishRecord(steps: Step[]): OwnPublishRecord | undefined {
 
 /**
  * Whether the ONLY reason this branch is blocked is the PR this very run opened, or
- * `undefined` when it is not. `undefined` is today's refusal, so the predicate fails
- * closed on every half of it.
+ * `undefined` when it is not — a half the predicate cannot read fails it closed.
  *
  * All of these must hold, each read from a source the step cannot wish away:
  *

@@ -13,7 +13,6 @@
  * account of the frozen tests it proved cannot all pass together; its KEYS are frozen test paths, so it
  * takes `frozenKeyProblem` instead of `CRITERION_ID`.
  */
-
 import { CRITERION_ID } from "./spec.ts";
 import { frozenKeyProblem } from "./state-outcome.ts";
 
@@ -117,8 +116,7 @@ export function blockedByProblem(value: unknown): string | undefined {
  * The `commandCriteria` map, rebuilt from entries this module actually checked.
  *
  * Rebuilt rather than spread-and-cast: `buildOutcome`'s claim is that every field it returns was looked
- * at, and a cast hands back the raw object with whatever it still held. Each entry is re-derived from its
- * own validation, so the type the caller receives is produced by the check, not asserted past it.
+ * at, and a cast hands back the raw object with whatever it still held.
  */
 export function validatedCommandCriteria(value: unknown): Record<string, string> {
   const out: Record<string, string> = {};
@@ -192,8 +190,7 @@ function recordedNameProblem(name: unknown): string | undefined {
  *
  * The record licenses a GREEN over a tier that exited non-zero, so every field it asserts is checked: a
  * name that could not have been printed is refused, and a tier with no names is refused rather than
- * rendered under a heading claiming failures exist. A refused record forfeits the excuse — the caller
- * keeps the `baseline red:` hand-back — it never throws.
+ * rendered under a heading claiming failures exist. A refused record forfeits the excuse — it never throws.
  */
 export function preexistingFailuresProblem(value: unknown): string | undefined {
   if (notAMap(value)) return "outcome preexistingFailures must be an object";

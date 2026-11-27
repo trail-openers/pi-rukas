@@ -14,7 +14,6 @@
  * What this module does NOT do is bound a child already running — that is the step's own
  * `WorkConfig.budgets` `childBoundMs`. The deadline decides only when a step may START.
  */
-
 import { type CycleBudgetMs, resolveCycleDeadline } from "../work-driver-deadline.ts";
 import { handoffDispatchTimeoutMs } from "../work-driver-handoff.ts";
 import { REPORT_STATES, type Step } from "./state.ts";

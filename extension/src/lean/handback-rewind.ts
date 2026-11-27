@@ -16,7 +16,6 @@
  * lease binds to that read) and AGAIN after it; success is origin holding the verified head, whatever git
  * printed. Every refusal is a `Rewind` with a reason, never a throw.
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import { traceWarn } from "../trace.ts";
 import { netGitEnv, netRefProblem, runNetGit } from "../work-driver-net-git.ts";

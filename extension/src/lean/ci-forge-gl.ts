@@ -26,7 +26,6 @@
  * come from is handed back by `lastMrRow` — the only way raw fields the normalized shape drops reach a
  * caller without a second read of a moving MR.
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import { gradeGlJobState } from "../forge-gl-grade.ts";
 import { GL_JOBS_PAGE } from "../forge-pipeline.ts";

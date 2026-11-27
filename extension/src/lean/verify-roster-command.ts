@@ -5,7 +5,6 @@
  * it for another, run it once, and turn the runner's machine-readable report into per-test verdicts.
  * What those verdicts MEAN is `verify-roster.ts`.
  */
-
 import { lstatSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
@@ -78,9 +77,8 @@ export function deriveSuiteTemplate(test: string): string {
  * The derived command hands `verify.test` pytest's `--junitxml={report}`, and the roster learns
  * names ONLY from that report, so a runner that is not pytest writes none and every verify hands
  * back after build has spent its budget. "Is pytest" is one mechanical rule, never a reading of
- * the command: some argv word whose basename is `pytest` or `py.test` (`python -m pytest` and
- * `uv run pytest` carry one). A wrapper that forwards to pytest without naming it is refused
- * too, and spells the same command as its `verify.roster`.
+ * the command: some argv word whose basename is `pytest` or `py.test`. A wrapper that forwards to
+ * pytest without naming it is refused too, and spells the same command as its `verify.roster`.
  */
 export function rosterStartProblem(config: VerifyRosterConfig): string | undefined {
   if (!leanProjectRosterEnabled()) return undefined;
@@ -179,7 +177,7 @@ export function parseJUnitCases(xml: string): { passed: string[]; failed: string
     const children = [
       ...body
         .slice(tag.length)
-        // Two passes: a captured-output element is cut only after the CDATA it may wrap is gone, so
+        // A captured-output element is cut only after the CDATA it may wrap is gone, so
         // a `/>` or `</system-out>` printed inside the CDATA cannot end it early.
         .replace(/<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->/g, "")
         .replace(/<(system-out|system-err)\b(?:[^>]*\/>|[\s\S]*?<\/\1>)/g, "")
@@ -211,8 +209,8 @@ export type SuiteRun =
  *
  * The command reaches the executor in argv form, so no shell re-parses the tree's path, and
  * `killGroup` makes the wall clock real for a runner that spawns a grandchild. The per-test
- * names come from the REPORT, never from the tail: a bounded tail shows the summary and elides
- * every per-failure marker, so a roster built from one silently reports zero tests.
+ * names come from the REPORT, never from the tail: a bounded tail elides every per-failure
+ * marker, so a roster built from one silently reports zero tests.
  */
 export async function runProjectSuite(
   exec: VerifyExec,

@@ -8,7 +8,6 @@
  * the spawn and the judgement live here, one child call, and the colour rule itself stays in
  * `verify-baseline.ts` so a kill cannot mean two different things in one pipeline.
  */
-
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import type { VerifyExec } from "./verify-types.ts";
 

@@ -20,7 +20,6 @@
  * builder that finds two frozen assertions in conflict has nothing to do but probe them until the turn ceiling
  * kills the step. The tool's report is a claim the driver verifies for itself (`build-blocked.ts`).
  */
-
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import { LEAN_BUILD_ISSUE_LEAD, leanIssueSection } from "./issue-prose.ts";
 import { criteriaBlock, scopeBlock } from "./spec-blocks.ts";

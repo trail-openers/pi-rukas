@@ -8,7 +8,6 @@
  * The spec's problem and criteria go in VERBATIM — a paraphrase would be a second spec to keep in step,
  * and the child would be tested against the paraphrase.
  */
-
 import { type TestLocation, testDirsNamed } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import { leanIssueSection } from "./issue-prose.ts";

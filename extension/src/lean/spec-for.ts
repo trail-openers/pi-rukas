@@ -11,7 +11,6 @@
  * is reported as one. With neither, the parse failure comes back verbatim. A resume
  * reuses the contract it derived — nothing here re-derives.
  */
-
 import { NO_BLOCK_RULE, type PiSpec, parsePiSpec, unterminatedFenceLine } from "./spec.ts";
 import type { ContractSource } from "./state-derived-spec.ts";
 

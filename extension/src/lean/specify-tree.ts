@@ -22,7 +22,6 @@
  *
  * Every git call here is argv form: the path and the base sha never become a word a shell re-parses.
  */
-
 import { existsSync, realpathSync } from "node:fs";
 import { traceWarn } from "../trace.ts";
 import { ensureGitExclude } from "../work-driver-git-exclude.ts";

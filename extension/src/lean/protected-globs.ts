@@ -1,11 +1,10 @@
 /**
  * lean/protected-globs — the matcher and the validity rules for a project's own
  * protected paths (`.pi/work.json` `lean.protectedPaths`). Both questions live here, and
- * only here, so the config validator and the revert predicate cannot disagree about what
- * a pattern MEANS: `protectedPathProblem` asks whether an entry is usable at all (an
- * entry that cannot name a repo-relative path is a typo whose rule silently protects
- * nothing, so the loader refuses it and quotes it); `protectedGlobMatches` asks whether
- * an entry names a path — the ONE matcher.
+ * config validator and the revert predicate cannot disagree about what a pattern MEANS:
+ * `protectedPathProblem` asks whether an entry is usable at all (an entry that cannot name a
+ * repo-relative path is a typo whose rule silently protects nothing, so the loader refuses it and
+ * quotes it); `protectedGlobMatches` asks whether an entry names a path — the ONE matcher.
  *
  * The semantics are gitignore's, read off git itself (`git check-ignore` against a
  * scratch repo) rather than from a summary of them: `*` spans characters WITHIN one
@@ -13,9 +12,8 @@
  * exactly one character other than `/`, a doublestar spans zero or more WHOLE segments,
  * a pattern naming no directory matches a basename at any depth, and a trailing `/` means
  * that directory and everything under it — never the directory node itself. No repo
- * matcher has exactly this set — the driver's `globMatchesSegments` makes `*` match at
- * least one segment and has no doublestar — and a glob library is a dependency this
- * extension does not carry, so the matcher is written here.
+ * matcher has exactly this set and a glob library is a dependency this extension does not
+ * carry, so the matcher is written here.
  *
  * The comparison is CASE-SENSITIVE on purpose: `isProtectedPath` in
  * `work-driver-doctrine.ts` classifies case-sensitively, and a revert rule that folded
@@ -37,7 +35,6 @@
  * disk, so the matcher is never asked to backtrack over it — and a path that arrives past them
  * is answered as PROTECTED, because one this module cannot read is not one it can vouch for.
  */
-
 /**
  * Characters no entry may contain: shell metacharacters, quotes, and the INVISIBLE class —
  * `\p{Cf}`, the format characters (zero-width, the bidi overrides and isolates, BOM, the TAGS

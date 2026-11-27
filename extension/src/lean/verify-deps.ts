@@ -9,7 +9,6 @@
  * It also holds the bound a red reason carries out of the gate and the clip that applies it, so the
  * step record and the build prompt read one truth.
  */
-
 import { execp } from "../exec.ts";
 import { loadWorkConfig } from "./config.ts";
 import { fetchIssueBody } from "./io.ts";

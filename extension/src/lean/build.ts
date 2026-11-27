@@ -35,7 +35,6 @@
  *
  * The re-entry context comes from the log too, clipped to 4 KB.
  */
-
 import { existsSync } from "node:fs";
 import { execp } from "../exec.ts";
 import { spawnSpecialist } from "../spawn.ts";

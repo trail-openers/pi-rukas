@@ -14,7 +14,6 @@
  * sides must be non-empty, every head line must equal a base line verbatim, the trees must be two trees,
  * and a base red shaped like a missing dependency tree is the probe's provisioning, not the commit's.
  */
-
 import { realpathSync } from "node:fs";
 import { FAILURE_LINE_SCAN_MAX, failureLines } from "../work-driver-verify-failures.ts";
 import { splitLines } from "../work-driver-verify-support.ts";

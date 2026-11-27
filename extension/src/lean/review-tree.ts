@@ -10,7 +10,6 @@
  * Same rule as the rest of `lean/review*`: every git call is argv form through `ReviewDeps.exec`, so a
  * test drives the whole surface against a real temp repo with no model in the loop.
  */
-
 import { existsSync } from "node:fs";
 import { traceWarn } from "../trace.ts";
 import { worktreePath } from "../worktree.ts";

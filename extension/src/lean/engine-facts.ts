@@ -4,7 +4,6 @@
  * (`landEarned`, its refusal wording, and the stamp check that re-asks the gate).
  * All are pure reads of the record, sharing `newestDecided` and the report-state exclusion.
  */
-
 import { REPORT_FAILED_KIND, exitCodeFor } from "./machine.ts";
 import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
 import { unacceptedTestEdits, unacceptedTestEditsRefusal } from "./review-test-accept.ts";

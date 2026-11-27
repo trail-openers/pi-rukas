@@ -19,7 +19,6 @@
  *   `git diff <base>...<head>` itself, so the diff is one the lenses can re-read and the
  *   ledger can bind to a commit rather than to a string this step handed over.
  */
-
 import path from "node:path";
 import { ADVERSARIAL_FINDING_RULE } from "../adversarial-prompts.ts";
 import { runAdversarialLoop } from "../adversarial.ts";
@@ -107,7 +106,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
           processGroup: true,
           ...arms,
           childBoundMs: Math.min(budgetBoundMs ?? Number.POSITIVE_INFINITY, loopChildBoundMs()),
-          // #2644 — the step's hung-request lever, as the frozen whole minutes: the reading that
+          // The step's hung-request lever, as the frozen whole minutes: the reading that
           // decides whether the child is quiet. Its abort already rides `arms.signal`.
           ...(budgetStall === undefined ? {} : { stallWindowMinutes: budgetStall.windowMinutes }),
           ...leanChildOpts(a.headless),
@@ -122,8 +121,7 @@ export function reviewDeps(headless: boolean): ReviewDeps {
       // back the budget's own value and it wins, making `PI_ENSEMBLE_LENS_BOUND_MS` inert.
       // Taking the key out of the type too makes a future spread that could carry it a
       // compile error. Asserted on the delivered value in `test-lean-review-deps-bound.ts`.
-      // `stall` is taken out beside `childBoundMs` for the same reason: `runLensReview` hands its
-      // options to `runLensChild`, which builds its own spawn options.
+      // `stall` is taken out beside `childBoundMs` for the same reason.
       const { childBoundMs: budgetBoundMs, stall: budgetStall, ...arms } = a.budget.opts;
       const summary = await (deps.lensEngine ?? runLensReview)({
         base: a.base,
@@ -143,25 +141,23 @@ export function reviewDeps(headless: boolean): ReviewDeps {
         // The ledger row's identity is the reviewed commit's: the step hands the layer
         // `cwd = repoRoot`, a checkout parked at the base commit, where the working-tree
         // diff against the mainline is empty and no row could be recorded. A recorded
-        // row arms the layer's automatic delta base, so the full wave opts out: its
-        // range is the whole branch, never one the layer picks from an earlier row.
+        // row arms the layer's automatic delta base, so the full wave opts out.
         identityHead: a.head,
         ...(a.wave === "full" ? { full: true } : {}),
         // The run's own PR, when it has one (see `LensArgs.pr`): the number the residual
-        // disclosure posts to, so the layer spends no `gh pr list` per round.
+        // disclosure posts to.
         ...(a.pr === undefined ? {} : { pr: a.pr }),
         processGroup: true,
         // The operator's own lever, read here: `lensChildBoundMs()` is the single source
         // for a lens child's wall clock, and a literal here would make that knob inert.
         childBoundMs: Math.min(budgetBoundMs ?? Number.POSITIVE_INFINITY, lensChildBoundMs()),
-        // The project's blocking bar, threaded from the step (see `LensArgs.threshold`).
-        // Without it the layer falls to `DEFAULT_REVIEW_THRESHOLD` — HIGH — and this step
+        // The project's blocking bar, threaded from the step (see `LensArgs.threshold`):
+        // without it the layer falls to `DEFAULT_REVIEW_THRESHOLD` — HIGH — and this step
         // buys a fixer for findings the project said are disclosable.
         ...(a.threshold === undefined ? {} : { threshold: a.threshold }),
         // The test-only lens-child seam (see `ReviewDeps.lensChildFn`).
         ...(deps.lensChildFn === undefined ? {} : { lensChildFn: deps.lensChildFn }),
-        // #2644 — the same lever for the six lens children: the reading that decides whether a lens
-        // is quiet. Its abort already rides `arms.signal`.
+        // The same hung-request lever for the six lens children.
         ...(budgetStall === undefined ? {} : { stallWindowMinutes: budgetStall.windowMinutes }),
         ...arms,
         ...leanChildOpts(a.headless),
@@ -267,7 +263,6 @@ export function renderFindings(summary: LensReviewSummary): string {
 // lists are the substance — a fixer handed findings without a diff, an issue or a tree
 // re-derives a solution from scratch, which is how a fix round undoes the previous fix.
 // ─────────────────────────────────────────────────────────────────────────────
-
 /**
  * The framing the adversarial reviewer is dispatched with. States the one-wave policy
  * rather than a round count, so the reviewer does not pace itself across a loop that does

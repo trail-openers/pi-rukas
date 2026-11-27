@@ -9,6 +9,5 @@
  * counts would silently stop seeing findings. So this file is the record's own list,
  * and `test-headless-work-lean-gates.ts` pins it against `SEVERITIES` from that layer.
  */
-
 export const GATE_SEVERITIES = ["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const;
 export type GateSeverity = (typeof GATE_SEVERITIES)[number];

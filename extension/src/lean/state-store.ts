@@ -7,7 +7,6 @@
  * The paths are exported from here and re-exported by `state.ts`, so callers keep
  * one import site and the layout of `.pi/lean-state/` is stated once.
  */
-
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";

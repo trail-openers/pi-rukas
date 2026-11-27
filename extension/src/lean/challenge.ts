@@ -30,7 +30,6 @@
  * `frozenFromLog` unions a `challenge:new-tests` map into what build and verify
  * hold, so the new tests join the contract rather than sitting beside it.
  */
-
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { execp } from "../exec.ts";

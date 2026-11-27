@@ -21,7 +21,6 @@
  * that reason — a guard that probed on a different seam than the push would be
  * answered by a different machine than the one it is protecting.
  */
-
 import { isFullCommitSha } from "../commit-sha.ts";
 import type { MainlineExecFn } from "../probe-cause.ts";
 import { assertSafeRef } from "../worktree-loss.ts";

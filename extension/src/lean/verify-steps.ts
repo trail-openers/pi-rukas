@@ -17,7 +17,6 @@
  *   - **the project tiers** run as shell commands with the driver's knobs scrubbed from the child env, in
  *     their own process group (`killGroup`) so a timeout kills the tree a build spawns, under a wall clock.
  */
-
 import { guardCompilerIntegrity, packageDirFor } from "../work-driver-toolchain-canary.ts";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { neverStarted, runTestFile, wasKilled } from "./specify-proof.ts";

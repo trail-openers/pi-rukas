@@ -6,7 +6,6 @@
  * `review-fix-child`) each read the same fields in the same order and each throw their OWN `*InfraError`
  * carrying their own rows, so the error class and the message prefix are arguments and nothing else varies.
  */
-
 import { redactClip } from "../decision-log.ts";
 import { PROVIDER_MAX } from "../provider-text-budget.ts";
 import type { DispatchResult } from "../types.ts";

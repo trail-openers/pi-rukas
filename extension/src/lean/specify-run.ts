@@ -22,7 +22,6 @@
  * nothing for AC2 has done its job. The judgement belongs to the caller, which is why this returns `committed` /
  * `uncovered` / `empty`.
  */
-
 import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";

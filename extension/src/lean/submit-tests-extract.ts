@@ -12,7 +12,6 @@
  * validator in specify.ts owns them. This module's job ends at "is this a readable submit_tests
  * call, and what did it say".
  */
-
 /** One `submit_tests` call, as read. */
 export interface SubmitTestsRow {
   criterionId: string;

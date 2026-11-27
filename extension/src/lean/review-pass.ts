@@ -5,7 +5,6 @@
  * that continues the run, with no gate, no git and no dispatch. The step decides; this says what a decision
  * looks like once made, and holds the row-bounds the state loader judges them against.
  */
-
 import { neutraliseEvidence } from "../comment-evidence.ts";
 import type { LensRound } from "./review-args.ts";
 import { passKind } from "./review-step.ts";

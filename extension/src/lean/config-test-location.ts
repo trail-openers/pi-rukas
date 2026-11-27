@@ -14,7 +14,6 @@
  * `testDir` for a repo whose tests sit in several roots (one `tests/` per package); the two are exclusive,
  * and one `testGlob` names the files in every root.
  */
-
 /** Where the adversary's tests live: directly inside any of `testDirs`, named to match `testGlob`. */
 export interface TestLocation {
   testDirs: readonly string[];

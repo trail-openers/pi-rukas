@@ -17,7 +17,6 @@
  * The shape half of the on-disk check reuses `fileProblem` from `specify-path.ts`, which already
  * refuses a symlink, a non-regular file, an `nlink > 1` hard link and a realpath escape.
  */
-
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { frozenTamperedAtHead } from "./build-git.ts";

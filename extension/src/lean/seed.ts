@@ -12,7 +12,6 @@
  * resume keeps the recorded sha rather than re-resolving a mainline that may
  * have moved.
  */
-
 import { proveBaseSha } from "./base-proof.ts";
 import { mainlineSha } from "./io.ts";
 import { oneLine } from "./text-fence.ts";

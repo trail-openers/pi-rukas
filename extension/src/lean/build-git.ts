@@ -7,7 +7,6 @@
  * from `merge-base --is-ancestor` is "no, it does not descend") is a value, while a git that could not run at
  * all is a `BuildInfraError`. Collapsing those two is how a driver builds on a tree it never verified.
  */
-
 import { BuildInfraError } from "./build-errors.ts";
 import type { BuildExec } from "./build-types.ts";
 import { sha256 } from "./specify-proof.ts";

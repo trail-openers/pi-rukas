@@ -9,7 +9,6 @@
  * `child-bound` cause; the stall verdict is only ever what the poll's breach froze.
  * Ask {@link readDispatched} BEFORE a caller's infra throw, so a stop is never read as a failure.
  */
-
 import type { LensRunResult } from "../lens-review-types.ts";
 import type { RunningState } from "../progress.ts";
 import type { BudgetLimit, StallArms, StallFired, StallOpts } from "../request-stall-policy.ts";

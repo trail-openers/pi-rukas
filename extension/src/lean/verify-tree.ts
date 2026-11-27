@@ -11,7 +11,6 @@
  * not tell" must never read as "the test is not there", because the first is a machine to re-run and the second
  * is an issue to fix.
  */
-
 import { NO_HOOKS } from "./specify-reset.ts";
 import { type VerifyExec, VerifyInfraError } from "./verify-types.ts";
 

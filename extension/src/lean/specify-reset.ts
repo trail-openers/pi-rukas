@@ -15,7 +15,6 @@
  * The COMMIT that follows the freeze — `commitTestFiles` and the `committedBlob` the freeze hashes — is
  * `specify-commit.ts`: discard-and-prove and record-and-prove are two contracts, and the commit is the seam.
  */
-
 import { existsSync, lstatSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";

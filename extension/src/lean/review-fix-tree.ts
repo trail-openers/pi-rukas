@@ -6,7 +6,6 @@
  * (`review-integrate.ts`) asks for and destroys, and the only one whose CLEANLINESS — not merely whose
  * existence — decides whether a fix may be paid for.
  */
-
 import { traceWarn } from "../trace.ts";
 import { provisionWorktree } from "../worktree-provision.ts";
 import type { HandlerCtx } from "./engine.ts";

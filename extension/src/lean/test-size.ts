@@ -9,7 +9,6 @@
  * live here, where the prompt that quotes them
  * (`specify-prompt.ts`) and the tests that pin them have one place to import.
  */
-
 /**
  * How many lines one kept acceptance test may have.
  *

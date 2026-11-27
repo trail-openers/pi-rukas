@@ -28,7 +28,6 @@
  * Every git call goes through `build-git.ts`, which carries the hook and fsmonitor guard (`NO_HOOKS`).
  * Anything unproven throws — the step's output is a commit the run merges.
  */
-
 import { chmodSync, rmSync } from "node:fs";
 import path from "node:path";
 import { isProtectedPath as canonicalProtectedPath } from "../work-driver-doctrine.ts";
@@ -91,8 +90,8 @@ interface Classified {
 function inertGlobs(globs: readonly string[], changed: string[]): string[] | undefined {
   // A built-in path cannot make a configured glob count as having bitten: if the only changed path
   // a glob names is one the shipped rule already reverts, the project's rule said nothing of its
-  // own, and that is exactly the rot this list exists to expose. Built-in paths are filtered out of
-  // the evidence rather than added to the disclosure.
+  // own, and that is exactly the rot this list exists to expose. Built-ins are filtered out of the
+  // evidence rather than added to the disclosure.
   const itsOwn = changed.filter((rel) => !isProtectedPath(rel));
   const hits = (entry: string): boolean => itsOwn.some((rel) => protectedGlobMatches(entry, rel));
   const inert = globs.filter((entry) => !hits(entry));

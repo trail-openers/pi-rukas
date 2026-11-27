@@ -14,7 +14,6 @@
  *
  * The last is the module's one git read. Everything else here is pure.
  */
-
 import { lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { isFullCommitSha } from "../commit-sha.ts";

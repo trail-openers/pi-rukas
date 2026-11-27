@@ -11,7 +11,6 @@
  * honours it only in the NEWEST decided review's record and only on the head the newest green verify
  * certified — so an earlier review's acceptance, or one about bytes a later push replaced, never carries.
  */
-
 import { fencedBlocks } from "./spec.ts";
 import {
   ACCEPT_REASON_MAX_CHARS,

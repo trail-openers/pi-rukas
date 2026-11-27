@@ -16,7 +16,6 @@
  * absent expectation is never a defect. Both reads are `--no-optional-locks` — a probe taking an index lock
  * could fail a concurrent git in a tree this step does not own.
  */
-
 import path from "node:path";
 import type { ExecFn } from "../worktree.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
