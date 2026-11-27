@@ -221,22 +221,19 @@ export async function buildOutcome(
   // A child that did no work gets its one free re-dispatch of this visit: it
   // bought nothing, so it bills no round and advances no `tries`.
   let noWorkRetryUsed = false;
-  // The builder's own fence, named once so the dispatch and the continuation cannot disagree about
-  // what the resumed child may write: the SAME builder the dispatch fences itself with.
+  // The dispatch's own builder, so the continuation gets no wider fence than the child it resumes.
   const fence = buildWriteFence(wt, repoRoot, issue);
   // Why the first no-work child died, kept for the throw the second one may make.
   let firstNoWorkWhy: string | undefined;
-  // The config row the arms are built from, read once: the ask re-arms with it at the ask instant
-  // (see the `askBuildReask` call), and the loop arms each child from the same read.
+  // The config row the arms are built from, read once: the loop and the ask both arm from this read.
   const buildRow = budgetFor(config, "build");
   const buildRowMs = (buildRow?.minutes ?? 0) * 60_000;
-  // The child whose recorded turn the re-ask detector reads — the last one the dispatch loop broke
-  // on. Set at the break and read only once, after the fold.
+  // The child the re-ask detector reads: the last one the loop broke on, read once after the fold.
   let lastChildResult: DispatchResult | undefined;
-  // The arms the LAST child was bought with: the reader that says whether a ceiling had already
-  // fired when the wasted-turn detector is asked (its `budgetFired` argument). Assigned in the loop,
-  // read once after the break — the break leaves the loop's own `budget` binding out of scope.
+  // The arms that child was bought with, kept for the detector's `budgetFired` read after the break.
   let lastBudget: BudgetArms | undefined;
+  const budgetFired = (): boolean =>
+    lastChildResult !== undefined && lastBudget?.fired(lastChildResult) !== undefined;
   for (let tries = 0; ; tries++) {
     const budget = armsStepBudget(
       buildRow,
@@ -379,13 +376,9 @@ export async function buildOutcome(
   // record, so the arms that child was bought with answer it here.
   const wasted =
     lastChildResult !== undefined && noChange
-      ? buildTurnWasWasted(lastChildResult, {
-          budgetFired: lastBudget?.fired(lastChildResult) !== undefined,
-          noChange,
-        })
+      ? buildTurnWasWasted(lastChildResult, { budgetFired: budgetFired(), noChange })
       : undefined;
-  // `undefined` covers both the un-wasted arm and the ask's own refusals (no seam, no session path):
-  // refused before a child was paid for, so nothing is billed and only the trace says why.
+  // `undefined` covers the un-wasted arm and every refusal, all of them before a child was paid for.
   const asked =
     wasted?.wasted === true && lastChildResult !== undefined
       ? await askBuildReask(deps.continueSession, {
@@ -413,8 +406,8 @@ export async function buildOutcome(
       : undefined;
   if (asked !== undefined) {
     rows.push(asked.row);
-    // A second fold that throws is infrastructure the FIRST fold never saw: the verdict that fold
-    // earned stands, so the ask's own fold failure falls through instead of replacing it.
+    // A fold that throws is infrastructure the FIRST fold never saw: the verdict that fold earned
+    // stands, so this one's failure falls through rather than replacing it.
     let again: NormaliseReport | undefined;
     try {
       again = await normaliseBuild({
