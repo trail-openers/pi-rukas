@@ -222,8 +222,7 @@ export async function buildOutcome(
   const fence = buildWriteFence(wt, repoRoot, issue);
   // Why the first no-work child died, kept for the throw the second one may make.
   let firstNoWorkWhy: string | undefined;
-  // The arms the LAST dispatch was bought with; the continuation is bounded by what the step armed
-  // (deadline-derived), never by a fresh ceiling. Set on every round, before any read of it.
+  // The arms the LAST dispatch was bought with; the continuation's bound comes from them.
   let lastBudget: BudgetArms;
   // The child whose recorded turn the re-ask detector reads — the last one the dispatch loop broke
   // on. Set at the break and read only once, after the fold.
