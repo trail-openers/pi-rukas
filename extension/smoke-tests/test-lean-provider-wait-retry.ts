@@ -263,15 +263,20 @@ async function withEnv<T>(key: string, value: string | undefined, run: () => Pro
   for (const arm of skipDraws) {
     const wait = drawnWait(arm.rand());
     const expectsWait = wait <= roomMs;
+    // The request-stall lever is switched off for these arms: their deadline leaves a window of
+    // `roomMs`, and the build fixture's quiet tick spends about that long in real time supervising
+    // the child, so the lever would end the child before the wait guard under test is reached.
     const { waits, value: r } = await withWaits(() =>
       withDraw(arm.rand, () =>
-        runBuild({
-          issue: 2129,
-          child: EDIT_FILE,
-          // ctx.now() is pinned to 0 by the fixture, so this IS the room the guard compares.
-          clock: { now: () => 0, deadlineMs: () => allowance + roomMs },
-          dispatchResults: providerChild,
-        }),
+        withEnv("PI_ENSEMBLE_LEAN_REQUEST_STALL", "0", () =>
+          runBuild({
+            issue: 2129,
+            child: EDIT_FILE,
+            // ctx.now() is pinned to 0 by the fixture, so this IS the room the guard compares.
+            clock: { now: () => 0, deadlineMs: () => allowance + roomMs },
+            dispatchResults: providerChild,
+          }),
+        ),
       ),
     );
     assert(

@@ -259,7 +259,9 @@ async function deliver(
 
   // The window the step's own arms imply, from the SAME reader the lever uses: the expectation is the
   // rule's answer, not a literal the fixture agrees with.
-  const expectedMinutes = Math.ceil(requestStallWindowMs(deadlineMs, startedAt, 10 * MINUTE)! / MINUTE);
+  const expectedMinutes = Math.ceil(
+    Number(requestStallWindowMs(deadlineMs, startedAt, 10 * MINUTE)) / MINUTE,
+  );
   const armed = await deliver({ stallWindowMinutes: expectedMinutes });
   assert(
     armed.reviewer !== undefined,
