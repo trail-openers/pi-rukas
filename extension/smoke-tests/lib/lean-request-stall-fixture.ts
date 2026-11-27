@@ -20,9 +20,6 @@ import { REVIEW_DEADLINE_RESERVE_MS } from "../../src/lean/review-bound.ts";
 /** The panel's cell, in seconds: a 4200 s lean deadline. */
 export const PANEL_CELL_S = 4200;
 
-/** The panel's cell in ms, built from the seconds so one number is the row. */
-export const PANEL_CELL_MS = PANEL_CELL_S * MINUTE_MS;
-
 /** The instant the panel's run began. Every clock position is stated against it. */
 export const PANEL_START_MS = 1_700_000_000_000;
 

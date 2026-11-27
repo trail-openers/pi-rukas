@@ -56,7 +56,7 @@ function childStream(declared: unknown[]): PiJsonEvent[] {
 /**
  * Whether this child's stream was quiet past the armed window, and the abort it produced.
  *
- * The two readings are the production ones: `stallLever` (`spawn-inflight.ts`) builds the arm over
+ * The two readings are the production ones: `stallLever` (`spawn-inactivity-poll.ts`) builds the arm over
  * a real `ChildProgress` and a real `InFlightTools` fed the child's own events, and
  * `createInactivityPoll` is what decides — on its timer, never on a turn the child emitted — that
  * the silence is a stall, and calls `check`. The case supplies only the two facts only it knows:

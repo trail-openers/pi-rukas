@@ -184,7 +184,7 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
     ran?.outcome?.kind === "ok",
     `(b) a silent child WITH a tool in flight finishes its work (got ${String(ran.outcome?.kind)})`,
   );
-  // The reading above is the production reader's own — `spawn-inflight.ts`'s `stallLever` over a
+  // The reading above is the production reader's own — `spawn-inactivity-poll.ts`'s `stallLever` over a
   // real `InFlightTools`, fed the child's stream events — so the arm is pinned from both sides:
   // a stream that reports a call in flight is never quiet, whatever the case's declared silence.
   let live: Awaited<ReturnType<typeof runBuild>> | undefined;
