@@ -95,6 +95,45 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
     }),
   },
   {
+    // #2661 — the ONE continuation a build turn that bought nothing is allowed: the detector of the
+    // two wasted shapes, its prompt, its clause and its switch. Under `src/lean/` because it is step
+    // judgement, and judged against the recursive corpus like its siblings above.
+    file: "lean/build-reask.ts",
+    pending: {},
+    testOnly: {
+      // The switch's ONE reader. No step calls it — the detector does — so only the truth table and
+      // the headless-inputs registry can pin `0` as the sole off value.
+      leanBuildReaskEnabled:
+        "the switch's ONE reader; test-lean-build-reask-pure.ts pins the truth table and test-headless-inputs.ts pins its default",
+      // The second wasted shape, named by no caller outside this module: a clean stop that acted never.
+      CLEAN_STOP_REASON:
+        "the literal the detector compares a no-change turn's stop reason against; test-lean-build-reask-pure.ts pins every arm of that comparison",
+      // The ask's own bound, which the ask clamps to the armed budget. Read only by the ask, whose
+      // bound the step-level suites drive through the seam rather than directly.
+      BUILD_REASK_BOUND_MS:
+        "the continuation's own bound before the armed budget clamps it; test-lean-build-reask-pure.ts pins the clamp against the literal",
+      // The detector's refusal table, and which of the two shapes decided the ask.
+      buildTurnWasWasted:
+        "the detector; test-lean-build-reask-pure.ts pins the refusal table and the arm order",
+      // The resumed child's instruction, one of two by trigger.
+      buildReaskPrompt:
+        "the continuation's prompt; test-lean-build-reask-pure.ts pins both shapes' text and the tokens a cut turn quotes",
+      // The suffix appended LAST to the exhausted reason, which every downstream consumer clips.
+      buildReaskClause:
+        "the clause appended to the exhausted reason; test-lean-build-reask-pure.ts pins it inside the reason clip and test-lean-build-reask.ts pins it only on the spent-ask arm",
+    },
+    canary: {
+      symbol: "buildTurnWasWasted",
+      importer: "lean/build.ts",
+    },
+    locate: (source: { name: string; text: string }) => ({
+      // The step that asks: the one file that reads the detector, as opposed to the ask's own file,
+      // which imports only the prompt, the bound and the switch.
+      production: source.name === "lean/build.ts",
+      importsSeam: /from "\.\/build-reask\.ts"/.test(source.text),
+    }),
+  },
+  {
     // #2644 — the child-supervision half of the hung-request bound: the switch, the derived window,
     // the frozen arms and the inertness line. It sits at `src/`'s top level because it is spawn
     // policy, not engine state, and takes the lean reserve as a PARAMETER so it never imports the
