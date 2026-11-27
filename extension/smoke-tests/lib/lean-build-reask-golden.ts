@@ -8,9 +8,10 @@
  * the arm a leaking switch would fail. A string re-derived from `lean/build.ts` in the same change
  * that edits it proves only that the module agrees with itself, so each constant below was captured
  * by checking out this branch's base commit — `740e56897a` — into a scratch directory under `tmp/`
- * with `git archive` (never a checkout over the working tree), copying `lib/lean-build-reask-fixture
- * -placeholder.ts` out of the way, and running this branch's OWN harness there with the switch unset
- * (the pre-change build has no knob to set):
+ * with `git archive` (never a checkout over the working tree), and running **that tree's own**
+ * harness there — its `smoke-tests/lib/lean-build-fixture.ts`, not this branch's — with the switch
+ * unset (the pre-change build has no knob to set). The capture must not go through this branch's
+ * fixture: goldens rendered by the code under test would only prove the two agree.
  *
  *   runBuild({issue, dispatchResults: [CUT]}) where CUT is the field's shape —
  *   `ok: true, exitCode: 0, stopReason: "length", toolUses: [], observedToolCalls: 0,

@@ -356,38 +356,34 @@ export async function buildOutcome(
   // the output cap mid-reasoning, or answered one clean turn without acting. Both get the fixer's ONE
   // continuation, judged AFTER the fold ("no change" is the fold's answer, not a child field) and
   // before the verdict, one-shot by the flag below. `tries` and `noWorkRetryUsed` are untouched.
-  let reasked: "none" | "skipped" | "asked" = "none";
-  let reaskTrigger: "length" | "no-change" = "length";
-  let reaskTokens = 0;
-  if (report.files.length === 0 && lastChildResult !== undefined) {
-    // Both flags carry what THIS site knows: a ceiling that had fired was answered inside the
-    // dispatch loop (no stop reaches here), and the fold above is what says the tree holds no change.
-    const wasted = buildTurnWasWasted(lastChildResult, { budgetFired: false, noChange: true });
-    if (wasted.wasted) {
-      reaskTrigger = wasted.trigger;
-      reaskTokens = wasted.outputTokens;
-      const asked = await askBuildReask(deps.continueSession, {
-        child: lastChildResult,
-        budget: lastBudget,
-        trigger: wasted.trigger,
-        issue,
-        worktree: wt,
-        writeFence: fence,
-        // The run's stamp, from the function that decides it — not re-derived here.
-        ...leanChildOpts(headless),
-      });
-      // `undefined` is the no-seam / date-rollover guard: refused before a child was paid for, so
-      // nothing is billed and only the trace says why.
-      if (asked !== undefined) {
-        reasked = "asked";
-        rows.push(asked.row);
-        const again = await normaliseBuild({
-          ...fold(label),
-          budget: new CaptureBudget(deps.captureCeiling),
-        });
-        if (again.files.length > 0) return okVerdict(again, rows, waitNote);
-      } else reasked = "skipped";
-    }
+  // Both flags carry what THIS site knows: a ceiling that had fired was answered inside the
+  // dispatch loop (no stop reaches here), and the fold above is what says the tree holds no change.
+  const wasted =
+    report.files.length === 0 && lastChildResult !== undefined
+      ? buildTurnWasWasted(lastChildResult, { budgetFired: false, noChange: true })
+      : ({ wasted: false, reason: "no-final-turn" } as const);
+  const asked =
+    wasted.wasted && lastChildResult !== undefined
+      ? await askBuildReask(deps.continueSession, {
+          child: lastChildResult,
+          budget: lastBudget,
+          trigger: wasted.trigger,
+          issue,
+          worktree: wt,
+          writeFence: fence,
+          // The run's stamp, from the function that decides it — not re-derived here.
+          ...leanChildOpts(headless),
+        })
+      : undefined;
+  // `undefined` is the no-seam / date-rollover guard: refused before a child was paid for, so
+  // nothing is billed and only the trace says why.
+  if (asked !== undefined) {
+    rows.push(asked.row);
+    const again = await normaliseBuild({
+      ...fold(label),
+      budget: new CaptureBudget(deps.captureCeiling),
+    });
+    if (again.files.length > 0) return okVerdict(again, rows, waitNote);
   }
   if (report.files.length === 0)
     return {
@@ -397,7 +393,7 @@ export async function buildOutcome(
         waitNote(),
         // ONE short clause, LAST, and only when the ask was spent: the head and wait note keep
         // their bytes for every arm that never asked, which the existing literals pin.
-        reasked === "asked" ? buildReaskClause(reaskTrigger, reaskTokens) : "",
+        asked !== undefined ? buildReaskClause(wasted.wasted ? wasted.trigger : "length", wasted.wasted ? wasted.outputTokens : 0) : "",
       ]),
       dispatches: rows,
     };

@@ -153,6 +153,23 @@ const LOOSE_SEAT = {
     (call?.boundMs ?? 0) > 0 && call?.boundMs <= 15 * 60_000,
     `(1) and it ran under the SMALLER of its own ceiling and the seat's 120-minute row (${String(call?.boundMs)})`,
   );
+  // The same bound again with the seat TIGHTER than the re-ask's ceiling: `continuationBoundMs` is
+  // the clamp, and a call that ignored it would still pass the line above (15 min sits under both).
+  const tight: ContinuationCalls = [];
+  const tightRun = await runBuild({
+    issue: 2661,
+    config: {
+      ...configWithRunner(),
+      budgets: { build: { turns: 400, tokens: 60_000_000, minutes: 4 } },
+    },
+    dispatchResults: [{ ...CUT, transcriptPath: sessionFor(2661, 1) }],
+    reask: { deps: reaskDeps({ calls: tight, answers: [answered()] }) },
+  });
+  assert(
+    tight.length === 1 && (tight[0]?.boundMs ?? 0) > 0 && tight[0].boundMs <= 4 * 60_000,
+    `(1) and a TIGHTER seat wins: the ask is bounded by the step's armed budget, not its own ceiling
+     (${String(tight[0]?.boundMs)}, ${String(tightRun.threw?.message)})`,
+  );
   const rows = r.outcome?.dispatches ?? [];
   assert(
     rows.length === 2 && rows[1]?.role === "developer",

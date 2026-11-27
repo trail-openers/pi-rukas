@@ -19,6 +19,7 @@
  */
 import { BUILD_REASK_BOUND_MS } from "../src/lean/build-reask.ts";
 import type { DispatchResult } from "../src/types.ts";
+import { withEnv } from "./lib/env-scope.ts";
 import { runBuild } from "./lib/lean-build-fixture.ts";
 import { type ContinuationCalls, answered, reaskDeps } from "./lib/lean-build-reask-fixture.ts";
 import {
@@ -47,21 +48,6 @@ const CUT: Partial<DispatchResult> = {
 /** A child that recorded NO stop reason — the arm that must never ask, on either arm of the switch. */
 const UNVOUCHED: Partial<DispatchResult> = { ...CUT, stopReason: undefined };
 
-const SWITCH = "PI_ENSEMBLE_LEAN_BUILD_REASK";
-
-/** Every case runs with the switch explicitly held, so one process cannot leak another's value. An
- *  `undefined` value means UNSET — the shipped default — which is its own arm, not "empty string". */
-function withEnv<T>(value: string | undefined, body: () => Promise<T>): Promise<T> {
-  const had = Object.prototype.hasOwnProperty.call(process.env, SWITCH);
-  const prev = process.env[SWITCH];
-  const put = (v: string | undefined): void => {
-    if (v === undefined) Reflect.deleteProperty(process.env, SWITCH);
-    else process.env[SWITCH] = v;
-  };
-  put(value);
-  return body().finally(() => put(had ? prev : undefined));
-}
-
 /** The exhausted reason a run produced, or the marker of a run that did not reach a verdict. */
 function exhaustedReason(r: Awaited<ReturnType<typeof runBuild>>): string {
   return r.outcome?.kind === "exhausted" ? r.outcome.reason : `«${String(r.outcome?.kind)}»`;
@@ -73,7 +59,7 @@ function dispatchJson(r: Awaited<ReturnType<typeof runBuild>>): string {
 }
 
 // ── 1. the off arm reproduces the base commit byte for byte ─────────────────
-await withEnv("0", async () => {
+await withEnv({ PI_ENSEMBLE_LEAN_BUILD_REASK: "0" }, async () => {
   const calls: ContinuationCalls = [];
   const r = await runBuild({
     issue: 2661,
@@ -109,7 +95,7 @@ await withEnv("0", async () => {
 
 // ── 2. only the literal 0 takes the re-ask out ──────────────────────────────
 for (const value of ["", "false", "no", "off", "1", " "]) {
-  await withEnv(value, async () => {
+  await withEnv({ PI_ENSEMBLE_LEAN_BUILD_REASK: value }, async () => {
     const calls: ContinuationCalls = [];
     await runBuild({
       issue: 2661,
@@ -129,7 +115,7 @@ for (const [value, label] of [
   ["0", "off"],
   ["1", "on"],
 ] as const) {
-  await withEnv(value, async () => {
+  await withEnv({ PI_ENSEMBLE_LEAN_BUILD_REASK: value }, async () => {
     const noSeam: ContinuationCalls = [];
     const r1 = await runBuild({
       issue: 2661,
@@ -154,7 +140,7 @@ for (const [value, label] of [
 }
 
 // The on arm's OWN answers must differ from the goldens, or the constants above prove nothing.
-await withEnv("1", async () => {
+await withEnv({ PI_ENSEMBLE_LEAN_BUILD_REASK: "1" }, async () => {
   const calls: ContinuationCalls = [];
   const r = await runBuild({
     issue: 2661,

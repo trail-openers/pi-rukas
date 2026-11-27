@@ -34,7 +34,7 @@ import { existsSync } from "node:fs";
 import type { NormalizedPullRequest } from "../forge-types.ts";
 import { specBlockProblem } from "../issue-spec-block.ts";
 import { netRefProblem } from "../work-driver-net-git.ts";
-import { testsFromLog } from "./build.ts";
+import { testsFromLog } from "./build-context.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { challengeBudgetFromLog, challengeSkipReasonFromLog, publishBody } from "./publish-body.ts";
 import { type PublishDeps, PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
