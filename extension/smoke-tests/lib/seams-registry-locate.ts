@@ -136,6 +136,32 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
     }),
   },
   {
+    // #2661 — the ask itself: the continuation a wasted build turn is allowed, its refusal trace and
+    // the row it bills. Top level beside the detector it serves; the step hands it the clamped bound,
+    // the prompt and the row builder, so the ask takes no runtime code from the lean tree. Its one
+    // production caller is `src/lean/build.ts` importing `../build-reask-child.ts`, invisible to the
+    // flat top-level scan, and three smoke tests import it, so it is judged against the recursive
+    // corpus like the modules above.
+    file: "build-reask-child.ts",
+    pending: {},
+    testOnly: {
+      // The ask, and the two refusals that keep a child from being paid for nothing. Reached in
+      // production only by the step's spent-ask arm; the pure suite drives each arm directly.
+      askBuildReask:
+        "the continuation call, its seam/path refusals and its billed row; test-lean-build-reask-pure.ts (7) pins the argv, both refusals and the failed-child row, test-lean-build-reask.ts pins the arms through the real step",
+    },
+    canary: {
+      symbol: "askBuildReask",
+      importer: "lean/build.ts",
+    },
+    locate: (source: { name: string; text: string }) => ({
+      // The step that asks. Type-only importers of this module answer false, so an `import type`
+      // cannot satisfy the reachability claim.
+      production: source.name === "lean/build.ts",
+      importsSeam: /from "\.\.\/build-reask-child\.ts"/.test(source.text),
+    }),
+  },
+  {
     // #2644 — the child-supervision half of the hung-request bound: the switch, the derived window,
     // the frozen arms and the inertness line. It sits at `src/`'s top level because it is spawn
     // policy, not engine state, and takes the lean reserve as a PARAMETER so it never imports the

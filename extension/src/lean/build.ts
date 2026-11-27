@@ -37,16 +37,17 @@
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { askBuildReask } from "../build-reask-child.ts";
 import {
   BUILD_REASK_BOUND_MS,
   buildReaskClause,
   buildReaskPrompt,
   buildTurnWasWasted,
 } from "../build-reask.ts";
-import { askBuildReask } from "../build-reask-child.ts";
 import { spawnDeveloperContinuationChild } from "../developer-session-continuation.ts";
 import type { DeveloperContinuationFn } from "../developer-session-continuation.ts";
 import { execp } from "../exec.ts";
+import { continuationBoundMs, continuationRow } from "../fixer-truncation.ts";
 import {
   addedByChallengeFromLog,
   budgetStopFromLog,
@@ -54,7 +55,6 @@ import {
   reentryFromLog,
   testsFromLog,
 } from "../lean-log.ts";
-import { continuationBoundMs, continuationRow } from "../fixer-truncation.ts";
 import { armsStepBudget, stepDispatchArms, stopReasonClause } from "../lean-step-bound.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";

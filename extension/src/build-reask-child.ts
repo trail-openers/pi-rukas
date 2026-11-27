@@ -1,3 +1,4 @@
+import type { BuildReaskTrigger } from "./build-reask.ts";
 /**
  * build-reask-child — the ask a wasted build turn makes.
  *
@@ -21,7 +22,6 @@ import type {
 import type { DispatchUsageRow } from "./lean/step-budget.ts";
 import { traceWarn } from "./trace.ts";
 import type { WriteFence } from "./write-fence-contract.ts";
-import type { BuildReaskTrigger } from "./build-reask.ts";
 
 /** The ask's result: the row it cost (billed whatever it answered) and the resumed child's reply. */
 export type BuildReaskOutcome = {
@@ -81,7 +81,7 @@ export async function askBuildReask(
 /** The two refusals, each named on the trace so an exhausted step is never silent about the ask it
  *  did not make ("seam" | "path"). */
 function traceRefused(child: { role: string }, which: "seam" | "path"): void {
-  const why = which === "seam" ? "the step has no session seam" : "the child's session path is absent";
+  const why =
+    which === "seam" ? "the step has no session seam" : "the child's session path is absent";
   traceWarn(`lean build #${String(child.role)}: no continuation — ${why}`);
 }
-

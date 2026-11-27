@@ -17,6 +17,7 @@
  * No git, no step import, no child: the detector is pure and the leaf it consults is a field.
  */
 
+import { askBuildReask } from "../src/build-reask-child.ts";
 import type { DeveloperContinuationFn } from "../src/developer-session-continuation.ts";
 import {
   BUILD_REASK_BOUND_MS,
@@ -25,9 +26,8 @@ import {
   buildReaskPrompt,
   buildTurnWasWasted,
 } from "../src/build-reask.ts";
-import { askBuildReask } from "../src/build-reask-child.ts";
-import type { DispatchResult } from "../src/types.ts";
 import { continuationBoundMs, continuationRow } from "../src/fixer-truncation.ts";
+import type { DispatchResult } from "../src/types.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 
