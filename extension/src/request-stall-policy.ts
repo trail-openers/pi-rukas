@@ -78,7 +78,8 @@ export function requestStallWindowMs(
 
 /**
  * The arm's disclosure when it armed nothing, in `review-bound.ts`'s shape: a lever that
- * bounded nothing says so rather than reporting a bound that held. `undefined` when it armed.
+ * bounded nothing says so rather than reporting a bound that held. `undefined` when it armed, or when
+ * the step had no deadline / no start to measure between — which is no lever, not an inert one.
  */
 export function requestStallUnarmed(
   deadlineMs: number | undefined,
