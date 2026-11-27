@@ -33,6 +33,12 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { execp } from "../exec.ts";
+import {
+  armsStepBudget,
+  stepBoundOf,
+  stepDispatchArms,
+  verdictReasonClause,
+} from "../lean-step-bound.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchSpec } from "../types.ts";
@@ -50,7 +56,6 @@ import { type WorkConfig, loadWorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { challengeSkip } from "./pre-verify-share.ts";
-import { stallArms } from "./request-stall.ts";
 import { rereadSpec } from "./spec-for.ts";
 import { type PiSpec, readiness } from "./spec.ts";
 import { existsInCommit, fileProblem, pathProblem } from "./specify-path.ts";
@@ -287,7 +292,12 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
     );
 
   // 3. The adversary, under the state's budget.
-  const budget = armBudget(budgetFor(config, "challenge"), stallArms(ctx));
+  const challengeFull = (budgetFor(config, "challenge")?.minutes ?? 0) * 60_000;
+  const budget = armsStepBudget(
+    budgetFor(config, "challenge"),
+    // #2660: both levers from one read of the step log.
+    stepDispatchArms(ctx, challengeFull, "challenge"),
+  );
   if (budget.warning !== undefined)
     traceWarn(`lean challenge #${String(issue)}: ${budget.warning}`);
   // The adversary's cost row rides on the throw and `settle` records it (see
@@ -327,7 +337,11 @@ export async function challengeOutcome(ctx: HandlerCtx, deps: ChallengeDeps): Pr
         `could not re-provision the challenge worktree after the budget stop: ${(err as Error).message}`,
       );
     }
-    return budgetVerdictWithRows("challenge", read.stop, rows);
+    // #2660: the deadline's own words beside the ceiling, when it was the deadline.
+    return verdictReasonClause(
+      budgetVerdictWithRows("challenge", read.stop, rows),
+      stepBoundOf(ctx, "challenge", challengeFull),
+    );
   }
   const toolUses = read.result.toolUses ?? [];
 
@@ -446,8 +460,11 @@ export function challengeDeps(headless: boolean): ChallengeDeps {
         // Forwarded so the ceiling binds the child, `budgetTurns` included: it is the
         // turns ceiling read as the denominator of the budget-progress steer, and a seam
         // that forwards the arms key by key must forward that one too or the adversary
-        // is killed at its ceiling never told where it stood.
+        // is killed at its ceiling never told where it stood. The grace is key-by-key
+        // forwarded beside the bound for the same reason: dropping it leaves the child on
+        // the configured grace, past the line the bound was placed to protect.
         childBoundMs: o.childBoundMs,
+        childBoundGraceMs: o.childBoundGraceMs,
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,

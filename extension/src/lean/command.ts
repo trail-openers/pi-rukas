@@ -258,8 +258,10 @@ export function specifyDeps(headless: boolean): SpecifyDeps {
         // Forwarded so the ceiling binds the child, `budgetTurns` included: it is the turns
         // ceiling read as the denominator of the budget-progress steer, and a seam that forwards
         // the arms key by key must forward that one too or the child is killed at its ceiling
-        // never told where it stood.
+        // never told where it stood. The grace rides beside the bound: the re-ask shares this
+        // seam (`adversaryDispatchOpts`), so one forward covers both children of the step.
         childBoundMs: o.childBoundMs,
+        childBoundGraceMs: o.childBoundGraceMs,
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,

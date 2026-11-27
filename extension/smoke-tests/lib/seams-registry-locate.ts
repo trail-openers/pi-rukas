@@ -99,7 +99,8 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
     // the frozen arms and the inertness line. It sits at `src/`'s top level because it is spawn
     // policy, not engine state, and takes the lean reserve as a PARAMETER so it never imports the
     // lean tree. Both of its production callers are `src/lean/` files — `step-budget.ts` arms the
-    // lever, `request-stall.ts` supplies the reserve, the deadline and the step's start — so the flat
+    // lever, `lean-step-bound.ts`'s `stepDispatchArms` supplies the reserve, the deadline and the
+    // step's start — so the flat
     // top-level scan that
     // the orphan check and both importer checks use cannot see them, and the module's three
     // smoke-tests importers make it look test-only. `locate` points the checks at the recursive corpus.
@@ -143,9 +144,62 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
     },
     locate: (source: { name: string; text: string }) => ({
       // The one file that ARMS the lever — it imports the module as a value and calls `stallLever`.
-      // `lean/request-stall.ts` also imports it, but only for the arms' type and the reserve.
+      // `lean-step-bound.ts` also imports it, but only for the arms' type and the reserve.
       production: source.name === "lean/step-budget.ts",
       importsSeam: /from "\.\.\/request-stall-policy\.ts"/.test(source.text),
+    }),
+  },
+  {
+    // #2660 — the wall clock a lean step's CHILD may be given, read against the run's deadline.
+    // Top level because it is spawn policy, not engine state, and it takes the deadline and the
+    // step's start as PARAMETERS so it never imports the lean tree. Every production caller is a
+    // `src/lean/` file importing `../lean-step-bound.ts`, which the flat top-level scan cannot see.
+    file: "lean-step-bound.ts",
+    pending: {},
+    testOnly: {
+      // The floor below which a deadline-derived grace stops being worth writing. Read only by
+      // the derivation itself; the pair it protects is pinned by the tight-room rows of
+      // test-lean-deadline-step-bound.ts (e), which build their rows FROM this constant.
+      MIN_DEADLINE_GRACE_MS:
+        "the derivation's own floor; test-lean-deadline-step-bound.ts (a)/(e) pin the pair it guards",
+      // The sibling floor, on the kill's placement rather than the clamp's worth. Pinned by
+      // literal beside its sibling in (a), which is the only reason it is exported: the two
+      // are separate constants and a change to one must show up as a red assertion.
+      MIN_KILL_GRACE_MS:
+        "the floor a deadline-derived grace never sits below; test-lean-deadline-step-bound.ts (a) pins it by literal beside its sibling",
+      // The deadline's own words, reached only through `verdictReasonClause`.
+      deadlineReasonClause:
+        "the clause a stopped step prints; test-lean-deadline-step-bound.ts (c) pins build's verdict, test-lean-step-deadline-bound-reasons.ts pins the other three callers",
+      // The reason wrapper every stopped site calls; it composes the clause above. Each caller is
+      // pinned at its own site — build by (c), challenge and both specify arms by the reasons suite
+      // — so no caller is claimed on another's strength.
+      verdictReasonClause:
+        "the wrapper the build/challenge/specify stop arms call; the reasons suite pins the clause in each site's reason",
+      // Re-derives the site's bound for the reason wrapper, clock-free. Its one production caller
+      // is challenge's stop arm, reached only through the reason that round prints — no case calls
+      // it directly, which is why the claim names the reason rather than a call.
+      stepBoundOf:
+        "the arm site's bound re-read for the stop reason; pinned through the site tests' verdict text",
+      // The arm sites' entry: both levers from one read of the step log.
+      stepDispatchArms:
+        "the single arms call every dispatching site makes; test-lean-deadline-step-bound.ts (a)/(b) pin what it hands the spawn",
+      // The warning-composing wrapper around armBudget for the four engine sites.
+      armsStepBudget:
+        "armBudget with the outside warning; pinned by the budget warning cases in test-lean-budgets.ts",
+      // The pure derivation, asked directly so the arithmetic is the case's and not the arm's.
+      leanStepBound:
+        "the derivation; test-lean-deadline-step-bound.ts (a)/(d)/(e) pin the clamped, inert and no-room arms",
+      // The one reader of the step log behind both levers; the sites call `stepDispatchArms`.
+      stepChildBound:
+        "the bound alone; test-lean-step-deadline-bound-off-arm.ts arms it directly to compare with the golden",
+    },
+    canary: { symbol: "stepDispatchArms", importer: "lean/build.ts" },
+    locate: (source: { name: string; text: string }) => ({
+      // The step that arms the panel-row build child: the file carrying the canary. Its siblings
+      // (`challenge`, `review`, `specify`, `step-budget`) import the module too, and the type-only
+      // importer must answer false here or an `import type` would satisfy a reachability claim.
+      production: source.name === "lean/build.ts",
+      importsSeam: /from "\.\.\/lean-step-bound\.ts"/.test(source.text),
     }),
   },
 ];

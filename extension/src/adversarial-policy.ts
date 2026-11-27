@@ -71,3 +71,8 @@ export function reportPolicyError(policy: {
 export function policyInfraFailureText(reason: string): string {
   return `Adversarial loop infrastructure failure: ${reason} (reportVerdict must be "terminal" or "routed"). No verdict was produced — this is NOT a review rejection.`;
 }
+
+/** What the loop says when it was given nothing to review: neither a pasted diff nor a base/head
+ *  range. The wording is loop policy (it is the operator's only clue), not control flow. */
+export const NO_DIFF =
+  "Adversarial loop: provide `diff`, or both `base` and `head` (with `workCwd`) — nothing to review was supplied.";

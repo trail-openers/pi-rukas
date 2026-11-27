@@ -41,6 +41,7 @@
  * to is the only difference. Everything outside the pure parts is injected, so the
  * test drives a real temp git repo through the same seams production uses.
  */
+import { stepDispatchArms } from "../lean-step-bound.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { guardCompilerIntegrity, packageDirFor } from "../work-driver-toolchain-canary.ts";
@@ -53,7 +54,6 @@ import type { WorkConfig } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { preVerifyShare } from "./pre-verify-share.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
-import { stallArms } from "./request-stall.ts";
 import { specFor } from "./spec-for.ts";
 import { type PiSpec, readiness } from "./spec.ts";
 import { runSpecifyAttempt } from "./specify-attempt.ts";
@@ -73,7 +73,7 @@ import {
 import { DISPATCHES_MAX_ROWS } from "./state-dispatches.ts";
 import type { LeanRun } from "./state.ts";
 import type { Outcome } from "./state.ts";
-import type { BudgetOpts, DispatchUsageRow } from "./step-budget.ts";
+import { type BudgetOpts, type DispatchUsageRow, budgetFor } from "./step-budget.ts";
 import { joinNotes } from "./text-fence.ts";
 import { withTestHelpers } from "./verify-roster-base.ts";
 
@@ -354,7 +354,8 @@ export async function specifyOutcome(ctx: HandlerCtx, deps: SpecifyDeps): Promis
     ...(testLocation === undefined ? {} : { testLocation }),
     wanted,
     frozenByCriterion,
-    stall: stallArms(ctx),
+    // #2660 — both levers from one read of the step log.
+    ...stepDispatchArms(ctx, (budgetFor(config, "specify")?.minutes ?? 0) * 60_000, "specify"),
   };
   // The first attempt is final unless it dropped a submitted row or ended
   // without submitting at all: both are things the child can fix by being told,

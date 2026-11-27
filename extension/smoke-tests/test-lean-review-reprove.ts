@@ -277,13 +277,14 @@ const didNotRun = (a: LensArgs, verdict: "REVIEW_INCOMPLETE" | "ROUND_CAP_REACHE
 // FRESH here: the pre-fix reading was not live, so a step that reused it would
 // dispatch six children past the ceiling it had just passed.
 {
-  // Crossed at the 5th read (R1, pre-fix, R2, the per-child arms, then the retry's
-  // fresh read) — earlier than that and the step never reaches the re-review at all.
+  // Crossed at the 6th read: R1, pre-fix, R2, the step's per-child arms (which read the
+  // clock for the deadline-derived bound, #2660), then the retry's fresh read — earlier than
+  // that and the step never reaches the re-review at all.
   const liveAtRetry = (repoRoot: string, baseSha: string) => {
     let reads = 0;
     return ctxWithClock(repoRoot, baseSha, "lean/issue-7", {
       startedAt: 0,
-      now: () => (++reads >= 5 ? 31 * MIN : 1 * MIN),
+      now: () => (++reads >= 6 ? 31 * MIN : 1 * MIN),
     });
   };
   const w = await wave(

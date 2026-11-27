@@ -124,6 +124,8 @@ export async function reaskMissing(args: {
   /** Whether the boundary drops any declared row — asked last, since it reads the tree. */
   refuses: () => Promise<boolean>;
   budget: Budget | undefined;
+  /** The bound the first child was armed with, so the pair agrees on the room. */
+  bound?: Parameters<typeof armBudget>[2];
   wt: string;
   repoRoot: string;
   issue: number;
@@ -144,7 +146,7 @@ export async function reaskMissing(args: {
   // a re-ask is one short prompt for criteria the child already knows about, on a session that has
   // already streamed. A hung request here is ended by the spawn's silence budgets like any other
   // child the step bounds without a window.
-  const budget = armBudget(args.budget);
+  const budget = armBudget(args.budget, undefined, args.bound);
   let result: DispatchResult;
   try {
     result = await args.dispatch(

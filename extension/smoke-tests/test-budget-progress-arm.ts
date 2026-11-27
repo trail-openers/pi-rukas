@@ -36,6 +36,8 @@ import {
 
 const { assert, eq, exitCode } = makeCheck();
 
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 // ── 6. a child with NO steer seam still receives both steers ────────────
 //
 // The lens / adversarial path passes no onSteer, so delivery falls through to
@@ -275,6 +277,70 @@ const { assert, eq, exitCode } = makeCheck();
   progress.onAssistantTurn(3, start + total * 1.5); // past the bound
   eq(out.lines().length, 2, "never a third steer, even past the bound");
   progress.stop();
+}
+
+// ── #2660: the grace a step armed with is what the SPAWN's timers are built from ───
+//
+// `armChildBounds` is the one production line that turns the deadline's pair
+// (`childBoundMs`, `childBoundGraceMs`) into timers, and until now no suite read what it built:
+// deleting the caller's grace there (`opts.childBoundGraceMs ?? childBoundGraceMs()` → the
+// configured grace) left every other suite green while every deadline-derived kill landed a
+// full 10-minute grace past the line — the exact #2660 shape, in the spawn. So arm a LIVE child
+// with a deliberately SHORT grace and OBSERVE where its two timers actually fire: the wrap-up
+// steer at the bound, and the SIGTERM one armed grace later. Nothing here recomputes a schedule.
+{
+  const BOUND_MS = 90;
+  const ARMED_GRACE_MS = 30;
+  const out = capture();
+  // Record WHEN each timer actually fires, on the same clock the timers were armed from
+  // (`start: 0`, so an offset IS the schedule position). A spawn that read the configured
+  // 600 000 ms grace instead of the armed one leaves `killedAt` undefined in this window.
+  const t0 = Date.now();
+  let steeredAt: number | undefined;
+  let killedAt: number | undefined;
+  out.stdin.on("data", () => {
+    if (steeredAt === undefined) steeredAt = Date.now() - t0;
+  });
+  const bounds = armChild({
+    role: "developer", // committing, so the bound must settle before it kills — hence `head`
+    cwd: "/w/issue-2660",
+    stdin: out.stdin,
+    start: 0,
+    // A child that never exits: only the bound's own timers can end it, which is the point.
+    childExited: false,
+    // Same HEAD before and after: nothing was committed, so the settle resolves to a KILL.
+    head: async () => "a",
+    onKill: () => {
+      if (killedAt === undefined) killedAt = Date.now() - t0;
+    },
+    opts: { childBoundMs: BOUND_MS, childBoundGraceMs: ARMED_GRACE_MS },
+  });
+  // Generous on purpose: the point is not to race the timer but to tell "fired at ~90+30" from
+  // "has not fired at all because it was armed at ~90+600000".
+  await wait(BOUND_MS + ARMED_GRACE_MS + 400);
+  const killed = bounds.childBound.killed();
+  bounds.stop();
+  assert(
+    steeredAt !== undefined &&
+      steeredAt >= BOUND_MS - 5 &&
+      steeredAt <= BOUND_MS + 150 &&
+      /wrap up/i.test(JSON.parse(out.lines()[0] ?? "{}").message ?? ""),
+    `the spawn steered the child to wrap up AT the bound (~${String(BOUND_MS)} ms; observed ${String(steeredAt)})`,
+  );
+  assert(
+    killed,
+    `and ended it — a kill the bound armed actually reached the child (observed ${String(killedAt)})`,
+  );
+  assert(
+    killedAt !== undefined &&
+      killedAt >= BOUND_MS + ARMED_GRACE_MS - 5 &&
+      killedAt <= BOUND_MS + ARMED_GRACE_MS + 400,
+    `the kill fired one ARMED grace behind the steer, at ~${String(BOUND_MS + ARMED_GRACE_MS)} ms (observed ${String(killedAt)}) — the configured ${String(childBoundGraceMs())} grace would still have been waiting when this case finished`,
+  );
+  assert(
+    bounds.childBound.boundMs === BOUND_MS,
+    `and the bound that ended it is the deadline's own (${String(bounds.childBound.boundMs)})`,
+  );
 }
 
 // ── an exited child is never written to ─────────────────────────────────

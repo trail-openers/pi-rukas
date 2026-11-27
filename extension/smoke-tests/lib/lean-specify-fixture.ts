@@ -33,19 +33,21 @@ import type { WorkConfig } from "../../src/lean/config.ts";
 import { defaultConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { type CaptureResult, captureTestBytes } from "../../src/lean/specify-capture.ts";
+import { SpecifyInfraError } from "../../src/lean/specify-reset.ts";
 import { parsePorcelainZ } from "../../src/lean/specify-tree.ts";
-import { type SpecifyDeps } from "../../src/lean/specify.ts";
+import type { SpecifyDeps } from "../../src/lean/specify.ts";
 import type { DerivedSpec } from "../../src/lean/state-derived-spec.ts";
+import type { Step } from "../../src/lean/state.ts";
 import type { Outcome } from "../../src/lean/state.ts";
 import { createRun } from "../../src/lean/state.ts";
 import type { DispatchUsageRow } from "../../src/lean/step-budget.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
 import { gitTestEnv } from "./git-test-env.ts";
+import { type ArmedOptsSink, recordArmedOpts } from "./lean-arms-recorder.ts";
 import type { DispatchResultOverride } from "./lean-build-artifacts.ts";
 import { deadlineOf, resultOverride } from "./lean-build-artifacts.ts";
 import type { ClockOpts } from "./lean-build-artifacts.ts";
 import { put } from "./lean-build-fixture.ts";
-import { SpecifyInfraError } from "../../src/lean/specify-reset.ts";
 export { put };
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
@@ -162,13 +164,22 @@ function ctxFor(
   issue: number,
   now: () => number,
   deadlineMs: number | undefined,
+  stepStartedAt?: number,
 ): HandlerCtx {
   const run = createRun({ issue, version: "test", models: {}, baseSha, branch: "" });
+  // The write-ahead entry the engine puts down before the handler runs: a #2660 bound
+  // measures the step's spend from it, and with no entry there is no start and no bound.
+  const steps =
+    run.steps.length === 0
+      ? [{ key: `${issue}:specify:0`, state: "specify", startedAt: stepStartedAt ?? 1 } as Step]
+      : run.steps.map((st) =>
+          st.state === "specify" ? { ...st, startedAt: stepStartedAt ?? st.startedAt } : st,
+        );
   return {
     repoRoot,
     issue,
-    run: deadlineMs === undefined ? run : { ...run, deadlineMs },
-    steps: run.steps,
+    run: { ...run, steps, ...(deadlineMs === undefined ? {} : { deadlineMs }) },
+    steps,
     stepKey: `${issue}:specify:0`,
     now,
   };
@@ -219,6 +230,7 @@ export interface RunResult {
 }
 
 export interface RunOpts {
+  armedOpts?: ArmedOptsSink; // #2660 — the arms each dispatch was handed, in order
   repoRoot: string;
   baseSha: string;
   issue: number;
@@ -305,6 +317,8 @@ export interface RunOpts {
   dispatchResults?: DispatchResultOverride;
   /** The run's whole-cycle deadline and the step's clock; both absent by default. */
   clock?: ClockOpts;
+  /** The `specify` entry's start on the log, for a deadline-derived bound (#2660). */
+  stepStartedAt?: number;
   /**
    * Collects the argv of every git command the STEP issued, in order — the product's
    * own argv, not the fixture's. A case asserting what git was ASKED to run (that the
@@ -334,6 +348,7 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
   };
   const dispatch: SpecifyDeps["dispatch"] = async (spec: DispatchSpec, dopts) => {
     dispatched++;
+    recordArmedOpts(opts.armedOpts, dopts);
     opts.prompts?.push(spec.prompt);
     opts.runIds?.push(dopts.runId);
     const wt = spec.cwd as string;
@@ -359,9 +374,10 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
       typeof opts.toolUses === "function" ? opts.toolUses(dispatched) : [...opts.toolUses];
     opts.afterSubmit?.(wt);
     const over = resultOverride(opts.dispatchResults, dispatched - 1);
+    const child = okResult(declared);
     return opts.dispatchOk === false
-      ? { ...okResult(declared), ok: false, exitCode: 1, ...over }
-      : { ...okResult(declared), ...over };
+      ? { ...child, ok: false, exitCode: 1, ...over }
+      : { ...child, ...over };
   };
   const deps: SpecifyDeps = {
     exec,
@@ -391,7 +407,7 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
   const worktree = path.join(opts.repoRoot, ".worktrees", `lean-${issue}`);
   try {
     const specify = await import("../../src/lean/specify.ts");
-    const ctx = ctxFor(opts.repoRoot, opts.baseSha, issue, now, deadline);
+    const ctx = ctxFor(opts.repoRoot, opts.baseSha, issue, now, deadline, opts.stepStartedAt);
     if (opts.derivedSpec !== undefined) ctx.run = { ...ctx.run, derivedSpec: opts.derivedSpec };
     const outcome = await specify.specifyOutcome(ctx, deps);
     return { outcome, sawBaseHealthy, dispatched, fetched, worktree };

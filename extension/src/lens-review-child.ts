@@ -11,6 +11,7 @@
 import { statSync } from "node:fs";
 import path from "node:path";
 import type { Writable } from "node:stream";
+import { type ReviewerBoundGraceOpt, reviewerBoundGrace } from "./adversarial-reviewer-grace.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import * as dispatchDeck from "./dispatch-deck.ts";
 import { extractFindings } from "./lens-findings-extract.ts";
@@ -45,7 +46,7 @@ export async function runLensChild(opts: {
   /** #873 — the full parsed roster, so the prompt's other-lenses list is
    * derived from the data (a seventh lens appears with no code change). */
   roster: RosterEntry[];
-  opts: {
+  opts: ReviewerBoundGraceOpt & {
     diff: string;
     cwd?: string;
     signal?: AbortSignal;
@@ -286,6 +287,8 @@ export async function runLensChild(opts: {
             // that never answers is steered to wrap up, then ended, instead of
             // holding the round until the 2-h spawn backstop.
             childBoundMs: boundMs,
+            // #2660 — the grace the step armed with, beside the bound above.
+            ...reviewerBoundGrace(runOpts.childBoundGraceMs),
             ...lensStall,
             // #2127 — the diff-scaled ADVISORY turn ceiling beside the wall
             // clock, never instead of it: it arms the 50 %/80 % progress steers

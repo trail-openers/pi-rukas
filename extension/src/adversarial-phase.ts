@@ -9,6 +9,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ReviewerBoundGraceOpt, reviewerBoundGrace } from "./adversarial-reviewer-grace.ts";
 import { adversarialSkillPath } from "./adversarial-skill-path.ts";
 import { childHandles, registerChildHandle } from "./async-jobs-registry.ts";
 import { setOrchestratorActiveChild } from "./async-jobs.ts";
@@ -29,7 +30,7 @@ export type RunPhase = (
 ) => Promise<DispatchResult>;
 
 /** `makeRunPhase`'s options, declared apart so the function below is the flow. */
-export type RunPhaseOpts = {
+export type RunPhaseOpts = ReviewerBoundGraceOpt & {
   runId: string;
   signal: AbortSignal;
   orchestratorJobId: string;
@@ -73,6 +74,7 @@ export function makeRunPhase(opts: RunPhaseOpts): RunPhase {
     workCycleTrust,
     childBoundMs: budgetChildBoundMs,
     stallWindowMinutes: budgetStallWindowMinutes,
+    childBoundGraceMs: budgetChildBoundGraceMs,
     budgetSignal,
     onProgress: onBudgetProgress,
   } = opts;
@@ -173,6 +175,10 @@ export function makeRunPhase(opts: RunPhaseOpts): RunPhase {
                   budgetChildBoundMs ?? Number.POSITIVE_INFINITY,
                   adversarialChildBoundMs(),
                 ),
+                // #2660 — the grace beside the bound; see `adversarial-reviewer-grace.ts` for
+                // why a bound the deadline clamped may not arrive without it. In ms, so
+                // `childBoundSchedule` still clamps `bound + grace` against the cycle clock once.
+                ...reviewerBoundGrace(budgetChildBoundGraceMs),
                 // #2644 — the step's hung-request window, on the reviewer's own spawn. The abort is
                 // already joined above (`budgetSignal` → this child's `kill`); these are the two facts
                 // the stream pump reads to decide whether to fire it. A child whose model request never

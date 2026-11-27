@@ -27,12 +27,13 @@ import { defaultConfig } from "../../src/lean/config.ts";
 import type { WorkConfig } from "../../src/lean/config.ts";
 import type { HandlerCtx } from "../../src/lean/engine.ts";
 import { foldLog } from "../../src/lean/resume.ts";
+import { SpecifyInfraError } from "../../src/lean/specify-reset.ts";
 import { specifyWorktreePath } from "../../src/lean/specify-tree.ts";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import type { DispatchResult, DispatchSpec } from "../../src/types.ts";
+import { type ArmedOptsSink, recordArmedOpts } from "./lean-arms-recorder.ts";
 import { SPEC_BODY } from "./lean-build-asserts.ts";
 import { type Built, RUNNER, buildFixture, git, gitEnvFor, sha } from "./lean-build-fixture.ts";
-import { SpecifyInfraError } from "../../src/lean/specify-reset.ts";
 
 /**
  * `git show <ref>:<rel>` as RAW BYTES. `spawnSync` with an `encoding` would decode
@@ -56,7 +57,15 @@ export function blobSha(wt: string, ref: string, rel: string): string {
   return sha(rawShow(wt, `${ref}:${rel}`));
 }
 
-export { ROOTS, RUNNER, childCommit as childCommitOf, git, put, putOutside, sha } from "./lean-build-fixture.ts";
+export {
+  ROOTS,
+  RUNNER,
+  childCommit as childCommitOf,
+  git,
+  put,
+  putOutside,
+  sha,
+} from "./lean-build-fixture.ts";
 export { SpecifyInfraError };
 
 export interface ChallengeBuilt extends Built {
@@ -129,8 +138,7 @@ export function challengeFixture(
     ...(opts?.baseMainlineMarker === true
       ? {
           baseFiles: {
-            "tests/mainline-marked.test.sh":
-              opts?.baseMainlineText ?? "#!/bin/sh\nexit 0\n",
+            "tests/mainline-marked.test.sh": opts?.baseMainlineText ?? "#!/bin/sh\nexit 0\n",
           },
         }
       : {}),
@@ -209,26 +217,7 @@ export function challengeFixture(
   return { ...built, buildSha, ctx };
 }
 
-/** A test the adversary wrote that FAILS against the current head. */
-export function redEdge(rel: string): string {
-  return [
-    "#!/bin/sh",
-    `echo "not ok - ${rel}" 1>&2`,
-    'echo "assertion failed: retry gave up on the second transient failure" 1>&2',
-    "exit 1",
-    "",
-  ].join("\n");
-}
-
-/** A test the adversary wrote that PASSES against the current head. */
-export function greenEdge(rel: string): string {
-  return ["#!/bin/sh", `echo "ok - ${rel}"`, "exit 0", ""].join("\n");
-}
-
-/** The child declared these files for this criterion. */
-export function submit(criterionId: string, testFiles: string[]): unknown {
-  return { name: "submit_tests", arguments: { criterionId, testFiles } };
-}
+export { greenEdge, redEdge, submit } from "./lean-challenge-child-acts.ts";
 
 export interface RunResult {
   outcome?: Outcome;
@@ -294,26 +283,22 @@ export interface RunOpts {
   testLimits?: { timeoutMs?: number };
   /** A child whose dispatch did not succeed (the infra case). */
   dispatchOk?: boolean;
-  /**
-   * The challenge state's minutes ceiling, with a child the wall clock ended at
-   * it: the dispatch reports `child-bound`, which the armed budget reads as a
-   * minutes stop — the same path a real child takes.
-   */
+  /** The minutes ceiling, with a child the wall clock ended at it: the dispatch reports
+   *  `child-bound`, which the armed budget reads as a minutes stop. */
   challengeMinutes?: number;
   /** A pre-built fixture, for a case that dismantles the tree first. */
   built?: ChallengeBuilt;
   /** The run's resolved cycle deadline, which the pre-verify bound reads at entry. */
   deadlineMs?: number;
-  /** The instant the round is offered, with `buildSeconds` giving the cell its build leg. */
+  // The four fields state a row's clock (each documented where it is consumed): the round's
+  // entry instant, the cell's start, and the `specify` / `build` entries' spend.
   challengeAt?: number;
-  /** The instant the run began — the other end of the cell the share is a fraction of. */
   cellStartedAt?: number;
-  /** Charge the run's `specify` entry this many seconds of the cell. */
   specifySeconds?: number;
-  /** Charge the run's `build` entry this many seconds, starting when specify ended. */
   buildSeconds?: number;
   /** A step log to use instead of the one the fixture builds. */
   extraSteps?: Step[];
+  armedOpts?: ArmedOptsSink; // #2660 — the arms each dispatch was handed, in order
 }
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
@@ -324,9 +309,7 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
       ...(opts.extraFrozen === undefined ? {} : { extraFrozen: opts.extraFrozen }),
       ...(opts.issueDir === undefined ? {} : { issueDir: opts.issueDir }),
       ...(opts.baseMainlineMarker === true ? { baseMainlineMarker: true } : {}),
-      ...(opts.baseMainlineText === undefined
-        ? {}
-        : { baseMainlineText: opts.baseMainlineText }),
+      ...(opts.baseMainlineText === undefined ? {} : { baseMainlineText: opts.baseMainlineText }),
     });
   // The tree this case runs in must be the one the STEP computes, from `repoRoot`
   // plus its own issue: the split-two-runs-across-trees mechanism rests on that
@@ -345,14 +328,22 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
   }
   if (opts.deadlineMs !== undefined) {
     ctx = { ...ctx, run: { ...ctx.run, deadlineMs: opts.deadlineMs } };
-    // The round is OFFERED at the instant the case states — the fake clock's only reading, so
-    // "time left at challenge entry" is the row's number and not the fixture's accident.
+    // Offered at the instant the case states — the fake clock's only reading, so "time
+    // left at challenge entry" is the row's number and not the fixture's accident.
     if (opts.challengeAt !== undefined) ctx = { ...ctx, now: () => opts.challengeAt as number };
   }
-  if (opts.cellStartedAt !== undefined)
+  // `cellStartedAt` charges the run's first entry; the write-ahead `challenge` entry
+  // carries the instant a #2660 bound measures the round's spend from.
+  if (opts.cellStartedAt !== undefined || opts.challengeAt !== undefined)
     ctx = {
       ...ctx,
-      steps: ctx.steps.map((s, i) => (i === 0 ? { ...s, startedAt: opts.cellStartedAt as number } : s)),
+      steps: ctx.steps.map((s, i) =>
+        i === 0 && opts.cellStartedAt !== undefined
+          ? { ...s, startedAt: opts.cellStartedAt as number }
+          : s.state === "challenge" && opts.challengeAt !== undefined
+            ? { ...s, startedAt: opts.challengeAt as number }
+            : s,
+      ),
     };
   if (opts.buildSeconds !== undefined) {
     // `build` sits between the two steps the share bounds, so a case that states the panel's
@@ -396,8 +387,9 @@ export async function runChallenge(opts: RunOpts): Promise<RunResult> {
       return { stdout: `${opts.overrideHead}\n`, stderr: "" };
     return execp(cmd, { ...o, env: gitEnvFor() });
   };
-  const dispatch: ChallengeDeps["dispatch"] = async (spec: DispatchSpec) => {
+  const dispatch: ChallengeDeps["dispatch"] = async (spec: DispatchSpec, o = {}) => {
     dispatched++;
+    recordArmedOpts(opts.armedOpts, o);
     specs.push(spec);
     prompts.push(spec.prompt);
     opts.child?.(spec.cwd as string);

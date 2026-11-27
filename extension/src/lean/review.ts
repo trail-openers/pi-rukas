@@ -66,12 +66,12 @@
  * run's cause would read `no transition for review + "budget"`.
  */
 import { truncatedFixerOutputTokens } from "../fixer-truncation.ts";
+import { armsStepBudget, stepDispatchArms } from "../lean-step-bound.ts";
 import { isCarried } from "../lens-review-types.ts";
 import { traceWarn } from "../trace.ts";
 import { frozenFromLog } from "./build.ts";
 import { protectedPathsOf } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { stallArms } from "./request-stall.ts";
 import { acceptanceSection, assertHeadIsVerified } from "./review-acceptance.ts";
 import { type StepStop, reviewBoundRecord, stepBound, unjudgedLenses } from "./review-bound.ts";
 import { assertReviewEntry } from "./review-entry.ts";
@@ -187,9 +187,13 @@ async function reviewPass(
   const runId = fixRunIdFromLog(ctx.steps) ?? fixRunId(ctx.now);
   // The step's budget, armed the way `build`, `challenge` and `specify` arm theirs. A
   // child that spends it is NOT a routed verdict — this step has no `budget` arrow, so the
-  // stop throws with the rows it paid for. `stallArms` reads no clock: the wave's stop below
-  // measures from the durable review entry, and the lever measures from that same entry.
-  const budget = armBudget(budgetFor(config, "review"), stallArms(ctx));
+  // stop throws with the rows it paid for. Both levers measure from the durable review entry,
+  // which the wave's stop below measures its spend from too.
+  const budget = armsStepBudget(
+    budgetFor(config, "review"),
+    // #2660: the stall window and what the deadline leaves, from one read of the step log.
+    stepDispatchArms(ctx, (budgetFor(config, "review")?.minutes ?? 0) * 60_000, "review"),
+  );
   if (budget.warning !== undefined) traceWarn(`lean review #${String(issue)}: ${budget.warning}`);
   // **The step's OWN clock, beside the per-child arms and for a different job** — it
   // bounds the whole wave, and its spend comes off the durable review entry so a resumed

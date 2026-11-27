@@ -29,6 +29,7 @@ import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.t
 import { leanPreVerifySharePercent } from "../../src/lean/pre-verify-share-switch.ts";
 import { leanDetectVerifyEnabled } from "../../src/lean/config-detect.ts";
 import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
+import { leanStepDeadlineBoundEnabled } from "../../src/lean-step-deadline-bound-switch.ts";
 import { leanSpecifyGapHandbackEnabled } from "../../src/lean/specify-gap-switch.ts";
 import { leanPrefixHeadEnabled } from "../../src/lean/review-log.ts";
 import { leanFullTierOperandEnabled } from "../../src/lean/full-tier-operand-switch.ts";
@@ -232,6 +233,10 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // pins "unset means on"; the truth table, the docs row and the off arm are pinned by
   // test-lean-request-stall-switch.ts and test-lean-request-stall-off-arm.ts.
   ["PI_ENSEMBLE_LEAN_REQUEST_STALL", leanRequestStallEnabled],
+  // #2660 — the deadline-derived lean child bound. The reader is `v !== "0"`, so the
+  // gate's LIVE loop (env deleted) pins "unset means on"; the truth table, the docs row
+  // and the byte-identity of `0` are pinned by test-lean-deadline-step-bound.ts.
+  ["PI_ENSEMBLE_LEAN_STEP_DEADLINE_BOUND", leanStepDeadlineBoundEnabled],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],
   // #2223 — the delta reader's incomplete-row rule. The reader is `v !== "0"`, so

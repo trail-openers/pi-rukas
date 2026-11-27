@@ -114,7 +114,7 @@ export type MainlineExec = (
  * wrapper gives a network git call its non-interactive env, process-group kill and bound — what makes a
  * wedged probe a refusal rather than a step that never answers.
  */
-export const ORIGIN_PROBE_COMMAND = "git ls-remote --symref origin HEAD";
+const ORIGIN_PROBE_COMMAND = "git ls-remote --symref origin HEAD";
 
 /** The symref probe's own name in the refusal's cause list. */
 const ORIGIN_PROBE_WHY = `${ORIGIN_PROBE_COMMAND} did not answer`;

@@ -77,8 +77,8 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // (`limit: "stall"`). The window is derived — the handoff allowance plus the review reserve,
   // clamped to what the deadline leaves — and never configured. `0` is the ONLY off value, which
   // returns a hung request to the outer wall alone. The reader is `leanRequestStallEnabled` in
-  // request-stall-policy.ts, which also derives the window; lean/request-stall.ts pins the lean
-  // reserve into it and lean/step-budget.ts arms it.
+  // request-stall-policy.ts, which also derives the window; lean-step-bound.ts pins the lean
+  // reserve into it (`stepDispatchArms`) and lean/step-budget.ts arms it.
   flag("LEAN_REQUEST_STALL", true),
   // The executed acceptance table in front of the lean review seats and on the run's
   // PR: each criterion, the frozen test the run recorded for it, and what the
@@ -106,4 +106,17 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // unsubmitted criteria end the run. The reader is `leanSpecifyReaskEnabled` in
   // lean/specify-reask.ts.
   flag("LEAN_SPECIFY_REASK", true),
+  // #2660 — the bound a lean step's CHILD may be given, read against the run's cycle
+  // deadline. The engine consults the deadline only BETWEEN steps and the cycle clock
+  // `spawn-child-bound.ts` clamps against is recorded by `/work` alone, so a step still
+  // running and still emitting when the deadline passed bounded itself by nothing: the
+  // panel's cells overran the line past the child grace until the outer wall took the
+  // cell. At arm time the child gets the smaller of its configured minutes and what the
+  // deadline leaves outside the handoff allowance, so the kill lands before the line and
+  // the handback keeps its allowance. Inert — and it says which on the trace — with no
+  // deadline, with `PI_ENSEMBLE_DISPATCH_CAPS=0`, or at this switch's `0`, the ONLY off
+  // value, which leaves the bound exactly the configured minutes. The reader is
+  // `leanStepDeadlineBoundEnabled` in lean-step-deadline-bound-switch.ts; the derivation
+  // is lean-step-bound.ts and lean/step-budget.ts arms it.
+  flag("LEAN_STEP_DEADLINE_BOUND", true),
 ];

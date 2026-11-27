@@ -13,6 +13,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { BudgetProgressSteer } from "../../src/budget-progress.ts";
 import type { SteerDelivery, SteerSource } from "../../src/dispatch-steer.ts";
+import type { ChildBound } from "../../src/spawn-child-bound.ts";
 import { type SpawnBudgetOpts, armChildBounds } from "../../src/spawn-budget-arms.ts";
 
 export type { SteerSource };
@@ -34,6 +35,14 @@ export function capture(): { stdin: PassThrough; text: () => string; lines: () =
 export interface ArmArgs {
   role: string;
   cwd?: string;
+  /** Fake-child overrides for the run bound's liveness questions. The bound asks
+   *  `childExited()` (through `childHasExited`) before it kills or steers, and `head(cwd)` to
+   *  decide committed-vs-killed; a case that wants to WATCH a kill needs the first, and a
+   *  committing child that cannot answer the second would never end as killed. */
+  childExited?: boolean;
+  head?: (cwd: string) => Promise<string | undefined>;
+  /** Test seam: notified when the run bound's kill runs (see `armChildBounds`). */
+  onKill?: () => void;
   stdin: PassThrough;
   start?: number;
   deckKey?: string;
@@ -51,7 +60,9 @@ export interface ArmArgs {
  * shared liveness flags, the stdin, and the caller's bound options. A child with
  * no exit state and no flag set is alive, which is the state every steer in
  * these suites is asserted against. */
-export function armChild(o: ArmArgs): BudgetProgressSteer & { armed: () => boolean } {
+export function armChild(
+  o: ArmArgs,
+): BudgetProgressSteer & { armed: () => boolean; childBound: ChildBound } {
   const child = new EventEmitter() as never;
   const opts: SpawnBudgetOpts =
     o.deckKey === undefined
@@ -60,13 +71,13 @@ export function armChild(o: ArmArgs): BudgetProgressSteer & { armed: () => boole
         // shape `SpawnOptions` declares, because that is where a lens child's
         // deck key lives.
         { ...o.opts, budgetSteerDeckKey: o.deckKey };
-  return armChildBounds({
+  const bounds = armChildBounds({
     spec: o.cwd === undefined ? { role: o.role } : { role: o.role, cwd: o.cwd },
     opts: o.onSteer === undefined ? opts : { ...opts, onSteer: o.onSteer },
     ...(o.onSteer === undefined ? {} : { onSteer: o.onSteer }),
     child,
     flags: {
-      childExited: () => o.exited === true,
+      childExited: () => o.exited === true || o.childExited === true,
       aborted: () => false,
       timedOut: () => false,
       inactivityKilled: () => false,
@@ -77,7 +88,12 @@ export function armChild(o: ArmArgs): BudgetProgressSteer & { armed: () => boole
     start: o.start ?? 0,
     boundArmed: o.boundArmed ?? (() => false),
     reported: () => false,
-  }).budgetProgress;
+    ...(o.head === undefined ? {} : { head: o.head }),
+    ...(o.onKill === undefined ? {} : { onKill: o.onKill }),
+  });
+  // #2660 — `childBound` too, so a case can pin WHERE the arm put the timers (the bound it
+  // armed, and therefore the grace it read) rather than only that a steer was written.
+  return { ...bounds.budgetProgress, childBound: bounds.childBound };
 }
 
 /** Pin env vars for a synchronous body, restoring exactly what was there

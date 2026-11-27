@@ -204,6 +204,10 @@ export function armChildBound(o: {
    *  progress steer to read one object. With it, `graceMs` is ignored — the
    *  schedule already carries `stopInMs`. */
   schedule?: ChildBoundSchedule;
+  /** Test seam: notified the instant this bound's kill runs, before the signal is delivered, so a
+   *  case can time the kill while still watching the real `killProcessTree` path. Absent in
+   *  production — a spawn already installs its own #1863 kill seam on its child. */
+  onKill?: () => void;
   head?: (cwd: string) => Promise<string | undefined>;
 }): ChildBound {
   const boundMs = o.boundMs ?? 0;
@@ -244,6 +248,7 @@ export function armChildBound(o: {
   };
   const kill = (why: string) => {
     trace(`child-bound: ${why}`);
+    o.onKill?.();
     try {
       killProcessTree(o.child);
     } catch (err) {

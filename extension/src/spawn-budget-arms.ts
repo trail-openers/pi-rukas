@@ -56,6 +56,12 @@ export interface SpawnBudgetOpts {
   budgetTurns?: number;
   /** #1560 — the run bound's ms. The lever that both paces and stops. */
   childBoundMs?: number;
+  /** #2660 — the grace between this child's wrap-up steer and its kill, ms. Absent means
+   *  the configured `childBoundGraceMs()`. A step whose bound was derived from the run's
+   *  deadline passes what the deadline still owns, so the kill lands inside deadline plus
+   *  the handoff allowance instead of a full grace past it. The derivation floors it, so
+   *  a bound never arrives with 0 — a bound with no grace would kill with no steer. */
+  childBoundGraceMs?: number;
   /** The registry id the progress steer delivers through when the caller has no
    *  steer seam of its own but registered a handle (a lens child's deck key). */
   budgetSteerDeckKey?: string;
@@ -79,6 +85,21 @@ export interface ChildBounds {
      *  silenced by a bound that will never kill. */
     armed: () => boolean;
   };
+}
+
+/**
+ * The ONE way a child's bound becomes timers: the grace the caller armed with (or the
+ * configured one), then the spawn's own `childBoundSchedule` anchored at the spawn's
+ * `start`. Exported because a case that pins where a deadline-derived kill lands must
+ * read the SAME two numbers the spawn will arm, and a schedule it computed for itself
+ * is arithmetic nobody shipped.
+ */
+export function childBoundScheduleFor(opts: SpawnBudgetOpts, start: number): ChildBoundSchedule {
+  return childBoundSchedule(
+    opts.childBoundMs ?? 0,
+    opts.childBoundGraceMs ?? childBoundGraceMs(),
+    start,
+  );
 }
 
 /** A child that can commit: a developer with a tree of its own. One definition,
@@ -118,14 +139,24 @@ export function armChildBounds(o: {
   boundArmed: () => boolean;
   /** The prompt's `agent_end` arrived (the spawn's `promptCompleted`). */
   reported: () => boolean;
+  /** Test seam for the run bound's committed-work read (`armChildBound`'s own `head`). A case
+   *  that WATCHES a real kill of a COMMITTING child must answer it, or the bound's settled-check
+   *  never settles and the kill never lands. Production callers pass none. */
+  head?: (cwd: string) => Promise<string | undefined>;
+  /** Test seam notified the instant the bound's kill runs, BEFORE the signal is delivered. A
+   *  case times the kill this way and still observes the real `killProcessTree` path. Absent
+   *  is the production shape (a spawn already installs its own #1863 kill seam on its child). */
+  onKill?: () => void;
   onSteer?: SteerDelivery;
 }): ChildBounds {
-  const graceMs = childBoundGraceMs();
+  const graceMs = o.opts.childBoundGraceMs ?? childBoundGraceMs();
   // ONE schedule, from one `graceMs` and the spawn's own `start`, handed to BOTH
   // arms: `armChildBound` starts its timers from it and the progress steer paces
   // against it. Asking the schedule twice — once per arm, at two instants — is
-  // how the child ends up told time the bound will not grant.
-  const schedule = childBoundSchedule(o.opts.childBoundMs ?? 0, graceMs, o.start);
+  // how the child ends up told time the bound will not grant. `childBoundScheduleFor`
+  // is the same call a case reads to pin where the kill lands, so the two cannot
+  // disagree about the grace.
+  const schedule = childBoundScheduleFor(o.opts, o.start);
   const childBound = armChildBound({
     child: o.child,
     boundMs: o.opts.childBoundMs,
@@ -143,6 +174,8 @@ export function armChildBounds(o: {
     boundArmed: o.boundArmed,
     graceMs,
     schedule,
+    ...(o.head === undefined ? {} : { head: o.head }),
+    ...(o.onKill === undefined ? {} : { onKill: o.onKill }),
   });
 
   const turns = o.opts.budgetTurns;

@@ -37,6 +37,7 @@
  */
 import { existsSync } from "node:fs";
 import { execp } from "../exec.ts";
+import { armsStepBudget, stepDispatchArms, stopReasonClause } from "../lean-step-bound.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchSpec } from "../types.ts";
@@ -56,7 +57,6 @@ import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
 import { MAX_BUILD_ATTEMPTS } from "./machine.ts";
 import { providerWaitNote, waitOutProviderFault } from "./provider-wait.ts";
-import { stallArms } from "./request-stall.ts";
 import { rereadSpec } from "./spec-for.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
@@ -288,7 +288,11 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
   // Why the first no-work child died, kept for the throw the second one may make.
   let firstNoWorkWhy: string | undefined;
   for (let tries = 0; ; tries++) {
-    const budget = armBudget(budgetFor(config, "build"), stallArms(ctx));
+    const budget = armsStepBudget(
+      budgetFor(config, "build"),
+      // #2660: both levers from one read of the step log.
+      stepDispatchArms(ctx, (budgetFor(config, "build")?.minutes ?? 0) * 60_000, "build"),
+    );
     if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
     const [dispatchedChild, row] = await dispatchBuilder(deps.dispatch, {
       issue,
@@ -363,6 +367,8 @@ export async function buildOutcome(ctx: HandlerCtx, deps: BuildDeps): Promise<Ou
       ...budgetVerdictWithRows("build", read.stop, rows),
       reason: joinNotes([
         budgetSentence("build", read.stop),
+        // Which ceiling ended the child, in the deadline's own words when it was the deadline.
+        stopReasonClause(ctx, "build", (budgetFor(config, "build")?.minutes ?? 0) * 60_000) ?? "",
         ...(atCap ? [`after ${String(dispatchedBefore + tries + 1)} build attempts`] : []),
         failingClause(failing),
         keptClause(kept.files),
@@ -430,8 +436,12 @@ export function buildDeps(headless: boolean): BuildDeps {
         writeFence: o.writeFence,
         extraArgs: o.extraArgs,
         // Forwarded so the ceiling binds the child; `budgetTurns` is the same
-        // ceiling the budget-progress steer counts down from.
+        // ceiling the budget-progress steer counts down from. The grace rides beside the
+        // bound: a bound with no grace of its own gets the configured 10 minutes, and a
+        // deadline-derived bound killed a full grace later is the overrun this step is
+        // bounded against. Pinned on the leaf by test-lean-step-deadline-bound-seams.ts.
         childBoundMs: o.childBoundMs,
+        childBoundGraceMs: o.childBoundGraceMs,
         signal: o.signal,
         onProgress: o.onProgress,
         budgetTurns: o.budgetTurns,
