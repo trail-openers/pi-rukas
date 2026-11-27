@@ -61,9 +61,11 @@ export function budgetRow(over: Partial<Budget>): Budget {
 /**
  * A run record whose deadline and step starts are what the case states.
  *
- * `startedAt` is the durable step entry the step's own levers measure from (`stallArms`,
- * `review-bound.ts`), so the bound is derived from the log and not from a clock read the
- * test invented: `stepChildBound` reads the newest entry for the `stepKey`'s state.
+ * The two levers measure from different instants and this fixture keeps them distinct on
+ * purpose: the child bound measures its room from `now` (the dispatch instant, so a re-arming
+ * step re-measures), while the stall lever measures from the durable `startedAt` entry #2644
+ * defines its window against. Most cases pass the same instant to both, which is what the
+ * shipped numbers assume; a case that wants them apart passes them apart.
  */
 export function ctxWith(over: {
   issue: number;

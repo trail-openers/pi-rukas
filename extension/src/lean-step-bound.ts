@@ -21,9 +21,15 @@
  *
  * Deliberately NOT a second mechanism: the cycle clock is not recorded for lean (that
  * would make a lean spawn inherit a `/work` cycle's clock and every other clamp in the
- * spawn follow from it), and no new clock is read — the lever takes the step's own
- * durable start, as `stallArms` does, so arming a bound costs no extra clock read a
- * scripted case would have to account for.
+ * spawn follow from it), and no new clock is read — the lever takes the instant the caller
+ * is standing at, the same scripted `ctx.now()` the step's other waits already read, so
+ * arming a bound costs no clock read of its own and a re-dispatch re-measures the room from
+ * where it actually is.
+ *
+ * Measuring from NOW and not from the step's durable start is the whole point for a step that
+ * re-arms: `build` re-arms per retry inside its own loop, and a window taken from the entry's
+ * `startedAt` hands a child dispatched minutes later the first child's full length — its kill
+ * then lands that much past deadline plus the allowance, which is the defect one retry deep.
  *
  * Lives outside `src/lean/` for the same reason `request-stall-policy.ts` does: this is
  * spawn policy, not engine state. It reads the shared deadline helpers as PARAMETERS
@@ -46,15 +52,15 @@ const MINUTE_MS = 60_000;
 
 /**
  * What a step hands {@link leanStepBound}: the run's resolved deadline (absent means no
- * deadline, which never shrinks a bound), and the instant THIS attempt's step began —
- * the durable step entry its other levers already measure from (`stallArms`,
- * `review-bound.ts`'s `stepBound`). The start is supplied rather than read here so
- * arming a bound costs no clock read of its own: a scripted clock counts reads, and one
- * extra slot would move a step's stop.
+ * deadline, which never shrinks a bound) and the instant the dispatch is armed at — `now`, not
+ * the step's durable start, because the room has to be what the deadline still leaves AT THAT
+ * INSTANT for a step that re-arms (`build` re-arms its child per retry). `now` is supplied
+ * rather than read here so arming a bound costs no clock read of its own: a scripted clock
+ * counts reads, and one extra slot would move a step's stop.
  */
 export interface StepBoundArms {
   deadlineMs?: number;
-  startedAt?: number;
+  now?: number;
 }
 
 /** The least room a deadline-derived bound may leave between the child's bound and the
@@ -70,19 +76,19 @@ export const MIN_DEADLINE_GRACE_MS = 30_000;
 const MIN_KILL_GRACE_MS = 30_000;
 
 /** Why the deadline did not shorten a bound, or `undefined` when it did. */
-type InertCause = "switch" | "deadline" | "caps" | "start" | "room" | "row";
+type InertCause = "switch" | "deadline" | "caps" | "now" | "room" | "row";
 
 /** The one cause table, so the disclosure and the decision cannot disagree. */
 function inertCause(arms: StepBoundArms, minutes: number): InertCause | undefined {
   if (minutes <= 0) return "row";
   if (!leanStepDeadlineBoundEnabled()) return "switch";
   if (arms.deadlineMs === undefined) return "deadline";
-  if (arms.startedAt === undefined) return "start";
+  if (arms.now === undefined) return "now";
   if (!capsEnabled()) return "caps";
   // The room the rule needs is stated in `leanStepBound` and repeated here as a guard
   // only: a step whose deadline sits inside the pair the grace is derived from has no
   // room for a bounded child at all.
-  if (arms.deadlineMs - arms.startedAt <= handoffDispatchTimeoutMs() + MIN_DEADLINE_GRACE_MS)
+  if (arms.deadlineMs - arms.now <= handoffDispatchTimeoutMs() + MIN_DEADLINE_GRACE_MS)
     return "room";
   return undefined;
 }
@@ -91,7 +97,7 @@ const CAUSE_TEXT: Record<InertCause, string> = {
   switch: "PI_ENSEMBLE_LEAN_STEP_DEADLINE_BOUND=0",
   deadline: "no cycle deadline",
   caps: "PI_ENSEMBLE_DISPATCH_CAPS=0",
-  start: "no recorded step start",
+  now: "no dispatch instant",
   room: "no room outside the handoff allowance",
   row: "no minutes row",
 };
@@ -115,9 +121,9 @@ export interface StepBound {
   readonly graceMs?: number;
 }
 
-/** What the deadline leaves the child outside the handoff allowance, from the step's start. */
+/** What the deadline leaves the child outside the handoff allowance, from the dispatch instant. */
 function deadlineRoom(arms: StepBoundArms, allowance: number): number {
-  return (arms.deadlineMs as number) - (arms.startedAt as number) - allowance;
+  return (arms.deadlineMs as number) - (arms.now as number) - allowance;
 }
 
 /**
@@ -152,7 +158,6 @@ export function leanStepBound(arms: StepBoundArms, full: number, state: string):
     Math.min(childBoundGraceMs(), deadlineRoom(arms, allowance) - allowance - MIN_KILL_GRACE_MS),
   );
   const deadlineMs = arms.deadlineMs as number;
-  const startedAt = arms.startedAt as number;
   // The pair this rule must keep inside the line: the wrap-up steer at the bound, then
   // the kill one grace later. The child's bound is therefore the deadline minus the
   // allowance MINUS the grace it will be armed with, so that a child still emitting when
@@ -205,23 +210,30 @@ function traceOnce(msg: string): void {
 }
 
 /**
- * The slice of the step's context the arms read: the run's deadline, the step log, and the
- * key that names which entry is this step's. Same shape `stallArms` takes, one module out.
- * Structural, so a caller needs no lean import to satisfy it.
+ * The slice of the step's context the arms read: the run's deadline, the step log, the key
+ * that names which entry is this step's, and the injected clock. Structural, so a caller
+ * needs no lean import to satisfy it.
  */
 export interface StepArmsCtx {
   run: { deadlineMs?: number };
   steps: readonly { state: string; startedAt: number }[];
   stepKey: string;
+  /** The run's clock, the one place this module reads it (#2660): the bound's room is
+   *  measured from NOW, so a re-dispatch re-measures it rather than reusing the first
+   *  child's window. The stall lever keeps its own window semantics on the durable entry. */
+  now: () => number;
 }
 
-/** The state this step's key names — the entry both levers measure from. */
+/** The state this step's key names — the entry the levers read. */
 function stepState(ctx: StepArmsCtx): string {
   return ctx.stepKey.split(":")[1] ?? "";
 }
 
 /** The durable start of this step's newest entry, and the run's deadline, read ONCE. */
-function stepArms(ctx: StepArmsCtx): StepBoundArms {
+function stepEntry(ctx: StepArmsCtx): {
+  deadlineMs?: number;
+  startedAt?: number;
+} {
   const state = stepState(ctx);
   let startedAt: number | undefined;
   for (const step of ctx.steps) if (step.state === state) startedAt = step.startedAt;
@@ -231,8 +243,17 @@ function stepArms(ctx: StepArmsCtx): StepBoundArms {
   };
 }
 
-/** The bound a step's LAST arm would have been given, re-derived from the same log. Cheap
- *  and clock-free, so a stop's reason can name the ceiling without threading the arm along. */
+/** What one dispatch is armed against: the deadline and the instant of the arming. The bound
+ *  measures its room from here, so each child of a re-arming step gets what the deadline still
+ *  leaves at the moment it is sent (`#2660`). */
+function dispatchArms(ctx: StepArmsCtx): StepBoundArms {
+  const { deadlineMs } = stepEntry(ctx);
+  return { ...(deadlineMs === undefined ? {} : { deadlineMs }), now: ctx.now() };
+}
+
+/** The bound a step's LAST arm would have been given, re-derived from the same log and the
+ *  run's clock — the same instants the arming itself used, so the reason a stopped step prints
+ *  describes the bound that child actually carried. */
 export function stepBoundOf(ctx: StepArmsCtx, state: string, full: number): StepBound | undefined {
   return stepChildBound(ctx, full, state);
 }
@@ -257,7 +278,7 @@ export function stepChildBound(
   // No row means no bound existed to shorten, and a rule that armed one would be a
   // bound no operator configured.
   if (full <= 0) return undefined;
-  return leanStepBound(stepArms(ctx), full, state);
+  return leanStepBound(dispatchArms(ctx), full, state);
 }
 
 /**
@@ -269,19 +290,24 @@ export function stepChildBound(
  * each step passes one object to `armBudget` and no engine module carries lever arithmetic.
  * The reserve is a parameter rather than an import for the same reason `leanStepBound`
  * takes its arms as parameters: this module never reaches into `src/lean/`.
+ *
+ * The two levers measure from different instants on purpose. The bound takes the dispatch
+ * instant (each child of a re-arming step gets what the deadline still leaves when it is
+ * sent); the stall lever keeps the durable step entry, which is the window #2644 defines —
+ * silence measured from when the step began.
  */
 export function stepDispatchArms(
   ctx: StepArmsCtx,
   minutesRow: number,
   state: string,
 ): { stall: StallArms; bound: StepBound | undefined } {
-  const arms = stepArms(ctx);
+  const entry = stepEntry(ctx);
   return {
     stall: {
       reserveMs: REVIEW_DEADLINE_RESERVE_MS,
       silence: () => ({ sinceMs: 0, toolInFlight: false }),
-      ...(arms.deadlineMs === undefined ? {} : { deadlineMs: arms.deadlineMs }),
-      ...(arms.startedAt === undefined ? {} : { startedAt: arms.startedAt }),
+      ...(entry.deadlineMs === undefined ? {} : { deadlineMs: entry.deadlineMs }),
+      ...(entry.startedAt === undefined ? {} : { startedAt: entry.startedAt }),
     },
     bound: stepChildBound(ctx, minutesRow, state),
   };
