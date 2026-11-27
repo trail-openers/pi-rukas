@@ -34,7 +34,7 @@ import type { Outcome } from "../src/lean/state.ts";
 import { budgetTrio } from "../src/lean/step-budget.ts";
 import { requestStallWindowMs } from "../src/request-stall-policy.ts";
 import { withEnv } from "./lib/env-scope.ts";
-import { put } from "./lib/lean-build-artifacts.ts";
+import { put } from "./lib/lean-build-git.ts";
 import { configWithRunner } from "./lib/lean-build-asserts.ts";
 import { runBuild } from "./lib/lean-build-fixture.ts";
 import {

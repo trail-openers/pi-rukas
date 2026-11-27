@@ -1,4 +1,7 @@
-import type { ContinuationOutcome } from "../../src/developer-session-continuation.ts";
+import type {
+  ContinuationOutcome,
+  DeveloperContinuationFn,
+} from "../../src/developer-session-continuation.ts";
 /**
  * smoke-tests/lib/lean-build-reask-fixture — the two #2661 knobs the build fixture cannot hold
  * itself: the per-dispatch child act, and the seam slots a re-ask case injects.
@@ -18,16 +21,9 @@ import type { ContinuationOutcome } from "../../src/developer-session-continuati
  */
 import type { BuildDeps } from "../../src/lean/build.ts";
 
-/** What one continuation call received, narrowed to what these cases assert. */
-export interface ContinuationCall {
-  transcriptPath: string;
-  role: string;
-  cwd: string;
-  boundMs: number;
-  prompt: string;
-  writeFence?: { root?: string; repo?: string; scratch?: string };
-  workCycleTrust?: boolean;
-}
+/** What one continuation call received: the seam's OWN argument type, so a key the step dropped is a
+ *  compile error here rather than a field a hand-written copy could quietly omit. */
+export type ContinuationCall = Parameters<DeveloperContinuationFn>[0];
 
 /** The sink a case reads back: every continuation call the step made, in order. */
 export type ContinuationCalls = ContinuationCall[];
@@ -89,8 +85,8 @@ export function reaskDeps(opts: {
     // The leaf stands in for production's `spawnDeveloperContinuationChild` in the SAME dependency
     // slot `buildDeps()` fills, so the step's real dispatch path makes the call.
     continueSession: async (args): Promise<ContinuationOutcome> => {
-      opts.calls.push(args as unknown as ContinuationCall);
-      opts.onCall?.(args as unknown as ContinuationCall, opts.calls.length - 1);
+      opts.calls.push(args);
+      opts.onCall?.(args, opts.calls.length - 1);
       // The tree the resumed child was HANDED is the tree its acts belong to — the case's `acts`
       // rule runs with the leaf's own `cwd`, so an ask aimed at the wrong tree writes the wrong
       // file and the case fails on the commit, not on a fixture assumption.
@@ -102,19 +98,13 @@ export function reaskDeps(opts: {
   };
 }
 
-/** The fixture's call site of the per-dispatch act rule: the resumed child's acts (index `-1`) and
- *  the dispatched children's (0-based) all run through the same case-owned predicate. */
-export function reaskActs(acts: (n: number, wt: string) => void, n: number, wt: string): void {
-  acts(n, wt);
-}
-
 /**
  * The child acts for one dispatch, and whether the "first child only" act is now spent.
  *
  * Here rather than in `lean-build-fixture.ts` because a re-ask case needs a first turn that acts
  * NOWHERE and a later turn that writes the file — only a per-index rule states that, and the plain
  * build fixture has no room for it inside its own size limit. `n` is the 0-based dispatch index; the
- * resumed continuation's acts run through {@link reaskActs} at index `-1`, so a case cannot have a
+ * resumed continuation's acts run through the same predicate at index `-1`, so a case cannot have a
  * first child act where it said it acted nowhere.
  */
 export function dispatchActs(
@@ -127,7 +117,7 @@ export function dispatchActs(
 ): boolean {
   const wt = (spec.cwd as string) ?? built.worktree;
   if (bag?.childActs !== undefined) {
-    reaskActs(bag.childActs, dispatched - 1, wt);
+    bag.childActs(dispatched - 1, wt);
     return true;
   }
   if (!alreadyActed) child?.(wt);

@@ -24,10 +24,10 @@ import type { DispatchUsageRow } from "./lean/step-budget.ts";
 import { traceWarn } from "./trace.ts";
 import type { WriteFence } from "./write-fence-contract.ts";
 
-/** The ask's result: the row it cost (billed whatever it answered) and the resumed child's reply. */
+/** The ask's result: the one cost row the continuation that ran incurred. The reply itself is not
+ *  carried out — the step's own fold reads the TREE the resumed child left, not what it said. */
 export type BuildReaskOutcome = {
   row: DispatchUsageRow;
-  outcome: ContinuationOutcome;
 };
 
 /** What the step hands the ask besides the child: the bound the seat's armed budget already clamped,
@@ -87,7 +87,7 @@ export async function askBuildReask(
     traceWarn(`lean build #${String(opts.issue)}: no continuation — ${String(outcome.reason)}`);
     return undefined;
   }
-  return { outcome, row: opts.rowFor(outcome, opts.child.role) };
+  return { row: opts.rowFor(outcome, opts.child.role) };
 }
 
 /** The two refusals, each named on the trace so an exhausted step is never silent about the ask it

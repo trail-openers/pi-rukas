@@ -5,18 +5,13 @@
  * that already exists there: the fixture BUILDS the repo and drives the step; these are the
  * per-dispatch OVERRIDE a case hands the fake child and the CLOCK it puts on the run, plus the two
  * exec wrappers the blocked gate's re-run needs. The bytes a child leaves in a tree are written by
- * `lean-build-git.ts`, the fixture family's bottom, and re-exported here so a case importing the
- * artifacts keeps one import line.
+ * `lean-build-git.ts`, the fixture family's bottom, which a case imports directly.
  */
 
 import { type ExecResult, execp } from "../../src/exec.ts";
 import type { BuildExec } from "../../src/lean/build-types.ts";
 import type { DispatchResult } from "../../src/types.ts";
 import { gitEnvFor } from "./lean-build-git.ts";
-
-// The bytes a child leaves in a tree are written by `lean-build-git.ts` — the fixture family's bottom
-// — and re-exported here so a case that imports the artifacts needs one import line, not two.
-export { hardlinkFromOutside, put, putOutside, symlink } from "./lean-build-git.ts";
 
 /**
  * What one dispatch of the fake child returns, per dispatch index: a list read

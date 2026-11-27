@@ -133,6 +133,32 @@ for (const reason of ["no-session", "unverified-role", "spawn-failed"] as const)
 	);
 }
 
+// ── (5c) no continuation, no second fold ───────────────────────────────
+{
+	// The first fold already proved the tree holds a change, and nothing ran after it that could have
+	// moved the head. A second fold over that same tree is a fold that can only throw its own
+	// infrastructure at a verdict the first fold already earned — so it must not run at all.
+	const calls: ContinuationCalls = [];
+	const r = await runBuild({
+		issue: 2688,
+		dispatchResults: [{ ...CUT, transcriptPath: sessionFor(2688, 1) }],
+		child: (wt) => WROTE(wt),
+		reask: { deps: reaskDeps({ calls }) },
+	});
+	assert(
+		r.threw === undefined && r.outcome?.kind === "ok",
+		`(5c) a child that changed the tree is still ok with no seam (${r.threw?.message ?? String(r.outcome?.kind)})`,
+	);
+	assert(
+		calls.length === 0,
+		`(5c) precondition: nothing was asked (${String(calls.length)})`,
+	);
+	assert(
+		(r.outcome?.reason ?? "").startsWith("1 file(s) changed"),
+		`(5c) and the reason is the FIRST fold's own account, not a second fold's (${JSON.stringify(r.outcome?.reason)})`,
+	);
+}
+
 // ── (7) the ask never extends the step's ceilings ────────────────────────────
 {
 	// Two runs, one env: the ask is billed as a row but the step's dispatch count, its single commit

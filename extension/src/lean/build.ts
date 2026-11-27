@@ -372,9 +372,8 @@ export async function buildOutcome(
   // minutes lever alike) and a breach returns a BudgetStop that this loop folds and returns or retries,
   // so the single `break` is the only edge reaching here and no fired ceiling can (case (2b)).
   const noChange = report.files.length === 0;
-  // `undefined` when the loop never broke on a real result: the detector reads a CHILD record, and
-  // fields this visit never saw are not facts to fabricate into one — the detector's own
-  // `no-final-turn` refusal is the honest answer for an absent child.
+  // `undefined` when no real result was ever read: fields this visit never saw are not facts to
+  // fabricate into a CHILD record.
   const wasted =
     lastChildResult !== undefined && noChange
       // The budget arm is the REAL read, not a swallowed constant: `buildTurnWasWasted` refuses an
@@ -414,9 +413,8 @@ export async function buildOutcome(
       : undefined;
   if (asked !== undefined) {
     rows.push(asked.row);
-    // Only a continuation that RAN can have moved the head, and only its own fold may say so. A second
-    // fold that throws is infrastructure the first fold never saw: the work the first fold proved stays
-    // the verdict, so the failure falls through to today's exhausted answer rather than replacing it.
+    // A second fold that throws is infrastructure the FIRST fold never saw: the verdict that fold
+    // earned stands, so the ask's own fold failure falls through instead of replacing it.
     let again: NormaliseReport | undefined;
     try {
       again = await normaliseBuild({
