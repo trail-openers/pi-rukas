@@ -41,8 +41,20 @@ import {
   type QuietTickReport,
   deliverQuietTick,
 } from "./lean-quiet-child-tick.ts";
-// The git contract lives in `lean-build-git.ts`; re-exported so a case imports one module.
-export { git, gitEnvFor } from "./lean-build-git.ts";
+// The git contract and the bytes a child leaves live in `lean-build-git.ts`, the bottom of the
+// fixture family's dependency order; the re-export names them, so a case imports one module.
+import { type ReaskOpts, dispatchActs } from "./lean-build-reask-fixture.ts";
+import { git, gitEnv, headOf, putCommitted } from "./lean-build-git.ts";
+export {
+  childCommit,
+  git,
+  gitEnvFor,
+  hardlinkFromOutside,
+  put,
+  putCommitted,
+  putOutside,
+  symlink,
+} from "./lean-build-git.ts";
 import {
   type ClockOpts,
   type DispatchResultOverride,
@@ -50,8 +62,6 @@ import {
   resultOverride,
 } from "./lean-build-artifacts.ts";
 import { configWithRunner, issueBodyReader } from "./lean-build-asserts.ts";
-import { git, gitEnv } from "./lean-build-git.ts";
-import { type ReaskOpts, dispatchActs } from "./lean-build-reask-fixture.ts";
 
 /** Temp dirs this module made; the caller removes them at the end of the run. */
 export const ROOTS: string[] = [];
@@ -267,20 +277,9 @@ function shaAll(entries: Record<string, string>): Record<string, string> {
   return Object.fromEntries(Object.entries(entries).map(([k, v]) => [k, sha(v)]));
 }
 
-// `reRunStub` is the fixture's executor, with the blocked gate's re-run seam
-// beside the artifact writers it drives; the four writers are re-exported for
-// every fixture and case that imported them from here before the 500-line split.
-import { execObserver, headOf, putCommitted, reRunStub } from "./lean-build-artifacts.ts";
-
-export {
-  childCommit,
-  hardlinkFromOutside,
-  headOf,
-  put,
-  putCommitted,
-  putOutside,
-  symlink,
-} from "./lean-build-artifacts.ts";
+// `reRunStub` is the fixture's executor, with the blocked gate's re-run seam beside it; the writers
+// it drives, and `headOf`, come from `lean-build-git.ts`.
+import { execObserver, reRunStub } from "./lean-build-artifacts.ts";
 
 export interface RunResult {
   outcome?: Outcome;
@@ -378,7 +377,6 @@ export interface RunOpts {
 
 /** Run the step against a fresh fixture; a throw comes back as the error. */
 export async function runBuild(opts: RunOpts): Promise<RunResult> {
-  const reask = opts.reask ?? {};
   const built =
     opts.built ??
     buildFixture(opts.issue, {
@@ -418,7 +416,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     prompts.push(spec.prompt);
     extraArgs.push(o.extraArgs ?? []);
     opts.onProgressTick?.(o.onProgress);
-    childActed = dispatchActs(reask, opts.child, dispatched, childActed, spec, built);
+    childActed = dispatchActs(opts.reask, opts.child, dispatched, childActed, spec, built);
     recordArmedOpts(opts.armedOpts, o); // #2660 — the arms as the seam received them
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
@@ -452,20 +450,18 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     },
     ...(opts.captureCeiling === undefined ? {} : { captureCeiling: opts.captureCeiling }),
     ...(opts.blockedTimeoutMs === undefined ? {} : { blockedTimeoutMs: opts.blockedTimeoutMs }),
-    ...reask.deps, // #2661 LAST, so a case replaces only the seam it names
+    ...(opts.reask?.deps ?? {}), // #2661 the case's seams, LAST
   };
   const deps: BuildDeps = {
     ...inner,
     ...(opts.afterDispatch === undefined
       ? {}
       : {
-          // The gate runs its re-runs before it looks at any git state, so firing
-          // the hook on the first NON-git exec lands it in that instant without a
-          // production seam invented for the test. It fires ONCE: a case plants a
-          // tree change for the gate to judge, and re-planting it on every later
-          // runner would make the tree depend on how many files the gate happened
-          // to execute. git calls are skipped — the step's own `clean -fdx` runs
-          // later, and planting before it would let normalisation delete the file.
+          // The gate re-runs its files before it reads any git state, so firing the hook on the
+          // first NON-git exec lands it in that instant with no production seam invented for the
+          // test. It fires ONCE: a case plants a tree change for the gate to judge, and re-planting
+          // it per runner would make the tree depend on how many files the gate happened to run.
+          // git calls are skipped — the step's own `clean -fdx` runs later and would delete it.
           exec: async (cmd, o) => {
             if (cmd !== "git" && !planted) {
               planted = true;
