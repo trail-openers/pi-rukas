@@ -80,7 +80,6 @@ import { CaptureBudget } from "./specify-capture.ts";
 import { assertSpecifyWorktreeOwned, specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { Outcome, Step } from "./state.ts";
 import {
-  type BudgetArms,
   type BudgetOpts,
   type DispatchUsageRow,
   armBudget,
@@ -228,18 +227,19 @@ export async function buildOutcome(
   const fence = buildWriteFence(wt, repoRoot, issue);
   // Why the first no-work child died, kept for the throw the second one may make.
   let firstNoWorkWhy: string | undefined;
-  // The arms the LAST dispatch was bought with; the continuation's bound comes from them.
-  let lastBudget: BudgetArms;
+  // The config row the arms are built from, read once: the ask re-arms with it at the ask instant
+  // (see the `askBuildReask` call), and the loop arms each child from the same read.
+  const buildRow = budgetFor(config, "build");
+  const buildRowMs = (buildRow?.minutes ?? 0) * 60_000;
   // The child whose recorded turn the re-ask detector reads — the last one the dispatch loop broke
   // on. Set at the break and read only once, after the fold.
   let lastChildResult: DispatchResult | undefined;
   for (let tries = 0; ; tries++) {
     const budget = armsStepBudget(
-      budgetFor(config, "build"),
+      buildRow,
       // #2660: both levers from one read of the step log.
-      stepDispatchArms(ctx, (budgetFor(config, "build")?.minutes ?? 0) * 60_000, "build"),
+      stepDispatchArms(ctx, buildRowMs, "build"),
     );
-    lastBudget = budget;
     if (budget.warning !== undefined) traceWarn(`lean build #${String(issue)}: ${budget.warning}`);
     const [dispatchedChild, row] = await dispatchBuilder(deps.dispatch, {
       issue,
@@ -316,7 +316,7 @@ export async function buildOutcome(
       reason: joinNotes([
         budgetSentence("build", read.stop),
         // Which ceiling ended the child, in the deadline's own words when it was the deadline.
-        stopReasonClause(ctx, "build", (budgetFor(config, "build")?.minutes ?? 0) * 60_000) ?? "",
+        stopReasonClause(ctx, "build", buildRowMs) ?? "",
         ...(atCap ? [`after ${String(dispatchedBefore + tries + 1)} build attempts`] : []),
         failingClause(failing),
         keptClause(kept.files),
@@ -382,9 +382,17 @@ export async function buildOutcome(
           issue,
           worktree: wt,
           writeFence: fence,
-          // The ask's own ceiling, clamped to what the armed budget left — the clamp lives with the
-          // fixer's bound, which the step already reads.
-          boundMs: continuationBoundMs(lastBudget, BUILD_REASK_BOUND_MS),
+          // The bound is armed AT THE ASK INSTANT, with the same call a dispatch arms with: the room
+          // is what the deadline leaves NOW, not what it left when the last child was bought. A
+          // provider wait or a no-work retry sits between that arm and this ask, and an arms object
+          // frozen before them both is a bound measured in the past — the overrun #2660 was filed
+          // for, one site later. The child this reaches (`developer-session-continuation.ts`) runs a
+          // bare timer with NO grace phase, so bound + no grace means the kill lands AT the bound:
+          // a bound clamped to deadline minus the allowance kills before the line, with room left.
+          boundMs: continuationBoundMs(
+            armsStepBudget(buildRow, stepDispatchArms(ctx, buildRowMs, "build")),
+            BUILD_REASK_BOUND_MS,
+          ),
           prompt: buildReaskPrompt(issue, wasted.trigger),
           rowFor: (outcome, role) => continuationRow(outcome, role, undefined),
           // The run's stamp, from the function that decides it — not re-derived here.
