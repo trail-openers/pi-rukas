@@ -1,5 +1,7 @@
 /**
- * lean/state-repair-record — the repair round's own two facts, and the rules that keep them facts.
+ * oracle-repair-fields — the repair round's own facts on a step's record, and the rules that keep them
+ * facts. Pure over plain values, so this lives outside `src/lean/` alongside the sibling validators in
+ * `oracle-repair-record.ts`; `lean/state-outcome.ts` calls into it the way it calls into any other module.
  *
  * A run that repaired a frozen test has to be able to say, afterwards, WHAT it replaced and WHAT it now holds
  * the run to. Two things answer that, and neither may be a child's claim:
@@ -10,15 +12,12 @@
  *     whose value is `false` is a replacement whose pass was never observed, and the disclosure prints that
  *     rather than inferring a pass from a green `verify`.
  *
- * The round is one-shot: `repairsSpent` on the counters and `repairAttempted` on the record, so a run that
- * spent its round and handed back cannot spend it again on resume.
- *
- * Separate from `state-outcome-gates.ts` because that file's fields describe the gates' verdicts; this one
- * describes an action the build step took, and its rules read the frozen map rather than a runner.
+ * The round is one-shot: `repairsSpent` on the counters, so a run that spent its round and handed back
+ * cannot spend it again on resume.
  */
-import { isFullCommitSha } from "../commit-sha.ts";
-import { BLOCKED_PATH_CAP, RECORD_MAX_ENTRIES } from "./state-outcome-maps.ts";
-import { frozenKeyProblem } from "./state-outcome.ts";
+import { isFullCommitSha } from "./commit-sha.ts";
+import { BLOCKED_PATH_CAP, RECORD_MAX_ENTRIES } from "./lean/state-outcome-maps.ts";
+import { frozenKeyProblem } from "./lean/state-outcome.ts";
 
 /** One repaired frozen test, as the record and the disclosure print it. */
 export interface RepairRecord {

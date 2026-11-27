@@ -13,7 +13,7 @@
 import { isFullCommitSha } from "../commit-sha.ts";
 import { HANDOFF_CHANNELS } from "../work-driver-handoff-channel.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
-import { repairRecordProblem, validatedRepairRecord } from "./state-repair-record.ts";
+import { repairRecordProblem, validatedRepairRecord } from "../oracle-repair-fields.ts";
 import { canonicalDerivedSpec } from "./state-derived-spec.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";
 import { derivedSpecProblem } from "./state-derived-spec.ts";
@@ -28,7 +28,7 @@ import {
 import {
   blockedEvidenceProblem,
   validatedBlockedEvidence,
-} from "./blocked-evidence.ts";
+} from "../oracle-repair-record.ts";
 import {
   blockedByProblem,
   commandCriteriaProblem,
@@ -344,19 +344,26 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
   }
   if (oc.headBefore !== undefined && !SHA1_HEX.test(String(oc.headBefore)))
     return "outcome headBefore must be a full commit sha";
-  if (oc.blockedEvidence !== undefined) {
-    const problem = blockedEvidenceProblem(oc.blockedEvidence);
+  // The repair round's three fields: their rules are pure over plain values and live with the round, in
+  // `oracle-repair-record.ts` and `oracle-repair-fields.ts`.
+  for (const [field, problem] of [
+    ["blockedEvidence", blockedEvidenceProblem(oc.blockedEvidence)],
+    [
+      "repair",
+      oc.repair === undefined
+        ? undefined
+        : repairRecordProblem(oc.repair, oc.frozen as Record<string, string> | undefined),
+    ],
+    [
+      "repairAttempted",
+      oc.repairAttempted !== undefined && oc.repairAttempted !== true
+        ? "outcome repairAttempted must be true when present"
+        : undefined,
+    ],
+  ] as const) {
     if (problem !== undefined) return problem;
+    void field;
   }
-  if (oc.repair !== undefined) {
-    const problem = repairRecordProblem(
-      oc.repair,
-      oc.frozen as Record<string, string> | undefined,
-    );
-    if (problem !== undefined) return problem;
-  }
-  if (oc.repairAttempted !== undefined && oc.repairAttempted !== true)
-    return "outcome repairAttempted must be true when present";
   if (oc.preexistingFailures !== undefined) {
     const problem = preexistingFailuresProblem(oc.preexistingFailures);
     if (problem !== undefined) return problem;

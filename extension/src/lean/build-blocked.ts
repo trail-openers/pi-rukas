@@ -38,7 +38,7 @@ import {
   RECORD_REASON_MAX_CHARS,
 } from "./state-outcome-maps.ts";
 import { frozenKeyProblem } from "./state-outcome.ts";
-import { BLOCKED_EVIDENCE_OUTPUT_CAP, type EvidenceLine } from "./blocked-evidence.ts";
+import { BLOCKED_EVIDENCE_OUTPUT_CAP, type EvidenceLine } from "../oracle-repair-record.ts";
 import { oneLine } from "./text-fence.ts";
 
 /** The cause LINE's ceiling: the renderer caps plus the sentence around them. */
@@ -293,9 +293,9 @@ export async function judgeBlockedReport(opts: {
   const red = proved.red;
   if (!(red in blockedBy)) return undefined;
   // The executed red the driver watched, per named file it vetted: the command it rendered and what came
-  // back. Bounded by the record's own rules (`blocked-evidence.ts`), sanitised where it is built because this
-  // durable record prints into a child's prompt.
-  const evidence = await executedEvidence(opts.exec, opts.wt, opts.template ?? "", [...ran], proved);
+  // back. Bounded by the record's own rules (`oracle-repair-record.ts`) and sanitised where it is built,
+  // because this durable record prints into a child's prompt.
+  const evidence = executedEvidence(opts.template ?? "", proved);
   // The cause line leads with the file the driver watched fail; the map carries all.
   return {
     reason: oneLine(
@@ -308,19 +308,16 @@ export async function judgeBlockedReport(opts: {
 }
 
 /**
- * The driver's own runs, as a record field: the command it rendered per vetted file, and the output it got.
- *
- * Only the RED file's output is carried — that is the failure under dispute, and the other vetted files came
- * back green, which proves nothing about the conflict and would only widen a child's prompt with text that
- * argues nothing.
+ * The driver's own run of the file under dispute: the command it rendered, and what came back. Only the RED
+ * file's output is carried — the other vetted files came back green, which argues nothing about the conflict
+ * and would only widen a child's prompt.
  */
-async function executedEvidence(
-  exec: BuildExec,
-  wt: string,
-  template: string,
-  ran: string[],
-  proved: { red: string; output: string },
-): Promise<Array<{ path: string; cmd: string; output: string }>> {
-  const one = oneLine(proved.output, BLOCKED_EVIDENCE_OUTPUT_CAP);
-  return [{ path: proved.red, cmd: renderTestCommand(template, proved.red), output: one }];
+function executedEvidence(template: string, proved: { red: string; output: string }): EvidenceLine[] {
+  return [
+    {
+      path: proved.red,
+      cmd: renderTestCommand(template, proved.red),
+      output: oneLine(proved.output, BLOCKED_EVIDENCE_OUTPUT_CAP),
+    },
+  ];
 }

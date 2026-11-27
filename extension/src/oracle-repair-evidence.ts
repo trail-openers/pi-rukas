@@ -15,6 +15,7 @@
  * Lives outside `src/lean/` for the line budget, and because it is prompt text, not engine state.
  */
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./lean/state-outcome-maps.ts";
+import { BLOCKED_EVIDENCE_OUTPUT_CAP } from "./oracle-repair-record.ts";
 import type { Step } from "./lean/state.ts";
 import { oneLine } from "./lean/text-fence.ts";
 
@@ -64,23 +65,23 @@ export interface HeadEvidenceRow {
   output: string;
 }
 
-/** The record field the build step writes the at-head evidence into. */
-export const HEAD_EVIDENCE_FIELD = "blockedEvidence";
-
-/** Read the at-head evidence off one blocked step, or `[]` when it recorded none. */
+/**
+ * Read the at-head evidence off one blocked step, or `[]` when it recorded none.
+ *
+ * Re-sanitised on the way to a prompt rather than trusted from the record: a state file an operator edited
+ * is untrusted input, and this is the one path from that file into a child's prompt.
+ */
 export function headEvidenceFromStep(step: Step | undefined): HeadEvidenceRow[] {
-  const raw = step?.outcome?.[HEAD_EVIDENCE_FIELD];
+  const raw = step?.outcome?.blockedEvidence;
   if (!Array.isArray(raw)) return [];
   const rows: HeadEvidenceRow[] = [];
-  for (const entry of raw.slice(0, EVIDENCE_LINE_CAP)) {
-    if (!entry || typeof entry !== "object") continue;
-    const e = entry as Record<string, unknown>;
-    if (typeof e.path !== "string" || typeof e.cmd !== "string" || typeof e.output !== "string")
+  for (const e of raw.slice(0, EVIDENCE_LINE_CAP)) {
+    if (typeof e?.path !== "string" || typeof e.cmd !== "string" || typeof e.output !== "string")
       continue;
     rows.push({
       path: oneLine(e.path, BLOCKED_PATH_CAP),
       cmd: oneLine(e.cmd, BLOCKED_PATH_CAP),
-      output: oneLine(e.output, 600),
+      output: oneLine(e.output, BLOCKED_EVIDENCE_OUTPUT_CAP),
     });
   }
   return rows;
