@@ -4,7 +4,10 @@ import { verifyHostEnv } from "../work-driver-verify-cmd.ts";
 import { runHookProvisioning } from "../worktree-provision-hook.ts";
 import { WORKTREE_SETUP_HOOK, linkShareableDeps } from "../worktree-provision.ts";
 import { testLocationOf } from "./config-test-location.ts";
-import { leanProjectRosterEnabled } from "./project-roster-switch.ts";
+import {
+  leanProjectRosterEnabled,
+  leanRosterTierLocationEnabled,
+} from "./project-roster-switch.ts";
 import { leanRosterBaseSetupEnabled } from "./roster-base-setup-switch.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
@@ -360,17 +363,12 @@ export function arbitrateTierWithRoster(opts: {
   const roster = opts.roster;
   if (roster === undefined) return { kind: "uninvolved" };
   if (opts.headFailed.length === 0) return { kind: "uninvolved" };
-  // The tier's lines and the report's labels are two spellings of one test; compared unnormalised
-  // they never meet and the roster's precedence never fires. A name the base roster failed is the
-  // mainline's own, never this run's regression.
-  const baseFailedNames = new Set(roster.baseFailed.map(testIdOf));
-  const passedNames = new Set(roster.passed.map(testIdOf).filter((n) => !baseFailedNames.has(n)));
-  const newlyFailing = opts.headFailed.filter((line) => passedNames.has(testIdOf(line)));
-  if (newlyFailing.length > 0)
+  const newly = newlyFailingLines(roster, opts.headFailed);
+  if (newly.length > 0)
     return {
       kind: "red",
       // `passed` is verify's head run: the record keeps no base passes, so the reason claims none.
-      reason: `project tests the verify roster saw passing fail this tier: ${clip(newlyFailing.map(testIdOf))} — a name the roster saw pass is this run's to fix, whatever the base printed at ${opts.baseSha.slice(0, 12)}`,
+      reason: `project tests the verify roster saw passing fail this tier: ${clip(newly.map(testIdOf))} — a name the roster saw pass is this run's to fix, whatever the base printed at ${opts.baseSha.slice(0, 12)}`,
     };
   const baseFailed = new Set(opts.baseFailed);
   if (!opts.headFailed.every((name) => baseFailed.has(name))) return { kind: "uninvolved" };
@@ -385,6 +383,40 @@ export function arbitrateTierWithRoster(opts: {
   return { kind: "excused", record };
 }
 
+/** The tier's failing lines that name a test the roster saw passing — the precedence that makes a
+ *  pass-to-pass break visible to a pytest- (or cargo-, or go-) graded project, where the tier's line and
+ *  the report's label never spell one test. */
+function newlyFailingLines(roster: ProjectRosterRecord, headFailed: readonly string[]): string[] {
+  // A location is what `testIdOf` leaves before `::`, so pytest's `tests/x.py::test_a` and its label
+  // `tests.x::test_a` are one file. A `::`-less name spells no test, so it places nothing.
+  const location = (name: string): string | undefined => {
+    const at = name.lastIndexOf("::");
+    return at <= 0 ? undefined : name.slice(0, at);
+  };
+  // Already-broken is the run's OWN base roster's answer, never the tier probe's echo — that echo is what
+  // used to silence this precedence. At its cap the list is a floor, so the location rule stands aside.
+  const capped = roster.baseFailed.length >= ROSTER_NAMES_CAP;
+  const failedLocations = new Set(
+    capped
+      ? []
+      : roster.baseFailed.map((n) => location(testIdOf(n))).filter((f) => f !== undefined),
+  );
+  const failedNames = new Set(roster.baseFailed.map(testIdOf));
+  const passedNames = new Set(roster.passed.map(testIdOf).filter((n) => !failedNames.has(n)));
+  const passedLocations = new Set<string>();
+  for (const name of passedNames) {
+    const loc = location(name);
+    if (loc !== undefined && !failedLocations.has(loc)) passedLocations.add(loc);
+  }
+  return headFailed.filter((line) => {
+    if (passedNames.has(testIdOf(line))) return true;
+    // Off, the arm compares exact labels alone, as it did before the location rule existed.
+    if (!leanRosterTierLocationEnabled() || capped) return false;
+    const loc = location(testIdOf(line));
+    return loc !== undefined && passedLocations.has(loc) && !failedLocations.has(loc);
+  });
+}
+
 /**
  * One test's identity, whether spelled as a tier's failure line or as a report's label.
  *
@@ -392,7 +424,7 @@ export function arbitrateTierWithRoster(opts: {
  * same test `tests.x_test.TestC::test_a`; both become the dotted form before the last `::`. A line
  * that names no `::` test (a TAP or go line) is kept whole, which is what it was compared as before.
  */
-function testIdOf(text: string): string {
+export function testIdOf(text: string): string {
   const id =
     text
       .trim()

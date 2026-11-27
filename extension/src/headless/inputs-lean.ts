@@ -97,6 +97,11 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // does. `0` symlinks dependencies only, as before. The reader is `leanRosterBaseSetupEnabled` in
   // lean/roster-base-setup-switch.ts.
   flag("LEAN_ROSTER_BASE_SETUP", true),
+  // The roster may judge a tier's failing line by the LOCATION of the test it names, not by its exact
+  // report label alone — the shape a pytest/cargo/go runner leaves unjudged today. `0` restores the
+  // label-only comparison byte for byte. The reader is `leanRosterTierLocationEnabled` in
+  // lean/project-roster-switch.ts; the rule is lean/verify-roster.ts.
+  flag("LEAN_ROSTER_TIER_LOCATION", true),
   // The executed acceptance table in front of the lean review seats and on the run's
   // PR: each criterion, the frozen test the run recorded for it, and what the
   // newest green `verify` reported for it at the certified head. The table is READ,

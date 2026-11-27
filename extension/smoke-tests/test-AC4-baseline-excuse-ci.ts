@@ -23,6 +23,7 @@
  * Everything is offline: the forge is a recorder answering the pinned argv and the
  * tier is an `sh` command the recorder runs.
  */
+import { withEnv } from "./lib/env-scope.ts";
 import { cleanUp, run } from "./lib/lean-ci-recorder.ts";
 import type { PreexistingTierRecord } from "../src/lean/state-outcome-maps.ts";
 
@@ -220,12 +221,11 @@ const PROBE = {
   );
 }
 
-// ------------------------------------------------------------ (roster-passed)
+// ------------------------------------------------- (roster-passed, label spelling)
 {
   // The base prints the same lines, so the line rule alone excuses — but verify's roster saw the
-  // first name PASS, and the roster outranks a line match in ci as it does in verify. The roster label
-  // here IS the failure line: the only shape the check matches today (a pytest JUnit label such as
-  // `tests.x_test::test_a` never equals its `FAILED …` line, so for pytest the line rule decides alone).
+  // first name PASS, and the roster outranks a line match in ci as it does in verify. Here the roster
+  // label IS the failure line, the one spelling the label rule can meet.
   const r = await run({
     full: FULL,
     ...tierRed,
@@ -245,6 +245,49 @@ const PROBE = {
   assert(
     r.outcome?.kind === "red" && rec(r) === undefined,
     `(roster-passed) a failing name the verify roster saw passing is not excused (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`,
+  );
+}
+
+// --------------------------------------------- (roster-passed, sibling spelling)
+{
+  // The bench shape, end to end. A pytest project's tier fails `tests/x_test.py::test_b`; the base
+  // printed the SAME line, so the whole-line excuse is ready to call the tier green. But verify's own
+  // base roster passed every test of that file and never named `test_b` failing — so by the location
+  // rule (`tests.x_test::test_b` shares its module path with the passing `tests.x_test::test_a`) the
+  // roster owns the judgement and the run stays red. Under the switch's `0` arm the roster sees no
+  // match in the label spelling and the line rule excuses, which is the behaviour that landed a broken
+  // pass-to-pass test.
+  const SIBLING = "FAILED tests/x_test.py::test_b - Assert";
+  const rosterSeenPassing = {
+    baseSha: "b".repeat(40),
+    files: ["tests/x_test.py"],
+    // pytest's report labels the passing test in its own spelling, which is never the tier's line.
+    passed: ["tests.x_test::test_a"],
+    failed: [],
+    baseFailed: [],
+    total: 1,
+    baseTotal: 1,
+  };
+  const armed = {
+    full: FULL,
+    tierExit: 1,
+    tierStdout: SIBLING,
+    baseTierOutput: SIBLING,
+    ...PROBE,
+    verifyRoster: rosterSeenPassing,
+  };
+  const r = await run(armed);
+  assert(
+    r.outcome?.kind === "red" && rec(r) === undefined,
+    `(sibling) a tier line for a test of a file the roster watched pass is not excused (got ${r.outcome?.kind ?? `threw: ${r.threw?.message}`})`,
+  );
+  let off!: Awaited<ReturnType<typeof run>>;
+  await withEnv({ PI_ENSEMBLE_LEAN_ROSTER_TIER_LOCATION: "0" }, async () => {
+    off = await run(armed);
+  });
+  assert(
+    off.outcome?.kind === "green" && rec(off) !== undefined,
+    `(sibling, off) the label-only arm excuses the same tier as before the location rule (got ${off.outcome?.kind ?? `threw: ${off.threw?.message}`})`,
   );
 }
 

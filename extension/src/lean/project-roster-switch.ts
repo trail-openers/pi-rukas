@@ -13,3 +13,9 @@
 export function leanProjectRosterEnabled(): boolean {
   return process.env.PI_ENSEMBLE_LEAN_PROJECT_ROSTER !== "0";
 }
+
+/** Whether the roster may charge a tier's failing line by the LOCATION of the test it names (what
+ *  `testIdOf` leaves before `::`) rather than its exact label alone. Only `"0"` takes it out. */
+export function leanRosterTierLocationEnabled(): boolean {
+  return process.env.PI_ENSEMBLE_LEAN_ROSTER_TIER_LOCATION !== "0";
+}

@@ -25,7 +25,10 @@ import { COMMENT_RETENTION_PATHS } from "../../src/comment-retention.ts";
 import { forgeReadOffGuardEnabled } from "../../src/forge-read-off-switch.ts";
 import { glabMrCreateArgvEnabled } from "../../src/gl-mr-create-switch.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
-import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.ts";
+import {
+  leanProjectRosterEnabled,
+  leanRosterTierLocationEnabled,
+} from "../../src/lean/project-roster-switch.ts";
 import { leanRosterBaseSetupEnabled } from "../../src/lean/roster-base-setup-switch.ts";
 import { leanPreVerifySharePercent } from "../../src/lean/pre-verify-share-switch.ts";
 import { leanDetectVerifyEnabled } from "../../src/lean/config-detect.ts";
@@ -228,6 +231,7 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LEAN_PRE_VERIFY_SHARE", leanPreVerifySharePercent],
   ["PI_ENSEMBLE_LEAN_PROJECT_ROSTER", leanProjectRosterEnabled],
   ["PI_ENSEMBLE_LEAN_ROSTER_BASE_SETUP", leanRosterBaseSetupEnabled],
+  ["PI_ENSEMBLE_LEAN_ROSTER_TIER_LOCATION", leanRosterTierLocationEnabled],
   ["PI_ENSEMBLE_LEAN_FIXER_TRUNCATION_REASK", leanFixerTruncationReaskEnabled],
   // The full-tier skip's trailing operand. The reader is `v !== "0"`, so the gate's LIVE loop (env
   // deleted) pins "unset means on"; the arms, the off-arm golden and the docs row are pinned by
