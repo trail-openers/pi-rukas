@@ -34,19 +34,9 @@ import os from "node:os";
 import path from "node:path";
 import type { DispatchResult } from "../src/types.ts";
 import { commitPaths, subjectsAbove } from "./lib/lean-build-asserts.ts";
-import {
-  ROOTS,
-  git,
-  put,
-  reaskDeps,
-  runBuild,
-} from "./lib/lean-build-fixture.ts";
 import { configWithRunner } from "./lib/lean-build-asserts.ts";
-import {
-  type ContinuationCalls,
-  answered,
-  silent,
-} from "./lib/lean-build-reask-fixture.ts";
+import { ROOTS, git, put, reaskDeps, runBuild } from "./lib/lean-build-fixture.ts";
+import { type ContinuationCalls, answered, silent } from "./lib/lean-build-reask-fixture.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -101,14 +91,16 @@ const LOOSE_SEAT = {
     // hands the seat a 120-minute row and asserts the ask still ran under 15.
     config: LOOSE_SEAT,
     dispatchResults: [{ ...CUT, transcriptPath: sessionFor(2661, 1) }],
-    deps: reaskDeps({
-      calls,
-      acts: (n, wt) => {
-        // The FIRST child acts nowhere — that is the defect. The resumed child (-1) writes.
-        if (n === -1) WROTE(wt);
-      },
-      answers: [answered()],
-    }),
+    reask: {
+      deps: reaskDeps({
+        calls,
+        acts: (n, wt) => {
+          // The FIRST child acts nowhere — that is the defect. The resumed child (-1) writes.
+          if (n === -1) WROTE(wt);
+        },
+        answers: [answered()],
+      }),
+    },
   });
   assert(
     r.threw === undefined && r.outcome?.kind === "ok",
@@ -122,8 +114,14 @@ const LOOSE_SEAT = {
     subjectsAbove(r.worktree, r.headBefore).length === 1,
     `(1) and exactly one build commit sits above the head the step found (${subjectsAbove(r.worktree, r.headBefore).join(" | ")})`,
   );
-  assert(r.dispatched === 1, `(1) the step still dispatched ONE child (got ${String(r.dispatched)})`);
-  assert(calls.length === 1, `(1) and exactly one continuation was asked for (${String(calls.length)})`);
+  assert(
+    r.dispatched === 1,
+    `(1) the step still dispatched ONE child (got ${String(r.dispatched)})`,
+  );
+  assert(
+    calls.length === 1,
+    `(1) and exactly one continuation was asked for (${String(calls.length)})`,
+  );
   const call = calls[0];
   assert(
     call?.transcriptPath === sessionFor(2661, 1),
@@ -181,19 +179,54 @@ const LOOSE_SEAT = {
     expect?: string;
   }
   const refusals: Refusal[] = [
-    { name: "made a tool call then stopped", over: { ...CUT, stopReason: "stop", toolUses: [{ type: "toolCall", id: "1", name: "read" }], observedToolCalls: 1 } },
-    { name: "recorded no stop reason", over: { ok: true, exitCode: 0, toolUses: [], observedToolCalls: 0 } },
+    {
+      name: "made a tool call then stopped",
+      over: {
+        ...CUT,
+        stopReason: "stop",
+        toolUses: [{ type: "toolCall", id: "1", name: "read" }],
+        observedToolCalls: 1,
+      },
+    },
+    {
+      name: "recorded no stop reason",
+      over: { ok: true, exitCode: 0, toolUses: [], observedToolCalls: 0 },
+    },
     // A kill the step's OWN minutes bound stamped is a ceiling stop: `dispatchBuilder` answers it as
     // `budget` inside the loop, so the arm below asserts a budget verdict and no ask.
     // A kill cause: what verdict each shape gets is the dispatch loop's routing that predates this
     // issue (and depends on a real cycle deadline), so the arm asserts only that it buys NO
     // continuation — no re-ask can widen a killed or aborted child's cost.
-    { name: "was bound-killed", over: { ...CUT, killCause: "child-bound", ok: false, exitCode: null as never } },
-    { name: "was killed before its usage landed", over: { killCause: "child-bound", ok: false, exitCode: null as never, usage: undefined } },
-    { name: "was ended by an abort", over: { ...CUT, killCause: "abort", ok: false, exitCode: null as never } },
-    { name: "carried an errorStop", over: { ...CUT, errorStop: { reason: "error", message: "HTTP 500 server error" }, ok: false, exitCode: 1 } },
+    {
+      name: "was bound-killed",
+      over: { ...CUT, killCause: "child-bound", ok: false, exitCode: null as never },
+    },
+    {
+      name: "was killed before its usage landed",
+      over: { killCause: "child-bound", ok: false, exitCode: null as never, usage: undefined },
+    },
+    {
+      name: "was ended by an abort",
+      over: { ...CUT, killCause: "abort", ok: false, exitCode: null as never },
+    },
+    {
+      name: "carried an errorStop",
+      over: {
+        ...CUT,
+        errorStop: { reason: "error", message: "HTTP 500 server error" },
+        ok: false,
+        exitCode: 1,
+      },
+    },
     { name: "was cut AFTER writing bytes", over: { ...CUT }, child: WROTE },
-    { name: "stopped cleanly after a tool call", over: { stopReason: "stop", toolUses: [{ type: "toolCall", id: "1", name: "bash" }], observedToolCalls: 1 } },
+    {
+      name: "stopped cleanly after a tool call",
+      over: {
+        stopReason: "stop",
+        toolUses: [{ type: "toolCall", id: "1", name: "bash" }],
+        observedToolCalls: 1,
+      },
+    },
   ];
   for (const [i, f] of refusals.entries()) {
     const calls: ContinuationCalls = [];
@@ -201,7 +234,7 @@ const LOOSE_SEAT = {
       issue: 2670 + i,
       dispatchResults: [{ ...f.over, transcriptPath: sessionFor(2670 + i, i) }],
       ...(f.child === undefined ? {} : { child: f.child }),
-      deps: reaskDeps({ calls, acts: (n, wt) => void (n === -1 && WROTE(wt)) }),
+      reask: { deps: reaskDeps({ calls, acts: (n, wt) => void (n === -1 && WROTE(wt)) }) },
     });
     assert(
       calls.length === 0,
@@ -247,7 +280,7 @@ const LOOSE_SEAT = {
       } as never);
     },
     dispatchResults: [{ ...CUT, transcriptPath: sessionFor(2680, 1) }],
-    deps: reaskDeps({ calls, acts: (n, wt) => void (n === -1 && WROTE(wt)) }),
+    reask: { deps: reaskDeps({ calls, acts: (n, wt) => void (n === -1 && WROTE(wt)) }) },
   });
   assert(
     calls.length === 0,
@@ -265,7 +298,7 @@ const LOOSE_SEAT = {
   const r = await runBuild({
     issue: 2681,
     dispatchResults: [{ ...CUT, transcriptPath: sessionFor(2681, 1) }],
-    deps: reaskDeps({ calls, answers: [silent()] }),
+    reask: { deps: reaskDeps({ calls, answers: [silent()] }) },
   });
   assert(
     r.threw === undefined && r.outcome?.kind === "exhausted",
@@ -284,18 +317,12 @@ const LOOSE_SEAT = {
     reason.includes("one continuation changed nothing"),
     `(3) and says the ask was spent, so it is not read as an untried one (${reason})`,
   );
-  assert(
-    calls.length === 1,
-    `(3) precondition: the ask really happened (${String(calls.length)})`,
-  );
+  assert(calls.length === 1, `(3) precondition: the ask really happened (${String(calls.length)})`);
   assert(
     (r.outcome?.dispatches ?? []).length === 2,
     `(3) and both children are billed (${String((r.outcome?.dispatches ?? []).length)} rows)`,
   );
-  assert(
-    subjectsAbove(r.worktree, r.headBefore).length === 0,
-    "(3) and nothing was committed",
-  );
+  assert(subjectsAbove(r.worktree, r.headBefore).length === 0, "(3) and nothing was committed");
 }
 
 // ── (4) T2: one clean turn, no tool call, no change ─────────────────────────
@@ -314,11 +341,13 @@ const LOOSE_SEAT = {
         transcriptPath: sessionFor(2682, 1),
       },
     ],
-    deps: reaskDeps({
-      calls,
-      acts: (n, wt) => void (n === -1 && WROTE(wt)),
-      answers: [answered()],
-    }),
+    reask: {
+      deps: reaskDeps({
+        calls,
+        acts: (n, wt) => void (n === -1 && WROTE(wt)),
+        answers: [answered()],
+      }),
+    },
   });
   assert(
     calls.length === 1,
@@ -343,7 +372,7 @@ const LOOSE_SEAT = {
     // The field's shape, but with no transcript path to resume — the ask must be refused before a
     // child is paid for, not answered by a fresh spawn that never read the first turn.
     dispatchResults: [{ ...CUT }],
-    deps: reaskDeps({ calls, acts: (n, wt) => void (n === -1 && WROTE(wt)) }),
+    reask: { deps: reaskDeps({ calls, acts: (n, wt) => void (n === -1 && WROTE(wt)) }) },
   });
   assert(
     calls.length === 0,
@@ -369,12 +398,14 @@ const LOOSE_SEAT = {
   const r = await runBuild({
     issue: 2684,
     dispatchResults: [{ ...CUT, transcriptPath: sessionFor(2684, 1) }],
-    deps: reaskDeps({
-      calls,
-      // The leaf answers with the CUT shape replayed: a resumed session replays the cut turn, so a
-      // detector that re-read the continuation's result would ask forever.
-      answers: [answered({ stopReason: "length", text: "still thinking" })],
-    }),
+    reask: {
+      deps: reaskDeps({
+        calls,
+        // The leaf answers with the CUT shape replayed: a resumed session replays the cut turn, so a
+        // detector that re-read the continuation's result would ask forever.
+        answers: [answered({ stopReason: "length", text: "still thinking" })],
+      }),
+    },
   });
   assert(
     calls.length === 1,
@@ -394,16 +425,18 @@ const LOOSE_SEAT = {
   const asked = await runBuild({
     issue: 2685,
     dispatchResults: [{ ...CUT, transcriptPath: sessionFor(2685, 1) }],
-    deps: reaskDeps({
-      calls,
-      acts: (n, wt) => void (n === -1 && WROTE(wt)),
-      answers: [answered()],
-    }),
+    reask: {
+      deps: reaskDeps({
+        calls,
+        acts: (n, wt) => void (n === -1 && WROTE(wt)),
+        answers: [answered()],
+      }),
+    },
   });
   const unasked = await runBuild({
     issue: 2686,
     dispatchResults: [{ ...CUT, transcriptPath: sessionFor(2686, 1) }],
-    deps: reaskDeps({ calls: [], answers: [silent()] }),
+    reask: { deps: reaskDeps({ calls: [], answers: [silent()] }) },
   });
   assert(
     asked.dispatched === 1 && unasked.dispatched === 1,

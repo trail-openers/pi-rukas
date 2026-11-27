@@ -1,3 +1,4 @@
+import type { ContinuationOutcome } from "../../src/developer-session-continuation.ts";
 /**
  * smoke-tests/lib/lean-build-reask-fixture — the two #2661 knobs the build fixture cannot hold
  * itself: the per-dispatch child act, and the seam slots a re-ask case injects.
@@ -16,7 +17,6 @@
  * upstream of that literal cannot see a dropped key — which is how the #2660 grace shipped.
  */
 import type { BuildDeps } from "../../src/lean/build.ts";
-import type { ContinuationOutcome } from "../../src/developer-session-continuation.ts";
 
 /** What one continuation call received, narrowed to what these cases assert. */
 export interface ContinuationCall {
@@ -63,6 +63,14 @@ export function silent(): ContinuationAnswer {
  * continuation in order; the last entry repeats when the calls outnumber the answers, so a case that
  * expects one ask states one answer.
  */
+/** The re-ask knobs a case hands {@link runBuild} as one bag, so the plain build fixture carries
+ *  none of them: what each child does in the tree, and any build dep the case replaces (the
+ *  resumed-child seam a recording leaf stands in for). */
+export type ReaskOpts = {
+  childActs?: (n: number, wt: string) => void;
+  deps?: Partial<BuildDeps>;
+};
+
 export function reaskDeps(opts: {
   calls: ContinuationCalls;
   acts?: (n: number, wt: string) => void;
@@ -75,25 +83,56 @@ export function reaskDeps(opts: {
     // The leaf stands in for production's `spawnDeveloperContinuationChild` in the SAME dependency
     // slot `buildDeps()` fills, so the step's real dispatch path makes the call.
     continueSession: async (args): Promise<ContinuationOutcome> => {
-        opts.calls.push(args as unknown as ContinuationCall);
-        opts.onCall?.(args as unknown as ContinuationCall, opts.calls.length - 1);
-        // The tree the resumed child was HANDED is the tree its acts belong to — the case's `acts`
-        // rule runs with the leaf's own `cwd`, so an ask aimed at the wrong tree writes the wrong
-        // file and the case fails on the commit, not on a fixture assumption.
-        acts(-1, args.cwd);
-        const answers = opts.answers ?? [];
-        if (answers.length === 0) return answered();
-        return answers[Math.min(opts.calls.length - 1, answers.length - 1)] ?? answered();
+      opts.calls.push(args as unknown as ContinuationCall);
+      opts.onCall?.(args as unknown as ContinuationCall, opts.calls.length - 1);
+      // The tree the resumed child was HANDED is the tree its acts belong to — the case's `acts`
+      // rule runs with the leaf's own `cwd`, so an ask aimed at the wrong tree writes the wrong
+      // file and the case fails on the commit, not on a fixture assumption.
+      acts(-1, args.cwd);
+      const answers = opts.answers ?? [];
+      if (answers.length === 0) return answered();
+      return answers[Math.min(opts.calls.length - 1, answers.length - 1)] ?? answered();
     },
   };
 }
 
 /** The fixture's call site of the per-dispatch act rule: the resumed child's acts (index `-1`) and
  *  the dispatched children's (0-based) all run through the same case-owned predicate. */
-export function reaskActs(
-  acts: (n: number, wt: string) => void,
-  n: number,
-  wt: string,
-): void {
+export function reaskActs(acts: (n: number, wt: string) => void, n: number, wt: string): void {
   acts(n, wt);
+}
+
+/**
+ * The child acts for one dispatch, and whether the "first child only" act is now spent.
+ *
+ * Here rather than in `lean-build-fixture.ts` because a re-ask case needs a first turn that acts
+ * NOWHERE and a later turn that writes the file — only a per-index rule states that, and the plain
+ * build fixture has no room for it inside its own size limit. `n` is the 0-based dispatch index; the
+ * resumed continuation's acts run through {@link reaskActs} at index `-1`, so a case cannot have a
+ * first child act where it said it acted nowhere.
+ */
+export function dispatchActs(
+  bag: ReaskOpts | undefined,
+  child: ((wt: string) => void) | undefined,
+  dispatched: number,
+  alreadyActed: boolean,
+  spec: { cwd?: unknown },
+  built: { worktree: string },
+): boolean {
+  const wt = (spec.cwd as string) ?? built.worktree;
+  if (bag?.childActs !== undefined) {
+    reaskActs(bag.childActs, dispatched - 1, wt);
+    return true;
+  }
+  if (!alreadyActed) child?.(wt);
+  return alreadyActed || child !== undefined;
+}
+
+/** The one bag a re-ask case hands {@link runBuild}: its recording leaf, and any per-dispatch acts.
+ *  A wrapper so the option's own name reads as one thing rather than a nested object literal. */
+export function bag(
+  deps: Partial<BuildDeps>,
+  childActs?: (n: number, wt: string) => void,
+): ReaskOpts {
+  return { deps, ...(childActs === undefined ? {} : { childActs }) };
 }

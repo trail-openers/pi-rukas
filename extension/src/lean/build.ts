@@ -38,8 +38,8 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { spawnDeveloperContinuationChild } from "../developer-session-continuation.ts";
+import type { DeveloperContinuationFn } from "../developer-session-continuation.ts";
 import { execp } from "../exec.ts";
-import { buildReaskClause, buildTurnWasWasted } from "../lean-build-reask.ts";
 import { armsStepBudget, stepDispatchArms, stopReasonClause } from "../lean-step-bound.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
@@ -48,15 +48,21 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { foldStoppedBuild, judgeBlockedReport } from "./build-blocked.ts";
-import { askBuildReask } from "./build-reask-child.ts";
+import {
+  addedByChallengeFromLog,
+  budgetStopFromLog,
+  frozenFromLog,
+  reentryFromLog,
+  testsFromLog,
+} from "./build-context.ts";
 import { dispatchBuilder } from "./build-dispatch.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
+import { askBuildReask, buildReaskClause, buildTurnWasWasted } from "./build-reask.ts";
 import { budgetFoldAccumulator, failingClause, foldClauses, keptClause } from "./build-reasons.ts";
 import type { BuildDispatch, BuildExec, NormaliseReport } from "./build-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
-import type { DeveloperContinuationFn } from "../developer-session-continuation.ts";
 import { type WorkConfig, loadWorkConfig, protectedPathsOf } from "./config.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { fetchIssueBody } from "./io.ts";
@@ -76,10 +82,6 @@ import {
   readDispatched,
 } from "./step-budget.ts";
 import { joinNotes } from "./text-fence.ts";
-import { RED_REASON_CLIP, clipReason } from "./verify-deps.ts";
-
-/** How many names one reason line lists, and how many the fold re-runs. */
-const LIST_CLIP = 20;
 
 export interface BuildDeps {
   exec: BuildExec;
@@ -96,94 +98,6 @@ export interface BuildDeps {
   continueSession?: DeveloperContinuationFn;
 }
 
-/** Is this step one that froze tests: a decided `specify:ok` or `challenge:new-tests`. */
-function frozeTests(step: Step): boolean {
-  return (
-    (step.state === "specify" && step.outcome?.kind === "ok") ||
-    (step.state === "challenge" && step.outcome?.kind === "new-tests")
-  );
-}
-
-/** The step log's frozen map: every `specify:ok` / `challenge:new-tests`, in order. */
-export function frozenFromLog(steps: Step[]): Record<string, string> {
-  const frozen: Record<string, string> = {};
-  for (const step of steps.filter(frozeTests))
-    for (const [rel, sha] of Object.entries(step.outcome?.frozen ?? {})) frozen[rel] = sha;
-  return frozen;
-}
-
-/**
- * The criterion -> tests map, unioned over every step that recorded one. The
- * run-level file quota seeds from here: `MAX_TEST_FILES_PER_CRITERION` bounds what
- * a criterion ENDS UP WITH across the run, and only this map knows what an earlier
- * round already froze for it.
- */
-export function testsFromLog(steps: Step[]): Record<string, string[]> {
-  const tests: Record<string, string[]> = {};
-  for (const step of steps.filter(frozeTests)) {
-    for (const [id, files] of Object.entries(step.outcome?.tests ?? {})) {
-      const seen = new Set(tests[id] ?? []);
-      for (const f of files) seen.add(f);
-      tests[id] = [...seen];
-    }
-  }
-  return tests;
-}
-
-/** The newest decided `state` + `kind` step's reason, clipped for a prompt. */
-function reasonFromLog(
-  steps: Step[],
-  state: "verify" | "ci" | "build",
-  kind: "red" | "budget",
-): string | undefined {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const oc = steps[i]?.state === state ? steps[i]?.outcome : undefined;
-    if (oc?.kind !== kind) continue;
-    const reason = oc.reason ?? oc.message;
-    if (typeof reason !== "string" || reason.trim() === "") continue;
-    return clipReason(reason);
-  }
-  return undefined;
-}
-
-/**
- * Why this round exists, in the gate's own words: the newest decided `verify:red`,
- * else the newest `ci:red`, clipped. A round that came back from added tests is
- * told by {@link addedByChallengeFromLog} instead.
- */
-export function reentryFromLog(steps: Step[]): string | undefined {
-  return reasonFromLog(steps, "verify", "red") ?? reasonFromLog(steps, "ci", "red");
-}
-
-/**
- * What stopped the PREVIOUS attempt and what still fails: the newest decided
- * `build:budget` reason, which that step composed from its ceiling and the files
- * it re-ran red. No gate judged a killed builder, so `reentryFromLog` is silent
- * and a child told only "the last round stopped" re-derives the feature.
- */
-function budgetStopFromLog(steps: Step[]): string | undefined {
-  return reasonFromLog(steps, "build", "budget");
-}
-
-/**
- * What the adversary added, in the builder's own brief: the frozen paths of the
- * newest decided `challenge:new-tests` step. No gate judged them — the adversary
- * only made the contract bigger — so they are named rather than quoted.
- */
-function addedByChallengeFromLog(steps: Step[]): string | undefined {
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i];
-    if (step?.state !== "challenge" || step.outcome?.kind !== "new-tests") continue;
-    const paths = Object.keys(step.outcome.frozen ?? {});
-    if (paths.length === 0) continue;
-    const kept = paths.slice(0, LIST_CLIP).map((p) => `- \`${p}\``);
-    const more = paths.length > LIST_CLIP ? `\n- …and ${paths.length - LIST_CLIP} more` : "";
-    const line = `the adversary's challenge round added these frozen tests:\n${kept.join("\n")}${more}`;
-    return line.length > RED_REASON_CLIP ? `${line.slice(0, RED_REASON_CLIP)}…` : line;
-  }
-  return undefined;
-}
-
 /** The `build` step. Returns `ok` | `exhausted` | `blocked`; THROWS on infrastructure. */
 export async function buildOutcome(
   ctx: HandlerCtx,
@@ -191,7 +105,7 @@ export async function buildOutcome(
   /** The run's permission stamp, threaded by the caller that owns the mode (see `buildDeps`). A
    *  continuation the step starts is stamped exactly as its parent child was — an unstamped second
    *  turn is permission-denied on the arm where the first ran free. */
-  headless: boolean = false,
+  headless = false,
 ): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
 
@@ -411,13 +325,9 @@ export async function buildOutcome(
   //     honoured only once the driver ran the named frozen tests on its tree and saw
   //     one come back red. An ignored report traces a line and records nothing.
   //
-  //     A wasted turn is asked for its one continuation FIRST, and the claim the
-  //     cut-off turn filed is judged exactly as today: the continuation seam loads no
-  //     `report_blocked` companion, so the continuation cannot file one and the first
-  //     turn's report stands. The fold below is idempotent against a continuation that
-  //     changed nothing, and the ONE fold that runs when the continuation wrote bytes is
-  //     the one whose verdict the step returns — a builder resumed into a reset tree
-  //     commits nothing itself, so a second fold would double-commit what the first found.
+  //     A wasted turn is asked for its continuation FIRST, and the claim the cut-off turn
+  //     filed is judged exactly as today: the seam loads no `report_blocked` companion, so
+  //     the first turn's report stands and the continuation cannot file one.
   const blocked = await judgeBlockedReport({
     exec: deps.exec,
     wt,
@@ -442,24 +352,17 @@ export async function buildOutcome(
     ...fold(label),
     budget: new CaptureBudget(deps.captureCeiling),
   });
-  // A turn that made NO tool call and left no change is not a builder that declined to edit: it is
-  // the field's shape (cut at the output cap while reasoning) or its sibling (one clean turn, never
-  // acted). Both get the ONE continuation the fixer's wave already has, judged AFTER the fold —
-  // "no change" is the fold's answer, not a field of the child — and before the verdict is written.
-  // The resumed child starts from this same worktree, which the fold has just reset to
-  // `headBefore`. One-shot, decided HERE: a resumed session replays the cut turn, so the
-  // continuation's own result is never handed back to the detector — the flag below is the
-  // one-shot, exactly as the fixer analogue's. `tries` and `noWorkRetryUsed` are untouched: this
-  // asks a child, it does not re-dispatch one.
+  // A turn that made NO tool call and left no change is not a builder that declined to edit: it hit
+  // the output cap mid-reasoning, or answered one clean turn without acting. Both get the fixer's ONE
+  // continuation, judged AFTER the fold ("no change" is the fold's answer, not a child field) and
+  // before the verdict, one-shot by the flag below. `tries` and `noWorkRetryUsed` are untouched.
   let reasked: "none" | "skipped" | "asked" = "none";
   let reaskTrigger: "length" | "no-change" = "length";
   let reaskTokens = 0;
   if (report.files.length === 0 && lastChildResult !== undefined) {
-    const wasted = buildTurnWasWasted(lastChildResult, {
-      // The ceiling's own verdict was answered inside the dispatch loop; a stop never reaches here.
-      budgetFired: false,
-      noChange: true,
-    });
+    // Both flags carry what THIS site knows: a ceiling that had fired was answered inside the
+    // dispatch loop (no stop reaches here), and the fold above is what says the tree holds no change.
+    const wasted = buildTurnWasWasted(lastChildResult, { budgetFired: false, noChange: true });
     if (wasted.wasted) {
       reaskTrigger = wasted.trigger;
       reaskTokens = wasted.outputTokens;
@@ -473,8 +376,8 @@ export async function buildOutcome(
         // The run's stamp, from the function that decides it — not re-derived here.
         ...leanChildOpts(headless),
       });
-      // `undefined` is the date-rollover / no-seam guard: the ask was refused before a child was
-      // paid for, so nothing is billed and the step ends exhausted with only the trace to say why.
+      // `undefined` is the no-seam / date-rollover guard: refused before a child was paid for, so
+      // nothing is billed and only the trace says why.
       if (asked !== undefined) {
         reasked = "asked";
         rows.push(asked.row);
@@ -492,9 +395,8 @@ export async function buildOutcome(
       reason: joinNotes([
         "the developer produced no change",
         waitNote(),
-        // ONE short clause, LAST, and only when the ask was actually spent — the head and the wait
-        // note keep their bytes for every arm that never asked, which is what the existing
-        // exhausted-reason literal pins.
+        // ONE short clause, LAST, and only when the ask was spent: the head and wait note keep
+        // their bytes for every arm that never asked, which the existing literals pin.
         reasked === "asked" ? buildReaskClause(reaskTrigger, reaskTokens) : "",
       ]),
       dispatches: rows,
@@ -502,19 +404,18 @@ export async function buildOutcome(
   return okVerdict(report, rows, waitNote);
 }
 
-/** The build seat's fence: the same root, repo and scratch the child's dispatch was fenced by, so
- *  the continuation cannot be handed a wider one than the dispatch it resumes. */
+/** The seat's fence — the root, repo and scratch the child was fenced by, so the continuation is
+ *  never handed a wider one than the dispatch it resumes. */
 function buildWriteFence(wt: string, repoRoot: string, issue: number): WriteFence {
   return {
     root: wt,
     repo: repoRoot,
-    // `<repoRoot>/tmp/lean-<issue>`: the worktree's parent is `.worktrees`, so one `..` from it is
-    // the repo root — the scratch dir the scratch hygiene convention names.
+    // `<repoRoot>/tmp/lean-<issue>` — one `..` from the worktree's parent, per scratch hygiene.
     scratch: path.join(path.dirname(wt), "..", "tmp", `lean-${String(issue)}`),
   };
 }
 
-/** The verdict for a visit whose tree holds a change: one `ok` with the fold's own account. */
+/** The verdict for a visit whose tree holds a change: one `ok` with the fold's account. */
 function okVerdict(
   report: NormaliseReport,
   rows: DispatchUsageRow[],

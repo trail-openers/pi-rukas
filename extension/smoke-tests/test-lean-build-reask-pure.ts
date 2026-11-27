@@ -17,13 +17,15 @@
  * No git, no step import, no child: the detector is pure and the leaf it consults is a field.
  */
 
+import type { DeveloperContinuationFn } from "../src/developer-session-continuation.ts";
+import { askBuildReask } from "../src/lean/build-reask.ts";
 import {
   BUILD_REASK_BOUND_MS,
   CLEAN_STOP_REASON,
   buildReaskClause,
   buildReaskPrompt,
   buildTurnWasWasted,
-} from "../src/lean-build-reask.ts";
+} from "../src/lean/build-reask.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
@@ -36,6 +38,16 @@ const CUT: Partial<DispatchResult> = {
   toolUses: [],
   observedToolCalls: 0,
   usage: { input: 900, output: 16384, cacheRead: 0, cacheWrite: 0, cost: 0.4, turns: 1 },
+};
+
+/** What a continued child reports it spent — the row under test must carry THIS object out. */
+const SEAM_USAGE: DispatchResult["usage"] = {
+  input: 40,
+  output: 900,
+  cacheRead: 0,
+  cacheWrite: 0,
+  cost: 0.1,
+  turns: 2,
 };
 
 function child(over: Partial<DispatchResult> = {}): DispatchResult {
@@ -71,7 +83,10 @@ function ctx(over: { budgetFired?: boolean; noChange?: boolean } = {}) {
   // The count rides the child's record, never a constant: a different cap must print a different
   // number, or the reason would be narration about a turn nobody saw.
   const other = buildTurnWasWasted(
-    child({ ...CUT, usage: { input: 1, output: 4096, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 } }),
+    child({
+      ...CUT,
+      usage: { input: 1, output: 4096, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+    }),
     ctx(),
   );
   assert(
@@ -188,27 +203,25 @@ function ctx(over: { budgetFired?: boolean; noChange?: boolean } = {}) {
 }
 
 // ── (5) the switch: only the literal 0, read at CALL time ───────────────────
-{
-  await withEnv({ PI_ENSEMBLE_LEAN_BUILD_REASK: undefined }, async () => {
-    const on = buildTurnWasWasted(child(CUT), ctx());
-    assert(on.wasted === true, `(5) default ON: the cut turn is asked (${JSON.stringify(on)})`);
-  });
-  await withEnv({ PI_ENSEMBLE_LEAN_BUILD_REASK: "0" }, async () => {
-    const off = buildTurnWasWasted(child(CUT), ctx());
+await withEnv({ PI_ENSEMBLE_LEAN_BUILD_REASK: undefined }, async () => {
+  const on = buildTurnWasWasted(child(CUT), ctx());
+  assert(on.wasted === true, `(5) default ON: the cut turn is asked (${JSON.stringify(on)})`);
+});
+await withEnv({ PI_ENSEMBLE_LEAN_BUILD_REASK: "0" }, async () => {
+  const off = buildTurnWasWasted(child(CUT), ctx());
+  assert(
+    off.wasted === false && off.reason === "switch-off",
+    `(5) 0 turns the whole change off (${JSON.stringify(off)})`,
+  );
+});
+for (const value of ["", "false", "NO", " 0 ", "00", "one"]) {
+  await withEnv({ PI_ENSEMBLE_LEAN_BUILD_REASK: value }, async () => {
+    const v = buildTurnWasWasted(child(CUT), ctx());
     assert(
-      off.wasted === false && off.reason === "switch-off",
-      `(5) 0 turns the whole change off (${JSON.stringify(off)})`,
+      v.wasted === true,
+      `(5) PI_ENSEMBLE_LEAN_BUILD_REASK=${JSON.stringify(value)} is not an operator asking for the old behaviour (${JSON.stringify(v)})`,
     );
   });
-  for (const value of ["", "false", "NO", " 0 ", "00", "one"]) {
-    await withEnv({ PI_ENSEMBLE_LEAN_BUILD_REASK: value }, async () => {
-      const v = buildTurnWasWasted(child(CUT), ctx());
-      assert(
-        v.wasted === true,
-        `(5) PI_ENSEMBLE_LEAN_BUILD_REASK=${JSON.stringify(value)} is not an operator asking for the old behaviour (${JSON.stringify(v)})`,
-      );
-    });
-  }
 }
 
 // ── (6) the prompts and the clause say what they must, and stay short ──────
@@ -230,7 +243,9 @@ function ctx(over: { budgetFired?: boolean; noChange?: boolean } = {}) {
   );
   const clause = buildReaskClause("length", 16384);
   assert(
-    clause.includes("output-token limit") && clause.includes("16384") && clause.includes("one continuation"),
+    clause.includes("output-token limit") &&
+      clause.includes("16384") &&
+      clause.includes("one continuation"),
     `(6) the clause names the cap, the child's own token count, and the spent ask (${JSON.stringify(clause)})`,
   );
   assert(
@@ -249,6 +264,182 @@ function ctx(over: { budgetFired?: boolean; noChange?: boolean } = {}) {
   assert(
     CLEAN_STOP_REASON === "stop",
     `(6) and the clean stop literal is the shipped one (${CLEAN_STOP_REASON})`,
+  );
+}
+
+// ── (7) the ask site: what it hands the seam, and the two refusals ─────────
+//
+// `test-lean-build-reask.ts` pins the step's dispatch arms; this block pins the module that makes
+// the call, which no production-path test reaches without a real child: the four arguments that make
+// the ask a FOLLOW-UP (session, role, cwd, fence), the bound it derives from the step's arms, the row
+// it bills, and the two refusals that must not pay for a child.
+{
+  const calls: Parameters<DeveloperContinuationFn>[0][] = [];
+  const seam: DeveloperContinuationFn = async (a) => {
+    calls.push(a);
+    return { ok: true, text: "done", ms: 5, usage: SEAM_USAGE };
+  };
+  const fence = { root: "/wt", repo: "/repo", scratch: "/repo/tmp/lean-1" };
+  /** A continued child that DIED still spent its tokens, so the row it bills carries this usage on
+   *  BOTH arms — an ask that only bills success is a continuation nobody paid for. */
+  const DEAD_USAGE: DispatchResult["usage"] = {
+    input: 700,
+    output: 12_000,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0.3,
+    turns: 1,
+  };
+  const asked = await askBuildReask(seam, {
+    child: { ...child(CUT), transcriptPath: "/runs/a.json" },
+    budget: { opts: { childBoundMs: 5 * 60_000 } },
+    trigger: "length",
+    issue: 2661,
+    worktree: "/wt",
+    writeFence: fence,
+  });
+  assert(asked !== undefined, "(7) a child with a session path and a seam gets its ask");
+  assert(
+    calls[0]?.transcriptPath === "/runs/a.json",
+    `(7) the ask resumes the CHILD's own session file — the only observable that separates a follow-up from a re-spawn (${JSON.stringify(calls[0]?.transcriptPath)})`,
+  );
+  assert(
+    calls[0]?.role === "developer" && calls[0]?.cwd === "/wt",
+    `(7) and it resumes as the builder's role in the build's tree, so it keeps its write tools (${JSON.stringify([calls[0]?.role, calls[0]?.cwd])})`,
+  );
+  assert(
+    calls[0]?.writeFence === fence,
+    `(7) and it carries the fence it was handed, unchanged — a continuation behind a wider fence is a child outside the fence (${JSON.stringify(calls[0]?.writeFence)})`,
+  );
+  assert(
+    calls[0]?.boundMs === 5 * 60_000,
+    `(7) and its bound is the step's armed bound when that is the tighter of the two (${String(calls[0]?.boundMs)})`,
+  );
+  assert(
+    (calls[0]?.prompt ?? "") === buildReaskPrompt(2661, "length"),
+    `(7) and the prompt is exactly the trigger's own prompt, not the sibling's and not a generic nudge (${JSON.stringify((calls[0]?.prompt ?? "").slice(0, 40))})`,
+  );
+  assert(
+    (calls[0]?.prompt ?? "").includes("output budget") &&
+      !(calls[0]?.prompt ?? "").includes("unchanged since"),
+    `(7) and it is the CUT prompt — a cut child is told something a declining child is not (${JSON.stringify((calls[0]?.prompt ?? "").slice(0, 40))})`,
+  );
+  assert(
+    asked?.row.role === "developer" &&
+      JSON.stringify(asked?.row.usage) === JSON.stringify(SEAM_USAGE),
+    `(7) and the ask bills a developer row carrying the continuation's own usage — a free continuation is an unbilled child (${JSON.stringify(asked?.row)})`,
+  );
+
+  // The permission stamp is threaded, never re-derived: an unstamped continuation is permission-denied
+  // on the arm where its parent ran free.
+  const stamped: Parameters<DeveloperContinuationFn>[0][] = [];
+  await askBuildReask(
+    async (a) => {
+      stamped.push(a);
+      return { ok: true, text: "", ms: 1, usage: SEAM_USAGE };
+    },
+    {
+      child: { ...child(CUT), transcriptPath: "/runs/b.json" },
+      budget: { opts: {} },
+      trigger: "no-change",
+      issue: 2661,
+      worktree: "/wt",
+      writeFence: fence,
+      workCycleTrust: true,
+    },
+  );
+  assert(
+    stamped[0]?.prompt === buildReaskPrompt(2661, "no-change"),
+    `(7) and the no-change visit gets the no-change prompt (${JSON.stringify((stamped[0]?.prompt ?? "").slice(0, 40))})`,
+  );
+  assert(
+    stamped[0]?.workCycleTrust === true,
+    `(7) and the run's permission stamp reaches the continuation (${JSON.stringify(stamped[0]?.workCycleTrust)})`,
+  );
+  assert(
+    stamped[0]?.boundMs === BUILD_REASK_BOUND_MS,
+    `(7) with no armed bound it runs under the re-ask's own ceiling, never unbounded (${String(stamped[0]?.boundMs)})`,
+  );
+
+  // A failed continuation was still one that was tried — which is what makes the exhausted clause
+  // honest — and it still cost what it spent.
+  const dead = await askBuildReask(
+    async () => ({
+      ok: false as const,
+      error: "child killed",
+      ms: 900,
+      usage: DEAD_USAGE,
+    }),
+    {
+      child: { ...child(CUT), transcriptPath: "/runs/d.json" },
+      budget: { opts: {} },
+      trigger: "length",
+      issue: 2661,
+      worktree: "/wt",
+      writeFence: fence,
+    },
+  );
+  assert(
+    dead !== undefined &&
+      dead.outcome.ok === false &&
+      JSON.stringify(dead.row.usage) === JSON.stringify(DEAD_USAGE),
+    `(7) a continuation that FAILED was still one that was tried, and its tokens are billed — the clause says the ask was spent, and a dead child billed as free would make that a lie (${JSON.stringify(dead?.row)})`,
+  );
+
+  // The refusal is traced into the step's own log (`traceWarn` writes through `console.error`), so an
+  // exhausted step is never silent about the ask it did not make. The capture is what makes the line
+  // testable: a deleted trace call would otherwise only ever be visible in a child's transcript.
+  const traced: string[] = [];
+  const prevWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    traced.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString());
+    return true;
+  }) as typeof process.stderr.write;
+  let noSeam: Awaited<ReturnType<typeof askBuildReask>>;
+  let noPath: Awaited<ReturnType<typeof askBuildReask>>;
+  try {
+    // The two refusals: no child paid for, and the call site never reached.
+    const refused: Parameters<DeveloperContinuationFn>[0][] = [];
+    noSeam = await askBuildReask(undefined, {
+      child: { ...child(CUT), transcriptPath: "/runs/c.json" },
+      budget: { opts: {} },
+      trigger: "length",
+      issue: 2661,
+      worktree: "/wt",
+      writeFence: fence,
+    });
+    assert(
+      noSeam === undefined && refused.length === 0,
+      "(7) a step with no seam refuses the ask rather than inventing a child",
+    );
+    noPath = await askBuildReask(
+      async (a) => {
+        refused.push(a);
+        return { ok: true, text: "", ms: 1, usage: SEAM_USAGE };
+      },
+      {
+        child: child(CUT),
+        budget: { opts: {} },
+        trigger: "length",
+        issue: 2661,
+        worktree: "/wt",
+        writeFence: fence,
+      },
+    );
+    assert(
+      noPath === undefined && refused.length === 0,
+      "(7) a child with no session path is refused BEFORE the seam is called — a fresh child would be a second opinion billed as a follow-up",
+    );
+  } finally {
+    process.stderr.write = prevWrite;
+  }
+  assert(
+    traced.some((l) => l.includes("no continuation") && l.includes("no session seam")),
+    `(7) the seam-less refusal says so on the step's log — silence there is indistinguishable from never having considered it (${JSON.stringify(traced)})`,
+  );
+  assert(
+    traced.some((l) => l.includes("no continuation") && l.includes("session path is absent")),
+    `(7) and the date-rollover refusal names its own cause, so the two refusals are told apart in the log (${JSON.stringify(traced)})`,
   );
 }
 
