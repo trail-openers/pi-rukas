@@ -346,11 +346,15 @@ export async function buildOutcome(
     ...(deps.blockedTimeoutMs === undefined ? {} : { timeoutMs: deps.blockedTimeoutMs }),
   });
   if (blocked !== undefined) {
-    // No commit: `verify` never judges a tree this step cannot account for.
+    // No commit: `verify` never judges a tree this step cannot account for. The head and the executed red are
+    // recorded beside the cause because the repair round re-runs its replacement at THAT commit and quotes
+    // only output the driver watched — facts about a run the driver made, not about what the child said.
     return {
       kind: "blocked",
       reason: blocked.reason,
       blockedBy: blocked.blockedBy,
+      headBefore,
+      ...(blocked.evidence.length === 0 ? {} : { blockedEvidence: blocked.evidence }),
       dispatches: rows,
     };
   }

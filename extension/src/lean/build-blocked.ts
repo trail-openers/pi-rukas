@@ -38,6 +38,7 @@ import {
   RECORD_REASON_MAX_CHARS,
 } from "./state-outcome-maps.ts";
 import { frozenKeyProblem } from "./state-outcome.ts";
+import { BLOCKED_EVIDENCE_OUTPUT_CAP, type EvidenceLine } from "./blocked-evidence.ts";
 import { oneLine } from "./text-fence.ts";
 
 /** The cause LINE's ceiling: the renderer caps plus the sentence around them. */
@@ -61,9 +62,10 @@ function usableConflicts(rows: Array<{ path: string; reason: string }>): string[
 
 /** What the gate decided, and the sentence the caller traces when it refused. */
 export type BlockedVerdict =
-  /** `ran` is every file the driver executed, up to and including the `red`. */
-  | { honoured: true; red: string; ran: string[] }
-  /** `why` is the reason the report was ignored, for the trace line. */
+  /** `ran` is every file the driver executed, up to and including the `red`; `output` is what the runner
+   *  printed on that red, which is the only failure evidence a repair brief may quote. */
+  | { honoured: true; red: string; ran: string[]; output: string }
+  /** Why the report was ignored, for the trace line. */
   | { honoured: false; why: string };
 
 /**
@@ -126,7 +128,7 @@ export async function blockedProved(opts: {
           honoured: false,
           why: `${file} is no longer the bytes the run froze — the frozen test was edited`,
         };
-      return { honoured: true, red: file, ran };
+      return { honoured: true, red: file, ran, output: proof.output ?? "" };
     }
   } finally {
     budget.dispose();
@@ -257,7 +259,7 @@ export async function judgeBlockedReport(opts: {
   toolUses: unknown[];
   issue: number;
   timeoutMs?: number;
-}): Promise<{ reason: string; blockedBy: Record<string, string> } | undefined> {
+}): Promise<{ reason: string; blockedBy: Record<string, string>; evidence: EvidenceLine[] } | undefined> {
   const extracted = extractBlockedReport(opts.toolUses);
   if (extracted.rows.length === 0) {
     if (extracted.skipped > 0)
@@ -290,6 +292,10 @@ export async function judgeBlockedReport(opts: {
   }
   const red = proved.red;
   if (!(red in blockedBy)) return undefined;
+  // The executed red the driver watched, per named file it vetted: the command it rendered and what came
+  // back. Bounded by the record's own rules (`blocked-evidence.ts`), sanitised where it is built because this
+  // durable record prints into a child's prompt.
+  const evidence = await executedEvidence(opts.exec, opts.wt, opts.template ?? "", [...ran], proved);
   // The cause line leads with the file the driver watched fail; the map carries all.
   return {
     reason: oneLine(
@@ -297,5 +303,24 @@ export async function judgeBlockedReport(opts: {
       BLOCKED_CAUSE_CAP,
     ),
     blockedBy,
+    evidence,
   };
+}
+
+/**
+ * The driver's own runs, as a record field: the command it rendered per vetted file, and the output it got.
+ *
+ * Only the RED file's output is carried — that is the failure under dispute, and the other vetted files came
+ * back green, which proves nothing about the conflict and would only widen a child's prompt with text that
+ * argues nothing.
+ */
+async function executedEvidence(
+  exec: BuildExec,
+  wt: string,
+  template: string,
+  ran: string[],
+  proved: { red: string; output: string },
+): Promise<Array<{ path: string; cmd: string; output: string }>> {
+  const one = oneLine(proved.output, BLOCKED_EVIDENCE_OUTPUT_CAP);
+  return [{ path: proved.red, cmd: renderTestCommand(template, proved.red), output: one }];
 }

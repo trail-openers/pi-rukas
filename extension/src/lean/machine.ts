@@ -28,6 +28,9 @@ export const OUTCOME_KINDS = {
   // `blocked` is the child's own "these frozen tests cannot all pass together", honoured only after the
   // driver re-ran the named tests itself. It is not `exhausted`: the route must never reach `publish`.
   build: ["ok", "exhausted", "budget", "blocked"],
+  // The repair round's two verdicts. Both re-dispatch the builder and both spend the round; the
+  // difference is whether the contract changed, which is what decides the red marker below.
+  repair: ["repaired", "refused"],
   challenge: ["new-tests", "none", "budget", "skipped"],
   verify: ["green", "red"],
   publish: ["ok"],
@@ -69,6 +72,17 @@ export const REPORT_FAILED_KIND = "report-failed";
 
 /** A step's own budget ended the child: a verdict, not a crash. */
 const BUDGET_KIND = "budget";
+
+/**
+ * Does this blocked verdict earn a repair round? Two facts, both read off the run rather than the working
+ * tree, so a resume cannot answer them differently: the switch, and the counter that says no round has been
+ * bought yet. The switch is passed in by the caller that owns the environment (`command.ts` reads it once per
+ * run) rather than read from `process.env` here — the table stays a pure function of `(run, outcome)`, which
+ * is what lets the step log be the record of a run.
+ */
+export function repairRoundDue(run: LeanRun): boolean {
+  return run.oracleRepair === true && run.counters.repairsSpent < 1;
+}
 
 /** Is this pair in the table? `next()` throws on a pair it does not have, so ask first. */
 export function hasTransition(state: LeanState, kind: string): boolean {
@@ -137,8 +151,13 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
           return to(run, c.challengeDone ? "verify" : "challenge");
         case "blocked":
-          // Never through the `exhausted` route: publishing a PR over tests the builder proved unsatisfiable
-          // is the one shape where an unsatisfied contract reaches `land`.
+          // The driver proved the named frozen tests cannot all pass. With the switch on and the run's one
+          // round unspent, that is a question for the adversary who wrote them, not the end of the run:
+          // `repair` pays for a blind seat and re-dispatches the builder with a corrected contract. Without
+          // either, the route is the one that has always been: never through the `exhausted` arm, because
+          // publishing a PR over tests the builder proved unsatisfiable is the one shape where an
+          // unsatisfied contract reaches `land`.
+          if (repairRoundDue(run)) return viaBuild(run, "repair");
           return to(run, "handback");
         case "exhausted":
           // The publish arm is the GREEN arm and nothing else: the gate decides whether a head may ship, so
@@ -148,6 +167,23 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           if (newestDecided(run.steps, "verify")?.outcome?.kind === "green")
             return viaBuild(run, "publish", true);
           return viaBuild(run, "handback", true);
+      }
+      break;
+
+    case "repair":
+      switch (outcome.kind) {
+        case "repaired":
+          // The oracle was corrected, so the builder gets another round against the contract it should
+          // have been built against. No red marker: the corrected oracle is the run's contract now, and
+          // `verify` holds it to the same standard it held the original to. The attempt is billed on
+          // entering `build` — this edge DISPATCHES it.
+          return viaBuild(run, "build");
+        case "refused":
+          // The round was spent and nothing was corrected: the same unsatisfiable contract is still the
+          // contract, so this round ships as a draft if the builder still cannot satisfy it and nothing
+          // later turns it off. A run must not reach `land` over a frozen test the driver proved cannot
+          // pass, and the refused round is the record's own evidence that the alternative was tried.
+          return viaBuild(run, "build", true);
       }
       break;
 

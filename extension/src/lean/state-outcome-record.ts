@@ -10,6 +10,7 @@ import type { ReviewBoundRecord } from "./review-bound.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";
 import type { RedRecord, ReviewRecord } from "./state-outcome-gates.ts";
 import type { PreexistingTierRecord, ProjectRosterRecord } from "./state-outcome-maps.ts";
+import type { RepairRecord } from "./state-repair-record.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 /**
  * What a step's handler returned. The engine routes on `kind` and reads the rest
@@ -34,6 +35,16 @@ export interface Outcome {
   commandNotRunnable?: Record<string, string>;
   /** `build` only (kind `blocked`): frozen test path -> the contradiction the driver itself re-proved red. `handback` prints it; exit 10 alone never names a cause. */
   blockedBy?: Record<string, string>;
+  /** `build` only (kind `blocked`): the at-head red the DRIVER watched the project's runner print, per named file. Present exactly where the driver ran the named files itself, and it is the ONLY evidence a repair brief may quote — a repair seat reads what the driver executed, never what the builder said about it. Sole reader: `oracle-repair-evidence.ts`. */
+  blockedEvidence?: Array<{ path: string; cmd: string; output: string }>;
+  /** `build` only (kind `blocked`): the head the driver ran the named files at — the commit whose tree came
+   *  back red, which is what the repair round re-runs its replacement against. Not a verdict the step takes
+   *  on its own authority: `build` resolved that head before it dispatched the builder. */
+  headBefore?: string;
+  /** `build` only: the repair round's two observed facts, once the run spent its one round. Validated and rebuilt by `state-repair-record.ts`. */
+  repair?: RepairRecord;
+  /** `build` only: the round was attempted, whether it repaired, was refused or was skipped for want of a runner. Written when the round was PAID for, so a later visit cannot buy a second one. */
+  repairAttempted?: true;
   /** The two fields `ready` owns and the engine copies onto the RUN (`applyReadyFacts`): the commit the config was read at, and — for a `derive` run — the contract the engine drafted, which is durable because a derived one exists nowhere else. Checked on load against the contract's own rules. */
   baseSha?: string;
   derivedSpec?: DerivedSpec;
