@@ -49,14 +49,8 @@ export type LeanState =
   | "ready"
   | "specify"
   | "build"
-  /**
-   * The repair round: one specify adversary, in a tree at the run's base, correcting the frozen tests the
-   * driver PROVED cannot all pass together. It is reached only from a `build` whose blocked report the
-   * anti-forgery gate honoured, and only when the switch is on and the run has not spent its one round. It
-   * is a HANDLER state, not a detour inside `build`: an unjudged replacement must be distinguishable from a
-   * judged one in the log, and a step that dies before it decides must re-decide on resume rather than be
-   * re-paid for.
-   */
+  /** The repair round: one blind adversary correcting the frozen tests the driver PROVED unsatisfiable. A
+   *  handler state, so a step that dies before it decides re-decides on resume instead of re-buying. */
   | "repair"
   | "challenge"
   | "verify"
@@ -133,12 +127,8 @@ export interface RunCounters {
   reviewDone: boolean;
   ciFixUsed: boolean;
   draft: boolean;
-  /**
-   * How many repair rounds the run has PAID for. One run buys one: the counter is incremented before the
-   * child is dispatched, so a round that was refused, crashed or was never judged has still been spent — a
-   * builder cannot wear the round down by producing another provable conflict. Absent on a state file
-   * written before the round existed, which reads as zero.
-   */
+  /** Repair rounds the run PAID for, billed on the edge ENTERING the step, so a refused or crashed round is
+   *  still spent and cannot be re-bought. Absent on an old record: zero. */
   repairsSpent: number;
 }
 
@@ -179,12 +169,9 @@ export interface LeanRun {
    * files keep loading — same schema version.
    */
   derivedSpec?: DerivedSpec;
-  /**
-   * The run's reading of `PI_ENSEMBLE_LEAN_ORACLE_REPAIR`, stamped when the run is created and persisted.
-   * A run is judged by the rules it started under: a switch an operator flips mid-cycle, between two steps
-   * of one run, cannot decide whether this run gets a repair round. Absent on a record written before the
-   * round existed, which reads as OFF — the release's behaviour. Read only by `repairRoundDue`.
-   */
+  /** The run's reading of `PI_ENSEMBLE_LEAN_ORACLE_REPAIR`, stamped at creation and persisted: a run is
+   *  judged by the rules it started under, so flipping the knob mid-cycle cannot decide this run's round.
+   *  Absent reads as OFF. Read only by `repairRoundDue`. */
   oracleRepair?: boolean;
 }
 
@@ -236,8 +223,7 @@ export function createRun(
     state: "ready",
     counters: { ...INITIAL_COUNTERS },
     steps: [],
-    // Stamped only when the caller says ON: a record that carries no key is a record from before the round,
-    // and the two must stay distinguishable in the file an operator reads.
+    // Only stamped when ON: no key is a record from before the round, and the two must stay distinguishable.
     ...(init.oracleRepair === true ? { oracleRepair: true } : {}),
   };
 }
@@ -285,8 +271,7 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
   for (const key of ["challengeDone", "reviewDone", "ciFixUsed", "draft"] as const) {
     if (typeof c[key] !== "boolean") bad(`counters.${key} must be a boolean`);
   }
-  // Optional on load: a state file written before the repair round existed carries no `repairsSpent`, and
-  // such a run has spent none. Present-but-wrong is corruption, and is refused rather than read as zero.
+  // Optional on load: a record from before the round has spent none. Present-but-wrong is corruption.
   if (c.repairsSpent !== undefined && (typeof c.repairsSpent !== "number" || !Number.isInteger(c.repairsSpent) || c.repairsSpent < 0))
     bad("counters.repairsSpent must be a non-negative integer");
   if (r.oracleRepair !== undefined && typeof r.oracleRepair !== "boolean")

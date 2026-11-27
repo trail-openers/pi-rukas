@@ -13,7 +13,7 @@
 import { isFullCommitSha } from "../commit-sha.ts";
 import { HANDOFF_CHANNELS } from "../work-driver-handoff-channel.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
-import { repairRecordProblem, validatedRepairRecord } from "../oracle-repair-fields.ts";
+import { repairOutcomeProblem, validatedRepairFields } from "../oracle-repair-fields.ts";
 import { canonicalDerivedSpec } from "./state-derived-spec.ts";
 import type { DerivedSpec } from "./state-derived-spec.ts";
 import { derivedSpecProblem } from "./state-derived-spec.ts";
@@ -25,10 +25,6 @@ import {
   redRecordProblem,
   reviewRecordProblem,
 } from "./state-outcome-gates.ts";
-import {
-  blockedEvidenceProblem,
-  validatedBlockedEvidence,
-} from "../oracle-repair-record.ts";
 import {
   blockedByProblem,
   commandCriteriaProblem,
@@ -170,12 +166,10 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // The build step's own account of which frozen tests it proved cannot all pass together;
   // `handback` prints it as the run's cause.
   blockedBy: "build",
-  // The driver's own executed red for those files, and the repair round's facts. `build` alone: a
-  // handback carrying an evidence line would print a run the gate never ran, and a repair record on
-  // any other step would claim an oracle this run never replaced.
+  // The driver's own executed red for those files, and the round that repaired them: `build` alone, since
+  // a handback carrying an evidence line would print a run the gate never ran.
   blockedEvidence: "build",
   repair: "build",
-  repairAttempted: "build",
   // The tiers a verify/ci step excused over the base commit: they license a GREEN over a
   // tier that exited non-zero, so a step that never ran that tier may not carry the record.
   preexistingFailures: ["verify", "ci"],
@@ -344,26 +338,9 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
   }
   if (oc.headBefore !== undefined && !SHA1_HEX.test(String(oc.headBefore)))
     return "outcome headBefore must be a full commit sha";
-  // The repair round's three fields: their rules are pure over plain values and live with the round, in
-  // `oracle-repair-record.ts` and `oracle-repair-fields.ts`.
-  for (const [field, problem] of [
-    ["blockedEvidence", blockedEvidenceProblem(oc.blockedEvidence)],
-    [
-      "repair",
-      oc.repair === undefined
-        ? undefined
-        : repairRecordProblem(oc.repair, oc.frozen as Record<string, string> | undefined),
-    ],
-    [
-      "repairAttempted",
-      oc.repairAttempted !== undefined && oc.repairAttempted !== true
-        ? "outcome repairAttempted must be true when present"
-        : undefined,
-    ],
-  ] as const) {
-    if (problem !== undefined) return problem;
-    void field;
-  }
+  // The repair round's fields: rules pure over plain values, living with the round (`oracle-repair-fields.ts`).
+  const repairProblem = repairOutcomeProblem(oc);
+  if (repairProblem !== undefined) return repairProblem;
   if (oc.preexistingFailures !== undefined) {
     const problem = preexistingFailuresProblem(oc.preexistingFailures);
     if (problem !== undefined) return problem;
@@ -462,11 +439,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     ...(typeof oc.headBefore === "string" && SHA1_HEX.test(oc.headBefore)
       ? { headBefore: oc.headBefore }
       : {}),
-    ...(oc.blockedEvidence === undefined
-      ? {}
-      : { blockedEvidence: validatedBlockedEvidence(oc.blockedEvidence) }),
-    ...(oc.repair === undefined ? {} : { repair: validatedRepairRecord(oc.repair) }),
-    ...(oc.repairAttempted === true ? { repairAttempted: true as const } : {}),
+    ...validatedRepairFields(oc),
     ...(oc.preexistingFailures === undefined
       ? {}
       : { preexistingFailures: validatedPreexistingFailures(oc.preexistingFailures) }),

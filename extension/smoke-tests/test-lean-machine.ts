@@ -112,7 +112,7 @@ for (const state of HANDLER_STATES) {
   }
 }
 assert(
-  pairs === 28,
+  pairs === 30,
   `all ${pairs} forward-routed pairs enumerated — the registry grew or shrank, check the spec`,
 );
 

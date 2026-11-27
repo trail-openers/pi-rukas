@@ -35,6 +35,9 @@ import { readySetup } from "./ready-setup.ts";
 import { reportHandlers } from "./report-handlers.ts";
 import { reviewDeps } from "./review-deps.ts";
 import { reviewOutcome } from "./review.ts";
+import { leanOracleRepairEnabled } from "../lean-oracle-repair-switch.ts";
+import { repairDeps } from "../oracle-repair-wiring.ts";
+import { repairOutcome } from "./repair.ts";
 import { type LeanSeed, leanSeed } from "./seed.ts";
 import { type DeriveDeps, type DeriveDispatch, deriveDeps, traceDerive } from "./spec-derive.ts";
 import type { SpecIntake } from "./spec-intake-switch.ts";
@@ -373,6 +376,8 @@ export function phase1Handlers(
   };
   handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps(headless));
   handlers.build = (ctx) => buildOutcome(ctx, buildDeps(headless), headless);
+  handlers.repair = (ctx) =>
+    repairOutcome(ctx, repairDeps(headless, repoRoot, issue, () => ctx.run.baseSha), headless);
   handlers.challenge = (ctx) => challengeOutcome(ctx, challengeDeps(headless));
   handlers.verify = (ctx) => verifyOutcome(ctx, verifyDeps());
   // The two post-publish steps, in the same one-line shape as the ones above: the step body is
@@ -421,7 +426,14 @@ export async function runWorkLean(
     repoRoot,
     issue,
     handlers: handlersFor(repoRoot, issue, opts, seed),
-    seed: { version: seed.version, baseSha: seed.baseSha },
+    seed: {
+      version: seed.version,
+      baseSha: seed.baseSha,
+      // The switch is read ONCE, when the run is created, and persisted on the record: a run is judged by
+      // the rules it started under, so an operator flipping the knob mid-cycle cannot decide whether THIS
+      // run gets a repair round. A resume ignores the seed, so it keeps the value its first visit stamped.
+      ...(leanOracleRepairEnabled() ? { oracleRepair: true } : {}),
+    },
     // The flag travels as a VALUE (`flagBudgetMs` mints the brand from the verb's parsed
     // minutes), never as an env write: one run's `--timeout` must not become the deadline of every
     // later dispatch this process makes.

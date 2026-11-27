@@ -28,8 +28,8 @@ export const OUTCOME_KINDS = {
   // `blocked` is the child's own "these frozen tests cannot all pass together", honoured only after the
   // driver re-ran the named tests itself. It is not `exhausted`: the route must never reach `publish`.
   build: ["ok", "exhausted", "budget", "blocked"],
-  // The repair round's two verdicts. Both re-dispatch the builder and both spend the round; the
-  // difference is whether the contract changed, which is what decides the red marker below.
+  // The repair round's verdicts: `repaired` rebuilds against the corrected contract, `refused` against the
+  // same one with the red marker standing. Both spend the round.
   repair: ["repaired", "refused"],
   challenge: ["new-tests", "none", "budget", "skipped"],
   verify: ["green", "red"],
@@ -74,11 +74,10 @@ export const REPORT_FAILED_KIND = "report-failed";
 const BUDGET_KIND = "budget";
 
 /**
- * Does this blocked verdict earn a repair round? Two facts, both read off the run rather than the working
- * tree, so a resume cannot answer them differently: the switch, and the counter that says no round has been
- * bought yet. The switch is passed in by the caller that owns the environment (`command.ts` reads it once per
- * run) rather than read from `process.env` here — the table stays a pure function of `(run, outcome)`, which
- * is what lets the step log be the record of a run.
+ * Does this blocked verdict earn a repair round? Two facts, both read off the RUN rather than the working
+ * tree or the environment, so a resume cannot answer them differently: the switch stamped when the run was
+ * created, and the counter that says no round has been bought yet. The table stays a pure function of
+ * `(run, outcome)` — which is what lets the step log be the record of a run.
  */
 export function repairRoundDue(run: LeanRun): boolean {
   return run.oracleRepair === true && run.counters.repairsSpent < 1;
@@ -152,11 +151,9 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           return to(run, c.challengeDone ? "verify" : "challenge");
         case "blocked":
           // The driver proved the named frozen tests cannot all pass. With the switch on and the run's one
-          // round unspent, that is a question for the adversary who wrote them, not the end of the run:
-          // `repair` pays for a blind seat and re-dispatches the builder with a corrected contract. Without
-          // either, the route is the one that has always been: never through the `exhausted` arm, because
-          // publishing a PR over tests the builder proved unsatisfiable is the one shape where an
-          // unsatisfied contract reaches `land`.
+          // round unspent, that is a question for the adversary who wrote them, not the end of the run.
+          // Without either, the route is the release's: never through `exhausted`, because publishing over
+          // tests the driver proved unsatisfiable is the one shape where an unsatisfied contract lands.
           if (repairRoundDue(run)) return viaBuild(run, "repair");
           return to(run, "handback");
         case "exhausted":
@@ -173,16 +170,14 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "repair":
       switch (outcome.kind) {
         case "repaired":
-          // The oracle was corrected, so the builder gets another round against the contract it should
-          // have been built against. No red marker: the corrected oracle is the run's contract now, and
-          // `verify` holds it to the same standard it held the original to. The attempt is billed on
-          // entering `build` — this edge DISPATCHES it.
+          // The corrected oracle is the run's contract now, so the builder rebuilds against it with no red
+          // marker; `verify` holds the replacement to the standard it held the original to. This edge
+          // DISPATCHES the round, so it bills the attempt.
           return viaBuild(run, "build");
         case "refused":
-          // The round was spent and nothing was corrected: the same unsatisfiable contract is still the
-          // contract, so this round ships as a draft if the builder still cannot satisfy it and nothing
-          // later turns it off. A run must not reach `land` over a frozen test the driver proved cannot
-          // pass, and the refused round is the record's own evidence that the alternative was tried.
+          // Nothing was corrected, so the unsatisfiable contract is still the contract and this round ships
+          // as a draft if the builder still cannot meet it, with nothing later clearing the marker. A run
+          // must not land over a frozen test the driver proved cannot pass.
           return viaBuild(run, "build", true);
       }
       break;

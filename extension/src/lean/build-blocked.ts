@@ -63,7 +63,7 @@ function usableConflicts(rows: Array<{ path: string; reason: string }>): string[
 /** What the gate decided, and the sentence the caller traces when it refused. */
 export type BlockedVerdict =
   /** `ran` is every file the driver executed, up to and including the `red`; `output` is what the runner
-   *  printed on that red, which is the only failure evidence a repair brief may quote. */
+   *  printed on it — the only failure evidence a repair brief may quote. */
   | { honoured: true; red: string; ran: string[]; output: string }
   /** Why the report was ignored, for the trace line. */
   | { honoured: false; why: string };
@@ -292,9 +292,8 @@ export async function judgeBlockedReport(opts: {
   }
   const red = proved.red;
   if (!(red in blockedBy)) return undefined;
-  // The executed red the driver watched, per named file it vetted: the command it rendered and what came
-  // back. Bounded by the record's own rules (`oracle-repair-record.ts`) and sanitised where it is built,
-  // because this durable record prints into a child's prompt.
+  // The executed red the driver watched: bounded and sanitised where it is built, because this durable
+  // record prints into a child's prompt.
   const evidence = executedEvidence(opts.template ?? "", proved);
   // The cause line leads with the file the driver watched fail; the map carries all.
   return {

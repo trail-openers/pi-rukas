@@ -78,6 +78,21 @@ function budgetCause(steps: Step[]): string | undefined {
     : `${budgetSentence(step.state, fired)} ${used}`;
 }
 
+/**
+ * A run that spent its repair round and still handed back says so FIRST: a corrected oracle and an unmet
+ * contract want different repairs, and only the latter was reportable before the round existed.
+ */
+function repairCause(steps: Step[]): string | undefined {
+  const step = newestDecidedWorkStep(steps);
+  const r = step?.state === "repair" ? step.outcome?.repair : undefined;
+  if (r === undefined) return undefined;
+  const lines = Object.entries(r.originalHashes).map(([path, hash]) => {
+    const verdict = r.passedAtHead[path] === true ? "passes at head" : "does NOT pass at head";
+    return `- ${oneLine(path, BLOCKED_PATH_CAP)} (was ${hash.slice(0, 12)}, now ${verdict})`;
+  });
+  return `the frozen oracle was repaired and the run still needs work:\n${lines.join("\n")}`;
+}
+
 /** The build step's named unsatisfiable contract — the one cause that names files; counts only at the newest
  * WORK step, like {@link budgetCause}. */
 function blockedCause(steps: Step[]): string | undefined {
@@ -116,6 +131,7 @@ function gapCause(steps: Step[]): string | undefined {
  */
 export function neededFromLog(steps: Step[]): string {
   const reason =
+    repairCause(steps) ??
     blockedCause(steps) ??
     gapCause(steps) ??
     budgetCause(steps) ??

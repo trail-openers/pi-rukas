@@ -12,10 +12,14 @@
  *     whose value is `false` is a replacement whose pass was never observed, and the disclosure prints that
  *     rather than inferring a pass from a green `verify`.
  *
- * The round is one-shot: `repairsSpent` on the counters, so a run that spent its round and handed back
- * cannot spend it again on resume.
+ * The round is one-shot: `repairsSpent` on the counters is the ONE statement of a spent round, billed on the
+ * edge that enters the step, so a run that spent it and handed back cannot buy another.
  */
 import { isFullCommitSha } from "./commit-sha.ts";
+import {
+  blockedEvidenceProblem,
+  validatedBlockedEvidence,
+} from "./oracle-repair-record.ts";
 import { BLOCKED_PATH_CAP, RECORD_MAX_ENTRIES } from "./lean/state-outcome-maps.ts";
 import { frozenKeyProblem } from "./lean/state-outcome.ts";
 
@@ -88,4 +92,28 @@ function replacementMapProblem(
       return `${field} names ${path.slice(0, BLOCKED_PATH_CAP)}, which the run never froze`;
   }
   return undefined;
+}
+
+/**
+ * The repair round's three outcome fields, judged together. `lean/state-outcome.ts` delegates here rather
+ * than spelling their rules in the engine, so a field's shape lives with the round that writes it.
+ */
+export function repairOutcomeProblem(oc: Record<string, unknown>): string | undefined {
+  const evidence = blockedEvidenceProblem(oc.blockedEvidence);
+  if (oc.blockedEvidence !== undefined && evidence !== undefined) return evidence;
+  if (oc.repair !== undefined) {
+    const problem = repairRecordProblem(oc.repair, oc.frozen as Record<string, string> | undefined);
+    if (problem !== undefined) return problem;
+  }
+  return undefined;
+}
+
+/** Rebuild the fields the judgement above passed, or nothing when the step carried none. */
+export function validatedRepairFields(oc: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...(oc.blockedEvidence === undefined
+      ? {}
+      : { blockedEvidence: validatedBlockedEvidence(oc.blockedEvidence) }),
+    ...(oc.repair === undefined ? {} : { repair: validatedRepairRecord(oc.repair) }),
+  };
 }
