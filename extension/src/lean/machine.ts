@@ -8,7 +8,8 @@
  *
  * Loop guards, all counters in the run so a resumed run sees the same caps: `buildAttempts` caps build rounds
  * DISPATCHED (billed on entering `build`, never leaving); `challengeDone` and `reviewDone` make each step run
- * at most once; `ciFixUsed` gives a red CI one fix round.
+ * at most once; `ciFixUsed` gives a red CI one fix round; `repairsSpent` gives a proven-wrong oracle one
+ * repair, billed on entering it.
  */
 import { type LeanRun, type LeanState, type Outcome, newestDecided } from "./state.ts";
 import { type Transition, to, viaBuild } from "./transitions.ts";

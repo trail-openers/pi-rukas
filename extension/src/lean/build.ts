@@ -347,8 +347,7 @@ export async function buildOutcome(
   });
   if (blocked !== undefined) {
     // No commit: `verify` never judges a tree this step cannot account for. The head and the executed red
-    // ride beside the cause, because the repair round re-runs at THAT commit and quotes only what the driver
-    // watched — facts about a run the driver made, not about what the child said.
+    // ride beside the cause: the repair round re-runs at THAT commit and quotes only what the driver watched.
     return {
       kind: "blocked",
       reason: blocked.reason,

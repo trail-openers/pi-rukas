@@ -1,10 +1,10 @@
 /**
  * lean/repair — the step that buys ONE adversary round to correct a frozen oracle the driver proved wrong.
  *
- * When a builder's blocked report survives the anti-forgery gate (`build-blocked.ts`), the driver has itself
- * watched a frozen acceptance test come back red at the builder's head. The release's answer was to hand back;
- * this is the other answer, under `PI_ENSEMBLE_LEAN_ORACLE_REPAIR`: the adversary that wrote the tests is paid
- * once to correct the named file, in a tree at the run's base, and judged before it may replace anything.
+ * A blocked report that survives the anti-forgery gate means the driver watched a frozen test come back red at
+ * the builder's head. The release's answer was to hand back; this is the other answer, under
+ * `PI_ENSEMBLE_LEAN_ORACLE_REPAIR`: the adversary that wrote the tests is paid once to correct the named file,
+ * in a tree at the run's base, and judged before it may replace anything.
  *
  * Four facts, not the child's good sense, make the round safe: it is billed before it is spent (the table
  * moves `repairsSpent` on the edge ENTERING this state, so a refused or crashed round is spent and cannot be
@@ -14,8 +14,8 @@
  * by the release's own primitive, so `verify` holds the corrected oracle to the original's standard and
  * `landEarned` is not widened.
  *
- * The step owns no child-spawning and no judgement code — those live outside `src/lean/`; this reads the
- * record, calls the round, and turns its verdict into the kinds the table routes.
+ * No child-spawning and no judgement code live here; this reads the record, calls the round, and turns its
+ * verdict into the kinds the table routes.
  */
 import { traceWarn } from "../trace.ts";
 import { runRepairRound, type RepairRoundDeps } from "../oracle-repair-dispatch.ts";

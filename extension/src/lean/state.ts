@@ -170,8 +170,7 @@ export interface LeanRun {
    */
   derivedSpec?: DerivedSpec;
   /** The run's reading of `PI_ENSEMBLE_LEAN_ORACLE_REPAIR`, stamped at creation and persisted: a run is
-   *  judged by the rules it started under, so flipping the knob mid-cycle cannot decide this run's round.
-   *  Absent reads as OFF. Read only by `repairRoundDue`. */
+   *  judged by the rules it started under. Absent reads as OFF; read only by `repairRoundDue`. */
   oracleRepair?: boolean;
 }
 

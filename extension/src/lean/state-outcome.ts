@@ -166,8 +166,8 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // The build step's own account of which frozen tests it proved cannot all pass together;
   // `handback` prints it as the run's cause.
   blockedBy: "build",
-  // The driver's own executed red for those files, and the round that repaired them: `build` alone, since
-  // a handback carrying an evidence line would print a run the gate never ran.
+  // The driver's own executed red, and the round that repaired it: `build` alone, since a handback carrying
+  // an evidence line would print a run the gate never ran.
   blockedEvidence: "build",
   repair: "build",
   // The tiers a verify/ci step excused over the base commit: they license a GREEN over a
@@ -436,7 +436,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       ? {}
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(oc.blockedBy === undefined ? {} : { blockedBy: validatedBlockedBy(oc.blockedBy) }),
-    ...(typeof oc.headBefore === "string" && SHA1_HEX.test(oc.headBefore)
+    ...(typeof oc.headBefore === "string" && isFullCommitSha(oc.headBefore)
       ? { headBefore: oc.headBefore }
       : {}),
     ...validatedRepairFields(oc),
