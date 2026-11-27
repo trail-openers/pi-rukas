@@ -107,14 +107,6 @@ export interface QuietTickOpts {
    *  an arm that read `turns`/`totalTokens` off a hand-made zero snapshot would be judged on a
    *  reading no production spawn ever handed it. */
   worked?: { turns: number; totalTokens: number };
-  /** The child's own history, ms before its last line: how long it had been emitting lines before
-   *  the ones this case declares. Default: as long as the case's silence, which is the hung-request
-   *  shape — the child began at the origin, worked, and its stream stopped there. A case meaning
-   *  "quiet for less than the window" states a duration SHORTER than its silence, because a child
-   *  that began at the same instant its last line arrived has no history to measure and would
-   *  otherwise be read as quiet for the whole span. Like every other fact here it is a duration the
-   *  case owns, never a reading: the trackers still derive the silence themselves. */
-  childAgeMs?: number | (() => number);
 }
 
 /** What one quiet tick observed, for the case's own canaries. `fires` is how often the poll handed
@@ -140,8 +132,6 @@ export interface QuietTickReport {
    *  that the fixture's clock and the reader's clock are the same clock. `undefined` until the tick
    *  has run, so a case cannot mistake "no reading" for "quiet for nothing". */
   silence: () => number | undefined;
-  /** What the reader reported on the FIRST pass, before any breach could have stood the poll down. */
-  firstSilence: () => number | undefined;
   /** Whether the tick ran the supervision loop at all: `false` means the poll never supervised
    *  this child, which is not the same answer as a poll that supervised it and held its fire. */
   supervised: boolean;
@@ -170,7 +160,6 @@ export async function deliverQuietTick(
     turns: { delivered: 0, beforeSilence: 0 },
     inFlight: () => false,
     silence: () => undefined,
-    firstSilence: () => undefined,
     supervised: false,
     fires: () => 0,
     supervisedMs: () => 0,
@@ -179,6 +168,19 @@ export async function deliverQuietTick(
   // that never ran names no cause, which is a different answer from one that ran and held its fire.
   report.killed = () => killed;
   if (o.stall === undefined || o.onProgress === undefined) return report;
+  // Inert unless the case SPOKE about its child's stream. `stall` is present whenever the switch is
+  // on and the deadline leaves room, so almost every fixture dispatch arrives here; the passes
+  // below then cost a real second of wall clock, and a case with a frozen clock and a tight
+  // deadline room reads that second as a hang and stops its child. A case that states no silence,
+  // no extra lines, no tool call and no worked shape is not testing a stall and nothing it asserts
+  // depends on the stream's timestamps. The stall suites all declare a silence, so they still get
+  // the poll, the trackers and the production reader.
+  const stated =
+    opts.silentMs !== undefined ||
+    opts.extraLines !== undefined ||
+    opts.toolUses !== undefined ||
+    opts.worked !== undefined;
+  if (!stated) return report;
   const declared = typeof opts.toolUses === "function" ? opts.toolUses() : (opts.toolUses ?? []);
   const extra = typeof opts.extraLines === "function" ? opts.extraLines() : (opts.extraLines ?? []);
   const silent = typeof opts.silentMs === "function" ? opts.silentMs() : (opts.silentMs ?? 0);
@@ -198,8 +200,9 @@ export async function deliverQuietTick(
   // case states, and the silence the case states is what is left after its last line. The reader
   // asks the real wall against `progressAt`, and `progressAt` is on the same anchor: the two differ
   // by exactly the duration the case named, plus the real milliseconds the passes themselves took.
-  const age = typeof opts.childAgeMs === "function" ? opts.childAgeMs() : (opts.childAgeMs ?? silent);
-  const start = Date.now() - age;
+  // The origin sits `silent` before the passes run, so the child began at the origin, worked, and
+  // its stream stopped there — the hung-request shape every case here means.
+  const start = Date.now() - silent;
   const childProgress = new ChildProgress(() => start);
   const pumpStamp = () => start;
   let fires = 0;
@@ -307,7 +310,6 @@ export async function deliverQuietTick(
     // different measurement — it would include the time the case spent between the passes.
     const reading = arm.silence();
     report.silence = () => reading.sinceMs;
-    if (i === 0) report.firstSilence = () => reading.sinceMs;
     poll.tick();
     ms += TICK_MS;
   }
