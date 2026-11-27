@@ -18,15 +18,16 @@
  */
 
 import type { DeveloperContinuationFn } from "../src/developer-session-continuation.ts";
-import { askBuildReask } from "../src/lean/build-reask-child.ts";
 import {
   BUILD_REASK_BOUND_MS,
   CLEAN_STOP_REASON,
   buildReaskClause,
   buildReaskPrompt,
   buildTurnWasWasted,
-} from "../src/lean/build-reask.ts";
+} from "../src/build-reask.ts";
+import { askBuildReask } from "../src/build-reask-child.ts";
 import type { DispatchResult } from "../src/types.ts";
+import { continuationBoundMs, continuationRow } from "../src/fixer-truncation.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 
@@ -292,11 +293,14 @@ for (const value of ["", "false", "NO", " 0 ", "00", "one"]) {
   };
   const asked = await askBuildReask(seam, {
     child: { ...child(CUT), transcriptPath: "/runs/a.json" },
-    budget: { opts: { childBoundMs: 5 * 60_000 } },
     trigger: "length",
     issue: 2661,
     worktree: "/wt",
     writeFence: fence,
+    // The step does this clamp; the suite drives it with the seat's own armed bound, as build.ts does.
+    boundMs: continuationBoundMs({ opts: { childBoundMs: 5 * 60_000 } }, BUILD_REASK_BOUND_MS),
+    prompt: buildReaskPrompt(2661, "length"),
+    rowFor: (outcome, role) => continuationRow(outcome, role, undefined),
   });
   assert(asked !== undefined, "(7) a child with a session path and a seam gets its ask");
   assert(
@@ -340,11 +344,13 @@ for (const value of ["", "false", "NO", " 0 ", "00", "one"]) {
     },
     {
       child: { ...child(CUT), transcriptPath: "/runs/b.json" },
-      budget: { opts: {} },
       trigger: "no-change",
       issue: 2661,
       worktree: "/wt",
       writeFence: fence,
+      boundMs: continuationBoundMs({ opts: {} }, BUILD_REASK_BOUND_MS),
+      prompt: buildReaskPrompt(2661, "no-change"),
+      rowFor: (outcome, role) => continuationRow(outcome, role, undefined),
       workCycleTrust: true,
     },
   );
@@ -372,11 +378,13 @@ for (const value of ["", "false", "NO", " 0 ", "00", "one"]) {
     }),
     {
       child: { ...child(CUT), transcriptPath: "/runs/d.json" },
-      budget: { opts: {} },
       trigger: "length",
       issue: 2661,
       worktree: "/wt",
       writeFence: fence,
+      boundMs: continuationBoundMs({ opts: {} }, BUILD_REASK_BOUND_MS),
+      prompt: buildReaskPrompt(2661, "length"),
+      rowFor: (outcome, role) => continuationRow(outcome, role, undefined),
     },
   );
   assert(
@@ -402,11 +410,13 @@ for (const value of ["", "false", "NO", " 0 ", "00", "one"]) {
     const refused: Parameters<DeveloperContinuationFn>[0][] = [];
     noSeam = await askBuildReask(undefined, {
       child: { ...child(CUT), transcriptPath: "/runs/c.json" },
-      budget: { opts: {} },
       trigger: "length",
       issue: 2661,
       worktree: "/wt",
       writeFence: fence,
+      boundMs: continuationBoundMs({ opts: {} }, BUILD_REASK_BOUND_MS),
+      prompt: buildReaskPrompt(2661, "length"),
+      rowFor: (outcome, role) => continuationRow(outcome, role, undefined),
     });
     assert(
       noSeam === undefined && refused.length === 0,
@@ -419,11 +429,13 @@ for (const value of ["", "false", "NO", " 0 ", "00", "one"]) {
       },
       {
         child: child(CUT),
-        budget: { opts: {} },
         trigger: "length",
         issue: 2661,
         worktree: "/wt",
         writeFence: fence,
+        boundMs: continuationBoundMs({ opts: {} }, BUILD_REASK_BOUND_MS),
+        prompt: buildReaskPrompt(2661, "length"),
+        rowFor: (outcome, role) => continuationRow(outcome, role, undefined),
       },
     );
     assert(

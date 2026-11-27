@@ -17,7 +17,7 @@
  *   3. the guard rails are unaffected by the switch: no seam and no session path still refuse the
  *      ask, and they refuse it identically on both arms.
  */
-import { BUILD_REASK_BOUND_MS } from "../src/lean/build-reask.ts";
+import { BUILD_REASK_BOUND_MS } from "../src/build-reask.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { runBuild } from "./lib/lean-build-fixture.ts";

@@ -28,7 +28,7 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // error stop, a budget the step's ceiling already fired, any tool call, or a child whose session path
   // is gone takes today's path. `0` restores today's behaviour byte for byte — no detection, no ask,
   // and the exhausted reason keeps its bytes. The ask is one extra developer cost row and no bound,
-  // budget or ceiling changes. The reader is `leanBuildReaskEnabled` in lean/build-reask.ts.
+  // budget or ceiling changes. The reader is `leanBuildReaskEnabled` in build-reask.ts.
   flag("LEAN_BUILD_REASK", true),
   // Default OFF, on only at `1`: a repo with neither `.pi/work.json` nor `.pi/verify-cmd`
   // gets verify tiers detected at the base (pytest, or a package.json test script) instead

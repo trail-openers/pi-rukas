@@ -1,22 +1,43 @@
 /**
- * lean/build-reask — the judgement that a BUILD turn bought nothing, plus its prompt, clause and
+ * build-reask — the judgement that a BUILD turn bought nothing, plus its prompt, clause and
  * switch. The defect: a build child spent its whole completion budget reasoning
  * (`stopReason: "length"` at the provider's output cap, NO tool call), the fold found no change, and
  * the step ended `exhausted: the developer produced no change`. The no-work re-dispatch cannot reach
- * it (`build-dispatch.ts` needs a DEAD child); the sibling — one clean turn, no tool call, no change
- * — gets the same one ask. Three rules meet here. **Evidence, never prose:** a turn is judged by its
- * OWN recorded `stopReason` and tool calls; an absent stop reason, an absent tool-call record, or a
- * record its own counter contradicts is NOT wasted, so an un-vouchable child takes today's exhaustion.
- * **The order is not cosmetic:** `killCause`/`errorStop` branch first (already routed by
+ * it (`lean/build-dispatch.ts` needs a DEAD child); the sibling — one clean turn, no tool call, no
+ * change — gets the same one ask. Three rules meet here. **Evidence, never prose:** a turn is judged
+ * by its OWN recorded `stopReason` and tool calls; an absent stop reason, an absent tool-call record,
+ * or a record its own counter contradicts is NOT wasted, so an un-vouchable child takes today's
+ * exhaustion. **The order is not cosmetic:** `killCause`/`errorStop` branch first (already routed by
  * `dispatchBuilder`), then the budget, the stop reason, the tool calls — the budget BEFORE anything is
  * spent, since an aborted continuation answers nothing. **One shot:** a resumed session replays the
  * cut turn, so the flag is the caller's and this module returns rather than recursing. The ask itself
- * is `lean/build-reask-child.ts`.
+ * is `build-reask-child.ts`.
+ *
+ * Lives outside `src/lean/` because it is a judgement over fields the caller already holds: it takes
+ * the fold's answer, the tool-call counts and the usage as plain parameters and imports no runtime
+ * code from the lean tree, so the lean line total does not grow with it.
  */
 
-import { TRUNCATED_STOP_REASON } from "../fixer-truncation.ts";
-import { traceWarn } from "../trace.ts";
-import type { DispatchResult } from "../types.ts";
+import { TRUNCATED_STOP_REASON } from "./fixer-truncation.ts";
+import { traceWarn } from "./trace.ts";
+
+/** The fields of one build dispatch this judgement reads, and no more. Structural, not
+ *  `DispatchResult`: the module that makes the call lives in the lean tree, and this one takes what
+ *  it needs as parameters instead of importing the lean engine's types. */
+export type BuildChildRecord = {
+  /** A self-kill or an abort the step already routed; any value is a refusal. */
+  killCause?: unknown;
+  /** A provider fault the step already routed; any value is a refusal. */
+  errorStop?: unknown;
+  /** What Pi stamped the child's last turn. Absent is not a value to guess from. */
+  stopReason?: string;
+  /** The child's own recorded tool calls; empty for a child killed mid-flight. */
+  toolUses?: unknown[];
+  /** The live counter that covers the record a killed child never wrote. */
+  observedToolCalls?: number;
+  /** The child's own token report; the clause quotes its output count. */
+  usage?: { output?: number };
+};
 
 /** A clean stop, stamped verbatim by Pi: the second wasted shape, a turn that ended WITHOUT acting. */
 export const CLEAN_STOP_REASON = "stop";
@@ -55,7 +76,7 @@ export type BuildWasted =
  *  killed mid-flight and `observedToolCalls` is the live count that covers it, so a record its own
  *  counter contradicts is not vouchable as call-free. */
 export function buildTurnWasWasted(
-  result: DispatchResult,
+  result: BuildChildRecord,
   deps: {
     /** The fold's answer: `report.files.length === 0`, judged by the caller. */
     budgetFired: boolean;

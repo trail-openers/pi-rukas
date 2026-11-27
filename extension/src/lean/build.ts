@@ -37,6 +37,13 @@
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
+import {
+  BUILD_REASK_BOUND_MS,
+  buildReaskClause,
+  buildReaskPrompt,
+  buildTurnWasWasted,
+} from "../build-reask.ts";
+import { askBuildReask } from "../build-reask-child.ts";
 import { spawnDeveloperContinuationChild } from "../developer-session-continuation.ts";
 import type { DeveloperContinuationFn } from "../developer-session-continuation.ts";
 import { execp } from "../exec.ts";
@@ -47,6 +54,7 @@ import {
   reentryFromLog,
   testsFromLog,
 } from "../lean-log.ts";
+import { continuationBoundMs, continuationRow } from "../fixer-truncation.ts";
 import { armsStepBudget, stepDispatchArms, stopReasonClause } from "../lean-step-bound.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
@@ -59,8 +67,6 @@ import { dispatchBuilder } from "./build-dispatch.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
-import { askBuildReask } from "./build-reask-child.ts";
-import { buildReaskClause, buildTurnWasWasted } from "./build-reask.ts";
 import { budgetFoldAccumulator, failingClause, foldClauses, keptClause } from "./build-reasons.ts";
 import type { BuildDispatch, BuildExec, NormaliseReport } from "./build-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
@@ -372,11 +378,15 @@ export async function buildOutcome(
     wasted.wasted && lastChildResult !== undefined
       ? await askBuildReask(deps.continueSession, {
           child: lastChildResult,
-          budget: lastBudget,
           trigger: wasted.trigger,
           issue,
           worktree: wt,
           writeFence: fence,
+          // The ask's own ceiling, clamped to what the armed budget left — the clamp lives with the
+          // fixer's bound, which the step already reads.
+          boundMs: continuationBoundMs(lastBudget, BUILD_REASK_BOUND_MS),
+          prompt: buildReaskPrompt(issue, wasted.trigger),
+          rowFor: (outcome, role) => continuationRow(outcome, role, undefined),
           // The run's stamp, from the function that decides it — not re-derived here.
           ...leanChildOpts(headless),
         })

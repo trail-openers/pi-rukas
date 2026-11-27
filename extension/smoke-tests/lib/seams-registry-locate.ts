@@ -96,9 +96,11 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
   },
   {
     // #2661 — the ONE continuation a build turn that bought nothing is allowed: the detector of the
-    // two wasted shapes, its prompt, its clause and its switch. Under `src/lean/` because it is step
-    // judgement, and judged against the recursive corpus like its siblings above.
-    file: "lean/build-reask.ts",
+    // two wasted shapes, its prompt, its clause and its switch. At `src/`'s top level because it is a
+    // judgement over fields the caller hands in, not engine state (the `request-stall-policy.ts`
+    // precedent), so its importer is under `src/lean/` and it is judged against the recursive corpus
+    // like its siblings above.
+    file: "build-reask.ts",
     pending: {},
     testOnly: {
       // The switch's ONE reader. No step calls it — the detector does — so only the truth table and
@@ -128,9 +130,9 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
     },
     locate: (source: { name: string; text: string }) => ({
       // The step that asks: the one file that reads the detector, as opposed to the ask's own file,
-      // which imports only the prompt, the bound and the switch.
+      // which imports only the prompt, the bound and the trigger type.
       production: source.name === "lean/build.ts",
-      importsSeam: /from "\.\/build-reask\.ts"/.test(source.text),
+      importsSeam: /from "\.\.\/build-reask\.ts"/.test(source.text),
     }),
   },
   {
