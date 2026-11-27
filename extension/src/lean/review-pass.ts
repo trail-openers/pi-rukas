@@ -48,9 +48,8 @@ export function postFailureNote(owed: string): string {
 /**
  * The step's pass outcome: kind, reason, and rows — bounded like every other surface that reports rows.
  *
- * `DISPATCHES_MAX_ROWS` is the validator's own cap. An unbounded pass was the one arm that could hand the
- * engine a record the loader rejects — which reports no over-long run: it drops the step's cost rows
- * entirely and silently under-bills the most expensive child.
+ * `DISPATCHES_MAX_ROWS` is the validator's own cap: an unbounded pass would hand the engine a record the
+ * loader rejects, which drops the step's cost rows and silently under-bills the most expensive child.
  *
  * **`fixed` or `done`.** The two kinds differ only in whether the fix wave pushed commits; `passKind`
  * reads that pair (see `fixedFromLog`).
@@ -68,8 +67,7 @@ export function cleanPass(
   // The note is the review layer's account of a failed post, and its text embeds model-authored finding prose
   // from the round. It rides the reason the engine stores, so it gets the treatment every model-authored field
   // gets before a stored surface (`neutraliseEvidence`: one line, no fence delimiters, no parsable marker,
-  // clipped). `disclosureNote` neutralises the gate's words beside it; a reason that disarmed half its model
-  // prose was the half nobody looked at.
+  // clipped). `disclosureNote` neutralises the gate's words beside it.
   const owed =
     round.note === undefined || round.note.trim() === ""
       ? ""

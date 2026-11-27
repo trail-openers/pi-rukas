@@ -80,7 +80,6 @@ await withEnv(
     // Absent, so the bound the reads are clamped to is the shipped default and the
     // recorded timeout is `min(60 s, 300 s)` rather than whatever the shell pinned.
     PI_ENSEMBLE_GIT_NET_TIMEOUT_MS: undefined,
-    PI_ENSEMBLE_LEAN_HANDBACK_NET_GIT: "1",
   },
   async () => {
     // `netGitEnv` caches the repo's `core.sshCommand` for the process's lifetime, so a
@@ -178,7 +177,7 @@ await withEnv(
     // question — whether the suite would notice a read that stopped being routed — because
     // the enumeration gate cannot: that gate counts `runNetGit(` sites, and a site that is
     // textually present but never reached passes it. So a COPY of the module under test is
-    // driven with its one routed arm forced off (`const ran = false && …`). The copy is
+    // driven with its one routed call handed straight to the executor. The copy is
     // written to a fresh path under the system temp root, which is what keeps it out of
     // bun's module cache (a module is keyed by resolved path, so a name no run has used is
     // a module bun has never compiled) and, more importantly, keeps the tracked file
@@ -187,7 +186,7 @@ await withEnv(
     // it resolves from anywhere.
     //
     // The mutant still ships its rewind — routing a read is not what makes it answer — so
-    // what is asserted is what the reads were handed. With the routed arm unreachable and
+    // what is asserted is what the reads were handed. With the wrapper bypassed and
     // the drive giving the rewind no env of its own, no supplier is left: an unrouted read
     // carries neither `killGroup` nor `GIT_TERMINAL_PROMPT`, and all four must be reported
     // as carrying neither. Green here would mean this suite was proving the drive's call
@@ -201,7 +200,7 @@ await withEnv(
         new URL("../src/lean/handback-rewind.ts", import.meta.url).pathname,
         "utf8",
       );
-      const ROUTED_ARM = "const ran = leanHandbackNetGitEnabled()";
+      const ROUTED_ARM = 'const ran = await runNetGit(exec, "git", {';
       const arms = source.split(ROUTED_ARM).length - 1;
       assert(
         arms === 1,
@@ -212,7 +211,7 @@ await withEnv(
         mutantPath,
         absoluteImports(source).replace(
           ROUTED_ARM,
-          "const ran = false && leanHandbackNetGitEnabled()",
+          'const ran = await exec("git", {',
         ),
       );
       const mutated = await import(`${mutantPath}?unrouted=${String(Date.now())}`);

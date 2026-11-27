@@ -42,8 +42,7 @@ import type { DispatchUsageRow } from "./step-budget.ts";
  * "an empty diff, nothing to change" — that is an approval with no bytes behind
  * it, and it is the failure this step's whole shape exists to make impossible.
  * The split comes from `resolveHeadShaOutcome`, the resolver the frozen driver's
- * review path already uses, rather than a local `rev-parse` whose stderr and exit
- * code were discarded and both answers collapsed into one.
+ * review path uses, which keeps the two answers apart.
  */
 export async function reviewedHead(
   deps: ReviewDeps,

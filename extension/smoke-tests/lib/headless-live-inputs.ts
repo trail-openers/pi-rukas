@@ -29,10 +29,8 @@ import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.t
 import { leanPreVerifySharePercent } from "../../src/lean/pre-verify-share-switch.ts";
 import { leanDetectVerifyEnabled } from "../../src/lean/config-detect.ts";
 import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
-import { leanHandbackNetGitEnabled } from "../../src/lean/handback-net-git-switch.ts";
 
 import { leanSpecifyGapHandbackEnabled } from "../../src/lean/specify-gap-switch.ts";
-import { leanBuildIssueProseEnabled } from "../../src/lean/issue-prose.ts";
 import { leanPrefixHeadEnabled } from "../../src/lean/review-log.ts";
 import { leanFullTierOperandEnabled } from "../../src/lean/full-tier-operand-switch.ts";
 import { leanPreflightProbeContainEnabled } from "../../src/lean/preflight-probe-switch.ts";
@@ -197,9 +195,6 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_HANDOFF_POST_RETRY", handoffPostRetryEnabled],
   ["PI_ENSEMBLE_INTENT", intentResolutionEnabled],
   ["PI_ENSEMBLE_INTENT_CRITICALITY", intentCriticalityEnabled],
-  // #2228 — the builder seat's issue-prose section. The reader is `v !== "0"`, so
-  // the gate's LIVE loop (env deleted) pins "unset means on".
-  ["PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE", leanBuildIssueProseEnabled],
   // #2202 — the probe parent's containment check. The reader is `v !== "0"`, so the
   // gate's LIVE loop (env deleted) pins "unset means on". (#2439 retired the probe's
   // COLLECTABLE switch, keeping its default: `preflight-probe-switch.ts`.)
@@ -231,11 +226,6 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // deleted) pins "unset means on"; the arms, the off-arm golden and the docs row are pinned by
   // test-2633-full-tier-relative-operand.ts.
   ["PI_ENSEMBLE_LEAN_FULL_TIER_OPERAND", leanFullTierOperandEnabled],
-  // #2279 — the handback's origin reads through the network-git wrapper. The reader is
-  // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth
-  // table, the docs row and the off-arm call shape are pinned by
-  // test-lean-handback-net-git-switch.ts.
-  ["PI_ENSEMBLE_LEAN_HANDBACK_NET_GIT", leanHandbackNetGitEnabled],
   // #2199 — the review fix wave's saved pre-fix head; truth table and off arm in
   // test-lean-prefix-head.ts.
   ["PI_ENSEMBLE_LEAN_PREFIX_HEAD", leanPrefixHeadEnabled],

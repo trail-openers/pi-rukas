@@ -66,8 +66,7 @@ export async function assertReviewEntry(opts: {
       `the run has no base commit to review against: ${JSON.stringify(base.slice(0, 80))}`,
     );
   // Publishability second: legality does not make a name PUSHABLE (`main` is legal,
-  // and `+x` is legal and reads as a force), so this is the half `review` never had
-  // while `publish` had it all along.
+  // and `+x` is legal and reads as a force).
   try {
     await assertPublishableBranch(repoRoot, branch, exec);
   } catch (err) {

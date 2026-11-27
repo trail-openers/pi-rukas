@@ -1,9 +1,8 @@
 /**
  * lean/submodule-verify — how this step checks its own work, allowed to be WRONG in only one
- * direction: towards refusing the run. A seeding that reported success without looking is the
- * failure mode this step exists to avoid — the field report was a run that “initialised” its
- * submodules and then tested against an empty `vendor/` directory. Both checks here are
- * deliberately pessimistic: an unreadable answer counts as a problem, never as an absence of one.
+ * direction: towards refusing the run. A seeding that reports success without looking — a run that
+ * tests against an empty `vendor/` directory — is the failure mode this step exists to avoid. Both
+ * checks are deliberately pessimistic: an unreadable answer counts as a problem, never as an absence.
  */
 
 import { spawnSync } from "node:child_process";

@@ -1,12 +1,9 @@
 /**
  * lean/pre-verify-share — the wall the steps BEFORE the first verify share, and what a stop says.
  *
- * `specify` and `challenge` are bounded per CHILD and never together, so a cell could spend
- * 1100 to 1800 of its 4200 seconds on the pair and still be asked to open `review`, which needs
- * the handoff allowance plus {@link REVIEW_DEADLINE_RESERVE_MS} left just to START (see
- * `review-bound.ts`). The reserve then fired on a head that was already green and published — the
- * cell handed back unverified. This module bounds the PAIR, so the run reaches its gate with time
- * for the review behind it.
+ * `specify` and `challenge` are bounded per CHILD and never together, while `review` needs the handoff
+ * allowance plus {@link REVIEW_DEADLINE_RESERVE_MS} left just to START (see `review-bound.ts`). This
+ * module bounds the PAIR, so the run reaches its gate with time for the review behind it.
  *
  * Both readings happen BEFORE a dispatch and neither is a kill: the pair's spend is the sum over
  * every `specify` and `challenge` entry in the DURABLE step log (so a resumed run is charged what

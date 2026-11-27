@@ -68,9 +68,8 @@ export const NO_MAINLINE_WHY = "no mainline ref resolved (origin/HEAD, origin/ma
 /**
  * What a mainline probe returned: the sha, or the reason there is none.
  *
- * A failure CAUSE travels back with the answer rather than sitting in a module global: the global version read
- * the LAST probe's causes, so a second probe after a failure — a retry, or two issues in one process — reported
- * one run's cause against another's, and the comment said something git never did.
+ * A failure CAUSE travels back with the answer rather than sitting in a module global, so a second probe after
+ * a failure — a retry, or two issues in one process — never reports one run's cause against another's.
  */
 interface MainlineSha {
   sha?: string;

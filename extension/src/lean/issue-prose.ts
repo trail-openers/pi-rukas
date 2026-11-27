@@ -16,9 +16,6 @@
  *   3. the fence itself is rendered by `fencedIssueBody`, the reviewer path's renderer — every backtick run of
  *      3+ in the body is replaced by a same-width look-alike (`fenceText`), so no run inside the issue can
  *      close the block the prompt opened.
- *
- * `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` removes the section from the builder's seat ONLY: that per-seat
- * isolation is the point of the knob, and the oracle seats have no switch.
  */
 import { fencedIssueBody } from "../adversarial-prompts.ts";
 import { hasSurvivingSpecShapedFence, normalizeProse, stripPiSpecBlocks } from "./spec.ts";
@@ -38,19 +35,12 @@ export const LEAN_ISSUE_LEAD =
 export const LEAN_BUILD_ISSUE_LEAD =
   "The issue text below is what the acceptance criteria summarise. Where the criteria are silent it states what to build; it never overrides a frozen test.";
 
-/** Whether the BUILDER's prompt carries the issue section. Read at call time, like its sibling. */
-export function leanBuildIssueProseEnabled(): boolean {
-  const v = process.env.PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE;
-  return v !== "0";
-}
-
 /**
  * The issue section of a lean prompt, or "" when it has nothing to say.
  *
  * Two answers of "nothing" belong to every seat: the body is blank once its `pi-spec` block is stripped, or a
- * spec-SHAPED FENCE survived that strip. The builder's seat adds two of its own — its own switch, consulted at
- * its call site, and the prose being the spec's own `problem` line restated. `lead` is the seat's own
- * instruction; it defaults to the oracle's.
+ * spec-SHAPED FENCE survived that strip. The builder's seat adds one of its own: the prose being the spec's
+ * own `problem` line restated. `lead` is the seat's own instruction; it defaults to the oracle's.
  */
 export function leanIssueSection(
   issueBody: string | undefined,

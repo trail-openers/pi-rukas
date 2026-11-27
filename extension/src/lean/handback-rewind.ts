@@ -21,7 +21,6 @@ import { isFullCommitSha } from "../commit-sha.ts";
 import { traceWarn } from "../trace.ts";
 import { netGitEnv, netRefProblem, runNetGit } from "../work-driver-net-git.ts";
 import type { HandlerCtx } from "./engine.ts";
-import { leanHandbackNetGitEnabled } from "./handback-net-git-switch.ts";
 import { PublishInfraError, assertPublishableBranch } from "./publish-deps.ts";
 import { NO_HOOKS } from "./specify-reset.ts";
 import { specifyBranch } from "./specify-tree.ts";
@@ -54,11 +53,10 @@ export interface Rewind {
 export async function originBranchHead(
   exec: VerifyExec,
   ctx: Pick<HandlerCtx, "repoRoot" | "issue" | "run">,
-  opts: { env?: NodeJS.ProcessEnv } = {},
 ): Promise<string | undefined> {
   const ref = `refs/heads/${specifyBranch(ctx.run.branch, ctx.issue)}`;
   // One origin read, one shape: {@link originRead} is the only call this file makes.
-  return originRead(exec, ctx.repoRoot, ref, opts.env);
+  return originRead(exec, ctx.repoRoot, ref);
 }
 
 /** Nothing to move: the rule fired and the log named no head to go back to. */
@@ -139,33 +137,17 @@ function readSha(stdout: string | undefined): string | undefined {
 }
 
 /**
- * The read this clone makes of one origin ref, in the shape the switch decides.
- *
- * Both arms ask for the same ceiling and buffer; the switch decides who hands the call to the executor. On
- * the routed arm that is the network wrapper, which supplies the non-interactive env, the process-group
- * kill, and its own bound.
+ * The read this clone makes of one origin ref. The network wrapper supplies the non-interactive env, the
+ * process-group kill, and its own bound, because `ls-remote` crosses the same transport the push does.
  */
-async function originRead(
-  exec: VerifyExec,
-  cwd: string,
-  ref: string,
-  env?: NodeJS.ProcessEnv,
-): Promise<string | undefined> {
+async function originRead(exec: VerifyExec, cwd: string, ref: string): Promise<string | undefined> {
   const argv = [...NO_HOOKS, "ls-remote", "origin", ref];
-  const ran = leanHandbackNetGitEnabled()
-    ? await runNetGit(exec, "git", {
-        argv,
-        cwd,
-        timeoutMs: 60_000,
-        maxBuffer: 4 * 1024 * 1024,
-      }).catch(() => undefined)
-    : await exec("git", {
-        argv,
-        cwd,
-        timeout: 60_000,
-        maxBuffer: 4 * 1024 * 1024,
-        ...(env === undefined ? {} : { env }),
-      }).catch(() => undefined);
+  const ran = await runNetGit(exec, "git", {
+    argv,
+    cwd,
+    timeoutMs: 60_000,
+    maxBuffer: 4 * 1024 * 1024,
+  }).catch(() => undefined);
   return readSha(ran?.stdout);
 }
 
@@ -202,7 +184,7 @@ export async function rewindToVerified(
   if (pushable !== undefined)
     return { shipped: false, reason: `the branch is not pushable: ${pushable}` };
   // `held` is read BEFORE the sha check: a read that cannot answer is no licence to claim a head shipped.
-  const held = await originRead(exec, ctx.repoRoot, ref, opts.env ?? netEnv);
+  const held = await originRead(exec, ctx.repoRoot, ref);
   if (held === undefined)
     return {
       shipped: false,
@@ -281,7 +263,7 @@ export async function rewindToVerified(
   if (pushStderr !== undefined) {
     // The lease is not the only reason a push says no: a clone that never fetched a third party's head
     // fails with `bad object` / `unpacker error`, and the two need different operator actions.
-    const refused = await originRead(exec, ctx.repoRoot, ref, opts.env ?? netEnv);
+    const refused = await originRead(exec, ctx.repoRoot, ref);
     const where = `origin still holds ${refused === undefined ? "an unreadable head" : refused.slice(0, 12)}`;
     return {
       shipped: false,
@@ -298,8 +280,8 @@ export async function rewindToVerified(
   // Origin decides, never the porcelain: compare BOTH names, since a rewind that moved the branch and lost
   // the keeping-ref would have thrown the unverified head away.
   const [after, keptOnOrigin] = await Promise.all([
-    originRead(exec, ctx.repoRoot, ref, opts.env ?? netEnv),
-    originRead(exec, ctx.repoRoot, unverifiedRef(ctx.issue), opts.env ?? netEnv),
+    originRead(exec, ctx.repoRoot, ref),
+    originRead(exec, ctx.repoRoot, unverifiedRef(ctx.issue)),
   ]);
   if (after === verifiedHead && keptOnOrigin === held)
     return { shipped: true, unshippedHead: held };

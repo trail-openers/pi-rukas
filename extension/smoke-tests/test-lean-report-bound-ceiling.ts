@@ -193,14 +193,11 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
    *  call site (the excluded `originBranchHead` row) still has to find a routed arm inside
    *  its own window: a site that no longer routes says so here rather than reading the
    *  number out of the helper two hundred lines below it. */
-  const lsRemoteCeiling = (needle: string, label: string, stop = OFF_ARM): number => {
+  const lsRemoteCeiling = (needle: string, label: string, stop = READ_END): number => {
     const src = readSource("lean/handback-rewind.ts");
     const at = src.indexOf(needle);
-    // `stop` is a function of where the needle landed, not of the source from the top: the
-    // needle can sit PAST the first copy of the boundary (the file holds three `exec("git")`
-    // calls, and the excluded `originBranchHead` row sits above all of them). Searching for
-    // the boundary from 0 instead made that window end behind its own routed arm, and the
-    // row reported a ceiling it had not looked for.
+    // `stop` is searched from where the needle landed, so a window always closes after its
+    // own needle and never behind its own routed arm.
     const boundary = src.indexOf(stop, at);
     // The routed arm is what the wrapper caps, so it is what the bound has to cover: the
     // window from the row's needle to its boundary must CONTAIN a `runNetGit` call, and the
@@ -229,7 +226,7 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
   /** The routed arm of the single origin-read helper, spelled as the source spells it. The
    *  helper's DECLARATION ends here, which is also where a row's window opens: the ceiling
    *  is read inside the routed arm's own options object and nothing else. */
-  const ROUTED_ARM = '    ? await runNetGit(exec, "git", {';
+  const ROUTED_ARM = '  const ran = await runNetGit(exec, "git", {';
 
   /** The single origin-read helper, declared up to its routed arm. Every origin read in the
    *  file is one call to it — the held head before the push, the refusal's re-read, both
@@ -238,20 +235,14 @@ import { ROOTS } from "./lib/lean-verified-handback-fixture.ts";
    *  would all print the same number while looking distinct, which is the failure this
    *  file's windowing exists to prevent. */
   const READ_HELPER =
-    "async function originRead(\n" +
-    "  exec: VerifyExec,\n" +
-    "  cwd: string,\n" +
-    "  ref: string,\n" +
-    "  env?: NodeJS.ProcessEnv,\n" +
-    "): Promise<string | undefined> {\n" +
+    "async function originRead(exec: VerifyExec, cwd: string, ref: string): Promise<string | undefined> {\n" +
     '  const argv = [...NO_HOOKS, "ls-remote", "origin", ref];\n' +
-    "  const ran = leanHandbackNetGitEnabled()\n" +
     ROUTED_ARM;
 
-  /** Where a call site's window ends: the off arm's call to the executor, which only the
+  /** Where a call site's window ends: the close of the routed call, which only the
    *  helper's own body carries. A row whose needle lies inside that body closes here, so
    *  its ceiling can only come from the routed arm on the near side of the boundary. */
-  const OFF_ARM = ": await exec(\"git\", {";
+  const READ_END = "}).catch(() => undefined);\n  return readSha(ran?.stdout);";
 
   const awaits: ReportAwait[] = [
     {

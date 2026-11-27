@@ -101,8 +101,7 @@ export function submoduleNoteClause(notes: readonly SubmoduleNote[]): string | u
   // A read that died is its own disclosure: it carries no path, so it must not fall through to silence.
   const unreadable = notes.some((n) => n.unreadable === true);
   if (unpopulated.size === 0 && !unreadable) return undefined;
-  // Bounded: the clause rides in a reason line the consumer clips from the END, so an unbounded path list
-  // made the disclosure the thing that got deleted.
+  // Bounded: the clause rides in a reason line the consumer clips from the END, which would cut it off.
   const listed = clipList(
     [...unpopulated].map((p) => `"${oneLine(p, PATH_CLIP)}"`),
     PATH_CAP,

@@ -26,7 +26,6 @@ import { challengePrompt } from "../src/lean/challenge-prompt.ts";
 import { type PiSpec, renderPiSpec } from "../src/lean/spec.ts";
 import { refusalFeedback } from "../src/lean/specify-prompt.ts";
 import { MAX_TEST_LINES } from "../src/lean/test-size.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { CONSTRAINT } from "./lib/ticket-issue-fixture.ts";
 import {
   ROOTS,
@@ -84,12 +83,7 @@ function linesOf(text: string): number {
 }
 
 // ── (a) over the cap on attempt 1, split into two in-cap files on attempt 2 ──
-//
-// The builder's switch is PINED absent for this case, not read from the ambient
-// environment: the two #2171 assertions at its end assert the issue section IS
-// rendered, and an inherited `PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0` from a driver or
-// operator shell would have failed them red on an unrelated change.
-await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: undefined }, async () => {
+{
   const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const x = 1;\n" });
   const half = Math.floor(MAX_TEST_LINES / 2);
   const prompts: string[] = [];
@@ -147,7 +141,7 @@ await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: undefined }, async () => {
       prompts.every((p) => p.includes("## The issue") && p.includes(CONSTRAINT)),
     "(a) BOTH prompts carry the fenced issue section with the body's own constraint",
   );
-});
+}
 
 // ── (b) the remedy is its own line, so a >300-char size reason cannot clip it ─
 {

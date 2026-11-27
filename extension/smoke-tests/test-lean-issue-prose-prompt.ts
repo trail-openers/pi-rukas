@@ -17,12 +17,8 @@
  * behaviour over the same fixture lives in `test-lean-challenge-issue-prose.ts`;
  * this file is the render, that file is the step.
  *
- * The oracle seats have no switch: the section ships on, and the only "no section"
- * is a body with nothing to say. The builder's knob is the one in the family and it
- * is PINED rather than trusted to the ambient environment: `leanBuildIssueProseEnabled()`
- * reads `process.env` at call time, so an operator shell that exported it would
- * otherwise change what this file asserts. `withEnv` restores exactly what was there,
- * an absent variable included.
+ * No seat has a switch: the section ships on, and the only "no section" is a body
+ * with nothing to say.
  *
  * Split out of `test-lean-adversary-prompts.ts` (AGENTS.md §12: split, never
  * compress) along the seam of one mechanism per file.
@@ -31,12 +27,10 @@ import { challengePrompt } from "../src/lean/challenge-prompt.ts";
 import {
   LEAN_ISSUE_HEADING,
   LEAN_ISSUE_LEAD,
-  leanBuildIssueProseEnabled,
   leanIssueSection,
 } from "../src/lean/issue-prose.ts";
 import type { PiSpec } from "../src/lean/spec.ts";
 import { specifyPrompt } from "../src/lean/specify-prompt.ts";
-import { withEnv } from "./lib/env-scope.ts";
 import { CONSTRAINT, INJECT_BODY, ISSUE_BODY, OVER_BODY } from "./lib/ticket-issue-fixture.ts";
 
 let exit = 0;
@@ -81,7 +75,7 @@ const FROZEN = ["tests/AC1-retry.test.ts", "tests/AC2-bound.test.ts"];
       issueBody,
     }),
   });
-  await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: undefined }, async () => {
+  {
     const plain = withBody(ISSUE_BODY);
 
     for (const [name, prompt] of [
@@ -118,35 +112,6 @@ const FROZEN = ["tests/AC1-retry.test.ts", "tests/AC2-bound.test.ts"];
         `${name}: the spec block itself never appears in the issue section`,
       );
     }
-
-    // #2228's builder-only knob must NOT reach this seat. The two switches look
-    // interchangeable from the docs table and one renderer serves all three seats,
-    // so the isolation is a property of WHERE each is consulted — the builder calls
-    // its own at its own call site (`build-prompt.ts`). Pinned here, at the oracle
-    // end, because that is the seat the builder's switch must leave alone: an
-    // earlier cut ANDed the builder's reader into the shared renderer, which
-    // silently reverted both prompts to their pre-#2171 bytes and made an A/B on
-    // the builder measure two variables.
-    await withEnv({ PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE: "0" }, async () => {
-      assert(
-        leanBuildIssueProseEnabled() === false,
-        "the builder's reader reports its own switch off",
-      );
-      const still = withBody(ISSUE_BODY);
-      assert(
-        still.specify === plain.specify && still.challenge === plain.challenge,
-        "PI_ENSEMBLE_LEAN_BUILD_ISSUE_PROSE=0 leaves both oracle prompts byte-identical — the builder's knob is the builder's only",
-      );
-      assert(
-        still.specify.includes("## The issue") && still.challenge.includes("## The issue"),
-        "and both oracle seats still carry the section under that environment",
-      );
-    });
-
-    // The builder's seat is the only one with a switch, so the oracle prompts must not
-    // move when it is turned off — pinned above. The section's absence is the only
-    // "no section" there is now: a blank body renders none (pinned at the bottom of
-    // this file), and no environment value does.
 
     // An injected heading or fence must stay inside the fence: no line of the
     // prompt outside the section's own fence may read as a heading or open a fence.
@@ -288,7 +253,7 @@ const FROZEN = ["tests/AC1-retry.test.ts", "tests/AC2-bound.test.ts"];
         `the renderer returns "" for ${JSON.stringify(empty)}`,
       );
     }
-  });
+  }
 }
 
 process.exit(exit);
