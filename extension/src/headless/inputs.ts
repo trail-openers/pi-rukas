@@ -151,6 +151,11 @@ export const HEADLESS_INPUTS_A: readonly HostInput[] = [
   // judged. Default ON.
   flag("CONSOLIDATED_VERIFY_SKIP", true),
   // Unset: the repo's recent history decides whether a /work title is prefixed.
+  // The resumed child's kill bound, stamped by the parent into its env beside the write fence. The
+  // continuation arms no supervisor of its own (no `spawn-child-bound.ts`, no steer, no grace
+  // phase), so this is the only record of when the child was to be ended. Written by the parent on
+  // every dispatch and never read back by it — `internal`, like the fence triple it travels with.
+  ms("CONTINUATION_BOUND_MS", null, "internal"),
   input("CONVENTIONAL_COMMITS", "boolean", null),
   flag("CONVERGE", true),
   flag("CROSS_GROUP_CONFLICTS", true),

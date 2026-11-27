@@ -56,7 +56,10 @@ const REPLY = {
   ],
 };
 
-const box: { seen: Seen | undefined; prompt: string } = { seen: undefined, prompt: "" };
+const box: { seen: Seen | undefined; prompt: string } = {
+  seen: undefined,
+  prompt: "",
+};
 
 mock.module("node:child_process", () => ({
   spawn: (
@@ -226,7 +229,8 @@ async function visit(issue: number, minutes: number) {
     "(leaf) the non-interactive git pins are stacked, as the spawn path stacks them",
   );
 
-  // THE BOUND the leaf kills at. The continuation has no grace phase, so this number is the kill.
+  // THE BOUND the leaf kills at, read from the child's own env: the continuation arms no
+  // supervisor (no spawn-child-bound, no steer, no grace phase), so this number IS the kill instant.
   const bound = Number(e.PI_ENSEMBLE_CONTINUATION_BOUND_MS ?? "0");
   assert(
     bound > 0 && bound <= BUILD_REASK_BOUND_MS,
