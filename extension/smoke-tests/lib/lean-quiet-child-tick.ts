@@ -126,6 +126,12 @@ export interface QuietTickReport {
   turns: { delivered: number; beforeSilence: number };
   /** Tool calls the real tracker still holds open when the tick finished. */
   inFlight: () => boolean;
+  /** The cause the poll's OWN supervision stack named when it ended this child, or `undefined`
+   *  while it ended nothing. `undefined` is not "supervised and held its fire" — that answer is
+   *  `fires() === 0` beside `supervised`; a cause here is a death the case never armed, and the
+   *  difference between `"stall"` and `"no-progress"` is the difference between the rule under
+   *  test and the poll's opt-in `PI_ENSEMBLE_PROGRESS_SILENCE_MS` arm stealing the verdict. */
+  killed?: () => string | undefined;
   /** What the PRODUCTION reader reported on the poll's LAST supervision pass —
    *  `Date.now() - childProgress.lastProgressAt`, not a value this file computed, and not sampled
    *  afterwards: the reader reads the real wall, so a reading taken after the passes is older by
@@ -169,6 +175,9 @@ export async function deliverQuietTick(
     fires: () => 0,
     supervisedMs: () => 0,
   };
+  // The cause reads the live `killed` binding, so the early return below keeps `undefined` — a poll
+  // that never ran names no cause, which is a different answer from one that ran and held its fire.
+  report.killed = () => killed;
   if (o.stall === undefined || o.onProgress === undefined) return report;
   const declared = typeof opts.toolUses === "function" ? opts.toolUses() : (opts.toolUses ?? []);
   const extra = typeof opts.extraLines === "function" ? opts.extraLines() : (opts.extraLines ?? []);
@@ -194,6 +203,10 @@ export async function deliverQuietTick(
   const childProgress = new ChildProgress(() => start);
   const pumpStamp = () => start;
   let fires = 0;
+  // The cause the poll's OWN supervision stack named, if it ended this child at all. Assigned only
+  // by `onKill` below, so "supervised and held its fire" and "never supervised" stay distinguishable
+  // from a death the case never armed.
+  let killed: string | undefined;
   const stepFire = o.stall.fire;
   const handler = createStdoutLineHandler({
     start,
@@ -210,6 +223,9 @@ export async function deliverQuietTick(
     // The spawn's own progress hook, which in production is the step's: it carries the counts
     // `spawn.ts` builds by ingesting the child's lines, so a lever that looked at them would be
     // judged on the reading a real spawn hands it — which is what this fixture used to fake away.
+    // `worked` is the case's SNAPSHOT of those counts, not a stream-derived reading: no rule under
+    // test here reads them (the poll's decider sees only the silence and the in-flight bit), and the
+    // turns/tokens priority is pinned through a real `armBudget` in (b5) rather than through this hook.
     onProgress: () => {
       report.turns.delivered++;
       o.onProgress?.({
@@ -248,12 +264,14 @@ export async function deliverQuietTick(
     // The poll's own silence budgets are switched OFF for this fixture: the case is exercising the
     // caller's lever, and a child quiet for 28 minutes would be ended by `inactivity` — a cause the
     // case never armed — long before the lever's own window closed. The `budgets` override covers
-    // the two timeout knobs only; `progressSilenceMs` (the no-progress arm, read per tick like every
-    // knob in this stack) is switched off by the case's own env, and
-    // `test-lean-request-stall-worked.ts` pins that leaving it on ends the child under the wrong
-    // cause.
+    // the two timeout knobs; `progressSilenceMs` (the no-progress arm) is read per tick from the
+    // case's own env, and the case reads the cause back through `killed` rather than trusting it
+    // stayed off: `test-lean-request-stall-worked.ts` (b3) pins that with the knob SET the poll
+    // still ends this child as a `stall`, not under the wrong cause.
     budgets: () => ({ inactivityMs: 0, toolInactivityMs: 0 }),
-    onKill: () => undefined,
+    onKill: (cause) => {
+      killed = cause;
+    },
     stall: {
       ...arm,
       // The enforced threshold the step froze. A caller that forwarded only the whole minutes

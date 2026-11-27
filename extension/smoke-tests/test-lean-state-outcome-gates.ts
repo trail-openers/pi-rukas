@@ -277,5 +277,35 @@ for (const [field, value, forgedOn, expect] of [
   );
 }
 
+// ─── (6) the ceiling allowlist includes the #2644 stall ─────────────────────
+// `LIMITS` is the ONE allowlist of what a `budget` verdict may name, and it gates BOTH halves of
+// the record: `outcomeProblem` refuses a limit it does not know, and `buildOutcome` rebuilds the
+// trio field only if the name is in the list. So with `"stall"` missing, a stall record loads on
+// the refusal side and is SILENTLY DROPPED on the rebuild side — the handback loses its
+// `limit`/`value`/`used` and the operator's cause line loses the named stall, while a suite that
+// only ever drives a `turns` verdict reports green. A byte-identity comparison over two runs of
+// THIS tree cannot see it either: a trio dropped on both arms compares equal. Hence the direct
+// pin: the loader accepts `stall`, rebuilds the trio, and still refuses a name it does not own.
+{
+  const STALL_RECORD = { kind: "budget", limit: "stall", value: 23, used: 28 };
+  assert(
+    outcomeProblem({ ...STALL_RECORD }, "build") === undefined,
+    `(stall) a build verdict naming the stall ceiling loads (got ${String(outcomeProblem({ ...STALL_RECORD }, "build"))})`,
+  );
+  const rebuilt = buildOutcome({ ...STALL_RECORD }) as unknown as {
+    limit?: string;
+    value?: number;
+    used?: number;
+  };
+  assert(
+    rebuilt.limit === "stall" && rebuilt.value === 23 && rebuilt.used === 28,
+    `(stall) and the rebuild keeps the trio a handback prints (got ${JSON.stringify(rebuilt)})`,
+  );
+  assert(
+    outcomeProblem({ kind: "budget", limit: "nope", value: 23, used: 28 }, "build") !== undefined,
+    "(stall) …while a ceiling the allowlist does not name is still refused",
+  );
+}
+
 console.log(`\nexit ${String(failures())}`);
 process.exit(failures());

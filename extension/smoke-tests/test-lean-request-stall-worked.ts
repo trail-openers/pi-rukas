@@ -11,7 +11,7 @@
  */
 
 import { budgetTrio } from "../src/lean/step-budget.ts";
-import { stallBreach } from "../src/request-stall-policy.ts";
+import { stallBreach, stallMinutes } from "../src/request-stall-policy.ts";
 import type { Outcome } from "../src/lean/state.ts";
 import { REVIEW_DEADLINE_RESERVE_MS } from "../src/lean/review-bound.ts";
 import { MINUTE_MS } from "../src/lean/deadline.ts";
@@ -51,6 +51,43 @@ const PANEL_NOW = cellAt(PANEL_CELL_S - 60);
 /** The child's own stream stamp: how long the fake child has been quiet. */
 function silent(ms: number): number {
   return ms;
+}
+
+// ── (b3) the poll ends a hung child as a STALL even with the no-progress arm switched on ─
+// The poll has three ways to end a child and only one of them is this rule. The opt-in
+// `PI_ENSEMBLE_PROGRESS_SILENCE_MS` arm is checked FIRST on the same tick, so with that knob set
+// an ordinary hung request could be attributed to `no-progress` — a cause whose whole advice is
+// "retry", which would replay the very request that hung. The fixture switches the poll's own
+// silence budgets off and states nothing about this knob, so the case owns it here: with the knob
+// SET, the cause the poll names must still be `stall`.
+{
+  let tick: QuietTickReport | undefined;
+  let run: Awaited<ReturnType<typeof runBuild>> | undefined;
+  await withEnv({ ...stallEnv(), PI_ENSEMBLE_PROGRESS_SILENCE_MS: "60000" }, async () => {
+    run = await runBuild({
+      issue: 2651,
+      config: stallOnlyConfig(),
+      clock: { deadlineMs: PANEL_START_MS + PANEL_CELL_S * MINUTE_MS, now: () => PANEL_NOW },
+      child: (wt) => put(wt, "src/stall.ts", "export const stall = () => 1;\n"),
+      worked: { turns: 14, totalTokens: 250_000 },
+      silentMs: silent(HUNG_REQUEST_MS),
+      quietTick: (r) => {
+        tick = r;
+      },
+    });
+  });
+  assert(
+    tick?.supervised === true,
+    "(b3) canary: the poll supervised this child, so the cause below is a real verdict and not an absence",
+  );
+  assert(
+    tick?.killed?.() === "stall",
+    `(b3) with PI_ENSEMBLE_PROGRESS_SILENCE_MS set, the poll still names the hung request a stall, not the no-progress arm's cause (got ${String(tick?.killed?.())})`,
+  );
+  assert(
+    budgetTrio(run?.outcome as Outcome | undefined)?.limit === "stall",
+    `(b3) and the step's verdict is the stall too, not a no-progress death the host would retry (got ${JSON.stringify(budgetTrio(run?.outcome as Outcome | undefined))})`,
+  );
 }
 
 // ── (b4) THE FIELD SHAPE: a child that already worked is still stallable ─────
@@ -227,6 +264,15 @@ function silent(ms: number): number {
       stallBreach({ ...armAt(1_380_000, false), windowMs: 1_380_000 + 1 }) === undefined &&
       stallBreach(undefined) === undefined,
     "(b5) …and nothing while a tool runs, inside the window, or with no arm",
+  );
+
+  // The rounding the verdict prints, pinned directly. The trio above rounds only at values where
+  // a floor would agree by coincidence, so nothing else pins the rule the comment states: a
+  // 13.8-minute hang prints 14, never 13, and the floor of the function is 1 — a verdict printing
+  // a 0-minute silence is a run that blames nothing.
+  assert(
+    stallMinutes(828_000) === 14 && stallMinutes(0) === 1,
+    `(b5) a stall verdict rounds the silence UP and never below a minute (got ${String(stallMinutes(828_000))} for 13.8 min, ${String(stallMinutes(0))} for nothing)`,
   );
 }
 
