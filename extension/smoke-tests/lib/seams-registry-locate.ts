@@ -99,7 +99,8 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
     // the frozen arms and the inertness line. It sits at `src/`'s top level because it is spawn
     // policy, not engine state, and takes the lean reserve as a PARAMETER so it never imports the
     // lean tree. Both of its production callers are `src/lean/` files — `step-budget.ts` arms the
-    // lever, `request-stall.ts` supplies the reserve and the clock — so the flat top-level scan that
+    // lever, `request-stall.ts` supplies the reserve, the deadline and the step's start — so the flat
+    // top-level scan that
     // the orphan check and both importer checks use cannot see them, and the module's three
     // smoke-tests importers make it look test-only. `locate` points the checks at the recursive corpus.
     file: "request-stall-policy.ts",
