@@ -26,6 +26,10 @@ import { forgeReadOffGuardEnabled } from "../../src/forge-read-off-switch.ts";
 import { glabMrCreateArgvEnabled } from "../../src/gl-mr-create-switch.ts";
 import { hostSpawnCap, hostSpawnWaitMs } from "../../src/host-spawn-slots.ts";
 import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.ts";
+// #2661 — a wasted build turn's one re-ask. Its truth table is pinned by
+// test-lean-build-reask-pure.ts, its dispatch arms by test-lean-build-reask.ts and its off-arm
+// byte-identity by test-lean-build-reask-off-arm.ts.
+import { leanBuildReaskEnabled } from "../../src/lean/build-reask-switch.ts";
 import { leanPreVerifySharePercent } from "../../src/lean/pre-verify-share-switch.ts";
 import { leanDetectVerifyEnabled } from "../../src/lean/config-detect.ts";
 import { leanFixerTruncationReaskEnabled } from "../../src/fixer-truncation.ts";
@@ -222,6 +226,7 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   ["PI_ENSEMBLE_LEAN_PRE_VERIFY_SHARE", leanPreVerifySharePercent],
   ["PI_ENSEMBLE_LEAN_PROJECT_ROSTER", leanProjectRosterEnabled],
   ["PI_ENSEMBLE_LEAN_FIXER_TRUNCATION_REASK", leanFixerTruncationReaskEnabled],
+  ["PI_ENSEMBLE_LEAN_BUILD_REASK", leanBuildReaskEnabled],
   // The full-tier skip's trailing operand. The reader is `v !== "0"`, so the gate's LIVE loop (env
   // deleted) pins "unset means on"; the arms, the off-arm golden and the docs row are pinned by
   // test-2633-full-tier-relative-operand.ts.

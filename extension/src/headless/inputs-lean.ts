@@ -26,6 +26,16 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // loader also hands it to classic /work's command-criteria tier. The reader is
   // `leanDetectVerifyEnabled` in lean/config-detect.ts.
   flag("LEAN_DETECT_VERIFY", false),
+  // A build child whose recorded turn ended at the model's output-token limit with no tool call — or
+  // one clean turn with no tool call and nothing for the change fold to commit — is asked for ONE more
+  // turn in its own session, through the same continuation seam the review fixer's wave uses, before
+  // the step writes `exhausted: the developer produced no change`. The detector reads the child's own
+  // recorded `stopReason`, its own tool calls and the FOLD's answer, never its prose; a kill cause, an
+  // error stop, a budget the step's ceiling already fired, any tool call, or a child whose session path
+  // is gone takes today's path. `0` restores today's behaviour byte for byte — no detection, no ask,
+  // and the exhausted reason keeps its bytes. The ask is one extra developer cost row and no bound,
+  // budget or ceiling changes. The reader is `leanBuildReaskEnabled` in lean/build-reask-switch.ts.
+  flag("LEAN_BUILD_REASK", true),
   // A review fixer whose last turn ended at the model's output-token limit with no edit made is
   // continued ONCE, in its own session, in its own tree behind the same write fence, before the wave
   // is judged "produced no change". The detector reads the child's own recorded `stopReason` and its

@@ -435,7 +435,13 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     // so the per-index rule is the only shape that can state "this child worked, that one did not".
     if (opts.childActs === undefined) {
       if (!childActed) opts.child?.((childActed = true) && (spec.cwd as string));
-    } else reaskActs(opts.childActs, dispatched - 1, (spec.cwd as string) ?? built.worktree);
+    } else {
+      // A #2661 re-ask case states what EACH child does — `n >= 0` is a dispatched child, `n === -1`
+      // the resumed one — and says so through `childActs`, so the fixture cannot let a first turn act
+      // where the case said it acted nowhere.
+      reaskActs(opts.childActs, dispatched - 1, (spec.cwd as string) ?? built.worktree);
+      childActed = true;
+    }
     recordArmedOpts(opts.armedOpts, o); // #2660 — the arms as the seam received them
     const declared =
       typeof opts.toolUses === "function" ? opts.toolUses() : [...(opts.toolUses ?? [])];
@@ -470,9 +476,12 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
     ...(opts.captureCeiling === undefined ? {} : { captureCeiling: opts.captureCeiling }),
     ...(opts.blockedTimeoutMs === undefined ? {} : { blockedTimeoutMs: opts.blockedTimeoutMs }),
   };
+  // The case's own seam slots (#2661) go in BEFORE the `afterDispatch` exec wrapper below, which
+  // replaces `exec` only: a case that injects `continueSession` must not have its leaf dropped by an
+  // exec override it never asked for, and the wrapper must not be built on the case's exec either.
+  const seeded: BuildDeps = { ...inner, ...(opts.deps ?? {}) };
   const deps: BuildDeps = {
-    ...inner,
-    ...(opts.deps ?? {}),
+    ...seeded,
     ...(opts.afterDispatch === undefined
       ? {}
       : {
@@ -488,7 +497,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
               planted = true;
               opts.afterDispatch?.(built.worktree);
             }
-            return inner.exec(cmd, o);
+            return seeded.exec(cmd, o);
           },
         }),
   };

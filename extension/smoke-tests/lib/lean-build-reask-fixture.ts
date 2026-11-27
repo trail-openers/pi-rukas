@@ -69,12 +69,12 @@ export function reaskDeps(opts: {
   answers?: ContinuationAnswer[];
   /** Watches the leaf's answer for a case that wants to fail it mid-ask. */
   onCall?: (call: ContinuationCall, n: number) => void;
-}): { deps: Partial<BuildDeps>; acts: (n: number, wt: string) => void } {
+}): Partial<BuildDeps> {
   const acts = opts.acts ?? (() => undefined);
   return {
-    acts,
-    deps: {
-      continueSession: async (args): Promise<ContinuationOutcome> => {
+    // The leaf stands in for production's `spawnDeveloperContinuationChild` in the SAME dependency
+    // slot `buildDeps()` fills, so the step's real dispatch path makes the call.
+    continueSession: async (args): Promise<ContinuationOutcome> => {
         opts.calls.push(args as unknown as ContinuationCall);
         opts.onCall?.(args as unknown as ContinuationCall, opts.calls.length - 1);
         // The tree the resumed child was HANDED is the tree its acts belong to — the case's `acts`
@@ -84,7 +84,6 @@ export function reaskDeps(opts: {
         const answers = opts.answers ?? [];
         if (answers.length === 0) return answered();
         return answers[Math.min(opts.calls.length - 1, answers.length - 1)] ?? answered();
-      },
     },
   };
 }
