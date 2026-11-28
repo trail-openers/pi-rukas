@@ -12,18 +12,6 @@
 import { CRITERION_ID } from "./lean/spec.ts";
 import { RECORD_MAX_ENTRIES } from "./lean/state-outcome-maps.ts";
 
-/** Why a `preserved` list is not a record this run may print, or undefined. */
-export function preservedListProblem(value: unknown): string | undefined {
-  if (!Array.isArray(value)) return "outcome preserved must be a string[]";
-  if (value.length === 0) return "outcome preserved must be absent rather than empty";
-  if (value.length > RECORD_MAX_ENTRIES)
-    return `outcome preserved must hold at most ${RECORD_MAX_ENTRIES} criteria`;
-  for (const id of value)
-    if (typeof id !== "string" || !CRITERION_ID.test(id))
-      return `outcome preserved entry ${JSON.stringify(id)} is not AC<n>`;
-  return undefined;
-}
-
 /** The `preserved` list, rebuilt from the entries this module actually checked. */
 export function validatedPreservedList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -34,9 +22,17 @@ export function validatedPreservedList(value: unknown): string[] {
   return out;
 }
 
-/** The record's problem for a `preserved` field, or undefined when the field is absent or well formed. */
+/** The record's problem for a `preserved` field: a value that is not a list, not a name, or empty. */
 export function preservedOutcomeProblem(oc: Record<string, unknown>): string | undefined {
-  return oc.preserved === undefined ? undefined : preservedListProblem(oc.preserved);
+  const value = oc.preserved;
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) return "outcome preserved must be a string[]";
+  if (value.length === 0) return "outcome preserved must be absent rather than empty";
+  if (value.length > RECORD_MAX_ENTRIES)
+    return `outcome preserved must hold at most ${RECORD_MAX_ENTRIES} criteria`;
+  return value.every((id) => typeof id === "string" && CRITERION_ID.test(id))
+    ? undefined
+    : "outcome preserved holds a name that is not AC<n>";
 }
 
 /** The rebuilt field for `buildOutcome`: empty when the record declared nothing, one key when it did. */

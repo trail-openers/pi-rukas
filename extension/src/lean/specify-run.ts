@@ -189,7 +189,6 @@ export async function runTestPipeline(
     Object.fromEntries(kept.map((row) => [row.criterionId, row.testFiles])),
   );
   const skippedNote = skipped > 0 ? ` (${skipped} malformed submit_tests call(s))` : "";
-  // The rule and its wording: `lean-preserved-step.ts`, `lean-preserved-coverage.ts`.
   const isPreserved = declaredPreserved(kept);
   if (candidates.length === 0) {
     return {
@@ -297,8 +296,7 @@ export async function runTestPipeline(
       continue;
     }
     assertRan(proof, cand.path);
-    // The rule is decided from ALL proofs at once, below: a file it does not keep is deleted here and never
-    // reaches the commit or leaves the tree unclean.
+    // The rule is decided from ALL proofs at once, below: a file it does not keep is deleted here.
     if (isPreserved(cand.criterionId) && !preservedKeepsFile(candidates, kinds, cand)) continue;
     notes.push(noteFor(cand, proof));
     const why = removeRejected(wt, cand.path);
