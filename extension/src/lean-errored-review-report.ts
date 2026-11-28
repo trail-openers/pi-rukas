@@ -32,9 +32,10 @@ export type ErroredReviewWriters = Omit<
 /**
  * Route an errored review over a certified head into the reporting step, and end the run with it.
  *
- * Returns the ended run, or `undefined` when nothing could be reported: no reporting step built, a
- * report that threw, or one that overran its own bound (on overrun `req.boundFiredMs` carries the
- * bound, which lets the caller say the report was LOST rather than that there was none to lose).
+ * Returns the ended run, or `undefined` when nothing could be reported: the run is not the shape
+ * (see this file's header), no reporting step was built, the report threw, or it overran its own
+ * bound. On overrun `req.boundFiredMs` carries the bound, which lets the caller say the report was
+ * LOST rather than that there was none to lose.
  */
 export async function reportErroredReview(
   run: LeanRun,
