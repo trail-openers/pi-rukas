@@ -139,8 +139,8 @@ export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | u
 }
 
 /**
- * The reason line a routed run carries: the report's own reason leads, and the refused step is named
- * so a reader can tell this from a plain deadline stop.
+ * The reason line a routed run carries: the report's own reason leads, and what the run was
+ * refused for is named beside it, so a reader can tell a routed report from a plain stamp.
  */
 function reportReason(stoppedAt: LeanState, cause: string, outcome: Outcome): string {
   const said =
@@ -160,6 +160,8 @@ export interface BoundaryStop {
     handler: HandbackHandler | undefined;
     keyFor: (state: LeanState, n: number) => string;
     attach: ReportRequest["attach"];
+    /** The runner's terminal stamp: only the runner may write `result` and persist it. */
+    finish: ReportRequest["finish"];
   };
   run: LeanRun;
   /** The step the stop refused, named verbatim in the run's reason line. */

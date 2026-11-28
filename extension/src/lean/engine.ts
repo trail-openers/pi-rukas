@@ -10,6 +10,7 @@
  * `error-outcome.ts`.
  */
 import { isFullCommitSha } from "../commit-sha.ts";
+import { reportErroredReview } from "../lean-errored-review-report.ts";
 import { trace } from "../trace.ts";
 import {
   type CycleBudgetMs,
@@ -137,6 +138,21 @@ interface Drive {
   save: (run: LeanRun) => void;
   /** The resolved deadline, so each boundary reads one value. */
   deadlineMs?: number;
+}
+
+/** The record writers and report pieces each route into the reporting step needs. */
+type ReportWriters = Parameters<typeof reportErroredReview>[2];
+
+function reportWriters(drive: Drive, opts: RunLeanOpts, now: () => number): ReportWriters {
+  return {
+    repoRoot: opts.repoRoot,
+    issue: opts.issue,
+    now,
+    handler: opts.handlers.handback as HandbackHandler | undefined,
+    keyFor: (state: LeanState, n: number) => stepKey(opts.issue, state, n),
+    attach: withOutcome,
+    finish: (run: LeanRun, state: LeanState, reason: string) => endRun(drive, run, state, reason),
+  };
 }
 
 /** Stamp the terminal result and persist — the only place `result` is written. */
@@ -273,12 +289,14 @@ async function settle(
   const withFacts = state === "ready" ? applyReadyFacts(logged, outcome) : logged;
   if (outcome.kind === "error") {
     drive.save(withFacts);
-    return endRun(
-      drive,
-      withFacts,
-      "handed-back",
-      `handler error at ${state}: ${String(outcome.message ?? "")}`,
-    );
+    const reason = `handler error at ${state}: ${String(outcome.message ?? "")}`;
+    // #2667: a `review` that threw over a certified head owes the reporting step the throw would
+    // skip; every other state's throw, and an errored review over nothing green, takes the stamp.
+    const reported =
+      state === "review"
+        ? await reportErroredReview(withFacts, reason, reportWriters(drive, opts, now))
+        : undefined;
+    return reported ?? endRun(drive, withFacts, "handed-back", reason);
   }
   // An outcome the table does not list is a handler bug, whatever the state.
   if (!hasTransition(state, outcome.kind)) {
@@ -386,13 +404,7 @@ async function driveLoop(
       // This side of the seam must not start WORK here: `endRun` ends the loop.
       run = await stopAtBoundary({
         end: (r, reason) => endRun(drive, r, "handed-back", reason),
-        request: {
-          repoRoot: opts.repoRoot,
-          issue: opts.issue,
-          handler: opts.handlers.handback as HandbackHandler | undefined,
-          keyFor: (state, n) => stepKey(opts.issue, state, n),
-          attach: withOutcome,
-        },
+        request: reportWriters(drive, opts, now),
         run,
         stoppedAt: state,
         cause: timedOut ? `cycle deadline ${deadline} reached` : "job killed",

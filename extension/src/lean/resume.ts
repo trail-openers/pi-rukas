@@ -13,6 +13,7 @@
  * Two positions the snapshot may legitimately hold: the fold's own (`pos`), and the one before its last step
  * (`before`) — a crash between recording an outcome and applying it. Anything else throws.
  */
+import { isReportRoute, routedThrowEntry } from "../lean-report-route.ts";
 import { hasTransition, next } from "./machine.ts";
 import {
   INITIAL_COUNTERS,
@@ -20,7 +21,6 @@ import {
   type LeanState,
   LeanStateError,
   type Position,
-  REPORT_STATES,
   type RunCounters,
   type Step,
   stepKey,
@@ -97,14 +97,33 @@ export function foldLog(
     }
     if (s.outcome === undefined) {
       // The write-ahead of the step this run is about to re-run: a drive saves at that moment, so the
-      // position it persisted is the one the fold stands on.
-      if (i !== log.length - 1) at(`step ${s.key} carries no outcome but is not the newest step`);
+      // position it persisted is the one the fold stands on. #2667's routed record is the one shape
+      // where a later save follows the write-ahead: the throw the runner stamped first, then the
+      // report's visit, with the verdict left for the save that ends the run. The route's own
+      // predicate decides that pairing; nothing else may put an entry after a write-ahead.
+      if (i !== log.length - 1 && !writeAheadThenRoute(log, i))
+        at(`step ${s.key} carries no outcome but is not the newest step`);
       break;
     }
     if (!hasTransition(s.state, s.outcome.kind)) {
-      // A thrown handler or a kind with no arrow: the engine ends the run itself, so this is the last entry.
-      if (i !== log.length - 1)
+      // A thrown handler or a kind with no arrow: the engine ends the run itself, so this is
+      // normally the last entry. #2667's route is the exception, stated as narrowly as the move:
+      // the throw's entry, then exactly one report entry with nothing of the walk between them,
+      // the head rule holding that an errored review over a certified head owes that report, and
+      // only on the side of the knob the routing runs on. `reportRouteFor` (over the log up to the
+      // throw) and the head rule are the judges, consulted rather than approximated.
+      const routed = routedThrowEntry(log, i) || reportEntryOfThrow(log, s.outcome.kind);
+      if (i !== log.length - 1 && !routed)
         at(`step ${s.key} + ${JSON.stringify(s.outcome.kind)} has no arrow and is not last`);
+      // A routed throw is a run still OWING its report (a crash between the runner's two saves):
+      // it folds UNDECIDED, still standing at `review`. A decided fold would let a forged
+      // `handed-back` snapshot past the one-step lag the snapshot is allowed. Anywhere else the
+      // no-arrow entry is the outcome a drive halts on, and the run has to be stamped.
+      if (routed && run.result === undefined) {
+        if (run.state !== "review")
+          at(`step ${s.key} is a throw the route handed on, but the run says ${run.state}`);
+        return { pos, before, decided: false };
+      }
       if (run.state !== "handed-back" || run.result === undefined)
         at(`step ${s.key} carries the outcome a drive halts on, but the run is not handed-back`);
       return { pos: { state: "handed-back", counters: pos.counters }, before, decided: true };
@@ -116,21 +135,21 @@ export function foldLog(
 }
 
 /**
- * Is this `handback` entry the engine's deadline route into the report, rather than an invented visit?
- *
- * Three conditions, none read from the entry being judged: it is the run's FIRST report entry; the log ends
- * on it; and the newest DECIDED work step is a `fixed` review with no decided `verify` behind it.
+ * Is this log the record a routed throw LEFT — the throw's entry, then its report's own verdict,
+ * with the run already stamped? The crash shape (`routedThrowEntry`) has the report's write-ahead;
+ * this is the FINISHED record. Both must fold, or a handed-back issue could never be opened again.
  */
-function isReportRoute(log: Step[]): boolean {
-  if ((log[log.length - 1] as Step | undefined)?.state !== "handback") return false;
-  const newestWork = [...log]
-    .reverse()
-    .find(
-      (s) => s.outcome !== undefined && !(REPORT_STATES as readonly string[]).includes(s.state),
-    );
-  if (newestWork?.state !== "review" || newestWork.outcome?.kind !== "fixed") return false;
-  const at = log.indexOf(newestWork);
-  return !log.some((s, i) => i > at && s.state === "verify" && s.outcome !== undefined);
+function reportEntryOfThrow(log: Step[], kind: string): boolean {
+  return kind === "error" && isReportRoute(log);
+}
+
+/**
+ * Is the verdictless entry at `i` the report's own write-ahead, standing where a routed throw left it?
+ * The route predicate judges the log (#2667's routed record is the one shape where a save follows a
+ * write-ahead), and the entry's own position says it is the last thing the run wrote.
+ */
+function writeAheadThenRoute(log: Step[], i: number): boolean {
+  return i === log.length - 1 && isReportRoute(log);
 }
 
 /**

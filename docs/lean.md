@@ -556,6 +556,25 @@ and in the host's `failure.message` alike. A review step therefore never carries
 the `limit`/`value`/`used` trio — the prose is its channel. `PI_ENSEMBLE_DISPATCH_CAPS=0`
 makes the wall clock inert, and the step says so.
 
+**A review that threw over a green head is still a handback.** Every throw site of
+`reviewOutcome` is read the same way: the bound stop, the budget stop, a refused re-review,
+the lens-did-not-run refusals, the head-identity and entry assertions, and the config, issue
+and threshold loads. Where the run's newest DECIDED `verify` certified a head, that head is not
+discarded: the run is routed into the reporting step, which rewinds origin to it under the existing
+lease and keeping-ref rules and records `shippedHead` with `shippedVerified: true`, or, where the
+rewind cannot be done safely, records it as the unshipped head with the refusal's own reason and
+pushes nothing. Either way the run ends `handed-back` at exit **10**. There is no `publish` and no
+`ci` arm for a head whose review did not complete, and no such head ever lands: `land` stays gated
+on a decided green `ci` and a review done. The named reason rides the thrown message, so the
+terminal cause line and the handback comment both carry it, and `issues[].reviewComplete` stays
+`false` from the review step's own record. The handback keeps its draft state, so it carries no cap
+string. `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_HEAD=0` is the only off value; off, the throw is
+stamped where it stands, which is the behaviour of the release before the knob. A resumed run does
+not re-dispatch `review` for a head it already handed back as incomplete; only an operator restart
+does. Sources: `extension/src/lean-handback-cause.ts` (the arm's finding and its NEEDING line),
+`extension/src/lean-errored-review-report.ts` (the routing), `extension/src/lean/handback-heads.ts`
+(the rule) and `extension/src/lean-review-incomplete-head-switch.ts` (the switch, its only reader).
+
 **The two steps before the first verify share a wall.** `specify` and `challenge`
 are each bounded per CHILD and were never bounded together, so a cell could spend
 half its budget on the pair and still be asked to open `review`, whose reserve
@@ -800,7 +819,9 @@ verified head, reports
 the step's own record says the review finished on the head that shipped, and `false` is
 never a default: a review that died before pass 1 read no lens, a stop that named no lane is still
 a stop, and a log with no `review` step is a review that never ran — none of them report a
-finished review. Which reading decides — identity of the record's own wave head (behind a
+finished review. A throw is not a cap's subject: the run that threw never reached a ready PR, so it
+carries no `review-incomplete` string and no `reviewComplete` key at all, only `failure` and the
+handback's own head lines. Which reading decides — identity of the record's own wave head (behind a
 judged round), or log position for a record that names no head of its own push — is stated
 once in `reviewCompleteOf`'s jsdoc (`extension/src/headless/work-lean-pr.ts`). The key is written only beside the two caps above, so a merged run, a draft or
 a run that never reached `publish` carries neither cap nor field. A draft, or a PR over

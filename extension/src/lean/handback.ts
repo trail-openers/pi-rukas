@@ -9,6 +9,7 @@
  * verdict.
  */
 import { execp } from "../exec.ts";
+import { endedBy } from "../lean-handback-cause.ts";
 import { frozenFromLog } from "../lean-log.ts";
 import { repairCause } from "../oracle-repair-disclose.ts";
 import { gapCauseLines } from "../preserved-disclose.ts";
@@ -114,6 +115,7 @@ export function neededFromLog(steps: Step[]): string {
     gapCause(steps) ??
     budgetCause(steps) ??
     exhaustedCause(steps) ??
+    endedBy(steps) ??
     newestReason(steps, "verify", "red") ??
     newestReason(steps, "ci", "red") ??
     newestReason(steps, "verify", "green") ??
@@ -330,9 +332,7 @@ export async function handbackOutcome(
     // the line that says the head is unverified.
     const facts: Heads = heads.shippedHead
       ? { render: true, shippedHead: heads.shippedHead, shippedVerified: false }
-      : moved === undefined
-        ? { render: false }
-        : headFacts(moved, originHead);
+      : headFacts(moved ?? NO_HEAD, originHead);
     const { render, ...record } = facts;
     body = handbackBody(ctx.issue, {
       needed: neededFromLog(ctx.steps),

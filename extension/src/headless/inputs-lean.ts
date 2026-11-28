@@ -94,6 +94,22 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // request-stall-policy.ts, which also derives the window; lean-step-bound.ts pins the lean
   // reserve into it (`stepDispatchArms`) and lean/step-budget.ts arms it.
   flag("LEAN_REQUEST_STALL", true),
+  // A `review` step that THROWS over a head the run's own gate certified used to end the
+  // run on the engine's bare error path: no reporting step, so the certified head was
+  // neither shipped nor named. On, that run is routed into the reporting step, which
+  // rewinds origin to the certified head under the existing lease and keeping-ref rules
+  // (or records it as the unshipped head with the refusal's own reason and pushes nothing),
+  // writes the four existing head fields, and says why review did not complete. The run
+  // still ends handed-back at exit 10: there is no publish and no ci arm for a head whose
+  // review did not complete, and no such head ever lands. `reviewComplete` stays false from
+  // the review step's own record, and the handback keeps its draft state, so no cap string
+  // is added. `0` is the ONLY off value, and off the step record, the handback comment body
+  // and the result document's `issues` entries are the bytes of the release before the knob
+  // (`test-lean-review-incomplete-head-off-arm.ts` pins that against a golden captured from
+  // the base commit). The reader is `leanReviewIncompleteHeadEnabled` in
+  // lean-review-incomplete-head-switch.ts; the rule is lean/handback-heads.ts and the route
+  // is lean/engine.ts.
+  flag("LEAN_REVIEW_INCOMPLETE_HEAD", true),
   // The executed acceptance table in front of the lean review seats and on the run's
   // PR: each criterion, the frozen test the run recorded for it, and what the
   // newest green `verify` reported for it at the certified head. The table is READ,

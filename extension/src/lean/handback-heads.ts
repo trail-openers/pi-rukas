@@ -11,30 +11,19 @@
  * `verify` must be `green` and must name a head.
  */
 import { isFullCommitSha } from "../commit-sha.ts";
+import {
+  type HandbackFindings,
+  NO_GATE_VERDICT,
+  erroredReviewFindings,
+  gateFindings,
+} from "../lean-handback-cause.ts";
 import { type LeanState, REPORT_STATES, type Step } from "./state.ts";
 
 /**
  * What the operator asks of a head that shipped unverified is why it never got certified. The only place
  * that answer is worded; `handback.ts` quotes the finding rather than re-wording it.
  */
-export const NO_GATE_VERDICT =
-  "no verify step of this run decided anything, so no head is verified";
-
-/**
- * True when this handback stands over bytes no gate of this run certified: a `fixed` review the gate has not
- * spoken for since (a gate visit ENTERED and never answered counts as not speaking), or a draft publish whose
- * own head no green covers.
- */
-export interface HandbackHeads {
-  applies: boolean;
-  /** The newest decided green `verify`'s head at or before the newest work step; none when absent. */
-  verifiedHead?: string;
-  /** Why nothing is shipped, in the record's own words, when there is no head to ship. */
-  reason?: string;
-  /** The draft-publish arm's own claim, set only for that arm: the head publish pushed, unverified. */
-  shippedHead?: string;
-  shippedVerified?: false;
-}
+export { NO_GATE_VERDICT } from "../lean-handback-cause.ts";
 
 /**
  * The newest step that was WORK and carried a verdict — an undecided write-ahead is not a verdict, it is the
@@ -77,9 +66,10 @@ function newestDecidedThrough(
 
 /**
  * The head a handback of this log should ship, or the reason it cannot. A log whose newest work step is
- * neither a `fixed` review nor a draft publish gets `{applies: false}` with no reason.
+ * neither a `fixed` review, an errored review over a certified head, nor a draft publish gets
+ * `{applies: false}` with no reason.
  */
-export function handbackHeads(steps: Step[]): HandbackHeads {
+export function handbackHeads(steps: Step[]): HandbackFindings {
   const newest = newestDecidedWorkStep(steps);
   if (newest?.outcome === undefined) return { applies: false };
   // The draft-publish arm: `build + exhausted` published this head and no green of this run covers it, so
@@ -94,26 +84,17 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
       return { applies: false };
     return { applies: true, shippedHead: head, shippedVerified: false };
   }
-  if (newest.state !== "review" || newest.outcome.kind !== "fixed") return { applies: false };
   const at = steps.indexOf(newest);
+  if (newest.state !== "review") return { applies: false };
+  // The two review arms, each a call to the reader that words it (#2667): an errored review judged
+  // nothing, so over bytes its own gate named it is owed the same report a `fixed` review the gate has
+  // not spoken for is owed. The switch that admits an errored review at all is read by that reader.
+  if (newest.outcome.kind === "error")
+    return erroredReviewFindings(newestDecidedThrough(steps, "verify", at));
+  if (newest.outcome.kind !== "fixed") return { applies: false };
   const trailing = newestStateStepAfter(steps, "verify", at);
-  if (trailing !== undefined && trailing.outcome === undefined)
-    return {
-      applies: true,
-      reason: `the run entered the gate again at ${trailing.key} and never recorded what it decided, so no head is verified`,
-    };
-  const green = newestDecidedThrough(steps, "verify", at);
-  if (green === undefined) return { applies: true, reason: NO_GATE_VERDICT };
-  if (green.outcome?.kind !== "green")
-    return {
-      applies: true,
-      reason: `the newest decided verify is ${String(green.outcome?.kind)}, not green, so no head is verified`,
-    };
-  const head = green.outcome.verifiedHead;
-  if (typeof head !== "string" || !isFullCommitSha(head))
-    return {
-      applies: true,
-      reason: "the green verify recorded no head, so there is no verified head to ship",
-    };
-  return { applies: true, verifiedHead: head };
+  return gateFindings(
+    newestDecidedThrough(steps, "verify", at),
+    trailing?.outcome === undefined ? trailing : undefined,
+  );
 }

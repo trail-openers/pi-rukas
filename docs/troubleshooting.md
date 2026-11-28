@@ -4879,6 +4879,35 @@ base-version runs), `extension/src/lean/verify.ts` (the hand-backs), `extension/
 (the land gate), `extension/src/lean/project-roster-switch.ts` (the lever); pinned by
 `extension/smoke-tests/test-AC1-project-roster-handback.ts` and friends.
 
+### Symptom: a green verified head comes back after a review error
+
+**Symptom:** a `work-lean` run ends `handed-back` (exit 10) with `failure.kind: "crashed"` and a
+review message (a bound stop, a budget stop, a refused re-review, a lens that did not run, a head
+or entry assertion, or a config, issue or threshold read that failed), although the run's newest
+DECIDED `verify` said `green` about a head.
+
+**Cause:** the review threw, so it judged nothing. The head it was standing on is not lost: with
+`PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_HEAD` on (the default) the run is routed into the reporting
+step, which rewinds origin to the certified head and records it as `shippedHead` with
+`shippedVerified: true`, or records it as `unshippedHead` with the refusal's own reason and pushes
+nothing. The comment's NEEDING line names why the review did not complete, in the throw's own words.
+Nothing published or landed: a head whose review did not complete gets no `publish` or `ci` arm and
+never lands.
+
+**Fix:** read the handback comment, then re-run the review on the current head with `/work-lean N`
+after the cause is addressed. A resumed run does not re-dispatch `review` for a head it already
+handed back as incomplete; only an operator restart does. `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_HEAD=0`
+restores the pre-knob behaviour, where the throw is stamped where it stands and the certified head
+is neither shipped nor named.
+
+Source: `extension/src/lean-handback-cause.ts`, `extension/src/lean-errored-review-report.ts`,
+`extension/src/lean/handback-heads.ts`, `extension/src/lean/handback.ts`,
+`extension/src/lean-review-incomplete-head-switch.ts`; pinned by
+`extension/smoke-tests/test-lean-review-incomplete-head.ts`,
+`test-lean-review-incomplete-head-errors.ts`,
+`test-lean-review-incomplete-head-resume.ts` and
+`test-lean-review-incomplete-head-off-arm.ts`.
+
 ### Symptom: `work-lean` hands back at once with `failure.kind: "setup"`
 
 **Symptom:** a `work-lean` run ends `handed-back` (exit 10) after one `ready` step, posts nothing on
