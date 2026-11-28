@@ -39,10 +39,8 @@ export interface Outcome {
   /** `build` only (kind `blocked`): the at-head red the DRIVER watched the runner print — the only failure
    *  evidence a repair brief may quote. Rules and reader: `oracle-repair-record.ts`. */
   blockedEvidence?: EvidenceLine[];
-  /** `build` only: the head this round STARTED from, read off the tree before its child ran. On a `blocked`
-   *  verdict it is the commit the driver ran the named files at — the red's commit, and where the repair round
-   *  resets its seat; on an `ok` it is the lower bound of the range the round changed, which a repair round
-   *  lays over its checkout of the base. */
+  /** `build` only: the head this round started from, read off the tree before its child ran. On `blocked` it is
+   *  the commit the driver ran the named files at — the red's commit, where a repair round resets its seat. */
   headBefore?: string;
   /** `build` only: the repair round's observed facts, once bought. Rules: `oracle-repair-fields.ts`. */
   repair?: RepairRecord;

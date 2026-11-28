@@ -62,9 +62,9 @@ import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
 import { judgeBlockedReport } from "./build-blocked.ts";
-import { foldStoppedBuild } from "./build-fold.ts";
 import { buildWriteFence, dispatchBuilder } from "./build-dispatch.ts";
 import { BuildInfraError } from "./build-errors.ts";
+import { foldStoppedBuild } from "./build-fold.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
 import { budgetFoldAccumulator, failingClause, foldClauses, keptClause } from "./build-reasons.ts";
@@ -152,18 +152,16 @@ export async function buildOutcome(
   const config = await deps.loadConfig(repoRoot, base).catch((err: unknown) => {
     throw new BuildInfraError(`could not load the project config: ${(err as Error).message}`);
   });
-  // The spec, re-read from the forge: a build against an unread spec is fiction. The accessor,
-  // because a derived run has no block on its issue and `ready` already validated its contract.
+  // The spec, re-read from the forge: a build against an unread spec is fiction. The accessor, because a
+  // derived run has no block on its issue and `ready` validated its contract.
   const { spec, body: issueBody } = await rereadSpec(
     () => deps.fetchIssueBody(repoRoot, issue),
     ctx.run,
     (m) => new BuildInfraError(m),
   );
-  // Rounds this run has DISPATCHED and paid for. `buildAttempts` is the authority
-  // because the table bills a round on entering `build` and never on leaving it: it
-  // counts dispatches, not table visits, so one child a ceiling stopped costs one
-  // round and the retry loop below stops only when the budget is spent. The round
-  // this visit is running is not in the count yet — the edge that enters `build`
+  // Rounds this run has DISPATCHED and paid for: `buildAttempts` counts dispatches, not
+  // table visits, since the table bills a round on entering `build` and never on leaving it.
+  // The round this visit is running is not in the count yet — the edge entering `build`
   // bills it when the engine applies the verdict — hence the +1 below.
   const dispatchedBefore = ctx.run.counters.buildAttempts;
   // What the child's prompt and its commit subject call the round: the decided
@@ -348,7 +346,7 @@ export async function buildOutcome(
   });
   if (blocked !== undefined) {
     // No commit: `verify` never judges a tree this step cannot account for. The head and the executed red ride
-    // beside the cause, since the round resets to that commit and quotes only what the driver saw.
+    // beside the cause, since the round resets to that commit and quotes only what the driver watched.
     return {
       kind: "blocked",
       reason: blocked.reason,
@@ -421,7 +419,8 @@ export async function buildOutcome(
     } catch {
       again = undefined;
     }
-    if (again !== undefined && again.files.length > 0) return okVerdict(again, rows, waitNote, headBefore);
+    if (again !== undefined && again.files.length > 0)
+      return okVerdict(again, rows, waitNote, headBefore);
   }
   if (!noChange) return okVerdict(report, rows, waitNote, headBefore);
   return {

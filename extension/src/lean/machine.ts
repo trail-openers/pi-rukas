@@ -1,3 +1,4 @@
+import { repairRoundDue } from "../oracle-repair-due.ts";
 /**
  * lean/machine — the whole transition table, in one pure function.
  *
@@ -8,12 +9,10 @@
  *
  * Loop guards, all counters in the run so a resumed run sees the same caps: `buildAttempts` caps build rounds
  * DISPATCHED (billed on entering `build`, never leaving); `challengeDone` and `reviewDone` make each step run
- * at most once; `ciFixUsed` gives a red CI one fix round; `repairsSpent` gives a proven-wrong oracle one
- * repair.
+ * at most once; `ciFixUsed` gives a red CI one fix round; `repairsSpent` one repair.
  */
 import { type LeanRun, type LeanState, type Outcome, newestDecided } from "./state.ts";
 import { type Transition, to, viaBuild } from "./transitions.ts";
-import { repairRoundDue } from "../oracle-repair-due.ts";
 
 /** Outcome kinds per state. The handler for a state may return only these; the pair enumeration in
  * `test-lean-machine.ts` asserts each entry equals the registry's set. */

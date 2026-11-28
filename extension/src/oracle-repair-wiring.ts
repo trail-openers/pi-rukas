@@ -21,10 +21,10 @@ import { fetchIssueBody } from "./lean/io.ts";
 import { NO_HOOKS } from "./lean/specify-reset.ts";
 import { ensureSpecifyWorktreeWithProvision } from "./lean/specify-tree.ts";
 import type { BudgetOpts } from "./lean/step-budget.ts";
+import type { RepairRoundDeps } from "./oracle-repair-dispatch.ts";
 import { spawnSpecialist } from "./spawn.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchSpec } from "./types.ts";
-import type { RepairRoundDeps } from "./oracle-repair-dispatch.ts";
 
 export interface RepairDeps extends Omit<RepairRoundDeps, "baseTree" | "ensureTree"> {
   /** A throwaway detached checkout of the run's base, made for this step and removed after it. */

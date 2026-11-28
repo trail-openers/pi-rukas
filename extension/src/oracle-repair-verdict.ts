@@ -4,9 +4,9 @@
  * it never calls out.
  */
 import type { Outcome, Step } from "./lean/state.ts";
+import { newestDecided } from "./lean/state.ts";
 import type { DispatchUsageRow } from "./lean/step-budget.ts";
 import { joinNotes } from "./lean/text-fence.ts";
-import { newestDecided } from "./lean/state.ts";
 import { traceWarn } from "./trace.ts";
 
 /** The newest decided `build` step whose blocked report the driver honoured. */
@@ -21,7 +21,10 @@ export function rowsKey(rows: DispatchUsageRow[]): { dispatches?: DispatchUsageR
 }
 
 /** The verdict a refused round leaves: the builder goes again against the same contract. */
-export function refusedRepair(r: { why: string; rows: DispatchUsageRow[] }, blocked: Step): Outcome {
+export function refusedRepair(
+  r: { why: string; rows: DispatchUsageRow[] },
+  blocked: Step,
+): Outcome {
   return {
     kind: "refused",
     reason: joinNotes([

@@ -1,4 +1,3 @@
-import type { BuildExec } from "./lean/build-types.ts";
 /**
  * oracle-repair-judge — the mechanical gate a repaired frozen test must pass before it may replace the
  * contract.
@@ -24,6 +23,7 @@ import type { BuildExec } from "./lean/build-types.ts";
  * judgement over a checkout, not engine state, and it never imports the machine.
  */
 import { blobAt } from "./lean/build-git.ts";
+import type { BuildExec } from "./lean/build-types.ts";
 import { runTestFile, sha256 } from "./lean/specify-proof.ts";
 import { writeCaptured } from "./lean/specify-reset.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
@@ -111,7 +111,13 @@ export class RepairJudgeError extends Error {
 
 /** One file, or `undefined` when it is refused — `lastRefusal` then carries why. */
 async function judgeOne(
-  opts: { exec: BuildExec; baseTree: string; baseRef: string; template: string; timeoutMs?: number },
+  opts: {
+    exec: BuildExec;
+    baseTree: string;
+    baseRef: string;
+    template: string;
+    timeoutMs?: number;
+  },
   r: ReplacementInput,
 ): Promise<AcceptedReplacement | undefined> {
   const refuse = (why: string): undefined => {
@@ -142,7 +148,8 @@ async function judgeOne(
   // evidence about it, and a round whose judge could not read a runner would be refused on an accident of the
   // toolchain. It throws, and the run hands back naming the cause — the same direction the release's own
   // blocked gate takes for a file it could not classify.
-  if (proof.kind !== "red") throw new RepairJudgeError(`the base run observed nothing (${proof.detail})`);
+  if (proof.kind !== "red")
+    throw new RepairJudgeError(`the base run observed nothing (${proof.detail})`);
   if (!(await provesNewRed(r, opts, proof.output)))
     return refuse("the replacement's failing case is one the frozen file already had");
   return {
@@ -164,16 +171,11 @@ async function judgeOne(
 /**
  * Did the runner's red name a case that exists only in the replacement?
  *
- * Two ways a submission can steal the round, both invisible to a byte-identity check. It can keep the
- * original's failing assertion and bolt a passing case on, so the red on the bench is the contract's own red
- * and nothing new was proved. Or it can delete a case the original printed — those bytes differ, and the
- * remaining red may name a line the original never printed, so the "new case" the judge accepted was bought
- * by dropping something the oracle required. So the red must be absent from the ORIGINAL **and** every line
- * the original printed must survive in the replacement.
- *
- * The original's bytes are the contract's, and read off disk they may be another submission's: a replacement
- * is laid into the base checkout before it runs, so the comparison reads the committed blob and checks its
- * hash against the record before trusting either.
+ * Two ways a submission steals the round, both invisible to a byte-identity check: keep the contract's failing
+ * assertion and bolt a passing case on (the red on the bench is the contract's own), or DELETE a case the
+ * contract printed so the remaining red names a line the contract never had. So the red must be absent from
+ * the original AND every line the original printed must survive. The original is read out of the commit and
+ * hash-checked, because the checkout it runs in is one this round has written into.
  */
 async function provesNewRed(
   r: ReplacementInput,
@@ -200,4 +202,3 @@ function linesOf(s: string): string[] {
     .map((l) => l.trim())
     .filter((l) => l !== "");
 }
-

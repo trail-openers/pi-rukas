@@ -114,6 +114,16 @@ export function repairOutcomeProblem(oc: Record<string, unknown>): string | unde
   return undefined;
 }
 
+/** The run's two repair facts, as its record may hold them: an absent round has spent none and read OFF.
+ *  Present-but-wrong is corruption, so the caller refuses the record rather than defaulting it away.
+ */
+export function countersRepairProblem(c: Record<string, unknown>): string | undefined {
+  const spent = c.repairsSpent;
+  if (spent !== undefined && (typeof spent !== "number" || !Number.isInteger(spent) || spent < 0))
+    return "counters.repairsSpent must be a non-negative integer";
+  return undefined;
+}
+
 /** Rebuild the fields the judgement above passed, or nothing when the step carried none. */
 export function validatedRepairFields(oc: Record<string, unknown>): Record<string, unknown> {
   return {

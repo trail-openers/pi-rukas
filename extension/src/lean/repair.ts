@@ -1,32 +1,30 @@
 import { frozenFromLog } from "../lean-log.ts";
 import { runRepairRound } from "../oracle-repair-dispatch.ts";
 import { blockedEvidenceLines, headEvidenceFromStep } from "../oracle-repair-evidence.ts";
+import { blockedStep, refusedRepair, repairedSentence, rowsKey } from "../oracle-repair-verdict.ts";
+import type { RepairDeps as RepairWiringDeps } from "../oracle-repair-wiring.ts";
+import { buildWriteFence } from "./build-dispatch.ts";
 /** lean/repair — ONE adversary round to correct a frozen oracle the driver proved unsatisfiable: read the
  * blocked report off the log, ask for the round, record its verdict. The safety facts (billing, blindness,
  * judgement, freeze) live with the round's own modules.
  */
 import { leanChildOpts } from "./child-opts.ts";
-import { buildWriteFence } from "./build-dispatch.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { rereadSpec } from "./spec-for.ts";
 import { SpecifyInfraError } from "./specify-reset.ts";
 import { specifyBranch, specifyWorktreePath } from "./specify-tree.ts";
 import type { Outcome } from "./state.ts";
-import { blockedStep, refusedRepair, repairedSentence, rowsKey } from "../oracle-repair-verdict.ts";
-import type { RepairDeps as RepairWiringDeps } from "../oracle-repair-wiring.ts";
 
 /** The `repair` step. A refusal is a `refused` kind the table routes; only git it cannot account for throws. */
 export async function repairOutcome(
   ctx: HandlerCtx,
   deps: RepairWiringDeps,
-  /** Threaded to the seat's permission stamp, like every dispatching step. */
   headless: boolean,
 ): Promise<Outcome> {
   const { repoRoot, issue } = ctx;
   const blocked = blockedStep(ctx.steps);
-  // The table only sends a run here from a honoured blocked verdict, so a record that cannot account for
-  // itself is infrastructure, and the throw names the missing fact.
-  if (blocked === undefined) throw new SpecifyInfraError("no proven blocked report behind this repair round");
+  if (blocked === undefined)
+    throw new SpecifyInfraError("no proven blocked report behind this repair round");
   const named = Object.keys(blocked.outcome?.blockedBy ?? {});
   if (named.length === 0) throw new SpecifyInfraError("the blocked report named no file to repair");
 
@@ -79,4 +77,3 @@ export async function repairOutcome(
     };
   });
 }
-

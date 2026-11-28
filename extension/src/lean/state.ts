@@ -28,6 +28,7 @@ import { type DerivedSpec, assertDerivedSpec } from "./state-derived-spec.ts";
 import type { Outcome } from "./state-outcome-record.ts";
 export type { Outcome } from "./state-outcome-record.ts";
 export type { ReviewBoundRecord } from "./review-bound.ts";
+import { countersRepairProblem } from "../oracle-repair-fields.ts";
 import { buildOutcome, outcomeProblem, progressProblem } from "./state-outcome.ts";
 // The store is re-exported so every caller of the record keeps one import site;
 // the layout of `.pi/lean-state/` is stated once, in `state-store.ts`.
@@ -127,7 +128,7 @@ export interface RunCounters {
   reviewDone: boolean;
   ciFixUsed: boolean;
   draft: boolean;
-  /** Repair rounds paid for, billed on entering the step: a refused round cannot be re-bought. Absent: 0. */
+  /** Repair rounds paid for, billed on entering the step. Absent: 0. */
   repairsSpent: number;
 }
 
@@ -269,14 +270,9 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
   for (const key of ["challengeDone", "reviewDone", "ciFixUsed", "draft"] as const) {
     if (typeof c[key] !== "boolean") bad(`counters.${key} must be a boolean`);
   }
-  // Optional on load: a record from before the round has spent none. Present-but-wrong is corruption.
-  if (
-    c.repairsSpent !== undefined &&
-    (typeof c.repairsSpent !== "number" || !Number.isInteger(c.repairsSpent) || c.repairsSpent < 0)
-  )
-    bad("counters.repairsSpent must be a non-negative integer");
-  if (r.oracleRepair !== undefined && typeof r.oracleRepair !== "boolean")
-    bad("oracleRepair must be a boolean");
+  // Both repair facts are validated by the round's own module, so their rules live beside its fields.
+  const spend = countersRepairProblem(c);
+  if (spend !== undefined) bad(spend);
   const models = r.models as Record<string, unknown> | undefined;
   if (!models || typeof models !== "object" || Array.isArray(models))
     bad("models must be an object");

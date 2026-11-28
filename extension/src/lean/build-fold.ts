@@ -5,10 +5,10 @@
  */
 import { blobAt } from "./build-git.ts";
 import { normaliseBuild } from "./build-normalise.ts";
+import { LoopBudget, runFrozen } from "./build-prove.ts";
 import type { BuildExec, NormaliseReport } from "./build-types.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { TEST_TIMEOUT_MS, sha256 } from "./specify-proof.ts";
-import { LoopBudget, runFrozen } from "./build-blocked.ts";
 
 export async function foldStoppedBuild(opts: {
   exec: BuildExec;
@@ -50,4 +50,3 @@ export async function foldStoppedBuild(opts: {
   }
   return { kept, failing };
 }
-

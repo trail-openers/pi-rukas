@@ -11,7 +11,7 @@
  * implementation, since a builder the driver honoured had produced nothing the named test could pass
  * against); the capture of the seat's `submit_tests` bytes, nothing else; the mechanical judgement in a real
  * checkout of `baseSha`; and the freeze, which is `specify`'s own primitive.
- */import { type StepArmsCtx, armsStepBudget, stepDispatchArms } from "./lean-step-bound.ts";
+ */ import { type StepArmsCtx, armsStepBudget, stepDispatchArms } from "./lean-step-bound.ts";
 import type { BuildExec } from "./lean/build-types.ts";
 import type { WorkConfig } from "./lean/config.ts";
 import type { PiSpec } from "./lean/spec.ts";
@@ -344,5 +344,8 @@ async function passesAtHead(
   }
   writeCaptured(baseTree, laid);
   const proof = await runTestFile(exec, { wt: baseTree, template, file: rel });
-  return { passed: proof.kind === "green", observed: proof.kind === "green" || proof.kind === "red" };
+  return {
+    passed: proof.kind === "green",
+    observed: proof.kind === "green" || proof.kind === "red",
+  };
 }
