@@ -25,11 +25,11 @@
 import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import {
+  type ProvedKind,
   allPreserved,
   malformedDeclarations,
   preservedCoverage,
   preservedKeepsFile,
-  type ProvedKind,
 } from "../lean-preserved-coverage.ts";
 import { preservedCriteria } from "../lean-preserved-step.ts";
 import { preservedReasonClause } from "../specify-preserves.ts";
@@ -337,9 +337,8 @@ export async function runTestPipeline(
       continue;
     }
     assertRan(proof, cand.path);
-    // A declared file keeps its bytes ONLY where the preservation rule freezes it: a file the proof refused
-    // and the rule does not keep is deleted, so nothing the step did not freeze can ride into the commit or
-    // leave the tree unclean. The rule is decided from all proofs at once, below, so this pass defers to it.
+    // A declared file keeps its bytes ONLY where the rule freezes it: the rule is decided from all proofs at
+    // once, below, so anything it does not keep is deleted here and never reaches the commit or the tree.
     if (isPreserved(cand.criterionId) && !preservedKeepsFile(candidates, kinds, cand)) continue;
     notes.push(noteFor(cand, proof));
     const why = removeRejected(wt, cand.path);
@@ -414,14 +413,13 @@ export async function runTestPipeline(
   }
 
   // 6. Coverage. ONLY `"all-criteria"` refuses a gap: `specify` needs a red for every test criterion, while
-  //    `challenge` keeps whatever red it earned. Only a DECLARED preserved criterion is excused here, and
-  //    the whole computation lives in `../lean-preserved-coverage.ts`.
+  //    `challenge` keeps whatever red it earned. Only a DECLARED preserved criterion is excused, and the
+  //    computation is `../lean-preserved-coverage.ts`.
   const coverage = preservedCoverage({ candidates, kinds, rows: kept, wanted: args.wanted });
   const { mustPass, preservedIds } = coverage;
   if (args.coverage === "all-criteria") {
-    const missing = coverage.missing;
-    if (missing.length > 0) {
-      const rules = gapFor(missing, true);
+    if (coverage.missing.length > 0) {
+      const rules = gapFor(coverage.missing, true);
       return {
         kind: "uncovered",
         uncovered: rules,

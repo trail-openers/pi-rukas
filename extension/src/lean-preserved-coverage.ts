@@ -1,3 +1,4 @@
+import { type ProvedFile, preservedCriteria, preservedFiles } from "./lean-preserved-step.ts";
 /**
  * lean-preserved-coverage — what the `specify` step must freeze once a run declared criteria preserved.
  *
@@ -11,8 +12,6 @@
  * only for verdicts, so a caller cannot accidentally skip the side effect a step owes.
  */
 import type { DeclaredPath } from "./lean/specify-tree.ts";
-import type { ProvedFile } from "./lean-preserved-step.ts";
-import { preservedCriteria, preservedFiles } from "./lean-preserved-step.ts";
 
 /** One path's proof verdict, as the caller read it. */
 export type ProvedKind = Pick<ProvedFile, "kind">;

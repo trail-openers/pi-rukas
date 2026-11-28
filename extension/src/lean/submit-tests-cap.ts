@@ -8,6 +8,7 @@
  * work rather than the call's cost, and are applied here, where a submitted path is finally a file.
  */
 import path from "node:path";
+import { keptCapRows, rowDeclaredPreserves } from "../lean-preserved-cap.ts";
 import { type TestLocation, testLocationProblem } from "./config-test-location.ts";
 import type { PiSpec } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
@@ -268,12 +269,8 @@ export async function validateSubmitRows(
       keptRels.set(row.criterionId, seen);
       quota.set(row.criterionId, (quota.get(row.criterionId) ?? 0) + 1);
     }
-    if (files.length > 0) keptByCriterion.set(row.criterionId, [files, row.preserves === true]);
+    if (files.length > 0) keptByCriterion.set(row.criterionId, [files, rowDeclaredPreserves(row)]);
   }
-  const kept: SubmitTestsRow[] = [...keptByCriterion.entries()].map(([criterionId, held]) => ({
-    criterionId,
-    testFiles: held[0],
-    ...(held[1] ? { preserves: true } : {}),
-  }));
+  const kept: SubmitTestsRow[] = keptCapRows([...keptByCriterion.entries()]);
   return { kept, dropped };
 }

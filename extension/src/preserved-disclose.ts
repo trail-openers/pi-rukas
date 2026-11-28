@@ -7,6 +7,7 @@
  * reader who cannot tell the two apart cannot tell a run that skipped a check from one that froze one.
  */
 import { leanSpecifyPreservesEnabled } from "./lean-specify-preserves-switch.ts";
+import type { Outcome } from "./lean/state-outcome-record.ts";
 import { oneLine } from "./lean/text-fence.ts";
 import { PRESERVES_HINT } from "./specify-preserves.ts";
 
@@ -49,7 +50,7 @@ export function preservedClause(
 
 /** The PR body's own line, or `""` for nothing to disclose. */
 export function preservedLine(o: {
-  preserved?: readonly string[];
+  preserved?: string[];
   tests?: Record<string, string[]>;
 }): string {
   const clause = preservedClause(o.preserved, o.tests);
@@ -63,12 +64,12 @@ export function preservedLine(o: {
  */
 export function gapCauseLines(
   reading: string,
-  rules: readonly string[],
-  reason: string,
-  preserved: readonly string[] | undefined,
-  tests?: Record<string, string[]>,
+  oc: Partial<Pick<Outcome, "failedRules" | "reason" | "preserved" | "tests">>,
 ): string {
+  const rules = oc.failedRules ?? [];
+  const reason = oc.reason ?? "";
   const lead = [...rules.filter((r) => !reason.includes(r)), reason];
   const second = reason.includes("exited 0 on base") ? [reading, PRESERVES_HINT] : [];
-  return [...lead, ...second, preservedClause(preserved, tests)].filter((s) => s !== "").join("\n");
+  const kept = preservedClause(oc.preserved, oc.tests);
+  return [...lead, ...second, kept].filter((s) => s !== "").join("\n");
 }

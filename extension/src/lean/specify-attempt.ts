@@ -307,9 +307,10 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       dispatched: rows,
     };
   const declaredRows = reask === undefined ? first.rows : [...first.rows, ...reask.rows];
-  const preservedRows = preservedCriteria(declaredRows);
   const wantedIds = wanted.map((c) => c.id);
+  // A declaration of the wrong type is a malformed call, counted where the malformed calls are counted.
   const skipped = first.skipped + (reask?.skipped ?? 0) + malformedDeclarations(declaredRows);
+  const preservedRows = preservedCriteria(declaredRows);
   const note = reask?.note;
   /** The attributed drops whose reason is a size refusal — see `SIZE_REFUSAL`. */
   const sizeRefused: string[] = [];
@@ -379,14 +380,13 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   const gapKind = leanSpecifyGapHandbackEnabled() ? RED_TEST_GAP : "no-red-test";
   // A spec whose every test criterion is preserved has nothing to build: its own stable reason, never a
   // freeze of a contract made of guards alone.
-  if (allPreserved(wantedIds, preservedRows)) {
-    const rule = allPreservedReason(preservedRows);
+  if (allPreserved(wantedIds, preservedRows))
     return {
       outcome: withReaskNote(
         {
           kind: gapKind,
           failedRules: wanted.map((c) => `criterion ${c.id} has no red test`),
-          reason: rule,
+          reason: allPreservedReason(preservedRows),
           dispatches: rows,
         },
         note,
@@ -395,7 +395,6 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       silent: false,
       dispatched: rows,
     };
-  }
   if (pipeline.kind === "uncovered")
     return {
       outcome: withReaskNote(
