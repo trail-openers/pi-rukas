@@ -74,8 +74,8 @@ for (const oracleRepair of [false, true]) {
       `build + blocked (${arm}) charges no build attempt at ${buildAttempts} (got ${moved.counters.buildAttempts})`,
     );
     assert(
-      moved.counters.repairsSpent === 0,
-      `build + blocked (${arm}) charges no repair round on entry (got ${moved.counters.repairsSpent})`,
+      moved.counters.repairsSpent === undefined,
+      `build + blocked (${arm}) charges no repair round on entry (got ${String(moved.counters.repairsSpent)})`,
     );
   }
 }

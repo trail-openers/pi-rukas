@@ -168,11 +168,11 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           // `repairsSpent` is owed here rather than earlier because a run that never answered the question
           // bought nothing: the counter is charged on the edge that leaves the round, so a round cannot be
           // re-bought by the next blocked report.
-          return viaBuild(run, "build", undefined, { repairsSpent: c.repairsSpent + 1 });
+          return viaBuild(run, "build", undefined, { repairsSpent: (c.repairsSpent ?? 0) + 1 });
         case "refused":
           // The red marker stands: a run must not land over a proven-bad oracle. Billed like its sibling, or
           // a re-buyable round would loop on the same refusal.
-          return viaBuild(run, "build", true, { repairsSpent: c.repairsSpent + 1 });
+          return viaBuild(run, "build", true, { repairsSpent: (c.repairsSpent ?? 0) + 1 });
       }
       break;
 

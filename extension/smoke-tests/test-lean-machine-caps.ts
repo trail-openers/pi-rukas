@@ -361,8 +361,8 @@ assert(
         `build blocked (${arm}) charges no build attempt (got ${blocked.counters.buildAttempts})`,
       );
       assert(
-        blocked.counters.repairsSpent === 0,
-        `build blocked (${arm}) charges no repair round on entry (got ${blocked.counters.repairsSpent})`,
+        blocked.counters.repairsSpent === undefined,
+        `build blocked (${arm}) charges no repair round on entry (got ${String(blocked.counters.repairsSpent)})`,
       );
       assert(
         blocked.counters.draft === false,

@@ -128,8 +128,10 @@ export interface RunCounters {
   reviewDone: boolean;
   ciFixUsed: boolean;
   draft: boolean;
-  /** Repair rounds paid for, billed on entering the step. Absent: 0. */
-  repairsSpent: number;
+  /** Repair rounds paid for, billed on the edge that leaves the step. Absent: none spent.
+   *  Optional on purpose: the key exists only on a run the repair round touched, so a run
+   *  the round never entered holds the bytes it held before the round existed. */
+  repairsSpent?: number;
 }
 
 /**
@@ -180,7 +182,6 @@ export const INITIAL_COUNTERS: RunCounters = {
   reviewDone: false,
   ciFixUsed: false,
   draft: false,
-  repairsSpent: 0,
 };
 
 export class LeanStateError extends Error {
@@ -363,7 +364,9 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
       reviewDone: c.reviewDone as boolean,
       ciFixUsed: c.ciFixUsed as boolean,
       draft: c.draft as boolean,
-      repairsSpent: (c.repairsSpent ?? 0) as number,
+      // Rebuilt member by member, never spread: the repair counter keeps its position at the
+      // end, so a file written by this build reads back with the key order it was written with.
+      ...(c.repairsSpent === undefined ? {} : { repairsSpent: c.repairsSpent as number }),
     },
     steps,
     ...(r.result !== undefined ? { result: assertResult(r.result, bad) } : {}),

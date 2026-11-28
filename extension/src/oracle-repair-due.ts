@@ -7,5 +7,5 @@
 import type { LeanRun } from "./lean/state.ts";
 
 export function repairRoundDue(run: LeanRun): boolean {
-  return run.oracleRepair === true && run.counters.repairsSpent < 1;
+  return run.oracleRepair === true && (run.counters.repairsSpent ?? 0) < 1;
 }

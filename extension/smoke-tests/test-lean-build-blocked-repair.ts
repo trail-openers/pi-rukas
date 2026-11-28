@@ -17,7 +17,7 @@
  * executing in a real checkout. Only the model is faked.
  */
 
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { leanOracleRepairEnabled } from "../src/lean-oracle-repair-switch.ts";
 import { repairRoundDue } from "../src/oracle-repair-due.ts";
@@ -172,6 +172,24 @@ const comparable = (r: RepairRecord): string =>
   assert(
     comparable(off) !== comparable(golden.repaired),
     "(e) the two arms are distinguishable runs",
+  );
+  // The state file is the durable half of that claim: the off arm writes no repair
+  // fact at all, and the on arm stamps the switch it started under and bills the
+  // round it spent. A default-on run that wrote either key unconditionally would
+  // put bytes in a record the round never entered.
+  const offKeys = JSON.stringify(off.stateFile);
+  assert(
+    offKeys.includes('"repairsSpent"') === false && offKeys.includes('"oracleRepair"') === false,
+    "(e) off, the state file carries neither repair key",
+  );
+  const on = golden.repaired;
+  assert(
+    on.stateFile?.oracleRepair === true,
+    `(e) on, the run's own record carries the stamp (${String(on.stateFile?.oracleRepair)})`,
+  );
+  assert(
+    on.steps.some((s) => s.state === "repair") && on.stateFile?.counters?.repairsSpent === 1,
+    `(e) and a run whose round ran bills it in the record (${String(on.stateFile?.counters?.repairsSpent)})`,
   );
 }
 

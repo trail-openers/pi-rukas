@@ -15,7 +15,8 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { leanStateFile } from "../../src/lean/state.ts";
 import path from "node:path";
 import { execp } from "../../src/exec.ts";
 import { leanIssueResult } from "../../src/headless/work-lean-result.ts";
@@ -115,6 +116,8 @@ export interface RepairRecord {
   comments: string[];
   failure?: ResultFailure;
   repair?: RepairObservation;
+  /** The two repair facts as the run's persisted record holds them: absent key, absent entry. */
+  stateFile?: { oracleRepair?: boolean; repairsSpent?: number };
 }
 
 /** Every full sha masked, so a fixture repo built afresh still matches its golden. */
@@ -397,6 +400,14 @@ export async function driveRepairRun(
         roundRan = result.run.steps.some((s) => s.state === "repair" && s.outcome !== undefined);
         const outcome = (o: Outcome | undefined): unknown =>
           o === undefined ? undefined : (JSON.parse(mask(JSON.stringify(o))) as unknown);
+        // The two repair facts as the run's own durable record holds them, read back off
+        // disk rather than from the in-memory run: what the off arm must NOT write is a
+        // claim about bytes, and bytes are only on disk.
+        const persisted = JSON.parse(
+          readFileSync(leanStateFile(repo.repoRoot, issue), "utf8"),
+        ) as Record<string, unknown>;
+        const repairKeys = Object.keys(persisted).filter((k) => k === "oracleRepair");
+        const spent = (persisted.counters as Record<string, unknown>)?.repairsSpent;
         record = {
           state: result.run.state,
           code: result.code,
@@ -408,6 +419,10 @@ export async function driveRepairRun(
           })),
           comments: comments.map(mask),
           failure: leanIssueResult(result.run, result.code).failure,
+          stateFile: {
+            ...(repairKeys.length === 0 ? {} : { oracleRepair: persisted.oracleRepair }),
+            ...(spent === undefined ? {} : { repairsSpent: spent }),
+          },
           ...(roundRan
             ? {
                 repair: {
