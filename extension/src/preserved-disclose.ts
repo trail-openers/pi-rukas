@@ -75,9 +75,10 @@ export function gapCauseLines(
   const rules = oc.failedRules ?? [];
   const reason = oc.reason ?? "";
   const lead = [...rules.filter((r) => !reason.includes(r)), reason];
-  // The second reading belongs to the GAP and prints on either arm; the HINT is an instruction to use the
-  // `preserves` field, and with the switch off that field is neither offered nor read, so telling an
-  // operator to use it would send them to a control the release does not have.
+  // The second reading belongs to the GAP and prints on either arm; the HINT is gated, because it is an
+  // instruction to declare a criterion and with the switch off the `preserves` field is neither offered to
+  // a child nor read from one. Its key is the red proof's own phrase, so without this test the off arm
+  // would order the operator to use a control that release does not have.
   const second =
     reason.includes("exited 0 on base") || (preservedIds(oc.preserved).length ?? 0) > 0
       ? [GAP_READING, ...(leanSpecifyPreservesEnabled() ? [PRESERVES_HINT] : [])]
