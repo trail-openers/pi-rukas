@@ -124,9 +124,8 @@ export class LoopBudget {
   }
 }
 
-/**
- * One frozen file's verdict under the loop's ONE budget. A runner that swallows the SIGKILL, or one a grandchild
- * holds open, is ABANDONED when the budget expires and counts `infra` — the step refuses at its bound.
+/** One file's verdict under the loop's ONE budget: a runner that swallows the SIGKILL, or one a grandchild holds
+ * open, is ABANDONED at the bound and counts `infra`.
  */
 export async function runFrozen(
   exec: BuildExec,
@@ -155,8 +154,8 @@ function abandoned(run: { template: string; file: string }, budgetMs: number): P
   };
 }
 
-/** The child's conflicts, filtered to entries the record could hold, in the child's order: `blockedProved`
- * runs them in it and stops at the first red, so illegal keys drop before any `git`/runner call.
+/** The child's conflicts, filtered to entries the record could hold, in its order: `blockedProved` runs them in
+ * it and stops at the first red, so illegal keys drop before any `git`/runner call.
  */
 export function usableConflicts(rows: Array<{ path: string; reason: string }>): string[] {
   const seen = new Set<string>();
