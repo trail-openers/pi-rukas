@@ -189,6 +189,8 @@ export async function runTestPipeline(
     Object.fromEntries(kept.map((row) => [row.criterionId, row.testFiles])),
   );
   const skippedNote = skipped > 0 ? ` (${skipped} malformed submit_tests call(s))` : "";
+  // The rule, its reason and its wording live outside this file: `lean-preserved-step.ts`,
+  // `lean-preserved-coverage.ts`, `specify-preserves.ts`.
   const isPreserved = declaredPreserved(kept);
   if (candidates.length === 0) {
     return {
