@@ -15,4 +15,3 @@ import { isFullCommitSha } from "./commit-sha.ts";
 export function isVerifiedHeadName(head: unknown): head is string {
   return typeof head === "string" && isFullCommitSha(head);
 }
-
