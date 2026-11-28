@@ -182,14 +182,14 @@ const comparable = (r: RepairRecord): string =>
     offKeys.includes('"repairsSpent"') === false && offKeys.includes('"oracleRepair"') === false,
     "(e) off, the state file carries neither repair key",
   );
-  const on = golden.repaired;
+  const on = await driveRepairRun(REPAIR_ISSUE + 6, { switchValue: undefined });
   assert(
     on.stateFile?.oracleRepair === true,
     `(e) on, the run's own record carries the stamp (${String(on.stateFile?.oracleRepair)})`,
   );
   assert(
-    on.steps.some((s) => s.state === "repair") && on.stateFile?.counters?.repairsSpent === 1,
-    `(e) and a run whose round ran bills it in the record (${String(on.stateFile?.counters?.repairsSpent)})`,
+    on.steps.some((s) => s.state === "repair") && on.stateFile?.repairsSpent === 1,
+    `(e) and a run whose round ran bills it in the record (${String(on.stateFile?.repairsSpent)})`,
   );
 }
 
