@@ -30,10 +30,12 @@ import type { Step } from "../../src/lean/state.ts";
 export type BuildFixtureOpts = {
   frozenSha?: string;
   frozenText?: string | Buffer;
+  /** See the module header for why a case asks for each. */
   extraFrozen?: Record<string, string>;
   childOwnsBranch?: boolean;
+  /** See {@link earnedRepairStep}. */
   earned?: EarnedRoundOpts;
-  buildStartedAt?: number;
+  buildStartedAt?: number; // #2660 — the start a deadline-derived bound measures from
   baseFiles?: Record<string, string>;
   worktreeIssue?: number;
 };

@@ -258,7 +258,7 @@ export interface RunResult {
    * died. Read off the `BuildInfraError` itself so a case asserts the rows
    * survived the throw rather than re-deriving them from a message.
    */
-  deadDispatches?: DispatchUsageRow[]; // rows the infra error carried, so a case asserts they survived
+  deadDispatches?: DispatchUsageRow[];
   dispatched: number;
   /**
    * How many times the step read the issue. ONE is the contract — the body the
@@ -284,8 +284,8 @@ export interface RunResult {
 
 /**
  * What one case asks the harness to do: the child's acts, the tree it plants, the
- * artifacts the fake dispatch hands back, and the clock the step reads. Each knob is
- * documented where it is read; the ones needing prose live on their own module.
+ * artifacts the fake dispatch hands back, and the clock the step reads. Most knobs
+ * are single-line; the multi-sentence ones are documented where they are read.
  */
 export interface RunOpts {
   issue: number;
@@ -315,7 +315,11 @@ export interface RunOpts {
   dispatchOk?: boolean;
   /** The issue body the step re-reads; defaults to `SPEC_BODY` (a bare spec fence). */
   specBody?: string;
-  /** The nth child's whole `DispatchResult`, verbatim or by rule — see {@link resultOverride}. */
+  /**
+   * The whole `DispatchResult` of the nth child (0-based), verbatim, or a rule
+   * for it — see {@link resultOverride}. The shape a case needs to hand its dead
+   * child real `usage.turns` / `toolUses` / `killCause` fields.
+   */
   dispatchResults?: DispatchResultOverride;
   /** Drives the child's progress feed, the way `spawn.ts` does at `message_end`. */
   onProgressTick?: (onProgress: BudgetOpts["onProgress"]) => void;
