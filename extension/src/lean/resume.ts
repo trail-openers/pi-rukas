@@ -143,7 +143,12 @@ function isReportRoute(log: Step[]): boolean {
     leanReviewIncompleteHeadEnabled() &&
     log
       .slice(0, at)
-      .some((s) => s.state === "verify" && s.outcome?.kind === "green" && s.outcome.verifiedHead !== undefined)
+      .some(
+        (s) =>
+          s.state === "verify" &&
+          s.outcome?.kind === "green" &&
+          s.outcome.verifiedHead !== undefined,
+      )
   );
 }
 

@@ -125,6 +125,10 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
       reason: `the newest decided verify is ${String(green.outcome?.kind)}, not green, so no head is verified`,
     };
   const head = green.outcome.verifiedHead;
+  // A green that named no commit is the same standing as no green at all: the run shipped
+  // bytes this rule cannot name. The distinction is still worth one clause, because a reader
+  // of the comment needs to know whether the gate spoke at all — and the rule's own finding for
+  // each case is what the comment quotes, so both keep their separate wording.
   if (typeof head !== "string" || !isFullCommitSha(head))
     return {
       applies: true,

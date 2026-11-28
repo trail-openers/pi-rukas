@@ -76,7 +76,14 @@ function newestReason(steps: Step[], state: "verify" | "ci", kind: "red" | "gree
 function endedBy(steps: Step[]): string | undefined {
   const ended = newestDecidedWorkStep(steps);
   const reason = ended?.outcome?.reason ?? ended?.outcome?.message;
-  return typeof reason === "string" && reason.trim() !== "" ? reason : undefined;
+  if (typeof reason !== "string" || reason.trim() === "") return undefined;
+  // A review that THREW is not a verdict, and the operator needs the two facts apart: the
+  // step never finished, and here is what stopped it. The heading is the rule's own line and
+  // the sentence under it is the throw's, unedited — the reason a bare engine error is not a
+  // handoff is that nobody said which step owed the work.
+  return ended?.state === "review" && ended.outcome?.kind === "error"
+    ? `the review did not complete. Why the review did not complete: ${reason}`
+    : reason;
 }
 
 /** Why the run is ending, in the record's own words. */
@@ -294,12 +301,18 @@ interface Heads {
  * includes `alreadyAtVerified`, where the rewind's pre-move `unshippedHead` is withheld rather than printed
  * as a head this step moved.
  */
-function headFacts(rewind: Rewind, originHead: string | undefined): Heads {
+function headFacts(
+  rewind: Rewind,
+  originHead: string | undefined,
+  /** The head rule's own finding, for the arm where the rewind brought no reason of its own. */
+  ruleFinding?: string,
+): Heads {
   const shippedHead = originHead ?? rewind.unshippedHead;
   // The arm with nothing to move: origin keeps the head the fix wave pushed, uncertified.
   if (rewind.unshippedHead === undefined && !rewind.shipped) {
-    if (originHead === undefined) return { render: false };
-    const why = rewind.noHeadReason ?? rewind.reason;
+    const why = rewind.noHeadReason ?? rewind.reason ?? ruleFinding;
+    if (originHead === undefined)
+      return why === undefined ? { render: false } : { render: true, unshippedReason: why };
     return {
       render: true,
       shippedHead: originHead,
@@ -359,9 +372,11 @@ export async function handbackOutcome(
     // the line that says the head is unverified.
     const facts: Heads = heads.shippedHead
       ? { render: true, shippedHead: heads.shippedHead, shippedVerified: false }
-      : moved === undefined
-        ? { render: false }
-        : headFacts(moved, originHead);
+      : // The rule spoke and named no head to move. Its finding IS the head line: a handback
+        // over bytes no gate of this run certified has to say so, and the rule's words are the
+        // only place that answer is written. `NO_HEAD`'s line, carried by the rewind it came
+        // through, says the same thing in the rewind's own voice and outranks it.
+        headFacts(moved ?? NO_HEAD, originHead, heads.reason);
     const { render, ...record } = facts;
     body = handbackBody(ctx.issue, {
       needed: neededFromLog(ctx.steps),

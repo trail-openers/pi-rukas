@@ -191,7 +191,10 @@ export async function routeReport(
 export async function reportErroredReview(
   run: LeanRun,
   cause: string,
-  writers: Omit<ReportRequest, "run" | "cause" | "boundMs" | "boundFiredMs" | "handler" | "stoppedAt"> & {
+  writers: Omit<
+    ReportRequest,
+    "run" | "cause" | "boundMs" | "boundFiredMs" | "handler" | "stoppedAt"
+  > & {
     handler: HandbackHandler | undefined;
   },
 ): Promise<LeanRun | undefined> {
