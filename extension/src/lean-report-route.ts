@@ -49,14 +49,14 @@ export function isReportRoute(log: Step[]): boolean {
  */
 export function reportRouteFor(newest: Step, log: Step[]): boolean {
   if (newest.outcome?.kind === "fixed") return true;
-  // The errored arm (#2667), and only with the switch on: the run the rule would hand back at a
-  // certified head is the run whose report entry this is. A green that named no head names nothing
-  // to ship, so it opens no route — and "named a head" is the head rule's own reading, asked over
-  // the same log the fold is judging, so the two readers cannot drift apart.
+  // The errored arm (#2667), and only with the switch on: the run the head rule would hand back is the
+  // run whose report entry this is. "Would hand back" is the head rule's own reading, asked over the same
+  // log the fold is judging, so the two readers cannot drift apart — and a green that named no head still
+  // earns the report, it just names no head.
   return (
     newest.outcome?.kind === "error" &&
     leanReviewIncompleteHeadEnabled() &&
-    handbackHeads(log).verifiedHead !== undefined
+    handbackHeads(log).applies
   );
 }
 
@@ -77,7 +77,6 @@ export function routedThrowEntry(log: Step[], i: number): boolean {
     log[i + 1]?.outcome === undefined &&
     log.filter((r) => r.state === "handback").length === 1 &&
     leanReviewIncompleteHeadEnabled() &&
-    reportRouteFor(s, log.slice(0, i + 1)) &&
-    handbackHeads(log.slice(0, i + 1)).applies
+    reportRouteFor(s, log.slice(0, i + 1))
   );
 }

@@ -42,6 +42,10 @@ export async function reportErroredReview(
   cause: string,
   writers: ErroredReviewWriters,
 ): Promise<LeanRun | undefined> {
+  // One gate for the whole arm: the head rule reads the switch, so off it answers `{applies: false}` for an
+  // errored review and this route is unreachable byte for byte. On, the rule's `applies` is the premise: a
+  // throw behind a decided green owes the reporting step, and a green that named no commit still owes the
+  // comment — it just ships no head and asks for no rewind.
   if (!handbackHeads(run.steps).applies) return undefined;
   const { handler, ...rest } = writers;
   if (handler === undefined) return undefined;

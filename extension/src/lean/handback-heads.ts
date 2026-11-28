@@ -84,14 +84,19 @@ function newestDecidedThrough(
 
 /** This file's finding for a gate verdict that named no head to ship. */
 function thisRule(green: Step): HandbackHeads {
-  return green.outcome?.kind === "green"
-    ? {
-        applies: true,
-        reason: "the green verify recorded no head, so there is no verified head to ship",
-      }
+  if (green.outcome?.kind !== "green")
+    return {
+      applies: true,
+      reason: `the newest decided verify is ${String(green.outcome?.kind)}, not green, so no head is verified`,
+    };
+  const head = green.outcome.verifiedHead;
+  // A green that NAMED a commit is the head a handback ships — the base rule's own answer, and the only
+  // head either arm may name. A green that named none has nothing to ship and says so in this file's words.
+  return isVerifiedHeadName(head)
+    ? { applies: true, verifiedHead: head }
     : {
         applies: true,
-        reason: `the newest decided verify is ${String(green.outcome?.kind)}, not green, so no head is verified`,
+        reason: "the green verify recorded no head, so there is no verified head to ship",
       };
 }
 
@@ -122,6 +127,12 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
   if (newest.state !== "review" || (newest.outcome.kind !== "fixed" && !errored))
     return { applies: false };
   if (errored && !incompleteHeadOn()) return { applies: false };
+  // One reading, asked of the gate's newest DECIDED verdict: a green that named a commit is the certified
+  // arm and its head is what the report ships; a green that named none still owes the report — it applies,
+  // names no head, prints no head line and asks for no rewind, and the run's own sentence is its NEEDING
+  // line. Anything else — a verdict that was never green, or a gate the run never let decide — is silent,
+  // because such a run shipped no bytes of its own: the plain stamp, byte for byte as before this knob.
+  if (errored) return incompleteReviewHandback(newestDecidedThrough(steps, "verify", at));
   const trailing = newestStateStepAfter(steps, "verify", at);
   if (trailing !== undefined && trailing.outcome === undefined)
     return {
@@ -129,17 +140,6 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
       reason: `the run entered the gate again at ${trailing.key} and never recorded what it decided, so no head is verified`,
     };
   const green = newestDecidedThrough(steps, "verify", at);
-  // An errored review with nothing decided behind it has no head this rule may name: it is not a
-  // handback over unverified BYTES the run shipped, and the rule's finding would be the run's whole
-  // sentence. Every other green shape keeps this file's own finding, so only a nameable head is
-  // answered outside.
-  if (errored) {
-    const reading = incompleteReviewHandback(green);
-    // A throw with nothing decided behind it names no head and shipped no bytes of its own: silent.
-    // Every other green shape keeps this file's finding, so only a nameable head is answered outside.
-    if (reading !== undefined) return reading;
-    return green === undefined ? { applies: false } : thisRule(green);
-  }
   if (green === undefined) return { applies: true, reason: NO_GATE_VERDICT };
   return thisRule(green);
 }

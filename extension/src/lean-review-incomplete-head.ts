@@ -33,15 +33,17 @@ export function incompleteHeadOn(): boolean {
 }
 
 /**
- * The reading an errored `review` gets, asked of the gate's newest decided verdict. `undefined`
- * means "this file has nothing to add", which is where the rule's own findings live.
+ * The reading an errored `review` gets, asked of the gate's newest decided verdict.
+ *
+ * A green that NAMED a commit is the certified arm: its head is what the report ships. A green that named
+ * none applies with no head and no reason: the report still runs, prints no head line, asks for no rewind,
+ * and the run's own sentence is its NEEDING line. Anything else — a verdict that was never green, or a gate
+ * the run never let decide — is `{applies: false}`: the plain stamp, as it was before this knob existed.
  */
-export function incompleteReviewHandback(
-  green: Step | undefined,
-): IncompleteReviewHeads | undefined {
+export function incompleteReviewHandback(green: Step | undefined): IncompleteReviewHeads {
   const outcome: Outcome | undefined = green?.outcome;
-  if (outcome?.kind !== "green") return undefined;
+  if (outcome?.kind !== "green") return { applies: false };
   return isVerifiedHeadName(outcome.verifiedHead)
     ? { applies: true, verifiedHead: outcome.verifiedHead }
-    : undefined;
+    : { applies: true };
 }
