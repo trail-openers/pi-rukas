@@ -55,7 +55,6 @@ import {
   testsFromLog,
 } from "../lean-log.ts";
 import { armsStepBudget, stepDispatchArms, stopReasonClause } from "../lean-step-bound.ts";
-import { buildRepairFields } from "./build-repair-fields.ts";
 import { foldStoppedBuild } from "../oracle-repair-fold.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
@@ -69,6 +68,7 @@ import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
 import { budgetFoldAccumulator, failingClause, foldClauses, keptClause } from "./build-reasons.ts";
+import { buildRepairFields } from "./build-repair-fields.ts";
 import type { BuildDispatch, BuildExec, NormaliseReport } from "./build-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import { type WorkConfig, loadWorkConfig, protectedPathsOf } from "./config.ts";
