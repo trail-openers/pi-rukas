@@ -25,6 +25,7 @@
 import { blobAt } from "./lean/build-git.ts";
 import type { BuildExec } from "./lean/build-types.ts";
 import { runTestFile, sha256 } from "./lean/specify-proof.ts";
+import { LoopBudget, runFrozen } from "./oracle-repair-prove.ts";
 import { writeCaptured } from "./lean/specify-reset.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 
@@ -37,6 +38,11 @@ export interface AcceptedReplacement {
   originalHash: string;
   /** The runner's own words on the failing case, quoted into the brief and the disclosure. */
   redCase: string;
+}
+
+/** One replacement refused, with the reason that belongs to THIS replacement and no other. */
+export interface RefusedReplacement {
+  refusal: string;
 }
 
 /** One replacement the caller submitted, with what the record already held for its path. */
@@ -83,6 +89,12 @@ export async function judgeRepairSubmission(opts: {
   replacements: ReplacementInput[];
   /** Shortened by a test to watch a hung base run refuse rather than hang. */
   timeoutMs?: number;
+  /**
+   * ONE wall clock for the whole sweep, which the caller owns because the same budget also bounds the head
+   * runs. `runFrozen` enforces it at both ends of a runner, so a sweep of replacements can never exceed one
+   * budget's worth of waiting. Absent, each base run carries only its own ceiling.
+   */
+  budget?: LoopBudget;
 }): Promise<Judgement> {
   const problem = submissionScopeProblem(
     opts.replacements.map((r) => r.path),
@@ -92,14 +104,17 @@ export async function judgeRepairSubmission(opts: {
   const verdicts: AcceptedReplacement[] = [];
   for (const r of opts.replacements) {
     const v = await judgeOne(opts, r);
-    if (v === undefined) return { accepted: false, why: `${r.path}: ${lastRefusal}` };
+    // A sweep the budget took left the round with no evidence about a file it cannot re-ask, so the round
+    // hands back naming the cause rather than accepting a judgement it never observed.
+    if (opts.budget?.over() === true)
+      throw new RepairJudgeError(
+        `the base sweep gave up at its ${String(opts.budget.ms)}ms budget before judging ${r.path}`,
+      );
+    if ("refusal" in v) return { accepted: false, why: `${r.path}: ${v.refusal}` };
     verdicts.push(v);
   }
   return { accepted: true, verdicts };
 }
-
-/** The reason the last refusal happened, set by `judgeOne` on its reject path. */
-let lastRefusal = "";
 
 /** A run that could not answer the question, as opposed to one that answered it. */
 export class RepairJudgeError extends Error {
@@ -109,7 +124,13 @@ export class RepairJudgeError extends Error {
   }
 }
 
-/** One file, or `undefined` when it is refused — `lastRefusal` then carries why. */
+/**
+ * One file: the accepted replacement, or a refusal carrying its own reason.
+ *
+ * The reason is RETURNED rather than stashed in a module-level slot because the loop that reads it does so
+ * across an `await`: two judgements in flight in one process would otherwise report each other's reason, and
+ * a handback that names the wrong refusal tells the builder to fix the wrong thing.
+ */
 async function judgeOne(
   opts: {
     exec: BuildExec;
@@ -117,29 +138,36 @@ async function judgeOne(
     baseRef: string;
     template: string;
     timeoutMs?: number;
+    budget?: LoopBudget;
   },
   r: ReplacementInput,
-): Promise<AcceptedReplacement | undefined> {
-  const refuse = (why: string): undefined => {
-    lastRefusal = why;
-    return undefined;
-  };
+): Promise<AcceptedReplacement | RefusedReplacement> {
+  const refuse = (why: string): RefusedReplacement => ({ refusal: why });
   if (r.frozenHash === undefined) return refuse("the run holds no frozen record for this path");
   if (r.bytes.length === 0) return refuse("the replacement is empty");
   if (sha256(r.bytes) === r.frozenHash)
     return refuse("the replacement is byte-identical to the frozen file");
+  // The original is read out of the COMMIT *before* the submitted bytes go into the checkout: the judge runs
+  // the replacement under the submitted path, so a comparison made after that write is one submission read
+  // back against itself, and a submission that quietly deleted a case the contract printed would compare
+  // equal to itself and be accepted. The committed bytes are the only copy the round has not written.
+  const original = await readOriginal(r, opts);
   // The runner classifies what it finds under the submitted path, so the submitted bytes go into the driver's
-  // throwaway base checkout first; judging the base's own copy would answer a question nobody asked.
+  // throwaway base checkout; judging the base's own copy would answer a question nobody asked.
   writeCaptured(opts.baseTree, new Map([[r.path, r.bytes]]));
-  const proof = await runTestFile(opts.exec, {
-    wt: opts.baseTree,
-    template: opts.template,
-    file: r.path,
-    limits: {
-      env: verifyChildEnv(),
-      ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
-    },
-  });
+  const run = { wt: opts.baseTree, template: opts.template, file: r.path };
+  // The same bounded runner the freeze-time proof and the blocked re-run use: the scrubbed environment and a
+  // kill ceiling on every run, so no project command can hold the round by its own timeout.
+  const proof =
+    opts.budget === undefined
+      ? await runTestFile(opts.exec, {
+          ...run,
+          limits: {
+            env: verifyChildEnv(),
+            ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
+          },
+        })
+      : await runFrozen(opts.exec, run, opts.budget);
   if (proof.kind === "green")
     return refuse(
       "every case of the replacement passes at the base, so it tests nothing the run must build",
@@ -150,7 +178,7 @@ async function judgeOne(
   // blocked gate takes for a file it could not classify.
   if (proof.kind !== "red")
     throw new RepairJudgeError(`the base run observed nothing (${proof.detail})`);
-  if (!(await provesNewRed(r, opts, proof.output)))
+  if (!(await provesNewRed(r, original, proof.output)))
     return refuse("the replacement's failing case is one the frozen file already had");
   return {
     path: r.path,
@@ -161,14 +189,6 @@ async function judgeOne(
 }
 
 /**
- * Does the runner's red name a case the ORIGINAL never printed?
- *
- * The identical-bytes check cannot catch a child that kept the original's failing assertion and appended a
- * passing one: those bytes differ, and the red is the frozen file's own. The original's text is the only
- * comparison that separates a corrected oracle from a resubmitted one, so the comparison is made line by line
- * against the original's own bytes.
- */
-/**
  * Did the runner's red name a case that exists only in the replacement?
  *
  * Two ways a submission steals the round, both invisible to a byte-identity check: keep the contract's failing
@@ -177,17 +197,25 @@ async function judgeOne(
  * the original AND every line the original printed must survive. The original is read out of the commit and
  * hash-checked, because the checkout it runs in is one this round has written into.
  */
-async function provesNewRed(
+/** The original's committed bytes, read before the round writes into the checkout it runs in. */
+async function readOriginal(
   r: ReplacementInput,
   opts: { exec: BuildExec; baseTree: string; baseRef: string },
-  output: string | undefined,
-): Promise<boolean> {
-  if (output === undefined || output.trim() === "") return false;
+): Promise<Buffer> {
   const bytes = await blobAt(opts.exec, opts.baseTree, opts.baseRef, r.path);
   if (bytes === undefined || sha256(bytes) !== r.frozenHash)
     throw new RepairJudgeError(
       `the base checkout's copy of ${r.path} is not the frozen file the run holds`,
     );
+  return bytes;
+}
+
+async function provesNewRed(
+  r: ReplacementInput,
+  bytes: Buffer,
+  output: string | undefined,
+): Promise<boolean> {
+  if (output === undefined || output.trim() === "") return false;
   const before = linesOf(bytes.toString("utf8"));
   const after = new Set(linesOf(r.bytes.toString("utf8")));
   if (before.some((l) => !after.has(l))) return false;
