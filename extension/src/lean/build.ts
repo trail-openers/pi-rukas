@@ -55,6 +55,7 @@ import {
   testsFromLog,
 } from "../lean-log.ts";
 import { armsStepBudget, stepDispatchArms, stopReasonClause } from "../lean-step-bound.ts";
+import { foldStoppedBuild } from "../oracle-repair-fold.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
@@ -64,7 +65,6 @@ import type { WriteFence } from "../write-fence-contract.ts";
 import { judgeBlockedReport } from "./build-blocked.ts";
 import { buildWriteFence, dispatchBuilder } from "./build-dispatch.ts";
 import { BuildInfraError } from "./build-errors.ts";
-import { foldStoppedBuild } from "./build-fold.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
 import { budgetFoldAccumulator, failingClause, foldClauses, keptClause } from "./build-reasons.ts";

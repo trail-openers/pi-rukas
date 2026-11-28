@@ -1,21 +1,24 @@
 /**
- * lean/build-prove — did the driver watch a named frozen test fail? The re-run a blocked report is honoured on
- * and the answer a repair round is bought with. `build-blocked.ts` turns the child's calls into a durable
- * verdict; nothing here reads that prose — a red the driver ran is the only fact that leaves this file.
+ * oracle-repair-prove — did the driver watch a named frozen test fail? The re-run a blocked report is honoured
+ * on and the answer a repair round is bought with. `lean/build-blocked.ts` turns the child's calls into a
+ * durable verdict; nothing here reads that prose — a red the driver ran is the only fact that leaves this file.
+ *
+ * Lives outside `src/lean/` with the round's other modules; it reaches into the engine only for the runner,
+ * the git reads and the durable record's own bounds.
  */
-import { trace, traceWarn } from "../trace.ts";
-import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
-import { blobAt } from "./build-git.ts";
-import type { BuildExec } from "./build-types.ts";
+import { blobAt } from "./lean/build-git.ts";
+import type { BuildExec } from "./lean/build-types.ts";
 import {
   type Proof,
   TEST_TIMEOUT_MS,
   renderTestCommand,
   runTestFile,
   sha256,
-} from "./specify-proof.ts";
-import { RECORD_MAX_ENTRIES, RECORD_REASON_MAX_CHARS } from "./state-outcome-maps.ts";
-import { frozenKeyProblem } from "./state-outcome.ts";
+} from "./lean/specify-proof.ts";
+import { RECORD_MAX_ENTRIES, RECORD_REASON_MAX_CHARS } from "./lean/state-outcome-maps.ts";
+import { frozenKeyProblem } from "./lean/state-outcome.ts";
+import { trace, traceWarn } from "./trace.ts";
+import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 
 /** What the gate decided, and the sentence the caller traces when it refused. */
 export type BlockedVerdict =
@@ -54,7 +57,7 @@ export async function blockedProved(opts: {
   if (unvetted.length > 0)
     return {
       honoured: false,
-      why: `named ${unvetted.length} file(s) the run never froze: ${unvetted.slice(0, 4).join(", ")}`,
+      why: `named ${String(unvetted.length)} file(s) the run never froze: ${unvetted.slice(0, 4).join(", ")}`,
     };
   // ONE budget for the loop, enforced at both ends of a runner (`runFrozen`).
   const budget = new LoopBudget(opts.timeoutMs ?? TEST_TIMEOUT_MS);

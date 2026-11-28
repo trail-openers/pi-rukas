@@ -1,14 +1,17 @@
 /**
- * lean/build-fold — the account a budget-stopped builder leaves: fold its work into the attempt's commit, then
- * say which frozen files are still red on the tree that commit made. The sweep reads each file out of HEAD,
- * because the tree is whatever the killed child left.
+ * oracle-repair-fold — the account a budget-stopped builder leaves: fold its work into the attempt's commit,
+ * then say which frozen files are still red on the tree that commit made. The sweep reads each file out of
+ * HEAD, because the tree is whatever the killed child left.
+ *
+ * Lives outside `src/lean/` with the round's other modules; the fold primitive itself stays in
+ * `lean/build-normalise.ts`, shared with the `build` step's own fold.
  */
-import { blobAt } from "./build-git.ts";
-import { normaliseBuild } from "./build-normalise.ts";
-import { LoopBudget, runFrozen } from "./build-prove.ts";
-import type { BuildExec, NormaliseReport } from "./build-types.ts";
-import { CaptureBudget } from "./specify-capture.ts";
-import { TEST_TIMEOUT_MS, sha256 } from "./specify-proof.ts";
+import { blobAt } from "./lean/build-git.ts";
+import { normaliseBuild } from "./lean/build-normalise.ts";
+import type { BuildExec, NormaliseReport } from "./lean/build-types.ts";
+import { CaptureBudget } from "./lean/specify-capture.ts";
+import { TEST_TIMEOUT_MS, sha256 } from "./lean/specify-proof.ts";
+import { LoopBudget, runFrozen } from "./oracle-repair-prove.ts";
 
 export async function foldStoppedBuild(opts: {
   exec: BuildExec;

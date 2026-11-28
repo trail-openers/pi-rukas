@@ -1,3 +1,4 @@
+import { blockedClaimKey, blockedProved, usableConflicts } from "../oracle-repair-prove.ts";
 import { BLOCKED_EVIDENCE_OUTPUT_CAP, type EvidenceLine } from "../oracle-repair-record.ts";
 /**
  * lean/build-blocked — the anti-forgery gate for the build child's "these frozen tests cannot all pass
@@ -13,13 +14,12 @@ import { BLOCKED_EVIDENCE_OUTPUT_CAP, type EvidenceLine } from "../oracle-repair
  *      `verify.test` template through the runner `verify` and `specify` use.
  *
  * A runner that could not start or was killed is NOT a red — it observed nothing — and a green named test is
- * not a conflict either. The re-run itself is `build-prove.ts`; the entry and reason bounds are the DURABLE
+ * not a conflict either. The re-run itself is `oracle-repair-prove.ts`; the entry and reason bounds are the DURABLE
  * record's, so an entry it could not persist is refused before anything is spent running it.
  */
 import { trace, traceWarn } from "../trace.ts";
 import { extractBlockedReport } from "./build-blocked-extract.ts";
 import { normaliseBuild } from "./build-normalise.ts";
-import { blockedClaimKey, blockedProved, usableConflicts } from "./build-prove.ts";
 import type { BuildExec, NormaliseReport } from "./build-types.ts";
 import { CaptureBudget } from "./specify-capture.ts";
 import { renderTestCommand } from "./specify-proof.ts";
