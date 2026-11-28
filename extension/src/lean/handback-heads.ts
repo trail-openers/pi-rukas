@@ -141,18 +141,5 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
     return green === undefined ? { applies: false } : thisRule(green);
   }
   if (green === undefined) return { applies: true, reason: NO_GATE_VERDICT };
-  if (green.outcome?.kind !== "green")
-    return {
-      applies: true,
-      reason: `the newest decided verify is ${String(green.outcome?.kind)}, not green, so no head is verified`,
-    };
-  const head = green.outcome.verifiedHead;
-  // A green that named no commit is the same standing as no green at all: the run shipped bytes
-  // this rule cannot name, and the finding says the gate spoke without naming anything.
-  if (!isVerifiedHeadName(head))
-    return {
-      applies: true,
-      reason: "the green verify recorded no head, so there is no verified head to ship",
-    };
-  return { applies: true, verifiedHead: head };
+  return thisRule(green);
 }

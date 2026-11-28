@@ -22,7 +22,8 @@
 
 import { readFileSync } from "node:fs";
 import { runLean } from "../src/lean/engine.ts";
-import { leanStateFile, loadRun } from "../src/lean/state.ts";
+import { handbackHeads } from "../src/lean/handback-heads.ts";
+import { leanStateFile, loadRun, type Step } from "../src/lean/state.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { driveRow } from "./lib/lean-review-incomplete-head-panel.ts";
 import { ISSUE } from "./lib/lean-review-incomplete-head-consts.ts";
@@ -110,6 +111,64 @@ assert(
   counter.started.length === 0 && cCounter.started.length === 0,
   `(c) neither resume DISPATCHED a step at all (a: ${counter.started.join(",")}; b: ${cCounter.started.join(",")})`,
 );
+
+// (d) A head whose newest decided `verify` is NOT green is unchanged: nothing is recorded as
+// verified, and the run does not become a handback over bytes its gate refused. The row drives
+// the real walk with the gate answering red, so the record is the machine's own.
+const redRow = await driveRow("budgetStop", { verifyKind: "red" });
+const redHandback = redRow.steps.find((s) => s.state === "handback")?.outcome;
+assert(
+  redRow.steps.some((s) => s.state === "verify" && s.outcome?.kind === "red"),
+  "(d) the walk's own gate really answered red",
+);
+assert(
+  redHandback !== undefined &&
+    redHandback.shippedHead === undefined &&
+    redHandback.unshippedHead === undefined &&
+    redHandback.shippedVerified === undefined,
+  `(d) a red gate records no verified head on the handback (${JSON.stringify(redHandback)})`,
+);
+assert(
+  redRow.code === 10 && redRow.state === "handed-back",
+  `(d) and the run is still a handback, not a landing (code ${String(redRow.code)}, ${redRow.state})`,
+);
+assert(
+  redRow.handback?.shippedVerified !== true,
+  "(d) and nothing on the record claims a certified head",
+);
+// The rule's own finding for a refused gate, asked of the rule over the walk's own log: the red
+// verdict is named as the reason nothing is verified, so the run cannot read as a handback over
+// bytes its gate had already rejected. The walk's own publish record supplies the head and the
+// walk's own gate the red verdict — nothing about the log is typed from the table, and the only
+// edit is the review entry the machine could not route on a refused gate. Dropping the green
+// condition from the rule is what this row is for: with it gone the finding is never produced.
+const greenFinding = handbackHeadsRedFinding(redRow.steps);
+assert(
+  greenFinding.includes("not green, so no head is verified"),
+  `(d) and the rule names the refused verdict as the reason nothing is verified (${JSON.stringify(greenFinding)})`,
+);
+assert(
+  redRow.steps.filter((s) => s.state === "verify" && s.outcome?.kind === "red").length > 0,
+  "(d) control: the gate verdicts the finding is built from are the walk's own red answers",
+);
+
+/**
+ * The rule's finding over a walk whose newest decided `verify` is red, with the review step's own
+ * record made to be the newest decided WORK step — the standing an errored review leaves, and the
+ * only way to ask this question of a walk the machine turned back at the gate.
+ */
+function handbackHeadsRedFinding(steps: Step[]): string {
+  const review = steps[steps.findIndex((s) => s.state === "publish") + 1] ?? {
+    key: `${String(ISSUE)}:review:0`,
+    state: "review",
+    startedAt: 1,
+  };
+  const log = [
+    ...steps,
+    { ...review, state: "review", outcome: { kind: "error", message: "the review did not finish" } },
+  ];
+  return handbackHeads(log as Step[]).reason ?? "";
+}
 
 function count(steps: { state: string }[]): Record<string, number> {
   const out: Record<string, number> = { handback: 0 };
