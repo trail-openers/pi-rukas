@@ -12,8 +12,8 @@
  */
 import { isFullCommitSha } from "../commit-sha.ts";
 import {
-  NO_GATE_VERDICT,
   type HandbackFindings,
+  NO_GATE_VERDICT,
   erroredReviewFindings,
   gateFindings,
 } from "../lean-handback-cause.ts";
