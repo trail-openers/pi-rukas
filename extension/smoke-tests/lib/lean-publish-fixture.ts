@@ -33,8 +33,13 @@ import type { PiSpec } from "../../src/lean/spec.ts";
 import { NO_HOOKS } from "../../src/lean/specify-reset.ts";
 import { specifyWorktreePath } from "../../src/lean/specify-tree.ts";
 import type { PreexistingTierRecord } from "../../src/lean/state-outcome-maps.ts";
-import type { LeanRun, Outcome, Step } from "../../src/lean/state.ts";
-import { INITIAL_COUNTERS, createRun } from "../../src/lean/state.ts";
+import {
+  INITIAL_COUNTERS,
+  type LeanRun,
+  type Outcome,
+  type Step,
+  createRun,
+} from "../../src/lean/state.ts";
 import { netGitEnv } from "../../src/work-driver-net-git.ts";
 import { gitTestEnv, writeCloneMainlineRef } from "./git-test-env.ts";
 import { originHead } from "./lean-publish-asserts.ts";
