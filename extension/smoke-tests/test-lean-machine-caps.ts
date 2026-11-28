@@ -160,8 +160,10 @@ const DISPATCHING_PAIRS = [
   "challenge + new-tests",
   "verify + red",
   "ci + red",
-  // The repair round's two exits both put the builder back on the wire, so both buy a round — and both also
-  // bill the round itself (`repairsSpent`), which is a separate counter this walk does not read.
+  // The repair round's two exits both put the builder back on the wire, so both buy a
+  // round. Entering the round is NOT in this list: it dispatches an adversary rather
+  // than a builder, so it bills nothing, and the census below refuses any pair that
+  // charges a build attempt it did not dispatch.
   "repair + repaired",
   "repair + refused",
 ];
@@ -250,24 +252,36 @@ for (const [state, kind] of [
   // no further child.
   const billed: string[] = [];
   const unpriced: string[] = [];
+  // The census walks BOTH arms of the repair switch. `build + blocked` answers
+  // differently on each — the off arm hands back, the on arm enters the round — and
+  // a walker that stamped the switch off would never see the edge that routes into
+  // `repair` at all, so an entry edge that billed a round nobody dispatched would
+  // pass this canary. Each pair is therefore priced on the arm its own table route
+  // reaches, and a pair is an offender when it bills on either arm without
+  // dispatching a builder.
   for (const state of HANDLER_STATES) {
     for (const kind of outcomeKindsFor(state)) {
-      const before = run(state, { counters: { ...INITIAL_COUNTERS, buildAttempts: 1 } });
-      let moved: ReturnType<typeof next>;
-      try {
-        moved = next(before, { kind });
-      } catch {
-        continue; // An unlisted pair is the sibling file's claim, not this one.
-      }
-      const pair = `${state} + ${kind}`;
-      const spent = moved.counters.buildAttempts - before.counters.buildAttempts;
-      // A pair named below only dispatches when it actually arrives at `build`:
-      // `specify + ok` at the cap goes to the gate instead, and dispatches
-      // nothing to bill. `build + exhausted` is the biller that dispatches no
+      for (const oracleRepair of [false, true]) {
+        const before = run(state, {
+          counters: { ...INITIAL_COUNTERS, buildAttempts: 1 },
+          ...(oracleRepair ? { oracleRepair: true } : {}),
+        });
+        let moved: ReturnType<typeof next>;
+        try {
+          moved = next(before, { kind });
+        } catch {
+          continue; // An unlisted pair is the sibling file's claim, not this one.
+        }
+        const pair = `${state} + ${kind}`;
+        const spent = moved.counters.buildAttempts - before.counters.buildAttempts;
+        // A pair named below only dispatches when it actually arrives at `build`:
+        // `specify + ok` at the cap goes to the gate instead, and dispatches
+        // nothing to bill. `build + exhausted` is the biller that dispatches no
       // child — it reports the round that already ran and ships it as a draft.
-      const dispatches = DISPATCHING_PAIRS.includes(pair) && moved.state === "build";
-      const bills = dispatches || pair === "build + exhausted";
-      if (spent !== (bills ? 1 : 0)) (bills ? unpriced : billed).push(pair);
+        const dispatches = DISPATCHING_PAIRS.includes(pair) && moved.state === "build";
+        const bills = dispatches || pair === "build + exhausted";
+        if (spent !== (bills ? 1 : 0)) (bills ? unpriced : billed).push(pair);
+      }
     }
   }
   assert(
@@ -321,20 +335,55 @@ assert(
   // is a PR the run ships when it merely ran out of rounds; shipping one over a
   // contract the run's own builder proved unsatisfiable opens a PR whose CI can
   // go green without anyone satisfying the tests. And the edge charges no build
-  // attempt — the run did not earn a round by reporting a conflict.
-  for (const buildAttempts of [0, 1, MAX_BUILD_ATTEMPTS - 1, MAX_BUILD_ATTEMPTS]) {
-    const blocked = next(run("build", { counters: { ...INITIAL_COUNTERS, buildAttempts } }), {
-      kind: "blocked",
-    });
-    assert(
-      blocked.state === "handback",
-      `build blocked → handback at ${buildAttempts} attempt(s) (got ${blocked.state})`,
-    );
-    assert(
-      blocked.counters.buildAttempts === buildAttempts,
-      `build blocked charges no build attempt (got ${blocked.counters.buildAttempts})`,
-    );
-    assert(blocked.counters.draft === false, "build blocked does not set the draft marker");
+  // attempt on EITHER arm — a run does not earn a round by reporting a conflict,
+  // and the round that follows dispatches an adversary, not a builder.
+  //
+  // Both arms are walked because the halves of the claim live on different edges.
+  // Entering `repair` bills nothing (no builder is dispatched); the round's own
+  // exits buy the build they dispatch and spend the one round. Asserting only the
+  // off arm would pass while the on arm billed a round nobody dispatched, and
+  // asserting entry alone would pass while the exits billed nothing and a round
+  // could be bought again by the next blocked report.
+  for (const oracleRepair of [false, true]) {
+    for (const buildAttempts of [0, 1, MAX_BUILD_ATTEMPTS - 1, MAX_BUILD_ATTEMPTS]) {
+      const before = run("build", {
+        counters: { ...INITIAL_COUNTERS, buildAttempts },
+        ...(oracleRepair ? { oracleRepair: true } : {}),
+      });
+      const blocked = next(before, { kind: "blocked" });
+      const arm = oracleRepair ? "on" : "off";
+      assert(
+        blocked.state === (oracleRepair ? "repair" : "handback"),
+        `build blocked (${arm}) → ${oracleRepair ? "repair" : "handback"} at ${buildAttempts} attempt(s) (got ${blocked.state})`,
+      );
+      assert(
+        blocked.counters.buildAttempts === buildAttempts,
+        `build blocked (${arm}) charges no build attempt (got ${blocked.counters.buildAttempts})`,
+      );
+      assert(
+        blocked.counters.repairsSpent === 0,
+        `build blocked (${arm}) charges no repair round on entry (got ${blocked.counters.repairsSpent})`,
+      );
+      assert(
+        blocked.counters.draft === false,
+        `build blocked (${arm}) does not set the draft marker`,
+      );
+      // The on arm only: leaving the round is where the build it dispatches is paid
+      // for, and where the run's single round is spent.
+      if (oracleRepair) {
+        const rebuilt = next({ ...before, state: "repair", counters: blocked.counters }, {
+          kind: "repaired",
+        });
+        assert(
+          rebuilt.state === "build" && rebuilt.counters.buildAttempts === buildAttempts + 1,
+          `repair → build with ${buildAttempts} attempt(s) in bills the one round it dispatches (got ${rebuilt.state}/${String(rebuilt.counters.buildAttempts)})`,
+        );
+        assert(
+          rebuilt.counters.repairsSpent === 1,
+          `and spends the run's single repair round on the way out (got ${String(rebuilt.counters.repairsSpent)})`,
+        );
+      }
+    }
   }
 }
 
