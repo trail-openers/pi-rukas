@@ -355,7 +355,7 @@ export async function buildOutcome(
       kind: "blocked",
       reason: blocked.reason,
       blockedBy: blocked.blockedBy,
-      ...buildRepairFields(ctx.run, headBefore, blocked.evidence),
+      ...buildRepairFields(ctx.steps, headBefore, blocked.evidence),
       dispatches: rows,
     };
   }

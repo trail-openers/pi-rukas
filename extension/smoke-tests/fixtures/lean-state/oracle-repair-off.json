@@ -51,14 +51,6 @@
           "blockedBy": {
             "tests/AC1-retry.test.sh": "the frozen assertion contradicts the problem statement"
           },
-          "headBefore": "<sha>",
-          "blockedEvidence": [
-            {
-              "path": "tests/AC1-retry.test.sh",
-              "cmd": "sh tests/AC1-retry.test.sh",
-              "output": "not ok - tests/AC1-retry.test.sh"
-            }
-          ],
           "dispatches": [
             {
               "role": "developer",

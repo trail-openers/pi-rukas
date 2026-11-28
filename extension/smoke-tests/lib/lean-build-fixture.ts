@@ -127,13 +127,8 @@ export function buildFixture(
      */
     extraFrozen?: Record<string, string>;
     childOwnsBranch?: boolean;
-    /**
-     * Stamp the run as created under the repair switch, so a case can ask what a run that EARNS a repair round
-     * records. The blocked record's head and executed red are written only for such a run
-     * (`build-repair-fields.ts`), and every case that does not ask leaves the run unstamped — the record the
-     * pre-change release wrote, which is what keeps an off arm from quietly widening it.
-     */
-    oracleRepair?: boolean;
+    /** See {@link RunOpts.earned}: a log already holding a decided repair round. */
+    earned?: boolean;
     buildStartedAt?: number; // #2660 — the start a deadline-derived bound measures from
     /**
      * Files committed into the BASE commit only, as `path -> bytes`: never hashed,
@@ -212,14 +207,7 @@ export function buildFixture(
       throw new Error(`fixture checkout failed in ${wt}: ${(r.stderr ?? "").trim()}`);
   }
 
-  const run = createRun({
-    issue,
-    version: "test",
-    models: {},
-    baseSha,
-    branch,
-    ...(opts?.oracleRepair === true ? { oracleRepair: true } : {}),
-  });
+  const run = createRun({ issue, version: "test", models: {}, baseSha, branch });
   const steps: Step[] = [
     { key: `${issue}:ready:0`, state: "ready", startedAt: 1, outcome: { kind: "ok" } },
     {
@@ -244,6 +232,18 @@ export function buildFixture(
             outcome: { kind: "new-tests" as const, frozen: shaAll(extraFrozen) },
           },
         ]),
+    // A round the run already spent, when the case asks for one: the log shape whose blocked record is the
+    // round's own evidence (`build-repair-fields.ts`). Its outcome is the minimum a decided round holds.
+    ...(opts?.earned === true
+      ? [
+          {
+            key: `${issue}:repair:0`,
+            state: "repair" as const,
+            startedAt: 3,
+            outcome: { kind: "repaired" as const, reason: "repaired 1 frozen test file(s)" },
+          },
+        ]
+      : []),
     // The position the log folds to: one build round owed.
     {
       key: `${issue}:build:0`,
@@ -343,8 +343,13 @@ export interface RunOpts {
   built?: Built;
   /** Leave the run's branch to the worktree so a case can dismantle that tree. */
   childOwnsBranch?: boolean;
-  /** Stamp the run as created under the repair switch; see {@link Built}/`buildFixture`. */
-  oracleRepair?: boolean;
+  /**
+   * Put a decided `repair` round in the log before the build round the case runs: the shape of a run the round
+   * already ran on, the only shape whose blocked record carries the judged head and the executed red
+   * (`build-repair-fields.ts`). Absent leaves the log the release wrote, which is what keeps an off arm from
+   * quietly widening its record.
+   */
+  earned?: boolean;
   /** A config load that refuses (case o); the step must treat it as infrastructure. */
   loadConfigError?: string;
   /** A child whose dispatch did not succeed — the infra case, as in `challenge`. */
@@ -396,7 +401,7 @@ export async function runBuild(opts: RunOpts): Promise<RunResult> {
       ...(opts.frozenText === undefined ? {} : { frozenText: opts.frozenText }),
       ...(opts.extraFrozen === undefined ? {} : { extraFrozen: opts.extraFrozen }),
       ...(opts.childOwnsBranch === undefined ? {} : { childOwnsBranch: opts.childOwnsBranch }),
-      ...(opts.oracleRepair === undefined ? {} : { oracleRepair: opts.oracleRepair }),
+      ...(opts.earned === undefined ? {} : { earned: opts.earned }),
       ...(opts.buildStartedAt === undefined ? {} : { buildStartedAt: opts.buildStartedAt }),
     });
   if (opts.extraSteps !== undefined) {

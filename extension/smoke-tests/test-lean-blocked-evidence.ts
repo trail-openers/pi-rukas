@@ -30,11 +30,11 @@ function blocked(names: Array<{ path: string; reason: string }>): unknown[] {
   // A repair round resets its seat to the commit the driver judged the red at, and its brief may quote ONLY
   // the output the driver itself watched the project's runner print. Both are therefore durable facts of the
   // blocked step, not things a later step re-derives — so this asks the real step, through the real runner,
-  // for the bytes the round is built from. The run is stamped the way `runWorkLean` stamps one whose switch
-  // reads on: that stamp is what earns the two fields (see (1e) for the arm that earns neither).
+  // for the bytes the round is built from. The log holds the decided round the fields were built for: that is
+  // what earns them (see (1e) for the arm whose log holds no round at all).
   const r = await runBuild({
     issue: 3022,
-    oracleRepair: true,
+    earned: true,
     toolUses: () => blocked([{ path: "tests/AC1-retry.test.sh", reason: CONFLICT }]),
   });
   assert(r.outcome?.kind === "blocked", `(1c) the step blocked (got ${r.outcome?.kind})`);
@@ -82,11 +82,10 @@ function blocked(names: Array<{ path: string; reason: string }>): unknown[] {
 
 // ── (1e) a run that earns no round records neither field ──
 {
-  // The switch is on by default, so the only thing separating this arm from (1c) is the run's stamp — the fact
-  // the transition table reads. A run created with the switch at `0` (or, before the round existed, with no
-  // stamp at all) has no reader for the two fields, and a record that carried them anyway would be a build
-  // record widened on the arm a golden captured before the round refutes. Key ORDER is part of the claim: the
-  // whole record, in the order the step wrote it, is what an off arm has to reproduce byte for byte.
+  // The only thing separating this arm from (1c) is whether the log holds a round: no reader, no fields. A
+  // record that carried them anyway would be a build record widened on the arm a golden captured before the
+  // round existed refutes — and a golden can only refute a field its own arm does not write. Key ORDER is part
+  // of the claim: the whole record, in the order the step wrote it, is what an off arm reproduces byte for byte.
   const r = await runBuild({
     issue: 3024,
     toolUses: () => blocked([{ path: "tests/AC1-retry.test.sh", reason: CONFLICT }]),
