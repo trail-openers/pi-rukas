@@ -136,6 +136,23 @@ assert(
   redRow.handback?.shippedVerified !== true,
   "(d) and nothing on the record claims a certified head",
 );
+// (e) The routing never lets a head whose review did not complete reach a landing: the walk's own
+// log holds no publish past the handback and no `ci` or `land` step at all, and the record's exit
+// is the handback code. Route the throw to publish or ci instead of the report and these lines are
+// the ones that go red — the plain stamp leaves the walk where the table had it, with no report.
+assert(
+  !redRow.steps.some((s) => ["ci", "land", "decline"].includes(s.state)),
+  `(e) a run whose review threw dispatched no ci, no land and no decline (${redRow.steps.map((s) => s.state).join(",")})`,
+);
+assert(
+  redRow.code === 10,
+  `(e) and the run is handed back at the handback exit, not landed (code ${String(redRow.code)})`,
+);
+assert(
+  row.steps.filter((s) => s.state === "publish").length === 1 &&
+    !row.steps.some((s) => ["ci", "land"].includes(s.state)),
+  `(e) the errored arm's own walk published once and never reached ci or land (${row.steps.map((s) => s.state).join(",")})`,
+);
 // The rule's own finding for a refused gate, asked of the rule over the walk's own log: the red
 // verdict is named as the reason nothing is verified, so the run cannot read as a handback over
 // bytes its gate had already rejected. The walk's own publish record supplies the head and the
