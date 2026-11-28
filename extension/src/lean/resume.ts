@@ -14,6 +14,7 @@
  * (`before`) — a crash between recording an outcome and applying it. Anything else throws.
  */
 import { leanReviewIncompleteHeadEnabled } from "../lean-review-incomplete-head-switch.ts";
+import { handbackHeads } from "./handback-heads.ts";
 import { hasTransition, next } from "./machine.ts";
 import {
   INITIAL_COUNTERS,
@@ -98,14 +99,54 @@ export function foldLog(
     }
     if (s.outcome === undefined) {
       // The write-ahead of the step this run is about to re-run: a drive saves at that moment, so the
-      // position it persisted is the one the fold stands on.
-      if (i !== log.length - 1) at(`step ${s.key} carries no outcome but is not the newest step`);
+      // position it persisted is the one the fold stands on. #2667's routed record is the one shape
+      // where a later save follows the write-ahead: the throw the runner stamped first, then the
+      // report's visit, with the verdict left for the save that ends the run. The route's own
+      // predicate decides that pairing; nothing else may put an entry after a write-ahead.
+      if (i !== log.length - 1 && !isReportRoute(log))
+        at(`step ${s.key} carries no outcome but is not the newest step`);
       break;
     }
     if (!hasTransition(s.state, s.outcome.kind)) {
-      // A thrown handler or a kind with no arrow: the engine ends the run itself, so this is the last entry.
-      if (i !== log.length - 1)
+      // A thrown handler or a kind with no arrow: the engine ends the run itself, so this is the
+      // last entry. #2667's route is the one shape where the run did NOT end there — the engine
+      // handed the run on to the reporting step, so the throw is followed by the report's entry.
+      // The exception is stated as narrowly as the move's own: exactly one report entry, with
+      // nothing of the walk between it and the throw, and the head rule holding that an errored
+      // review over a certified head owes that report. Anything else about a no-arrow entry, the
+      // snapshot or the counters, is refused below, so a record cannot widen the shape by claiming it.
+      // #2667's routed record: the throw the engine saved, then the report entry the route wrote
+      // after it. The throw may sit before the log's end only under that shape — and ONLY on the
+      // side of the knob the routing runs on, so a record cannot read as a routed run that the
+      // shipped build never routed. `reportRouteFor` (over the log up to the throw) and the head
+      // rule are the judges; both are consulted here rather than approximated.
+      const routed =
+        s.state === "review" &&
+        s.outcome.kind === "error" &&
+        i === log.length - 2 &&
+        log[i + 1]?.state === "handback" &&
+        log[i + 1]?.outcome === undefined &&
+        log.filter((r) => r.state === "handback").length === 1 &&
+        leanReviewIncompleteHeadEnabled() &&
+        reportRouteFor(s, log.slice(0, i + 1)) &&
+        handbackHeads(log.slice(0, i + 1)).applies;
+      if (i !== log.length - 1 && !routed)
         at(`step ${s.key} + ${JSON.stringify(s.outcome.kind)} has no arrow and is not last`);
+      // #2667's route is the one shape where a no-arrow entry does NOT end the run: the runner
+      // saved the throw and then handed the run to the reporting step, so a record whose newest
+      // entry is that throw is still OWING the report — the shape a crash between the two saves
+      // leaves, with the run not yet stamped.
+      // The fold ends the run where the record says it ended. A run the route left owing its
+      // report (a crash between the runner's two saves) still stands at `review` and has to be
+      // read as UNDECIDED: a decided fold lets a forged `handed-back` snapshot past the one-step
+      // lag the snapshot is allowed, which is exactly the move the routing's own exemption would
+      // be handing a record that never ran. Anywhere else, a no-arrow entry is the outcome a drive
+      // halts on and the run is stamped.
+      if (routed && run.result === undefined) {
+        if (run.state !== "review")
+          at(`step ${s.key} is a throw the route handed on, but the run says ${run.state}`);
+        return { pos, before, decided: false };
+      }
       if (run.state !== "handed-back" || run.result === undefined)
         at(`step ${s.key} carries the outcome a drive halts on, but the run is not handed-back`);
       return { pos: { state: "handed-back", counters: pos.counters }, before, decided: true };
@@ -127,28 +168,44 @@ export function foldLog(
  */
 function isReportRoute(log: Step[]): boolean {
   if ((log[log.length - 1] as Step | undefined)?.state !== "handback") return false;
-  const newestWork = [...log]
+  // The routing's record ends on the report's WRITE-AHEAD: the visit the route wrote, carrying no
+  // verdict, because the verdict is the terminal result the run ends on rather than a second
+  // entry. So the step that decides this record's shape is the newest work step BEFORE that entry,
+  // and the fold's rule for a no-arrow entry is the same one — a routed run's log is a prefix of
+  // the log it would have written had the throw ended it. One report entry only: a second is a
+  // step the walk took on its own and is judged at the move, not here.
+  const last = log[log.length - 1] as Step | undefined;
+  if (last?.state !== "handback") return false;
+  if (log.slice(0, -1).some((s) => s.state === "handback")) return false;
+  const body = last.outcome === undefined ? log.slice(0, -1) : log;
+  const newestWork = [...body]
     .reverse()
     .find(
       (s) => s.outcome !== undefined && !(REPORT_STATES as readonly string[]).includes(s.state),
     );
   if (newestWork?.state !== "review") return false;
-  const at = log.indexOf(newestWork);
-  if (log.some((s, i) => i > at && s.state === "verify" && s.outcome !== undefined)) return false;
-  if (newestWork.outcome?.kind === "fixed") return true;
-  // The errored arm, and only with the switch on: the run the rule would hand back at the
-  // certified head is the run whose report entry this is.
+  return reportRouteFor(newestWork, body);
+}
+
+/**
+ * Does the newest work step `newest` make the report entry at the end of `log` the engine's route?
+ *
+ * Split out because the fold has to ask the same question twice, about two different logs: at the
+ * MOVE (the walk stands at `review` and the log's newest entry is the report's) and at the no-arrow
+ * entry (#2667's routed record, whose newest entry is the throw itself and whose report entry
+ * follows it). Both ask it of the log up to the entry they judge, never of the entry itself.
+ */
+function reportRouteFor(newest: Step, log: Step[]): boolean {
+  const at = log.indexOf(newest);
+  if (newest.outcome?.kind === "fixed") return true;
+  // The errored arm (#2667), and only with the switch on: the run the rule would hand back at a
+  // certified head is the run whose report entry this is. A green that named no head names nothing
+  // to ship, so it opens no route — and "named a head" is the head rule's own reading, asked over
+  // the same log the fold is judging, so the two readers cannot drift apart.
   return (
-    newestWork.outcome?.kind === "error" &&
+    newest.outcome?.kind === "error" &&
     leanReviewIncompleteHeadEnabled() &&
-    log
-      .slice(0, at)
-      .some(
-        (s) =>
-          s.state === "verify" &&
-          s.outcome?.kind === "green" &&
-          s.outcome.verifiedHead !== undefined,
-      )
+    handbackHeads(log).verifiedHead !== undefined
   );
 }
 

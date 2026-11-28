@@ -368,8 +368,8 @@ export async function handbackOutcome(
       ? { render: true, shippedHead: heads.shippedHead, shippedVerified: false }
       : // The rule fired and named no head to move, so no rewind ran: the plain `NO_HEAD` stamp,
         // exactly as this step printed it before #2667. A run whose gate named no head at all is
-        // the one shape the feature adds here, and it is answered by the errored arm's own line
-        // (`erroredReviewLine`), not by re-wording a stamp the ordinary runs already carry.
+        // the one shape the feature adds here, and it is answered by the cause line the errored
+        // arm carries (`endedBy`), not by re-wording a stamp the ordinary runs already carry.
         headFacts(moved ?? NO_HEAD, originHead);
     const { render, ...record } = facts;
     body = handbackBody(ctx.issue, {
