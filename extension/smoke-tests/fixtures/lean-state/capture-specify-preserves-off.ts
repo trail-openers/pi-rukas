@@ -31,11 +31,23 @@
  */
 
 import { rmSync, writeFileSync } from "node:fs";
-import { captureOffArm } from "../../lib/lean-specify-preserves-golden.ts";
+import { captureOffArm, capturePreservesPanel, maskPreserves } from "../../lib/lean-specify-preserves-golden.ts";
 import { ROOTS } from "../../lib/lean-specify-fixture.ts";
+import { PANEL_IDS, greenFile, redFile, testRel } from "../../lib/lean-specify-preservation-fixture.ts";
+
+const PANEL_ROWS = PANEL_IDS.map((id) => ({
+  id,
+  script: id === "AC5" ? greenFile() : redFile(),
+  ...(id === "AC5" ? { preserves: true } : {}),
+  rel: testRel(id),
+}));
 
 const record = await captureOffArm(2668);
+record.panel = await capturePreservesPanel(2669, PANEL_ROWS);
+// The mask runs ONCE over the whole record: the texts are already masked where they were built (the prompt
+// comes from the step and the record from the panel arm), and the file's bytes are what both arms compare.
 const text = `${JSON.stringify(record, null, 2)}\n`;
+
 for (const root of ROOTS) rmSync(root, { recursive: true, force: true });
 if (process.argv[2] === undefined) console.log(text);
 else {

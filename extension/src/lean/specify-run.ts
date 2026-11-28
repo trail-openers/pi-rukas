@@ -175,6 +175,21 @@ function removeRejected(wt: string, rel: string): string | undefined {
 }
 
 /** The classification of one non-red file, per the proof's own words. */
+/**
+ * Does a declared file the proof refused still earn its keep? Only when NO file of its criterion proved red:
+ * a criterion with a real red is an ordinary red test, so a second, green file under the same declaration is
+ * a file the step never froze. Asked after the proof, so a file whose own criterion failed already counts.
+ */
+function redForCriterion(
+  candidates: readonly DeclaredPath[],
+  proved: Map<string, Proof>,
+  cand: DeclaredPath,
+): boolean {
+  return candidates.some(
+    (c) => c.criterionId === cand.criterionId && proved.get(c.path)?.kind === "red",
+  );
+}
+
 function noteFor(cand: DeclaredPath, proof: Proof): string {
   return clip(`${cand.criterionId} ${cand.path}: ${proof.detail}`);
 }
@@ -333,8 +348,10 @@ export async function runTestPipeline(
       continue;
     }
     assertRan(proof, cand.path);
-    // A declared must-pass file keeps its bytes; any other refused file is DELETED.
-    if (isPreserved(cand.criterionId)) continue;
+    // A declared file keeps its bytes ONLY where the preservation rule freezes it: a file the proof refused
+    // and the rule does not keep is deleted, so nothing the step did not freeze can ride into the commit or
+    // leave the tree unclean. The rule is decided from all proofs at once, below, so this pass defers to it.
+    if (isPreserved(cand.criterionId) && !redForCriterion(candidates, proved, cand)) continue;
     notes.push(noteFor(cand, proof));
     const why = removeRejected(wt, cand.path);
     if (why !== undefined) notes.push(why);

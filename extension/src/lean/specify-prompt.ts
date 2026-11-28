@@ -238,9 +238,13 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
           : testLocationInstruction(opts.testLocation),
         "",
         tests.length === 0 ? "" : TEST_SCOPE_CONTRACT,
-        "",
-        tests.length === 0 ? "" : preservesPromptClause(),
-        "",
+        // The clause and its own blank line are present or absent as ONE unit: with the switch off neither
+        // line is emitted, and the prompt is the bytes from before the field existed — not that prompt with
+        // an empty line missing.
+        tests.length === 0 ? "" : "",
+        ...(tests.length === 0 || preservesPromptClause() === ""
+          ? []
+          : [preservesPromptClause(), ""]),
         tests.length === 0 ? "" : IMPLIED_REQUIREMENTS,
         "",
         "**Do not edit, create or delete any non-test file.** No source changes, no config, no fixtures outside your test files, no package-manifest edits. The parent reverts anything you touch that you did not submit as a test.",

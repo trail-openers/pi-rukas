@@ -36,13 +36,20 @@ import { allPreservedReason } from "../src/specify-preserves.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
+  CONFIG_WITH_FREEZE_CHECK,
   PANEL_IDS,
+  ROSTER_DAMAGE,
   greenFile,
   panelRows,
   runPanel,
   testRel,
 } from "./lib/lean-specify-preservation-fixture.ts";
-import { capturePreservesOff, readPreservesFixture } from "./lib/lean-specify-preserves-golden.ts";
+import {
+  capturePreservesPanelArm,
+  maskPreservesText,
+  offArmSchemaText,
+  readPreservesFixture,
+} from "./lib/lean-specify-preserves-golden.ts";
 
 const { assert, failures } = makeAssert();
 /** Run one arm of the switch and hand back whatever the body captured (withEnv itself returns void). */
@@ -96,6 +103,9 @@ const freshRows = (preservedId?: string) =>
     script: id === GREEN ? greenFile() : redFileFixture(),
     ...(id === preservedId ? { preserves: true } : {}),
   }));
+const freshRowsWith = (preservedId?: string, patch?: () => unknown) =>
+  freshRows(preservedId).map((r) => (r.id === GREEN && patch !== undefined ? { ...r, ...patch() } : r));
+
 function redFileFixture() {
   return ['#!/bin/sh', 'echo "not ok - $(basename "$0")" 1>&2', "exit 1", ""].join("\n");
 }
@@ -172,7 +182,7 @@ check("(b) the PR body carries its own preserved line", body.includes(`- preserv
 const undeclared = await arm(undefined, () => runPanel({ issue: 2669, rows: rowsWith(undefined) }));
 check("(c) an undeclared green is still refused", undeclared.outcome?.kind === "red-test-gap", String(undeclared.outcome?.kind));
 check("(c) naming the criterion the child refused to prove", said(undeclared).includes(`criterion ${GREEN} has no red test`), said(undeclared));
-check("(c) and the ordinary gap accounting is untouched", undeclared.dispatched === undeclaredExpected, String(undeclared.dispatched));
+check("(c) and the ordinary gap accounting is untouched", undeclared.dispatched === 1, String(undeclared.dispatched));
 check("(c) with no preserved record", undeclared.outcome?.preserved === undefined);
 
 // (d) a row that declares preservation and writes nothing is a MISSING test, not a frozen nothing.
@@ -188,37 +198,89 @@ check("(e) the reason is the rule module's own sentence", said(allPreserved).sta
 check("(e) so it froze nothing and re-asked nobody", Object.keys(allPreserved.outcome?.frozen ?? {}).length === 0 && allPreserved.dispatched <= 1, String(allPreserved.dispatched));
 check("(e) and the rule is stable for the same ids", allPreservedReason(PANEL_IDS) === allPreservedReason(PANEL_IDS));
 
-// (f) an UNDECLARED green that breaks the project's own roster: deleted, disclosed, unexcused.
-const breaker = (): unknown => ({
-  script: ['#!/bin/sh', 'echo "harness error: 1 test file(s) could not be run" 1>&2', "exit 1", ""].join("\n"),
-});
-const brokeUndeclared = await arm(undefined, () => runPanel({ issue: 2672, rows: rowsWith(undefined, breaker) }));
-check("(f) a green that breaks the roster is still refused", brokeUndeclared.outcome?.kind === "red-test-gap", said(brokeUndeclared));
+// (f)+(g) THE ROSTER IS NEVER EXCUSED. A declared criterion that also carries a red file gets that file
+// proved, so its row reaches the freeze check; a file the project's own gate cannot stand is deleted and the
+// run refused — a declaration buys a freeze for a file the project's tests pass, never for one they break.
+/** The green file that trips the project's own gate: red for the candidate, green without it. */
+const breaker = (names: string): string =>
+  `#!/bin/sh\necho "${names}" 1>&2\necho "${ROSTER_DAMAGE}" 1>&2\nexit 1\n`;
+/** Four ordinary reds, plus the criterion carrying both a naming red that breaks the gate and a green. */
+const rowsBreakingGate = (preservedId?: string) =>
+  PANEL_IDS.filter((id) => id !== GREEN).map((id) => ({ id, script: redFileFixture() })).concat([
+    { id: GREEN, script: redFileFixture() },
+    {
+      id: GREEN,
+      script: breaker(`not ok - ${GREEN}-guard.test.sh`),
+      rel: `tests/${GREEN}-guard.test.sh`,
+      ...(preservedId === GREEN ? { preserves: true } : {}),
+    },
+  ]);
+const brokeUndeclared = await arm(undefined, () =>
+  runPanel({ issue: 2672, rows: rowsBreakingGate(undefined), config: CONFIG_WITH_FREEZE_CHECK }),
+);
+check("(f) a candidate the project's gate cannot stand is refused", brokeUndeclared.outcome?.kind === "red-test-gap", said(brokeUndeclared));
+check("(f) and the offender is disclosed by the gate's own words", said(brokeUndeclared).includes(ROSTER_DAMAGE), said(brokeUndeclared));
 check("(f) with no criterion excused", said(brokeUndeclared).includes(`criterion ${GREEN} has no red test`), said(brokeUndeclared));
-check("(f) and the roster damage is disclosed", said(brokeUndeclared).includes(`${GREEN}: broke the project's own tests`), said(brokeUndeclared));
-check("(f) and the offender is not frozen", Object.keys(brokeUndeclared.outcome?.frozen ?? {}).length === 0, JSON.stringify(brokeUndeclared.outcome?.frozen));
+check("(f) and nothing was frozen", Object.keys(brokeUndeclared.outcome?.frozen ?? {}).length === 0, JSON.stringify(brokeUndeclared.outcome?.frozen));
 check("(f) with no preserved list", brokeUndeclared.outcome?.preserved === undefined);
 
-// (g) a DECLARED-preserved file that breaks the roster cannot buy its freeze.
-const brokeDeclared = await arm(undefined, () => runPanel({ issue: 2673, rows: rowsWith(GREEN, breaker) }));
-check("(g) declaring does not excuse the roster", brokeDeclared.outcome?.kind === "red-test-gap", said(brokeDeclared));
+const brokeDeclared = await arm(undefined, () =>
+  runPanel({ issue: 2673, rows: rowsBreakingGate(GREEN), config: CONFIG_WITH_FREEZE_CHECK }),
+);
+check("(g) declaring does not excuse the project's own tests", brokeDeclared.outcome?.kind === "red-test-gap", said(brokeDeclared));
 check("(g) the criterion is not excused", said(brokeDeclared).includes(`criterion ${GREEN} has no red test`), said(brokeDeclared));
-check("(g) its file is absent from the contract", brokeDeclared.outcome?.tests?.[GREEN] === undefined, JSON.stringify(brokeDeclared.outcome?.tests?.[GREEN]));
-check("(g) and the offender is disclosed", said(brokeDeclared).includes(`${GREEN}: broke the project's own tests`), said(brokeDeclared));
+check("(g) its files are absent from the contract", brokeDeclared.outcome?.tests?.[GREEN] === undefined, JSON.stringify(brokeDeclared.outcome?.tests?.[GREEN]));
+check("(g) and the offender is disclosed", said(brokeDeclared).includes(ROSTER_DAMAGE), said(brokeDeclared));
+check("(g) so a declaration froze nothing", brokeDeclared.outcome?.preserved === undefined, JSON.stringify(brokeDeclared.outcome?.preserved));
+
+// (g2) A declaration may not smuggle a second, green file into the contract for a criterion that already
+// has a red one: the row is an ordinary red test, and only the file the proof saw fail is frozen.
+const smuggled = await arm(undefined, () =>
+  runPanel({
+    issue: 2678,
+    rows: PANEL_IDS.filter((id) => id !== GREEN)
+      .map((id) => ({ id, script: redFileFixture() }))
+      .concat([
+        { id: GREEN, script: redFileFixture(), preserves: true },
+        {
+          id: GREEN,
+          script: greenFile(),
+          rel: `tests/${GREEN}-extra.test.sh`,
+          preserves: true,
+        },
+      ]),
+  }),
+);
+check("(g2) the run still freezes", smuggled.threw === undefined, said(smuggled));
+check(
+  "(g2) only the file that proved red joined the contract",
+  JSON.stringify(smuggled.outcome?.tests?.[GREEN]) === JSON.stringify([testRel(GREEN)]),
+  JSON.stringify(smuggled.outcome?.tests?.[GREEN]),
+);
+check(
+  "(g2) the green extra is not in the frozen map",
+  Object.keys(smuggled.outcome?.frozen ?? {}).length === 5 &&
+    Object.keys(smuggled.outcome?.frozen ?? {}).every((p) => !p.includes("-extra")),
+  JSON.stringify(Object.keys(smuggled.outcome?.frozen ?? {})),
+);
 
 // (h) the off arm is the pre-field tree, byte for byte.
 const fixture = readPreservesFixture();
-const offPrompts: string[] = [];
-const offPanel = await arm("0", () => runPanel({ issue: 2674, rows: rowsWith(GREEN), prompts: offPrompts }));
-check("(h) the panel shape is refused again with the switch off", offPanel.outcome?.kind === "red-test-gap", said(offPanel));
-check("(h) the off record is the pre-field record of the same shape", JSON.stringify(offPanel.outcome) === JSON.stringify(fixture.gap.outcome), JSON.stringify(offPanel.outcome));
-check("(h) the off prompt is the pre-field prompt, byte for byte", offPrompts[0] === fixture.prompt, `${offPrompts[0]?.length} vs ${fixture.prompt.length} chars`);
-const offArm = await arm("0", () => capturePreservesOff());
-check("(h) the off schema is the pre-field schema", offArm.schema === fixture.schema, offArm.schema.slice(0, 120));
+const PANEL_PANEL_ROWS = PANEL_IDS.map((id) => ({
+  id,
+  script: id === GREEN ? greenFile() : redFileFixture(),
+  ...(id === GREEN ? { preserves: true } : {}),
+}));
+const offPanel = await arm("0", () => capturePreservesPanelArm(2674, PANEL_PANEL_ROWS));
+check("(h) the panel shape is refused again with the switch off", offPanel.record.kind === "red-test-gap", offPanel.record.kind);
+check("(h) the off record is the pre-field record of the same panel run", JSON.stringify(offPanel.record.outcome) === JSON.stringify(fixture.panel?.outcome), JSON.stringify(offPanel.record.outcome));
+check("(h) the off prompt is the pre-field prompt, byte for byte", maskPreservesText(offPanel.prompt) === fixture.prompt, `${maskPreservesText(offPanel.prompt).length} vs ${fixture.prompt.length} chars`);
+const offSchema = await arm("0", () => offArmSchemaText());
+check("(h) the off schema is the pre-field schema", maskPreservesText(offSchema) === fixture.schema, `${maskPreservesText(offSchema).length} vs ${fixture.schema.length} chars`);
 const onPrompts: string[] = [];
-await arm(undefined, () => runPanel({ issue: 2675, rows: rowsWith(GREEN), prompts: onPrompts }));
+await arm(undefined, () => runPanel({ issue: 2675, rows: freshRows(GREEN), prompts: onPrompts }));
 check("(i) the on prompt carries the declaration clause", (onPrompts[0] ?? "").includes("preserves: true"), (onPrompts[0] ?? "").slice(-200));
-check("(i) and the off prompt never mentions the field", !(offPrompts[0] ?? "").includes("preserves"));
+check("(i) and the off prompt never mentions the field", !offPanel.prompt.includes("preserves: true"), offPanel.prompt.slice(-200));
 
 // (i) a non-boolean declaration is a malformed call: skipped, never coerced.
 const malformed = await arm(undefined, () => runPanel({ issue: 2676, rows: panelRows(GREEN, GREEN).map((r) => (r.id === GREEN ? { ...r, preserves: "yes" } : r)) }));
