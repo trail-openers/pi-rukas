@@ -17,8 +17,11 @@
  * Change it and those cases go red rather than passing on a brief nobody reads.
  */
 import { TEST_RUNNER_PLACEHOLDER } from "./lean/config.ts";
+import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./lean/state-outcome-maps.ts";
+import { BLOCKED_EVIDENCE_OUTPUT_CAP } from "./oracle-repair-record.ts";
 import { criteriaBlock, scopeBlock } from "./lean/spec-blocks.ts";
 import type { PiSpec } from "./lean/spec.ts";
+import { fenceText, oneLine } from "./lean/text-fence.ts";
 import type { EvidenceRow, HeadEvidenceRow } from "./oracle-repair-evidence.ts";
 
 /** The heading a repair brief carries and no other lean brief contains. */
@@ -38,20 +41,46 @@ export interface RepairBriefOpts {
   evidence: HeadEvidenceRow[];
 }
 
+/** A run of 3+ backticks: the sequence that opens or closes a markdown fence. */
+const BACKTICK_RUN = /`{3,}/g;
+/** A heading marker a one-line value may still carry, with or without leading spaces. */
+const HEADING_MARKER = /^ +#?(?=\S)/gm;
+
+/**
+ * An inline prompt value that came from outside the run: one line, no fence, no heading.
+ *
+ * `oneLine` already drops every control character but keeps backticks — right for a path the seat must read,
+ * wrong for a value the brief sits between two backticks, where one surviving run closes the span and the rest
+ * of the line renders as structure. The fold is the one `fenceText` applies to a fenced payload (same character
+ * class, same U+02CB replacement, so the count survives and the reader sees what was there), plus escaping a
+ * heading marker the value carries. A state file an operator edited is untrusted input, and these fields are a
+ * path from it into a child's prompt.
+ */
+function inlinePrompt(s: string, max: number): string {
+  return oneLine(s, max)
+    .replace(BACKTICK_RUN, (run) => "\u02cb".repeat(run.length))
+    .replace(HEADING_MARKER, "\\#");
+}
+
 /** One claim as the seat sees it: a path, and the conflict the builder stated about it. */
 function claimLine(c: EvidenceRow): string {
-  return `- \`${c.path}\` — ${c.reason}`;
+  return `- \`${inlinePrompt(c.path, BLOCKED_PATH_CAP)}\` — ${inlinePrompt(c.reason, BLOCKED_REASON_CAP)}`;
 }
 
 /** One executed red: the file, the command the driver ran, and what came back. */
 function evidenceLine(e: HeadEvidenceRow): string {
-  const fence = "```";
-  return `- \`${e.path}\` run as \`${e.cmd}\` came back red:\n\n  ${fence}\n  ${e.output}\n  ${fence}`;
+  // The output is the one field long enough to want a block, and `fenceText` is the module that owns folding a
+  // payload into a fence: it neutralises every 3+ backtick run inside, so nothing the runner printed closes
+  // the fence this line opens.
+  return (
+    `- \`${inlinePrompt(e.path, BLOCKED_PATH_CAP)}\` run as \`${inlinePrompt(e.cmd, BLOCKED_PATH_CAP)}\` came back red:\n\n` +
+    fenceText(inlinePrompt(e.output, BLOCKED_EVIDENCE_OUTPUT_CAP), BLOCKED_EVIDENCE_OUTPUT_CAP)
+  );
 }
 
 /** Build the repair seat's kickoff prompt. */
 export function repairPrompt(o: RepairBriefOpts): string {
-  const named = o.claims.map((c) => `- \`${c.path}\``).join("\n");
+  const named = o.claims.map((c) => `- \`${inlinePrompt(c.path, BLOCKED_PATH_CAP)}\``).join("\n");
   const runner =
     o.testRunner === undefined
       ? "No project test runner is configured, so run each file with whatever command runs this repository's tests."
@@ -84,7 +113,7 @@ export function repairPrompt(o: RepairBriefOpts): string {
     "",
     "## Your working tree",
     "",
-    `You are in \`${o.worktree}\`, a checkout of the run's BASE commit — the code as it stood before anyone implemented the feature. Your replacements must be red HERE, because a test the base already passes tests nothing. Do not look for the implementation: it is deliberately not in this tree.`,
+    `You are in \`${o.worktree}\`, the tree the driver reset to the commit the driver judged the red at — the run's frozen tests as their records hash them, with none of the builder's implementation. Your replacements must be red HERE, because a test this tree already passes tests nothing. Do not look for the implementation: it is deliberately not in this tree.`,
     "",
     runner,
     "",
