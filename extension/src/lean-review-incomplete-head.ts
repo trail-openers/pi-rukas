@@ -7,10 +7,12 @@
  * step's reading. The switch reads live here, so the rule and the fold consult one knob.
  *
  * `undefined` means "this file has nothing to add", and is the seam between the two readings: this file
- * speaks only where a gate of this run certified BYTES — a green that named a full commit sha — because
- * those are the only bytes a handback can ship. Every other verdict (a green that named none, a red, a
- * gate the run never let decide) belongs to the base rule in `lean/handback-heads.ts`, whose own finding
- * is the sentence the step printed before this knob existed.
+ * speaks where a gate of this run was ANSWERED green, because a review that threw judged nothing and a
+ * green verdict is what the run paid for. Whether that green NAMED a full commit sha decides the one thing
+ * the two answers differ on: a named sha is the head a handback ships, and a green that named none applies
+ * with no head — the report still runs, prints no head line and asks for no rewind. A verdict that was
+ * never green, or a gate the run never let decide, belongs to the base rule in `lean/handback-heads.ts`,
+ * whose own finding is the sentence that step printed before this knob existed.
  *
  * The switch reads live here, so the rule and the fold consult one knob. This module imports NO lean
  * file — the rule asks it, never the other way round, so the two files cannot form an import cycle.
@@ -38,13 +40,13 @@ export function incompleteHeadOn(): boolean {
 
 /**
  * The reading an errored `review` gets, asked of the gate's newest decided verdict. `undefined` is the
- * hand-back to the base rule: only a green that NAMED a full commit sha is bytes a handback can ship,
- * and only that answer is this file's. Everything the gate left uncertified is the base rule's finding.
+ * hand-back to the base rule: only a verdict the gate ANSWERED green is this file's, and only a green that
+ * NAMED a full commit sha carries a head for the report to ship.
  */
 export function incompleteReviewHandback(green: Step | undefined): IncompleteReviewHeads | undefined {
   const outcome: Outcome | undefined = green?.outcome;
   if (outcome?.kind !== "green") return undefined;
   return isVerifiedHeadName(outcome.verifiedHead)
     ? { applies: true, verifiedHead: outcome.verifiedHead }
-    : undefined;
+    : { applies: true };
 }

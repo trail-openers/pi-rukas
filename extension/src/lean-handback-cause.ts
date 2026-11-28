@@ -11,18 +11,22 @@ import { newestDecidedWorkStep } from "./lean/handback-heads.ts";
 import type { Step } from "./lean/state.ts";
 
 /**
- * The cause the run ended on, for the ONE shape that has no cause line of its own: a `review` step that
- * THREW. Its record is an error outcome, not a verdict, and the operator needs the two facts apart — the
- * step never finished, and here is what stopped it. The sentence under the heading is the throw's,
- * unedited.
+ * The cause the run ended on, for the ONE shape that had no cause line at all: a `review` step that THREW
+ * and whose run was STAMPED where it stood. Its record is an error outcome, not a verdict, and the operator
+ * needs the two facts apart — the step never finished, and here is what stopped it. The sentence under the
+ * heading is the throw's, unedited.
  *
- * A step that ended the run with a VERDICT is not this reading's subject: a red `verify` or `ci` already
- * spoke for itself, and the readers that quote those verdicts run first. A heading over a verdict the run
- * already named would bury the answer the developer can act on under a restatement of it.
+ * Two exclusions, both load-bearing. A step that ended the run with a VERDICT is not this reading's
+ * subject: a red `verify` or `ci` already spoke for itself, and quoting it under a review heading buries
+ * the answer a developer can act on. And a review throw the engine ROUTED into the reporting step is not
+ * either: that step runs with its own visit in the log, quotes the throw verbatim as the run's cause, and
+ * needs no heading over its own words — only the stamped run, which gets no step at all, has a cause
+ * nobody said.
  */
 export function endedBy(steps: Step[]): string | undefined {
   const ended = newestDecidedWorkStep(steps);
   if (ended?.state !== "review" || ended.outcome?.kind !== "error") return undefined;
+  if (steps.some((s) => s.state === "handback" || s.state === "decline")) return undefined;
   const reason = ended.outcome.message ?? ended.outcome.reason;
   if (typeof reason !== "string" || reason.trim() === "") return undefined;
   // A bare engine error is not a handoff because nobody said which step owed the work; this says so.

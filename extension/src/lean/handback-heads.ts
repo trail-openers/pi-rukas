@@ -128,14 +128,17 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
     return { applies: false };
   if (errored && !incompleteHeadOn()) return { applies: false };
   // One reading, asked of the gate's newest DECIDED verdict. A green that named a commit is the certified
-  // arm and its head is what the report ships; a green that named none still owes the report — it applies,
-  // names no head, prints no head line and asks for no rewind, and the run's own sentence is its NEEDING
-  // line. Anything the gate never certified — a verdict that was not green, a gate that decided nothing —
-  // gets the base rule's own finding, which is the sentence this step printed before the knob existed:
-  // the run ships no bytes of its own, and says why in the base rule's words.
+  // arm and its head is what the report ships. A green that named none — and a gate the run never let
+  // decide — is the plain stamp's shape: such a run shipped no bytes of its own, so the arm stays silent
+  // exactly as it was before this knob existed, and the run keeps the bare stamp and its own NEEDING line.
+  // The one exception the arm does owe is the sentence for a verdict the gate DID record and left
+  // uncertified, which the report quotes when the run reaches it by the table's own route.
   if (errored) {
     const gate = newestDecidedThrough(steps, "verify", at);
-    return incompleteReviewHandback(gate) ?? (gate === undefined ? { applies: false } : thisRule(gate));
+    if (gate === undefined) return { applies: false };
+    // A green that named no commit still owes the report: it applies, names no head, prints no head line
+    // and asks for no rewind. Only a verdict the gate never made green, or no verdict at all, stays silent.
+    return incompleteReviewHandback(gate) ?? thisRule(gate);
   }
   const trailing = newestStateStepAfter(steps, "verify", at);
   if (trailing !== undefined && trailing.outcome === undefined)
