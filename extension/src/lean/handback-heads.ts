@@ -127,12 +127,16 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
   if (newest.state !== "review" || (newest.outcome.kind !== "fixed" && !errored))
     return { applies: false };
   if (errored && !incompleteHeadOn()) return { applies: false };
-  // One reading, asked of the gate's newest DECIDED verdict: a green that named a commit is the certified
+  // One reading, asked of the gate's newest DECIDED verdict. A green that named a commit is the certified
   // arm and its head is what the report ships; a green that named none still owes the report — it applies,
   // names no head, prints no head line and asks for no rewind, and the run's own sentence is its NEEDING
-  // line. Anything else — a verdict that was never green, or a gate the run never let decide — is silent,
-  // because such a run shipped no bytes of its own: the plain stamp, byte for byte as before this knob.
-  if (errored) return incompleteReviewHandback(newestDecidedThrough(steps, "verify", at));
+  // line. Anything the gate never certified — a verdict that was not green, a gate that decided nothing —
+  // gets the base rule's own finding, which is the sentence this step printed before the knob existed:
+  // the run ships no bytes of its own, and says why in the base rule's words.
+  if (errored) {
+    const gate = newestDecidedThrough(steps, "verify", at);
+    return incompleteReviewHandback(gate) ?? (gate === undefined ? { applies: false } : thisRule(gate));
+  }
   const trailing = newestStateStepAfter(steps, "verify", at);
   if (trailing !== undefined && trailing.outcome === undefined)
     return {
