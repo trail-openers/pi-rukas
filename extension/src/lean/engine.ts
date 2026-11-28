@@ -140,11 +140,10 @@ interface Drive {
   deadlineMs?: number;
 }
 
-/**
- * The two writers of the record that the reporting routes need — the runner's `stepKey`, its
- * `withOutcome` and its `endRun` — packaged once so each route's call site stays thin.
- */
-function reportWriters(drive: Drive, opts: RunLeanOpts, now: () => number) {
+/** The record writers and report pieces each route into the reporting step needs. */
+type ReportWriters = Parameters<typeof reportErroredReview>[2];
+
+function reportWriters(drive: Drive, opts: RunLeanOpts, now: () => number): ReportWriters {
   return {
     repoRoot: opts.repoRoot,
     issue: opts.issue,
