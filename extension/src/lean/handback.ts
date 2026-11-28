@@ -97,13 +97,10 @@ function blockedCause(steps: Step[]): string | undefined {
   return `the frozen tests cannot all pass together:\n${named}${more}`;
 }
 
-/** The other reading of a test that passed on the base, which the gap's evidence cannot rule out. */
-const GAP_READING =
-  "A test that passes on the base may also mean the criterion already holds there.";
 function gapCause(steps: Step[]): string | undefined {
   const oc = newestDecidedWorkStep(steps)?.outcome;
   if (oc?.kind !== RED_TEST_GAP) return undefined;
-  return gapCauseLines(GAP_READING, oc);
+  return gapCauseLines(oc);
 }
 
 /**

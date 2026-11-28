@@ -44,7 +44,7 @@ import {
   NUDGE,
   report as reportShared,
   writeTest,
-} from "./lib/lean-specify-reprompt-constants.ts";
+} from "./lib/lean-specify-shared.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {

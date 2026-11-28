@@ -409,8 +409,6 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
   };
   const worktree = path.join(opts.repoRoot, ".worktrees", `lean-${issue}`);
   const shared = {
-    sawBaseHealthy,
-    fetched,
     worktree,
     repoRoot: opts.repoRoot,
     baseSha: opts.baseSha,
@@ -420,11 +418,13 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
     const ctx = ctxFor(opts.repoRoot, opts.baseSha, issue, now, deadline, opts.stepStartedAt);
     if (opts.derivedSpec !== undefined) ctx.run = { ...ctx.run, derivedSpec: opts.derivedSpec };
     const outcome = await specify.specifyOutcome(ctx, deps);
-    return { outcome, dispatched, ...shared };
+    return { outcome, sawBaseHealthy, fetched, dispatched, ...shared };
   } catch (err) {
     return {
       threw: err as Error,
       deadDispatches: err instanceof SpecifyInfraError ? err.dispatches : undefined,
+      sawBaseHealthy,
+      fetched,
       dispatched,
       ...shared,
     };

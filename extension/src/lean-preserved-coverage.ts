@@ -46,20 +46,34 @@ export interface PreservedCoverage {
   missing: string[];
 }
 
+/** The proof pass's own verdicts, plus the declaration the run read from the submitted rows. */
+export interface ProofRule {
+  /** Does this criterion's own rows declare it preserved? */
+  isPreserved: (criterionId: string) => boolean;
+  /** Does a file the proof refused still earn its keep under its criterion's declaration? */
+  keeps: (cand: DeclaredPath) => boolean;
+}
+
 /**
- * Does a declared file the proof refused still earn its keep? Only when NO file of its criterion proved
- * red: a criterion with a real red is an ordinary red test, so a second, green file under the same
- * declaration is a file the step never froze. Asked after the proof, so a file whose own criterion failed
- * already counts.
+ * The proof pass's rule, built from the kept rows and the verdicts the loop collects. A declared file the
+ * proof refused keeps its place ONLY when NO file of its criterion proved red: a criterion with a real red
+ * is an ordinary red test, so a second, green file under the same declaration is one the step never froze.
+ * The verdicts are read at the END of the pass — a file whose own criterion proved red later still counts,
+ * which is why the rule is asked after each verdict rather than at the refusal it produces.
  */
-export function preservedKeepsFile(
+export function proofRule(
+  kept: readonly CoverageRow[],
   candidates: readonly DeclaredPath[],
   kinds: ReadonlyMap<string, ProvedKind>,
-  cand: DeclaredPath,
-): boolean {
-  return candidates.some(
-    (c) => c.criterionId === cand.criterionId && kinds.get(c.path)?.kind === "red",
-  );
+): ProofRule {
+  const declared = new Set(kept.filter((r) => r.preserves === true).map((r) => r.criterionId));
+  return {
+    isPreserved: (criterionId) => declared.has(criterionId),
+    keeps: (cand) =>
+      candidates.some(
+        (c) => c.criterionId === cand.criterionId && kinds.get(c.path)?.kind === "red",
+      ),
+  };
 }
 
 /**
@@ -116,8 +130,8 @@ export function malformedDeclarations(rows: readonly CoverageRow[]): number {
  * only the call.
  */
 export function preservedCommitReason(input: {
-  frozen: number;
-  criteria: number;
+  frozen: Record<string, string>;
+  tests: Record<string, string[]>;
   preservedIds: readonly string[];
   skipped: number;
   droppedNote: string;
@@ -126,7 +140,8 @@ export function preservedCommitReason(input: {
   treeProblem?: string;
 }): string {
   return [
-    `froze ${String(input.frozen)} red test file(s) for ${String(input.criteria)} criterion/criteria`,
+    `froze ${String(Object.keys(input.frozen).length)} red test file(s) for ` +
+      `${String(Object.keys(input.tests).length)} criterion/criteria`,
     preservedReasonClause(input.preservedIds),
     input.skipped > 0
       ? `${String(input.skipped)} submit_tests call(s) skipped or refused as malformed`

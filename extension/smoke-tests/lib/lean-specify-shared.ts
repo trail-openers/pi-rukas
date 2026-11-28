@@ -1,7 +1,9 @@
 /**
- * lean-specify-reprompt-constants — the shared needles of the silent-reprompt pair, split out of
- * `lean-specify-fixture.ts` so the two suites cannot drift apart about what the nudge text or the retry
- * marker is: a pair that disagrees about the needle asserts nothing about the pair.
+ * lean-specify-shared — the needles and the config the specify suites share, split out of
+ * `lean-specify-fixture.ts` so a pair of suites (the silent-reprompt pair and its switch-off sibling,
+ * the re-ask pair) cannot drift apart about what the nudge text or the retry marker is: a pair that
+ * disagrees about the needle asserts nothing about the pair. The fixture holds the harness; this file
+ * holds the bytes a case asserts on.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";

@@ -480,9 +480,8 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     // `ready`'s two run-level facts, at the END of the spread: the key order above is what the
     // handback key-list case pins, and a field inserted mid-list rewrites those bytes. Only
     // `ready` may carry either field, and `outcomeProblem` has refused it anywhere else BEFORE
-    // this runs — so each clause here rebuilds only what that judgement already passed. The
-    // contract goes through the reader that canonicalises it rather than carrying the file's
-    // shape, so the executed document is the reader's shape rather than the file's.
+    // this runs. The pair is rebuilt in `state-outcome-spec-fields.ts`, which canonicalises the
+    // contract through the contract's own reader rather than carrying the file's shape.
     ...derivedSpecOutcomeFields(oc),
   };
 }

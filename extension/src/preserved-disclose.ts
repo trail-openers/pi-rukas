@@ -62,14 +62,16 @@ export function preservedLine(o: {
  * of a test that passed on the base, and the preserved clause. Composed off the record's fields so the
  * handback keeps one call site.
  */
+const GAP_READING =
+  "A test that passes on the base may also mean the criterion already holds there.";
+
 export function gapCauseLines(
-  reading: string,
   oc: Partial<Pick<Outcome, "failedRules" | "reason" | "preserved" | "tests">>,
 ): string {
   const rules = oc.failedRules ?? [];
   const reason = oc.reason ?? "";
   const lead = [...rules.filter((r) => !reason.includes(r)), reason];
-  const second = reason.includes("exited 0 on base") ? [reading, PRESERVES_HINT] : [];
+  const second = reason.includes("exited 0 on base") ? [GAP_READING, PRESERVES_HINT] : [];
   const kept = preservedClause(oc.preserved, oc.tests);
   return [...lead, ...second, kept].filter((s) => s !== "").join("\n");
 }

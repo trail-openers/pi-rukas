@@ -44,7 +44,7 @@ import {
   TEST_REL,
   report as reportShared,
   writeTest,
-} from "./lib/lean-specify-reprompt-constants.ts";
+} from "./lib/lean-specify-shared.ts";
 // The shared constants and helpers live in the module both files import, so the
 // pair cannot drift apart and disagree about what the nudge text or the retry marker
 // is — a pair that disagrees about its needle asserts nothing about the pair.

@@ -24,17 +24,14 @@
  */
 import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
-import { declaredPreserved } from "../lean-preserved-cap.ts";
 import {
+  type ProofRule,
   type ProvedKind,
-  allPreserved,
-  malformedDeclarations,
   preservedCommitReason,
   preservedCoverage,
-  preservedKeepsFile,
+  proofRule,
 } from "../lean-preserved-coverage.ts";
-import { type DropLabel, dropNote, noteClause, noteClip } from "../lean-preserved-notes.ts";
-import { preservedCriteria } from "../lean-preserved-step.ts";
+import { dropNote, noteClause, noteClip } from "../lean-preserved-notes.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { FreezeCheck } from "./freeze-check.ts";
 import { freezeCheckDrops, freezeCheckNote, runFreezeCheck } from "./freeze-check.ts";
@@ -189,9 +186,10 @@ export async function runTestPipeline(
     Object.fromEntries(kept.map((row) => [row.criterionId, row.testFiles])),
   );
   const skippedNote = skipped > 0 ? ` (${skipped} malformed submit_tests call(s))` : "";
-  // The rule, its reason and its wording live outside this file: `lean-preserved-step.ts`,
-  // `lean-preserved-coverage.ts`, `specify-preserves.ts`.
-  const isPreserved = declaredPreserved(kept);
+  // The rule, its reason and its wording live outside this file: `lean-preserved-coverage.ts`,
+  // `lean-preserved-step.ts`, `specify-preserves.ts`.
+  const kinds = new Map<string, ProvedKind>();
+  const rule = proofRule(kept, candidates, kinds);
   if (candidates.length === 0) {
     return {
       kind: "empty",
@@ -280,9 +278,8 @@ export async function runTestPipeline(
   }
 
   // 5. Prove red on exactly these bytes, per file, against `headBefore`. A green or unclear file is dropped
-  //    and DELETED from the tree; only an unrunnable runner is infrastructure. Each verdict is kept so the
-  //    preservation rule reads this one run, never a second one.
-  const kinds = new Map<string, ProvedKind>();
+  //    and DELETED from the tree; only an unrunnable runner is infrastructure. Each verdict is kept, so the
+  //    preservation rule reads this one pass rather than a second one.
   let red: DeclaredPath[] = [];
   for (const cand of candidates) {
     if (!captured.has(cand.path)) continue; // dropped at capture — never run
@@ -298,8 +295,8 @@ export async function runTestPipeline(
       continue;
     }
     assertRan(proof, cand.path);
-    // The rule is decided from ALL proofs at once, below: a file it does not keep is deleted here.
-    if (isPreserved(cand.criterionId) && !preservedKeepsFile(candidates, kinds, cand)) continue;
+    // Decided from ALL proofs at once: a file the rule does not keep is deleted like any other green.
+    if (rule.isPreserved(cand.criterionId) && !rule.keeps(cand)) continue;
     notes.push(noteFor(cand, proof));
     const why = removeRejected(wt, cand.path);
     if (why !== undefined) notes.push(why);
@@ -389,10 +386,12 @@ export async function runTestPipeline(
     }
   }
 
-  // 7. COMMIT them, and assert the commit is exactly them.
-  const paths = [...new Set([...red.map((r) => r.path), ...mustPass])];
+  // 7. COMMIT them, and assert the commit is exactly them. The freeze check may have pruned red files
+  //    AFTER the coverage set was decided, so the contract is filtered to what the commit still holds.
+  const keptPaths = new Set([...red.map((r) => r.path), ...mustPass]);
+  const contract = coverage.contract.filter((c) => keptPaths.has(c.path));
   try {
-    await commitTestFiles(exec, wt, headBefore, paths, args.commitMessage);
+    await commitTestFiles(exec, wt, headBefore, [...keptPaths], args.commitMessage);
   } catch (err) {
     if (err instanceof SpecifyCommitError) throw new SpecifyInfraError(err.message);
     throw new SpecifyInfraError(`could not commit the acceptance tests: ${(err as Error).message}`);
@@ -402,9 +401,6 @@ export async function runTestPipeline(
   //    describe the commit, not whatever was on disk when the step looked.
   const frozen: Record<string, string> = {};
   const tests: Record<string, string[]> = {};
-  const contract = coverage.contract.filter(
-    (c) => red.some((r) => r.path === c.path) || mustPass.includes(c.path),
-  );
   for (const { criterionId, path: rel } of contract) {
     frozen[rel] = sha256(await committedBlob(exec, wt, rel));
     const list = tests[criterionId] ?? [];
@@ -413,8 +409,8 @@ export async function runTestPipeline(
   }
 
   const reason = preservedCommitReason({
-    frozen: Object.keys(frozen).length,
-    criteria: Object.keys(tests).length,
+    frozen,
+    tests,
     preservedIds,
     skipped,
     droppedNote,
