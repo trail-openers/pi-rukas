@@ -11,6 +11,7 @@
  * `verify` must be `green` and must name a head.
  */
 import { isFullCommitSha } from "../commit-sha.ts";
+import { leanReviewIncompleteHeadEnabled } from "../lean-review-incomplete-head-switch.ts";
 import { type LeanState, REPORT_STATES, type Step } from "./state.ts";
 
 /**
@@ -22,8 +23,9 @@ export const NO_GATE_VERDICT =
 
 /**
  * True when this handback stands over bytes no gate of this run certified: a `fixed` review the gate has not
- * spoken for since (a gate visit ENTERED and never answered counts as not speaking), or a draft publish whose
- * own head no green covers.
+ * spoken for since (a gate visit ENTERED and never answered counts as not speaking), an errored review over a
+ * head the gate certified — a review that threw judged nothing, so its head is owed the same reading — or a
+ * draft publish whose own head no green covers.
  */
 export interface HandbackHeads {
   applies: boolean;
@@ -75,9 +77,13 @@ function newestDecidedThrough(
   return undefined;
 }
 
+/** Whether an errored review is a handback shape at all: the #2667 switch, read at CALL time. */
+const incompleteHeadOn = leanReviewIncompleteHeadEnabled;
+
 /**
  * The head a handback of this log should ship, or the reason it cannot. A log whose newest work step is
- * neither a `fixed` review nor a draft publish gets `{applies: false}` with no reason.
+ * neither a `fixed` review, an errored review over a certified head, nor a draft publish gets
+ * `{applies: false}` with no reason.
  */
 export function handbackHeads(steps: Step[]): HandbackHeads {
   const newest = newestDecidedWorkStep(steps);
@@ -94,7 +100,13 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
       return { applies: false };
     return { applies: true, shippedHead: head, shippedVerified: false };
   }
-  if (newest.state !== "review" || newest.outcome.kind !== "fixed") return { applies: false };
+  const review = newest.state === "review";
+  // #2667, on the switch: a review that THREW over a head the gate certified judged nothing, which is the
+  // same standing a `fixed` review the gate has not spoken for has. Off, or for any kind outside the pair,
+  // the rule is silent exactly as it was before the knob: an errored review is not a handback shape.
+  const errored = review && newest.outcome.kind === "error";
+  if (!review || (newest.outcome.kind !== "fixed" && !(errored && incompleteHeadOn())))
+    return { applies: false };
   const at = steps.indexOf(newest);
   const trailing = newestStateStepAfter(steps, "verify", at);
   if (trailing !== undefined && trailing.outcome === undefined)
@@ -103,6 +115,9 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
       reason: `the run entered the gate again at ${trailing.key} and never recorded what it decided, so no head is verified`,
     };
   const green = newestDecidedThrough(steps, "verify", at);
+  // An errored review with nothing decided behind it has no head this rule may name: it is not a handback
+  // over unverified BYTES the run shipped, and the rule's finding would be the run's whole sentence.
+  if (errored && green === undefined) return { applies: false };
   if (green === undefined) return { applies: true, reason: NO_GATE_VERDICT };
   if (green.outcome?.kind !== "green")
     return {

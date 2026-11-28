@@ -13,6 +13,7 @@
  * Two positions the snapshot may legitimately hold: the fold's own (`pos`), and the one before its last step
  * (`before`) — a crash between recording an outcome and applying it. Anything else throws.
  */
+import { leanReviewIncompleteHeadEnabled } from "../lean-review-incomplete-head-switch.ts";
 import { hasTransition, next } from "./machine.ts";
 import {
   INITIAL_COUNTERS,
@@ -116,10 +117,13 @@ export function foldLog(
 }
 
 /**
- * Is this `handback` entry the engine's deadline route into the report, rather than an invented visit?
+ * Is this `handback` entry the engine's route into the report, rather than an invented visit?
  *
  * Three conditions, none read from the entry being judged: it is the run's FIRST report entry; the log ends
- * on it; and the newest DECIDED work step is a `fixed` review with no decided `verify` behind it.
+ * on it; and the newest DECIDED work step is a `fixed` review with no decided `verify` behind it — or, with
+ * #2667 on, an `error` review whose newest decided `verify` named a head. The pair is exactly what
+ * `handbackHeads` answers `applies` for, which is the premise the routing acts on: an entry the routing
+ * writes must be one the fold will admit, and a run the rule refuses must not have one at all.
  */
 function isReportRoute(log: Step[]): boolean {
   if ((log[log.length - 1] as Step | undefined)?.state !== "handback") return false;
@@ -128,9 +132,19 @@ function isReportRoute(log: Step[]): boolean {
     .find(
       (s) => s.outcome !== undefined && !(REPORT_STATES as readonly string[]).includes(s.state),
     );
-  if (newestWork?.state !== "review" || newestWork.outcome?.kind !== "fixed") return false;
+  if (newestWork?.state !== "review") return false;
   const at = log.indexOf(newestWork);
-  return !log.some((s, i) => i > at && s.state === "verify" && s.outcome !== undefined);
+  if (log.some((s, i) => i > at && s.state === "verify" && s.outcome !== undefined)) return false;
+  if (newestWork.outcome?.kind === "fixed") return true;
+  // The errored arm, and only with the switch on: the run the rule would hand back at the
+  // certified head is the run whose report entry this is.
+  return (
+    newestWork.outcome?.kind === "error" &&
+    leanReviewIncompleteHeadEnabled() &&
+    log
+      .slice(0, at)
+      .some((s) => s.state === "verify" && s.outcome?.kind === "green" && s.outcome.verifiedHead !== undefined)
+  );
 }
 
 /**

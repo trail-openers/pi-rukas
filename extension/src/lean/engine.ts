@@ -19,7 +19,7 @@ import {
 } from "../work-driver-deadline.ts";
 import { deadlineStopsSteps, leanDeadline } from "./deadline.ts";
 import { engineFacts } from "./engine-facts.ts";
-import { type HandbackHandler, stopAtBoundary } from "./engine-report.ts";
+import { type HandbackHandler, reportErroredReview, stopAtBoundary } from "./engine-report.ts";
 import { errorOutcome } from "./error-outcome.ts";
 import { acquireLock } from "./lock.ts";
 import { exitCodeFor, hasTransition, next } from "./machine.ts";
@@ -273,12 +273,20 @@ async function settle(
   const withFacts = state === "ready" ? applyReadyFacts(logged, outcome) : logged;
   if (outcome.kind === "error") {
     drive.save(withFacts);
-    return endRun(
-      drive,
-      withFacts,
-      "handed-back",
-      `handler error at ${state}: ${String(outcome.message ?? "")}`,
-    );
+    const reason = `handler error at ${state}: ${String(outcome.message ?? "")}`;
+    const reported =
+      state === "review"
+        ? await reportErroredReview(withFacts, reason, {
+            repoRoot: opts.repoRoot,
+            issue: opts.issue,
+            now,
+            handler: opts.handlers.handback as HandbackHandler | undefined,
+            keyFor: (s, n) => stepKey(opts.issue, s, n),
+            attach: withOutcome,
+            finish: (r, terminal, why) => endRun(drive, r, terminal, why),
+          })
+        : undefined;
+    return reported ?? endRun(drive, withFacts, "handed-back", reason);
   }
   // An outcome the table does not list is a handler bug, whatever the state.
   if (!hasTransition(state, outcome.kind)) {

@@ -1,0 +1,760 @@
+{
+  "throwArm": {
+    "steps": [
+      {
+        "key": "2667:ready:0",
+        "state": "ready",
+        "outcome": {
+          "kind": "ok"
+        }
+      },
+      {
+        "key": "2667:specify:0",
+        "state": "specify",
+        "outcome": {
+          "kind": "ok",
+          "frozen": {
+            "tests/AC1-review-head.test.sh": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "tests": {
+            "AC1": [
+              "tests/AC1-review-head.test.sh"
+            ]
+          }
+        }
+      },
+      {
+        "key": "2667:build:0",
+        "state": "build",
+        "outcome": {
+          "kind": "ok"
+        }
+      },
+      {
+        "key": "2667:challenge:0",
+        "state": "challenge",
+        "outcome": {
+          "kind": "none"
+        }
+      },
+      {
+        "key": "2667:verify:0",
+        "state": "verify",
+        "outcome": {
+          "kind": "green",
+          "verifiedHead": "<sha>",
+          "reason": "all frozen tests green at <sha>",
+          "projectRoster": {
+            "baseSha": "<sha>",
+            "files": [
+              "tests/suite.test.ts"
+            ],
+            "passed": [
+              "tests/suite.test.ts::passes"
+            ],
+            "failed": [],
+            "baseFailed": [],
+            "total": 1,
+            "baseTotal": 1
+          }
+        }
+      },
+      {
+        "key": "2667:publish:0",
+        "state": "publish",
+        "outcome": {
+          "kind": "ok",
+          "prUrl": "https://forge.invalid/o/r/pull/1",
+          "publishedHead": "<sha>",
+          "draft": true
+        }
+      },
+      {
+        "key": "2667:review:0",
+        "state": "review",
+        "outcome": {
+          "kind": "error",
+          "message": "review stopped: minutes budget 15 exceeded (used 16)",
+          "dispatches": [
+            {
+              "role": "adversarial-loop",
+              "ms": 960000,
+              "ok": false,
+              "usage": {
+                "input": 1,
+                "output": 2,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.5,
+                "turns": 10
+              }
+            },
+            {
+              "role": "code-review-specialist",
+              "ms": 100,
+              "ok": true,
+              "usage": {
+                "input": 10,
+                "output": 1,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.1,
+                "turns": 1
+              }
+            },
+            {
+              "role": "code-review-specialist",
+              "ms": 200,
+              "ok": true,
+              "usage": {
+                "input": 20,
+                "output": 2,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.2,
+                "turns": 2
+              }
+            },
+            {
+              "role": "code-review-specialist",
+              "ms": 300,
+              "ok": true,
+              "usage": {
+                "input": 30,
+                "output": 3,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.30000000000000004,
+                "turns": 3
+              }
+            },
+            {
+              "role": "code-review-specialist",
+              "ms": 400,
+              "ok": true,
+              "usage": {
+                "input": 40,
+                "output": 4,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.4,
+                "turns": 4
+              }
+            },
+            {
+              "role": "code-review-specialist",
+              "ms": 500,
+              "ok": true,
+              "usage": {
+                "input": 50,
+                "output": 5,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.5,
+                "turns": 5
+              }
+            },
+            {
+              "role": "code-review-specialist",
+              "ms": 600,
+              "ok": true,
+              "usage": {
+                "input": 60,
+                "output": 6,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.6000000000000001,
+                "turns": 6
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "handbackBody": null,
+    "issues": [
+      {
+        "issue": 2667,
+        "status": "handoff",
+        "stateFile": ".pi/lean-state/2667.json",
+        "durationMs": 0,
+        "steps": [
+          {
+            "step": "ready",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "specify",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "build",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "challenge",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "verify",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "publish",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "review",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          }
+        ],
+        "exitCode": 10,
+        "resumable": false,
+        "driver": "lean",
+        "usage": {
+          "input": 211,
+          "output": 23,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "cost": 2.6,
+          "turns": 31,
+          "dispatches": 7,
+          "byRole": {
+            "adversarial-loop": {
+              "input": 1,
+              "output": 2,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "cost": 0.5,
+              "turns": 10,
+              "dispatches": 1
+            },
+            "code-review-specialist": {
+              "input": 210,
+              "output": 21,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "cost": 2.1,
+              "turns": 21,
+              "dispatches": 6
+            }
+          }
+        },
+        "branch": "lean/issue-2667",
+        "prState": "draft",
+        "failure": {
+          "kind": "crashed",
+          "message": "review stopped: minutes budget 15 exceeded (used 16)",
+          "step": "handoff",
+          "role": "code-review-specialist"
+        },
+        "prUrl": "https://forge.invalid/o/r/pull/1",
+        "gates": {
+          "specify": {
+            "frozen": {
+              "tests/AC1-review-head.test.sh": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "tests": {
+              "AC1": [
+                "tests/AC1-review-head.test.sh"
+              ]
+            }
+          },
+          "challenge": {
+            "kind": "none"
+          },
+          "verify": [
+            {
+              "state": "verify",
+              "kind": "green",
+              "tiers": null,
+              "tiersTotal": null,
+              "criteria": null,
+              "criteriaTotal": null,
+              "projectTestsRan": 1,
+              "newlyFailing": [],
+              "newlyFailingTotal": 0
+            }
+          ],
+          "review": {
+            "kind": "error",
+            "rounds": null,
+            "waves": null,
+            "wavesTotal": null,
+            "reviewBound": null
+          },
+          "handback": {
+            "reason": null,
+            "head": "<sha>",
+            "verified": true,
+            "unshipped": null
+          }
+        }
+      }
+    ],
+    "state": "handed-back",
+    "code": 10,
+    "reason": "handler error at review: review stopped: minutes budget 15 exceeded (used 16)"
+  },
+  "doneArm": {
+    "steps": [
+      {
+        "key": "2667:ready:0",
+        "state": "ready",
+        "outcome": {
+          "kind": "ok"
+        }
+      },
+      {
+        "key": "2667:specify:0",
+        "state": "specify",
+        "outcome": {
+          "kind": "ok",
+          "frozen": {
+            "tests/AC1-review-head.test.sh": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "tests": {
+            "AC1": [
+              "tests/AC1-review-head.test.sh"
+            ]
+          }
+        }
+      },
+      {
+        "key": "2667:build:0",
+        "state": "build",
+        "outcome": {
+          "kind": "ok"
+        }
+      },
+      {
+        "key": "2667:challenge:0",
+        "state": "challenge",
+        "outcome": {
+          "kind": "none"
+        }
+      },
+      {
+        "key": "2667:verify:0",
+        "state": "verify",
+        "outcome": {
+          "kind": "green",
+          "verifiedHead": "<sha>",
+          "reason": "all frozen tests green at <sha>",
+          "projectRoster": {
+            "baseSha": "<sha>",
+            "files": [
+              "tests/suite.test.ts"
+            ],
+            "passed": [
+              "tests/suite.test.ts::passes"
+            ],
+            "failed": [],
+            "baseFailed": [],
+            "total": 1,
+            "baseTotal": 1
+          }
+        }
+      },
+      {
+        "key": "2667:publish:0",
+        "state": "publish",
+        "outcome": {
+          "kind": "ok",
+          "prUrl": "https://forge.invalid/o/r/pull/1",
+          "publishedHead": "<sha>",
+          "draft": true
+        }
+      },
+      {
+        "key": "2667:review:0",
+        "state": "review",
+        "outcome": {
+          "kind": "done",
+          "reason": "adversarial and six-lens review clean at <sha12> (APPROVED, no fixer)",
+          "dispatches": [
+            {
+              "role": "adversarial-loop",
+              "ms": 5,
+              "ok": true,
+              "usage": {
+                "input": 1,
+                "output": 2,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.5,
+                "turns": 10
+              }
+            },
+            {
+              "role": "code-review-specialist",
+              "ms": 100,
+              "ok": true,
+              "usage": {
+                "input": 10,
+                "output": 1,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.1,
+                "turns": 1
+              }
+            },
+            {
+              "role": "code-review-specialist",
+              "ms": 200,
+              "ok": true,
+              "usage": {
+                "input": 20,
+                "output": 2,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.2,
+                "turns": 2
+              }
+            },
+            {
+              "role": "code-review-specialist",
+              "ms": 300,
+              "ok": true,
+              "usage": {
+                "input": 30,
+                "output": 3,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.30000000000000004,
+                "turns": 3
+              }
+            },
+            {
+              "role": "code-review-specialist",
+              "ms": 400,
+              "ok": true,
+              "usage": {
+                "input": 40,
+                "output": 4,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.4,
+                "turns": 4
+              }
+            },
+            {
+              "role": "code-review-specialist",
+              "ms": 500,
+              "ok": true,
+              "usage": {
+                "input": 50,
+                "output": 5,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.5,
+                "turns": 5
+              }
+            },
+            {
+              "role": "code-review-specialist",
+              "ms": 600,
+              "ok": true,
+              "usage": {
+                "input": 60,
+                "output": 6,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost": 0.6000000000000001,
+                "turns": 6
+              }
+            }
+          ],
+          "review": {
+            "rounds": [
+              {
+                "CRITICAL": 0,
+                "HIGH": 0,
+                "MEDIUM": 0,
+                "LOW": 0
+              }
+            ],
+            "waves": []
+          }
+        }
+      },
+      {
+        "key": "2667:ci:0",
+        "state": "ci",
+        "outcome": {
+          "kind": "red"
+        }
+      },
+      {
+        "key": "2667:build:1",
+        "state": "build",
+        "outcome": {
+          "kind": "ok"
+        }
+      },
+      {
+        "key": "2667:verify:1",
+        "state": "verify",
+        "outcome": {
+          "kind": "green",
+          "verifiedHead": "<sha>",
+          "reason": "all frozen tests green at <sha>",
+          "projectRoster": {
+            "baseSha": "<sha>",
+            "files": [
+              "tests/suite.test.ts"
+            ],
+            "passed": [
+              "tests/suite.test.ts::passes"
+            ],
+            "failed": [],
+            "baseFailed": [],
+            "total": 1,
+            "baseTotal": 1
+          }
+        }
+      },
+      {
+        "key": "2667:publish:1",
+        "state": "publish",
+        "outcome": {
+          "kind": "ok",
+          "prUrl": "https://forge.invalid/o/r/pull/1",
+          "publishedHead": "<sha>",
+          "draft": true
+        }
+      },
+      {
+        "key": "2667:ci:1",
+        "state": "ci",
+        "outcome": {
+          "kind": "red"
+        }
+      },
+      {
+        "key": "2667:handback:0",
+        "state": "handback",
+        "outcome": {
+          "kind": "done",
+          "reason": "handback comment posted",
+          "posted": true,
+          "report": "work-lean: issue #2667 is handed back \u2014 this is still needed:\n\n```text\nall frozen tests green at <sha>\n```\n\nFrozen acceptance tests:\n- tests/AC1-review-head.test.sh\n\nBranch: `lean/issue-2667`\nPR: https://forge.invalid/o/r/pull/1"
+        }
+      }
+    ],
+    "handbackBody": "work-lean: issue #2667 is handed back \u2014 this is still needed:\n\n```text\nall frozen tests green at <sha>\n```\n\nFrozen acceptance tests:\n- tests/AC1-review-head.test.sh\n\nBranch: `lean/issue-2667`\nPR: https://forge.invalid/o/r/pull/1",
+    "issues": [
+      {
+        "issue": 2667,
+        "status": "handoff",
+        "stateFile": ".pi/lean-state/2667.json",
+        "durationMs": 0,
+        "steps": [
+          {
+            "step": "ready",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "specify",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "build",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "challenge",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "verify",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "publish",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "review",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "ci",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "build",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "verify",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "publish",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "ci",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          },
+          {
+            "step": "handback",
+            "startedAt": "2023-11-14T22:13:20.000Z",
+            "endedAt": "2023-11-14T22:13:20.000Z"
+          }
+        ],
+        "exitCode": 10,
+        "resumable": false,
+        "driver": "lean",
+        "usage": {
+          "input": 211,
+          "output": 23,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "cost": 2.6,
+          "turns": 31,
+          "dispatches": 7,
+          "byRole": {
+            "adversarial-loop": {
+              "input": 1,
+              "output": 2,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "cost": 0.5,
+              "turns": 10,
+              "dispatches": 1
+            },
+            "code-review-specialist": {
+              "input": 210,
+              "output": 21,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "cost": 2.1,
+              "turns": 21,
+              "dispatches": 6
+            }
+          }
+        },
+        "branch": "lean/issue-2667",
+        "prState": "draft",
+        "failure": {
+          "kind": "verify",
+          "message": "ci step reported red",
+          "step": "handoff",
+          "role": "code-review-specialist"
+        },
+        "prUrl": "https://forge.invalid/o/r/pull/1",
+        "handoff": {
+          "channel": "forge",
+          "marker": "<!-- pi-rukas:handoff issue=2667 cap=none -->",
+          "labelApplied": false,
+          "body": "<!-- pi-rukas:handoff issue=2667 cap=none -->\n\nhandback comment posted"
+        },
+        "gates": {
+          "specify": {
+            "frozen": {
+              "tests/AC1-review-head.test.sh": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "tests": {
+              "AC1": [
+                "tests/AC1-review-head.test.sh"
+              ]
+            }
+          },
+          "challenge": {
+            "kind": "none"
+          },
+          "verify": [
+            {
+              "state": "verify",
+              "kind": "green",
+              "tiers": null,
+              "tiersTotal": null,
+              "criteria": null,
+              "criteriaTotal": null,
+              "projectTestsRan": 1,
+              "newlyFailing": [],
+              "newlyFailingTotal": 0
+            },
+            {
+              "state": "verify",
+              "kind": "green",
+              "tiers": null,
+              "tiersTotal": null,
+              "criteria": null,
+              "criteriaTotal": null,
+              "projectTestsRan": 1,
+              "newlyFailing": [],
+              "newlyFailingTotal": 0
+            },
+            {
+              "state": "ci",
+              "kind": "red",
+              "tiers": null,
+              "tiersTotal": null,
+              "criteria": null,
+              "criteriaTotal": null,
+              "projectTestsRan": null,
+              "newlyFailing": null,
+              "newlyFailingTotal": null
+            },
+            {
+              "state": "ci",
+              "kind": "red",
+              "tiers": null,
+              "tiersTotal": null,
+              "criteria": null,
+              "criteriaTotal": null,
+              "projectTestsRan": null,
+              "newlyFailing": null,
+              "newlyFailingTotal": null
+            }
+          ],
+          "review": {
+            "kind": "done",
+            "rounds": [
+              {
+                "CRITICAL": 0,
+                "HIGH": 0,
+                "MEDIUM": 0,
+                "LOW": 0
+              }
+            ],
+            "waves": null,
+            "wavesTotal": null,
+            "reviewBound": null
+          },
+          "handback": {
+            "reason": "handback comment posted",
+            "head": "<sha>",
+            "verified": false,
+            "unshipped": null
+          }
+        }
+      }
+    ],
+    "state": "handed-back",
+    "code": 10,
+    "reason": "handback comment posted"
+  }
+}

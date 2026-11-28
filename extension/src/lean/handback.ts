@@ -39,7 +39,17 @@ function branchLine(branch: string): string[] {
  * full sets live in the step log. */
 const LIST_CAP = 20;
 
-/** The newest DECIDED step of `state` whose outcome carries a reason. */
+/**
+ * The newest DECIDED step of `state` whose outcome carries a reason.
+ *
+ * A run that was ROUTED into this step never had a `handback` entry when its cause was
+ * asked — the routed visit is written after its handler returns — so `steps[0]` is the
+ * step that ended the run: the newest decided step at all, or the newest decided WORK
+ * step when the head rule found a head to name. Either way this step displaced it, so
+ * its own reason is the run's cause; with neither, the newest work step's reason answers.
+ * A cause carried on any other step is a step that already spoke for itself, and quoting
+ * it here would name something the run walked past.
+ */
 function newestReason(steps: Step[], state: "verify" | "ci", kind: "red" | "green") {
   let found: string | undefined;
   for (let i = steps.length - 1; i >= 0; i--) {
@@ -51,6 +61,22 @@ function newestReason(steps: Step[], state: "verify" | "ci", kind: "red" | "gree
     break;
   }
   return found;
+}
+
+/**
+ * Why the run is ending, in the record's own words.
+ *
+ * The step that ENDED the run, read as the newest decided step that was WORK: its reason is
+ * the cause the run died on (an errored `review` quoting its own throw, a refused land
+ * naming its refusal). A decided `handback` entry is excluded — it is the report of an
+ * earlier ending, either the deadline's route or the report of a run that resumed and walked
+ * on to its own handback — and a report's own bookkeeping line is never the reason the run
+ * needs something.
+ */
+function endedBy(steps: Step[]): string | undefined {
+  const ended = newestDecidedWorkStep(steps);
+  const reason = ended?.outcome?.reason ?? ended?.outcome?.message;
+  return typeof reason === "string" && reason.trim() !== "" ? reason : undefined;
 }
 
 /** Why the run is ending, in the record's own words. */
@@ -114,6 +140,9 @@ export function neededFromLog(steps: Step[]): string {
     gapCause(steps) ??
     budgetCause(steps) ??
     exhaustedCause(steps) ??
+    // The step that ended the run: a review that threw, or a run the clock stopped, whose
+    // own reason line is what this comment exists to carry.
+    endedBy(steps) ??
     newestReason(steps, "verify", "red") ??
     newestReason(steps, "ci", "red") ??
     newestReason(steps, "verify", "green") ??

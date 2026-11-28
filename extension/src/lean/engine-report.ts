@@ -139,13 +139,63 @@ export async function runHandbackReport(req: ReportRequest): Promise<LeanRun | u
 }
 
 /**
- * The reason line a routed run carries: the report's own reason leads, and the refused step is named
- * so a reader can tell this from a plain deadline stop.
+ * The reason line a routed run carries: the report's own reason leads, and what the run was
+ * refused for is named beside it, so a reader can tell a routed report from a plain stamp.
  */
 function reportReason(stoppedAt: LeanState, cause: string, outcome: Outcome): string {
   const said =
     typeof outcome.reason === "string" && outcome.reason !== "" ? outcome.reason : "reported";
   return `${said} (${cause} at ${stoppedAt})`;
+}
+
+/**
+ * Route a run whose newest work step holds bytes the head rule refuses into the report, and
+ * end it with what the report recorded.
+ *
+ * The one reading of "this run owes a report it was never routed to", asked of the LOG and
+ * not of the stop cause, so the clock's boundary stop and the engine's handler-error path
+ * route exactly the shape the reporting step reports on and nothing else. The caller supplies
+ * the two writers of the record, because the runner owns the state file and this module does
+ * not.
+ *
+ * Returns the ended run when the report ran, or `undefined` when nothing could be reported:
+ * no reporting step built, a report that threw, or one that overran its own bound. On
+ * overrun `req.boundFiredMs` carries the bound, which is what lets a caller say the report
+ * was LOST rather than that there was none to lose.
+ */
+export async function routeReport(
+  req: Omit<ReportRequest, "boundMs" | "boundFiredMs" | "handler"> & {
+    handler: HandbackHandler | undefined;
+    boundFiredMs?: number;
+  },
+): Promise<LeanRun | undefined> {
+  if (!handbackHeads(req.run.steps).applies) return undefined;
+  // The report's own bound, raced against the handler inside `runHandbackReport`; an overrun throws
+  // away the verdict and answers `undefined` with `boundFiredMs` set, which is what lets the stamp
+  // below say the report was LOST rather than that there was none to lose.
+  const { handler, ...rest } = req;
+  if (handler === undefined) return undefined;
+  return await runHandbackReport({ ...rest, handler, boundMs: handoffReportBoundMs() });
+}
+
+/**
+ * The one error path that owes a report: a `review` whose handler threw (#2667).
+ *
+ * A review that threw judged nothing, and where the run's newest decided `verify`
+ * certified a head, that head is owed the reporting step the throw would otherwise skip
+ * — the rewind, the four head fields, and the comment naming why review did not complete.
+ * The head rule decides whether the run is that shape, so an errored review over nothing
+ * green — and every other state's throw — takes the caller's plain stamp. The caller
+ * supplies the two writers of the record, because the runner owns the state file.
+ */
+export async function reportErroredReview(
+  run: LeanRun,
+  cause: string,
+  writers: Omit<ReportRequest, "run" | "cause" | "boundMs" | "boundFiredMs" | "handler" | "stoppedAt"> & {
+    handler: HandbackHandler | undefined;
+  },
+): Promise<LeanRun | undefined> {
+  return await routeReport({ ...writers, stoppedAt: "review", run, cause });
 }
 
 /** What the runner gives the stop: the two writers of the record, and the report's pieces. */
