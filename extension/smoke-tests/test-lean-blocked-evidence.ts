@@ -30,9 +30,11 @@ function blocked(names: Array<{ path: string; reason: string }>): unknown[] {
   // A repair round resets its seat to the commit the driver judged the red at, and its brief may quote ONLY
   // the output the driver itself watched the project's runner print. Both are therefore durable facts of the
   // blocked step, not things a later step re-derives — so this asks the real step, through the real runner,
-  // for the bytes the round is built from.
+  // for the bytes the round is built from. The run is stamped the way `runWorkLean` stamps one whose switch
+  // reads on: that stamp is what earns the two fields (see (1e) for the arm that earns neither).
   const r = await runBuild({
     issue: 3022,
+    oracleRepair: true,
     toolUses: () => blocked([{ path: "tests/AC1-retry.test.sh", reason: CONFLICT }]),
   });
   assert(r.outcome?.kind === "blocked", `(1c) the step blocked (got ${r.outcome?.kind})`);
@@ -77,6 +79,29 @@ function blocked(names: Array<{ path: string; reason: string }>): unknown[] {
   assert(r.outcome?.blockedEvidence === undefined, "(1d) no executed evidence is recorded");
 }
 
+
+// ── (1e) a run that earns no round records neither field ──
+{
+  // The switch is on by default, so the only thing separating this arm from (1c) is the run's stamp — the fact
+  // the transition table reads. A run created with the switch at `0` (or, before the round existed, with no
+  // stamp at all) has no reader for the two fields, and a record that carried them anyway would be a build
+  // record widened on the arm a golden captured before the round refutes. Key ORDER is part of the claim: the
+  // whole record, in the order the step wrote it, is what an off arm has to reproduce byte for byte.
+  const r = await runBuild({
+    issue: 3024,
+    toolUses: () => blocked([{ path: "tests/AC1-retry.test.sh", reason: CONFLICT }]),
+  });
+  assert(r.outcome?.kind === "blocked", `(1e) the step still blocked (got ${r.outcome?.kind})`);
+  assert(
+    r.outcome?.headBefore === undefined,
+    `(1e) an unearned run records no head (${JSON.stringify(r.outcome?.headBefore)})`,
+  );
+  assert(r.outcome?.blockedEvidence === undefined, "(1e) and no executed red");
+  assert(
+    JSON.stringify(Object.keys(r.outcome ?? {})) === JSON.stringify(["kind", "reason", "blockedBy", "dispatches"]),
+    `(1e) and the record's key order is the one the release wrote (${JSON.stringify(Object.keys(r.outcome ?? {}))})`,
+  );
+}
 
 console.log(exit === 0 ? "\nlean blocked evidence: OK" : "\nFAILED");
 process.exit(exit);

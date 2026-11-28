@@ -73,7 +73,8 @@ export async function judgeBlockedReport(opts: {
   }
   const red = proved.red;
   if (!(red in blockedBy)) return undefined;
-  // Bounded and sanitised where it is built: this durable record prints into a child's prompt.
+  // Bounded and sanitised where it is built: this durable record prints into a child's prompt. The driver ran
+  // it either way, and an unearned run simply keeps no key for it (`buildRepairFields`).
   const evidence = executedEvidence(opts.template ?? "", proved);
   // The cause line leads with the file the driver watched fail; the map carries all.
   return {

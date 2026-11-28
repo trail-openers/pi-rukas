@@ -55,6 +55,7 @@ import {
   testsFromLog,
 } from "../lean-log.ts";
 import { armsStepBudget, stepDispatchArms, stopReasonClause } from "../lean-step-bound.ts";
+import { buildRepairFields } from "./build-repair-fields.ts";
 import { foldStoppedBuild } from "../oracle-repair-fold.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
@@ -348,13 +349,13 @@ export async function buildOutcome(
   });
   if (blocked !== undefined) {
     // No commit: `verify` never judges a tree this step cannot account for. The head and the executed red ride
-    // beside the cause, since the round resets to that commit and quotes only what the driver watched.
+    // beside the cause only for a run that earns a repair round: the round is their only reader, and the off
+    // arm's record is the one the release wrote without them (`build-repair-fields.ts`).
     return {
       kind: "blocked",
       reason: blocked.reason,
       blockedBy: blocked.blockedBy,
-      headBefore,
-      ...(blocked.evidence.length === 0 ? {} : { blockedEvidence: blocked.evidence }),
+      ...buildRepairFields(ctx.run, headBefore, blocked.evidence),
       dispatches: rows,
     };
   }
@@ -421,10 +422,9 @@ export async function buildOutcome(
     } catch {
       again = undefined;
     }
-    if (again !== undefined && again.files.length > 0)
-      return okVerdict(again, rows, waitNote, headBefore);
+    if (again !== undefined && again.files.length > 0) return okVerdict(again, rows, waitNote);
   }
-  if (!noChange) return okVerdict(report, rows, waitNote, headBefore);
+  if (!noChange) return okVerdict(report, rows, waitNote);
   return {
     kind: "exhausted",
     reason: joinNotes([
@@ -445,7 +445,6 @@ function okVerdict(
   report: NormaliseReport,
   rows: DispatchUsageRow[],
   waitNote: () => string,
-  headBefore: string,
 ): Outcome {
   return {
     kind: "ok",
@@ -454,8 +453,9 @@ function okVerdict(
       ...foldClauses(report),
       waitNote(),
     ]),
-    // The range this round changed, lower-bounded: what a repair round runs its replacement against.
-    headBefore,
+    // No `headBefore` here: an `ok` round buys no repair round, so the field has no reader on this arm, and a
+    // key the pre-change build never wrote widens the record whichever way the switch reads. The rule and its
+    // reason are in `build-repair-fields.ts`.
     dispatches: rows,
   };
 }
