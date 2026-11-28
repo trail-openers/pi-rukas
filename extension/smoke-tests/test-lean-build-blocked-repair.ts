@@ -20,6 +20,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { leanOracleRepairEnabled } from "../src/lean-oracle-repair-switch.ts";
+import { repairRoundDue } from "../src/oracle-repair-due.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
@@ -76,6 +77,20 @@ const comparable = (r: RepairRecord): string =>
       );
     });
   }
+}
+{
+  // The step is reached through one predicate, and the off arm's shape is only meaningful if that predicate is
+  // the sole door: a run with no round stamped, or with its one round spent, never enters `repair`.
+  const due = (oracleRepair: boolean, spent: number): boolean =>
+    repairRoundDue({ oracleRepair, counters: { repairsSpent: spent } } as never);
+  assert(due(true, 0), "(a) an on-run with an unspent round earns the round");
+  assert(!due(false, 0), "(a) an off-run never earns the round");
+  assert(!due(true, 1), "(a) a run that already spent its round never earns a second");
+  const docs = readFileSync(path.join(root, "docs", "lean.md"), "utf8");
+  assert(
+    docs.includes("| `repair` |") && docs.includes(KNOB),
+    "(a) docs/lean.md walks the repair step and names the switch that gates it",
+  );
 }
 
 // ── (b) the round, and what the seat was shown
