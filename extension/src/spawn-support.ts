@@ -21,6 +21,7 @@ import { excludeToolsFor } from "./role-tools.ts";
 import {
   applyUserExtension,
   discoverInstalledExtensions,
+  extensionForwardArgs,
   piEnsembleExtensionPath,
 } from "./spawn-extension-forward.ts";
 import type { DispatchUsage } from "./types.ts";
@@ -482,9 +483,7 @@ export function buildChildArgs(
   if (modelChoice.model) {
     args.push("--model", modelChoice.model);
   }
-  for (const ext of discoverInstalledExtensions(role)) {
-    args.push("--extension", ext);
-  }
+  args.push(...extensionForwardArgs(discoverInstalledExtensions(role)));
   applyUserExtension(args, role);
   if (subagentGuardEnabled) {
     const ensemblePath = piEnsembleExtensionPath();

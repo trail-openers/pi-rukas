@@ -38,7 +38,7 @@ import { buildChildEnv } from "./spawn-child-env.ts";
 import { collapseEvents } from "./spawn-collapse-events.ts";
 import { installExitKillSeam, startExitWait } from "./spawn-exit-await-session.ts";
 
-import { discoverPackageExtensions } from "./spawn-extension-forward.ts";
+import { discoverPackageExtensions, extensionForwardArgs } from "./spawn-extension-forward.ts";
 import { createInactivityPoll, stallLever } from "./spawn-inactivity-poll.ts";
 import { InFlightTools, attachStdoutLinePump, createStdoutLineHandler } from "./spawn-inflight.ts";
 import { groupSpawnOpts, leadsProcessGroup, registerChild } from "./spawn-kill.ts";
@@ -153,7 +153,7 @@ async function spawnSpecialistInner(
     transcriptPath,
     modelChoice,
     subagentGuardEnabled,
-    [...packageExtensions.flatMap((p) => ["--extension", p]), ...(opts.extraArgs ?? [])],
+    [...extensionForwardArgs(packageExtensions), ...(opts.extraArgs ?? [])],
   );
   // No positional prompt — sent over stdin RPC channel below.
   const invocation = getPiInvocation(childArgs);

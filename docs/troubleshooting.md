@@ -554,6 +554,20 @@ PI_CODING_AGENT_DIR="$HOME/.pi/agent" pi-rukas-headless --capabilities | head -1
 
 If read-only children work with the variable exported and die without it, the defect is this one. Turning the redirect off (`PI_ENSEMBLE_REVIEWER_SCRATCH_HOME=0`) also restores them, and is the operator's escape hatch for the isolation itself — but it puts the child's bash back on your real `$HOME`, which is what the redirect exists to prevent, so prefer the fix.
 
+## pi-lens is missing from a subagent, or does not format a developer's writes
+
+### Symptom
+
+With pi-lens installed, its tools (`lens_diagnostics`, `symbol_search`, `lsp_navigation`, …) are absent from explore, reviewer and ops children. In a developer child they are present, but pi-lens neither autoformats nor autofixes the files the developer writes, nor runs tests on write, whatever the project's `.pi-lens.json` says.
+
+### Cause
+
+Deliberate. pi-lens rewrites files and runs tests through the filesystem, not through a tool call, so `--exclude-tools` and the write fence cannot contain it. It is forwarded to the `developer` role only (develop and lens-fix children), from either source: `<agent dir>/extensions/` or `settings.json` packages. There it loads with `--no-autoformat --no-autofix --no-tests`, which outrank a project `.pi-lens.json`. The developer keeps the LSP diagnostics and navigation, its diff stays exactly what it wrote, and the verify step runs the project's own checks.
+
+### Fix
+
+Nothing to do. To confirm, run with `PI_ENSEMBLE_DEBUG=1`: the pi-lens `auto-forward --extension <path>` trace line (tagged `(pi-lens)` from `extensions/`, `(package)` from `settings.json`) appears on `spawn[developer]` lines only. Detected by `extension/smoke-tests/test-discover-extensions.ts`.
+
 ## Subagent provider requests fail while the parent's succeed
 
 ### Symptom
@@ -566,7 +580,7 @@ Children start with `--no-extensions`, and pi-rukas adds the parent's extensions
 
 ### Fix
 
-Nothing to do: every spawn also forwards the extension files of the packages in `<agent dir>/settings.json`, resolved by the running Pi's own package manager (under `pi-rukas-headless`, a plain bun process, the copy installed beside the extension), so the `pi` manifest, conventional directories and per-package `extensions` filters apply exactly as in the parent. The agent dir is Pi's (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`). Not forwarded: pi-rukas itself and `pi-mcp-adapter` (as for `extensions/`), a package that is declared but not installed (a spawn never installs one), and project `.pi/settings.json` packages. With `PI_ENSEMBLE_DEBUG=1` each forwarded file is traced as `auto-forward --extension <path> (package)`; a Pi without the package-manager API prints a `WARN … settings.json packages not forwarded` line instead. Detected by `extension/smoke-tests/test-discover-extensions.ts`.
+Nothing to do: every spawn also forwards the extension files of the packages in `<agent dir>/settings.json`, resolved by the running Pi's own package manager (under `pi-rukas-headless`, a plain bun process, the copy installed beside the extension), so the `pi` manifest, conventional directories and per-package `extensions` filters apply exactly as in the parent. The agent dir is Pi's (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`). Not forwarded: pi-rukas itself, `pi-mcp-adapter`, and pi-lens to any role but the developer (as for `extensions/`), a package that is declared but not installed (a spawn never installs one), and project `.pi/settings.json` packages. With `PI_ENSEMBLE_DEBUG=1` each forwarded file is traced as `auto-forward --extension <path> (package)`; a Pi without the package-manager API prints a `WARN … settings.json packages not forwarded` line instead. Detected by `extension/smoke-tests/test-discover-extensions.ts`.
 
 ## Subagent silently "finished" but the worktree wasn't touched
 
