@@ -402,7 +402,9 @@ export async function runTestPipeline(
   //    describe the commit, not whatever was on disk when the step looked.
   const frozen: Record<string, string> = {};
   const tests: Record<string, string[]> = {};
-  const contract = coverage.contract;
+  const contract = coverage.contract.filter(
+    (c) => red.some((r) => r.path === c.path) || mustPass.includes(c.path),
+  );
   for (const { criterionId, path: rel } of contract) {
     frozen[rel] = sha256(await committedBlob(exec, wt, rel));
     const list = tests[criterionId] ?? [];
