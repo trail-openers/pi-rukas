@@ -323,6 +323,10 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     "work-driver-corrective-round.ts": 1, // #1667 — the corrective developer, pinned to the failing workstream's own worktree (cwd: t.cwd)
     "issue-spec-check.ts": 1, // the approved-spec check child — cwd: input.worktree, the PR's tree
     "work-driver-plan-quality-corrective.ts": 1, // #1756 r2 — the one-shot plan corrective, moved out of the plan-quality tail for the §12 cap (repoRoot-intentional; see the allowlist row above)
+    // The oracle repair round's seat: the spec (cwd included) is built HERE, at the tree the
+    // round reset and the fence roots, so this is the site and `oracle-repair-wiring.ts` is the
+    // wrapper that forwards it.
+    "oracle-repair-dispatch.ts": 1, // the repair seat — cwd: wt, the specify worktree reset to the commit the red was judged at
   };
   // The /plan and /research drivers' seams — outside the /work driver's
   // scope for this audit (their own cwd hygiene is a separate concern).
@@ -366,6 +370,10 @@ for (const { file, site, label, why } of ROOT_INTENTIONAL_SITES) {
     // #1789 — runSingleDispatch moved here and still DEFINES the seam.
     "work-driver-merged.ts",
     "work-driver-dispatch-seam.ts",
+    // The repair round's production wiring: like `issue-spec.ts` it DEFINES the dep's `dispatch`
+    // as a thin forward to `spawnSpecialist` and decides nothing about where a child runs — the
+    // spec, cwd included, is built by `oracle-repair-dispatch.ts`, audited above.
+    "oracle-repair-wiring.ts",
     // #1634 fix round — the per-workstream pass (and the `loopFn` seam call)
     // moved to work-driver-adversarial-fanout-run.ts, where the adversarial
     // cwd section above pins the cwd it threads. The fan-out itself now only

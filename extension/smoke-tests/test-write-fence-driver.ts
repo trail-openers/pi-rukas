@@ -104,8 +104,26 @@ assert(
     .sort();
   assert(
     JSON.stringify(fenced) ===
-      JSON.stringify(["work-develop-run.ts", "work-driver-corrective-round.ts", "work-driver-lens-fix.ts"]),
-    `B: only the develop, corrective-round and lens-fix developer dispatches build a fence (got ${fenced.join(", ")})`,
+      JSON.stringify([
+        "oracle-repair-dispatch.ts",
+        "work-develop-run.ts",
+        "work-driver-corrective-round.ts",
+        "work-driver-lens-fix.ts",
+      ]),
+    `B: only the develop, corrective-round, lens-fix and oracle-repair-seat dispatches build a fence (got ${fenced.join(", ")})`,
+  );
+  // The repair seat is a developer with the run's own contract to correct, so it is fenced like every other
+  // writer the cycle pays for. The root names the tree it owns: the round's seat, reset to the commit the red
+  // was judged at. The build worktree is NOT in its range — a seat that could write there could write the
+  // implementation its replacement is meant to be tested against.
+  const repair = readFileSync(path.join(SRC, "oracle-repair-dispatch.ts"), "utf8");
+  // The seat's tree is resolved once, in the round's body, and travels down as `wt`; the round's seat is the
+  // specify worktree, which `build`'s own worktree is not.
+  const step = readFileSync(path.join(SRC, "oracle-repair-step.ts"), "utf8");
+  assert(
+    /writeFence:\s*\{\s*root:\s*wt,\s*repo:\s*o\.repoRoot,\s*scratch:\s*o\.scratch\s*\}/.test(repair) &&
+      /const wt = specifyWorktreePath\(repoRoot, issue\);/.test(step),
+    "B: the repair seat's fence root is the seat's own (specify) worktree, so it cannot write the build worktree",
   );
   const develop = readFileSync(path.join(SRC, "work-develop-run.ts"), "utf8");
   assert(
