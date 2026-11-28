@@ -25,6 +25,7 @@
 
 import { runWorkLeanVerb } from "../src/headless/work-lean.ts";
 import type { LeanRun, Step } from "../src/lean/state.ts";
+import { INITIAL_COUNTERS } from "../src/lean/state.ts";
 import { makeAssert } from "./headless-verb-harness.ts";
 import {
   CHILDREN,
@@ -470,6 +471,7 @@ const reviewed = (steps: Step[]): Step[] => withReviews(steps, [judgedReviewStep
     branch: "   ",
     state: "handed-back",
     counters: {
+      ...INITIAL_COUNTERS,
       buildAttempts: 1,
       challengeDone: true,
       reviewDone: false,

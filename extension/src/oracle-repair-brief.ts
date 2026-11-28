@@ -1,4 +1,3 @@
-import { TEST_RUNNER_PLACEHOLDER } from "./lean/config.ts";
 /**
  * oracle-repair-brief — the repair seat's prompt, and the closed list of what it may contain.
  *
@@ -17,6 +16,7 @@ import { TEST_RUNNER_PLACEHOLDER } from "./lean/config.ts";
  * The heading this module renders is the string the harness routes on, and the blindness cases assert on.
  * Change it and those cases go red rather than passing on a brief nobody reads.
  */
+import { TEST_RUNNER_PLACEHOLDER } from "./lean/config.ts";
 import { criteriaBlock, scopeBlock } from "./lean/spec-blocks.ts";
 import type { PiSpec } from "./lean/spec.ts";
 import type { EvidenceRow, HeadEvidenceRow } from "./oracle-repair-evidence.ts";

@@ -30,8 +30,8 @@ import { setLeanCommentPoster } from "../../src/lean/io.ts";
 import { NO_HOOKS } from "../../src/lean/submodule-reads.ts";
 import { BLOCKED_REPORTER_PATH } from "../../src/lean/build-blocked-reporter.ts";
 import { ensureSpecifyWorktreeWithProvision } from "../../src/lean/specify-tree.ts";
-import type { EnsureTreeArgs } from "../../src/oracle-repair-dispatch.ts";
-import type { RepairSeatOpts, RepairSeatSpec } from "../../src/oracle-repair-dispatch.ts";
+import type { RepairRoundDeps } from "../../src/oracle-repair-dispatch.ts";
+import { REPAIR_HEADING } from "../../src/oracle-repair-brief.ts";
 import { specifyOutcome } from "../../src/lean/specify.ts";
 import type { SpecifyDeps } from "../../src/lean/specify.ts";
 import type { Outcome } from "../../src/lean/state.ts";
@@ -102,18 +102,6 @@ export interface RepairObservation {
   specSeen: string[][];
   /** Whether the round took a throwaway checkout of the run's base — the tree the judge ran in. */
   judgedInBaseCheckout: boolean;
-  /** What the judge RAN: each replacement's bytes, captured as the round left them. A test asserting the
-   *  replacement passes at the head has to know what was put under the runner, not trust a boolean. */
-  judgedBytes: string[];
-  /** The builder's implementation, as the round laid it over its base checkout for the head run — read from
-   *  the step's own record, which is what the round actually ran. */
-  headOverlay: string[][];
-  /** Each build round's own record, in order, from the run's log. A claim about what a round ran has to read
-   *  what the round wrote down — the head it started from, the head it judged a red at, the evidence it saw. */
-  buildRounds?: Record<string, unknown>[];
-  /** The repair step's own record, copied out of the run's log: what the judge accepted and whether each
-   *  replacement passed against the builder's head. An absent key means the step recorded nothing. */
-  repairRecord?: Record<string, unknown>;
   /** Whether each seat's tree sat on the build head its brief described the red at. */
   atBuildHead: boolean[];
 }
@@ -236,9 +224,6 @@ export async function driveRepairRun(
     treeFiles: [],
     specSeen: [],
     judgedInBaseCheckout: false,
-    atBuildHead: [],
-    judgedBytes: [],
-    headOverlay: [],
   };
   let record: RepairRecord | undefined;
   // Which build round this dispatch is, counted as they are dispatched — the index `buildChild` reads when
@@ -357,8 +342,8 @@ export async function driveRepairRun(
       // The seat's tree, its arms, and what it was shown — all of it read off the real round rather than
       // asserted near it: the assertions below ask whether the dispatch the seam received was blind, and a
       // stubbed round would answer that question about a round that never ran.
-      dispatch: (spec: RepairSeatSpec, o: RepairSeatOpts) => dispatch(spec as DispatchSpec, o),
-      ensureTree: (o: EnsureTreeArgs) => ensureSpecifyWorktreeWithProvision(run, o),
+      dispatch: (spec, o) => dispatch(spec as DispatchSpec, o),
+      ensureTree: (o) => ensureSpecifyWorktreeWithProvision(run, o),
       withBaseTree: <T,>(fn: (tree: string) => Promise<T>): Promise<T> => {
         baseTreeUsed = true;
         return withRepairBaseTree(run, repo.repoRoot, issue, seed.baseSha, fn);
@@ -428,16 +413,6 @@ export async function driveRepairRun(
                 repair: {
                   ...repair,
                   judgedInBaseCheckout: baseTreeUsed,
-                  repairRecord: (
-                    result.run.steps.find((s) => s.state === "repair")?.outcome?.repair ?? {}
-                  ) as Record<string, unknown>,
-                  // What the round ran, read off its own record rather than a value this file computed: the
-                  // head its diff was taken against, and the replacement's bytes it put under the runner.
-                  buildRounds: result.run.steps
-                    .filter((s) => s.state === "build" && s.outcome !== undefined)
-                    .map((s) => (JSON.parse(mask(JSON.stringify(s.outcome))) ?? {}) as Record<string, unknown>),
-                  judgedBytes: repair.judgedBytes,
-                  headOverlay: repair.headOverlay,
                 },
               }
             : {}),
@@ -458,5 +433,6 @@ export async function driveRepairRun(
   return record;
 }
 
-/** The heading a repair brief carries and no other brief contains; also the harness's routing test. */
-export const REPAIR_MARKER = "Repair the named frozen tests";
+/** The heading a repair brief carries and no other brief contains; also the harness's routing test. Derived
+ *  from the brief's own heading so the harness cannot route on a string the product no longer renders. */
+export const REPAIR_MARKER = REPAIR_HEADING.replace(/^#+ +/, "");

@@ -121,7 +121,7 @@ const comparable = (r: RepairRecord): string =>
 {
   const off = golden.off;
   assert(
-    comparable(off) === comparable(golden.crashed) === false,
+    comparable(off) !== comparable(golden.crashed),
     "(c) a round that could not run is not the same record as no round at all",
   );
   const crashed = golden.crashed;

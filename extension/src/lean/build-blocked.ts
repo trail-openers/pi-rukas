@@ -19,9 +19,7 @@ import { BLOCKED_EVIDENCE_OUTPUT_CAP, type EvidenceLine } from "../oracle-repair
  */
 import { trace, traceWarn } from "../trace.ts";
 import { extractBlockedReport } from "./build-blocked-extract.ts";
-import { normaliseBuild } from "./build-normalise.ts";
 import type { BuildExec, NormaliseReport } from "./build-types.ts";
-import { CaptureBudget } from "./specify-capture.ts";
 import { renderTestCommand } from "./specify-proof.ts";
 import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./state-outcome-maps.ts";
 import { oneLine } from "./text-fence.ts";
