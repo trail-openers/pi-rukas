@@ -23,9 +23,10 @@
  * clean-pass shape, so a row fails at the site it names or not at all.
  */
 
-import type { LeanHandlers, LeanRun } from "../../src/lean/engine.ts";
+import type { LeanHandlers } from "../../src/lean/engine.ts";
 import { runLean } from "../../src/lean/engine.ts";
 import { handbackOutcome } from "../../src/lean/handback.ts";
+import { strangerHandback } from "./lean-review-incomplete-head-report.ts";
 import { errorOutcome } from "../../src/lean/error-outcome.ts";
 import { rewindToVerified } from "../../src/lean/handback-rewind.ts";
 import { reviewOutcome } from "../../src/lean/review.ts";
@@ -46,7 +47,6 @@ import {
   completedReview,
   gateRefusal,
   gateVerdict,
-  pendingStranger,
 } from "./lean-review-incomplete-head-gate.ts";
 import {
   CAUSES,
@@ -101,15 +101,10 @@ export function erroredReviewOver(
     ...(newest.endedAt === undefined ? {} : { endedAt: newest.endedAt }),
     ...(newest.progress === undefined ? {} : { progress: newest.progress }),
     outcome: errorOutcome("review", new Error(opts.message)),
-  };  return [...walk.filter((s) => s.key !== newest.key), entry];
+  };
+  return [...walk.filter((s) => s.key !== newest.key), entry];
 }
 
-/** A `budgets.review` with only the lever the row needs armed. */
-export function cfgWith(budget: Partial<Budget>) {
-  const cfg = defaultConfig();
-  cfg.budgets.review = { turns: 400, tokens: 60_000_000, minutes: 30, ...budget };
-  return cfg;
-}
 
 /** What one row drove, with every fact read back rather than assumed. */
 export interface PanelRun {
@@ -381,80 +376,24 @@ export async function driveRow(
   }
 
 
-  // Two stranger arms, because the reporting step answers differently depending on WHEN origin
-  // moved, and a row has to say which one it drove.
-  //
-  //   `movedBeforeRead` — origin moves before the reporting step is called. Its rewind reads a head
-  //     the run never pushed, and its own `alreadyAtVerified` / refusal wording is what the record
-  //     has to carry.
-  //   `pushStranger` — origin moves from inside the rewind's own push, after that step read origin.
-  //     That is the window `--force-with-lease=<branch>:<held>` guards, and the refusal it produces
-  //     says `the lease refused the rewind`.
-  //
-  // `pendingStranger` makes the commit once and leaves the instant to the caller. The stranger
-  // travels to origin over a transport and its object is fetched into the clone the rewind pushes
-  // from: a stranger that only ever appears in origin's ref store makes origin name bytes it never
-  // received, and the push then dies at `bad object` with the lease never evaluated.
-  let planted: string | undefined;
-  let originAtReport: string | undefined;
-  const strangerHandback = (arm: "read" | "push"): LeanHandlers["handback"] => {
-    return (ctx) => {
-      visited.push("handback");
-      seen.handback = (seen.handback ?? 0) + 1;
-      const stranger = pendingStranger(origin, verifiedHead, repoRoot);
-      let raced = false;
-      const move = (): string => {
-        if (planted === undefined) {
-          planted = stranger.push();
-          // The bare sha form, which refreshes no ref: the branch is checked out in the run's
-          // worktree, and git refuses a fetch that would write a checked-out branch.
-          git(repoRoot, "fetch", "-q", "origin", planted);
-          if (originRef(origin) === verifiedHead)
-            throw new Error(`origin's ${BRANCH} did not move, so the row proved nothing`);
-        }
-        return planted;
-      };
-      if (arm === "read") {
-        // Origin moves, and the clone the rewind pushes from is NOT told: that is what makes the
-        // rewind's refusal a refusal of its own rules rather than a transport accident.
-        planted = stranger.moveUnseen();
-      }
-      const rigExec: typeof exec = async (cmd, opts) => {
-        if (arm === "push" && (opts?.argv ?? []).includes("push") && !raced) {
-          if (raced) throw new Error("the rewind pushed twice, so a second refusal proves nothing");
-          raced = true;
-          move();
-        }
-        return await exec(cmd, opts);
-      };
-      return handbackOutcome(
-        ctx,
-        async (_r, _i, body) => void posts.push(body),
-        (verified) =>
-          rewindToVerified(
-            arm === "push" ? rigExec : exec,
-            { repoRoot, issue: ISSUE, run: ctx.run },
-            verified,
-            { net: true },
-          ),
-        // Where the reporting step found origin once the rewind is done: read back off origin, never
-        // handed to the record as a literal.
-        () => {
-          originAtReport = originRef(origin);
-          return originAtReport;
-        },
-      );
-    };
-  };
   const r = await runLean({
     repoRoot,
     issue: ISSUE,
     handlers:
-      opts.pushStranger === true
-        ? { ...handlers, handback: strangerHandback("push") }
-        : opts.movedBeforeRead === true
-          ? { ...handlers, handback: strangerHandback("read") }
-          : handlers,
+      opts.pushStranger === true || opts.movedBeforeRead === true
+        ? {
+            ...handlers,
+            handback: strangerHandback({
+              arm: opts.pushStranger === true ? "push" : "read",
+              repoRoot,
+              origin,
+              verifiedHead,
+              posts,
+              visited,
+              seen,
+            }),
+          }
+        : handlers,
     now: clock,
     seed: { baseSha, branch: BRANCH },
   });
@@ -469,7 +408,9 @@ export async function driveRow(
     origin,
     finalHead,
     verifiedHead,
-    opts.pushStranger === true ? originAtReport : undefined,
+    opts.pushStranger === true || opts.movedBeforeRead === true
+      ? originRef(origin)
+      : undefined,
     posts,
     visited,
   );
@@ -528,39 +469,3 @@ function summarise(
   };
 }
 
-/**
- * The plain hand-back stamp a run that owes no report takes: the run is already terminal, so
- * the reporting step is called with the log it would have seen on that route.
- *
- * `handbackOutcome` is the production step and never throws; the engine reaches it through the
- * table, and a control that asks what a COMPLETED review records there has to put the finished
- * log in front of the same function. Nothing about the log is invented: its steps are the ones
- * the walk above just wrote.
- */
-async function reportOverFinishedRun(opts: {
-  repoRoot: string;
-  origin: string;
-  run: LeanRun;
-  posts: string[];
-  visited: string[];
-}): Promise<Outcome | undefined> {
-  const last = opts.run.steps.at(-1);
-  if (last === undefined) return undefined;
-  opts.visited.push("handback");
-  return await handbackOutcome(
-    {
-      repoRoot: opts.repoRoot,
-      issue: ISSUE,
-      run: opts.run,
-      steps: opts.run.steps,
-      stepKey: last.key,
-      now: () => NOW,
-    },
-    async (_r, _i, body) => void opts.posts.push(body),
-    (verified) =>
-      rewindToVerified(exec, { repoRoot: opts.repoRoot, issue: ISSUE, run: opts.run }, verified, {
-        net: true,
-      }),
-    () => Promise.resolve(originRef(opts.origin)),
-  );
-}
