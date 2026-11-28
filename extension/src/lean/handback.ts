@@ -40,17 +40,7 @@ function branchLine(branch: string): string[] {
  * full sets live in the step log. */
 const LIST_CAP = 20;
 
-/**
- * The newest DECIDED step of `state` whose outcome carries a reason.
- *
- * A run that was ROUTED into this step never had a `handback` entry when its cause was
- * asked — the routed visit is written after its handler returns — so `steps[0]` is the
- * step that ended the run: the newest decided step at all, or the newest decided WORK
- * step when the head rule found a head to name. Either way this step displaced it, so
- * its own reason is the run's cause; with neither, the newest work step's reason answers.
- * A cause carried on any other step is a step that already spoke for itself, and quoting
- * it here would name something the run walked past.
- */
+/** The newest DECIDED step of `state` whose outcome carries a reason. */
 function newestReason(steps: Step[], state: "verify" | "ci", kind: "red" | "green") {
   let found: string | undefined;
   for (let i = steps.length - 1; i >= 0; i--) {
@@ -125,8 +115,6 @@ export function neededFromLog(steps: Step[]): string {
     gapCause(steps) ??
     budgetCause(steps) ??
     exhaustedCause(steps) ??
-    // The step that ended the run: a review that threw, or a run the clock stopped, whose
-    // own reason line is what this comment exists to carry.
     endedBy(steps) ??
     newestReason(steps, "verify", "red") ??
     newestReason(steps, "ci", "red") ??
@@ -344,10 +332,7 @@ export async function handbackOutcome(
     // the line that says the head is unverified.
     const facts: Heads = heads.shippedHead
       ? { render: true, shippedHead: heads.shippedHead, shippedVerified: false }
-      : // The rule fired and named no head to move, so no rewind ran: the plain `NO_HEAD` stamp,
-        // as this step printed it before #2667; the errored arm's own cause line (`endedBy`) says
-        // why the review never completed.
-        headFacts(moved ?? NO_HEAD, originHead);
+      : headFacts(moved ?? NO_HEAD, originHead);
     const { render, ...record } = facts;
     body = handbackBody(ctx.issue, {
       needed: neededFromLog(ctx.steps),
