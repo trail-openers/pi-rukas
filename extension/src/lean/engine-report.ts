@@ -148,41 +148,6 @@ function reportReason(stoppedAt: LeanState, cause: string, outcome: Outcome): st
   return `${said} (${cause} at ${stoppedAt})`;
 }
 
-/**
- * The one error path that owes a report: a `review` whose handler threw (#2667). A review that
- * threw judged nothing, and where the run's newest decided `verify` certified a head, that head is
- * owed the reporting step the throw would otherwise skip — the rewind, the four head fields, and
- * the comment naming why review did not complete. `handbackHeads` over the log decides whether the
- * run is that shape, so an errored review over nothing green — and every other state's throw —
- * takes the caller's plain stamp. Returns the ended run, or `undefined` when nothing could be
- * reported: no reporting step built, a report that threw, or one that overran its own bound (on
- * overrun `req.boundFiredMs` carries the bound, which lets the caller say the report was LOST
- * rather than that there was none to lose). The caller supplies the two writers of the record,
- * because the runner owns the state file and this module does not.
- */
-export async function reportErroredReview(
-  run: LeanRun,
-  cause: string,
-  writers: Omit<
-    ReportRequest,
-    "run" | "cause" | "boundMs" | "boundFiredMs" | "handler" | "stoppedAt"
-  > & {
-    handler: HandbackHandler | undefined;
-  },
-): Promise<LeanRun | undefined> {
-  if (!handbackHeads(run.steps).applies) return undefined;
-  const { handler, ...rest } = writers;
-  if (handler === undefined) return undefined;
-  return await runHandbackReport({
-    ...rest,
-    stoppedAt: "review",
-    run,
-    cause,
-    handler,
-    boundMs: handoffReportBoundMs(),
-  });
-}
-
 /** What the runner gives the stop: the two writers of the record, and the report's pieces. */
 export interface BoundaryStop {
   /** Stamp `handed-back` with a reason and persist — the runner's `endRun` on that state. */
@@ -195,6 +160,8 @@ export interface BoundaryStop {
     handler: HandbackHandler | undefined;
     keyFor: (state: LeanState, n: number) => string;
     attach: ReportRequest["attach"];
+    /** The runner's terminal stamp: only the runner may write `result` and persist it. */
+    finish: ReportRequest["finish"];
   };
   run: LeanRun;
   /** The step the stop refused, named verbatim in the run's reason line. */
