@@ -7,7 +7,6 @@ import { leanSpecifyPreservesEnabled } from "./lean-specify-preserves-switch.ts"
  * `lean/specify-preserves.ts`; nothing here reads git or the tree — it reads the rows the child submitted
  * and what the step's own red proof already said about each file.
  */
-import { isPreservesValue } from "./submit-tests-preserves.ts";
 
 /** One submitted row, as far as this module cares: the criterion and its declaration. */
 export interface PreservesRowInput {
@@ -52,24 +51,4 @@ export function preservedFiles(files: readonly ProvedFile[]): string[] {
     if (!out.includes(f.path)) out.push(f.path);
   }
   return out;
-}
-
-/** The ids among `wanted` still owed a red file, once the preserved ones are excused. */
-export function uncoveredExcludingPreserved(
-  wanted: readonly string[],
-  covered: readonly string[],
-  preserved: readonly string[],
-): string[] {
-  const held = new Set(preserved);
-  return wanted.filter((id) => !covered.includes(id) && !held.has(id));
-}
-
-/** Is every criterion the spec asked for one this run preserved? Then there is nothing to build. */
-export function nothingToBuild(wanted: readonly string[], preserved: readonly string[]): boolean {
-  return wanted.length > 0 && wanted.every((id) => preserved.includes(id));
-}
-
-/** A declaration of the wrong type is a malformed call, counted with the skipped-call accounting. */
-export function preservesDeclarationMalformed(value: unknown): boolean {
-  return value !== undefined && !isPreservesValue(value);
 }

@@ -100,7 +100,6 @@ function blockedCause(steps: Step[]): string | undefined {
 /** The other reading of a test that passed on the base, which the gap's evidence cannot rule out. */
 const GAP_READING =
   "A test that passes on the base may also mean the criterion already holds there.";
-/** `specify`'s child left a criterion with no red test: rules, evidence, and the readings the record's words earn. */
 function gapCause(steps: Step[]): string | undefined {
   const oc = newestDecidedWorkStep(steps)?.outcome;
   if (oc?.kind !== RED_TEST_GAP) return undefined;

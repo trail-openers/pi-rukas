@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { leanSpecifyPreservesEnabled } from "../lean-specify-preserves-switch.ts";
+import { PRESERVES_SCHEMA_DESCRIPTION } from "../submit-tests-preserves.ts";
 
 /**
  * Where this file lives — the source directory of the extension — so `--extension` gets the real
@@ -32,8 +33,6 @@ export const SUBMIT_TESTS_REPORTER_PATH = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   "submit-tests-reporter.ts",
 );
-
-import { PRESERVES_SCHEMA_DESCRIPTION } from "../submit-tests-preserves.ts";
 
 interface SubmitTestsInput {
   criterionId: string;

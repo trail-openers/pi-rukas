@@ -19,7 +19,7 @@ export interface SubmitTestsRow {
   criterionId: string;
   testFiles: string[];
   note?: string;
-  /** The child's declaration that this criterion must KEEP working; off, or absent, is the pre-field row. */
+  /** Absent, never empty: a non-boolean is a malformed call and an empty list is refused at the record. */
   preserves?: boolean;
 }
 
