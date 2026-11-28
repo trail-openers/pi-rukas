@@ -202,15 +202,17 @@ preserved when submitting*.
 
 **Cause:** the child wrote a good red test for every other criterion and a green guard for that one, and
 did not declare it. A preservation criterion states behaviour the base already has, so its file cannot be
-red there; before the declaration existed that was simply the gap and the cycle ended.
+red there; before the declaration existed that was simply the gap and the cycle ended. A declared row whose
+file the step's red proof could not classify is still the gap: the proof's green verdict is the step's only
+evidence that the base already passes the file, and a verdict that observed nothing freezes nothing.
 
 **Fix:** re-run with a child that passes `preserves: true` on that criterion's `submit_tests` call (the
 specify prompt names the field, so a current child can state it itself). The declared file is frozen as a
 must-pass file and `verify` runs it at head, so it is a real check rather than a waived one. What the run
-still refuses: a criterion with no file, a file that cannot fail, and a spec whose every criterion is
-preserved. A preserved test that asserts nothing looks exactly like a genuine guard at specify - the
-mitigations are that it must stay green at head and that the ids are named in the handback comment and the
-PR body. `PI_ENSEMBLE_LEAN_SPECIFY_PRESERVES=0` restores the release where the field did not exist.
+still refuses: a criterion with no file, a file that cannot fail, a declared file the proof could not
+classify, and a spec whose every criterion is preserved. A preserved test that asserts nothing looks exactly
+like a genuine guard at specify - the mitigations are that it must stay green at head and that the ids of the
+files that really froze are named in the handback comment and the PR body. `PI_ENSEMBLE_LEAN_SPECIFY_PRESERVES=0` restores the release where the field did not exist.
 
 ### Symptom: a lean run hands back with `frozen tests cannot all pass together`
 
