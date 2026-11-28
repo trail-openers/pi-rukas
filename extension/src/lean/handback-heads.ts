@@ -12,36 +12,18 @@
  */
 import { isFullCommitSha } from "../commit-sha.ts";
 import {
-  incompleteHeadOn,
-  incompleteReviewHandback,
-  isVerifiedHeadName,
-} from "../lean-review-incomplete-head.ts";
+  NO_GATE_VERDICT,
+  type HandbackFindings,
+  erroredReviewFindings,
+  gateFindings,
+} from "../lean-handback-cause.ts";
 import { type LeanState, REPORT_STATES, type Step } from "./state.ts";
 
 /**
  * What the operator asks of a head that shipped unverified is why it never got certified. The only place
  * that answer is worded; `handback.ts` quotes the finding rather than re-wording it.
  */
-export const NO_GATE_VERDICT =
-  "no verify step of this run decided anything, so no head is verified";
-
-/**
- * True when this handback stands over bytes no gate of this run certified: a `fixed` review the gate has not
- * spoken for since (a gate visit ENTERED and never answered counts as not speaking), an errored review over a
- * head the gate certified — a review that threw judged nothing, so its head is owed the same reading — or a
- * draft publish whose own head no green covers. The errored arm's reading lives in
- * `../lean-review-incomplete-head.ts`.
- */
-export interface HandbackHeads {
-  applies: boolean;
-  /** The newest decided green `verify`'s head at or before the newest work step; none when absent. */
-  verifiedHead?: string;
-  /** Why nothing is shipped, in the record's own words, when there is no head to ship. */
-  reason?: string;
-  /** The draft-publish arm's own claim, set only for that arm: the head publish pushed, unverified. */
-  shippedHead?: string;
-  shippedVerified?: false;
-}
+export { NO_GATE_VERDICT } from "../lean-handback-cause.ts";
 
 /**
  * The newest step that was WORK and carried a verdict — an undecided write-ahead is not a verdict, it is the
@@ -82,30 +64,12 @@ function newestDecidedThrough(
   return undefined;
 }
 
-/** This file's finding for a gate verdict that named no head to ship. */
-function thisRule(green: Step): HandbackHeads {
-  if (green.outcome?.kind !== "green")
-    return {
-      applies: true,
-      reason: `the newest decided verify is ${String(green.outcome?.kind)}, not green, so no head is verified`,
-    };
-  const head = green.outcome.verifiedHead;
-  // A green that NAMED a commit is the head a handback ships — the base rule's own answer, and the only
-  // head either arm may name. A green that named none has nothing to ship and says so in this file's words.
-  return isVerifiedHeadName(head)
-    ? { applies: true, verifiedHead: head }
-    : {
-        applies: true,
-        reason: "the green verify recorded no head, so there is no verified head to ship",
-      };
-}
-
 /**
  * The head a handback of this log should ship, or the reason it cannot. A log whose newest work step is
  * neither a `fixed` review, an errored review over a certified head, nor a draft publish gets
  * `{applies: false}` with no reason.
  */
-export function handbackHeads(steps: Step[]): HandbackHeads {
+export function handbackHeads(steps: Step[]): HandbackFindings {
   const newest = newestDecidedWorkStep(steps);
   if (newest?.outcome === undefined) return { applies: false };
   // The draft-publish arm: `build + exhausted` published this head and no green of this run covers it, so
@@ -121,26 +85,16 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
     return { applies: true, shippedHead: head, shippedVerified: false };
   }
   const at = steps.indexOf(newest);
-  // #2667: the switch that admits an errored review at all lives outside this file; off, the kind is
-  // refused here exactly as it was before the knob existed.
-  const errored = newest.state === "review" && newest.outcome.kind === "error";
-  if (newest.state !== "review" || (newest.outcome.kind !== "fixed" && !errored))
-    return { applies: false };
-  if (errored && !incompleteHeadOn()) return { applies: false };
-  // One reading, asked of the gate's newest DECIDED verdict. A green that NAMED a commit is the certified
-  // arm and its head is what the report ships. A green that ANSWERED and named none applies with no head
-  // and no reason of its own: the report runs, writes no head field, prints no head line and asks for no
-  // rewind, and its NEEDING line is the run's own sentence. Everything the gate never certified — a verdict
-  // that was not green, or a gate the run never let decide — is silent, as it was before this knob existed:
-  // a run whose gate named no bytes shipped nothing this step could ship, so it keeps the plain stamp.
-  if (errored) return incompleteReviewHandback(newestDecidedThrough(steps, "verify", at));
+  if (newest.state !== "review") return { applies: false };
+  // The two review arms, each a call to the reader that words it (#2667): an errored review judged
+  // nothing, so over bytes its own gate named it is owed the same report a `fixed` review the gate has
+  // not spoken for is owed. The switch that admits an errored review at all is read by that reader.
+  if (newest.outcome.kind === "error")
+    return erroredReviewFindings(newestDecidedThrough(steps, "verify", at));
+  if (newest.outcome.kind !== "fixed") return { applies: false };
   const trailing = newestStateStepAfter(steps, "verify", at);
-  if (trailing !== undefined && trailing.outcome === undefined)
-    return {
-      applies: true,
-      reason: `the run entered the gate again at ${trailing.key} and never recorded what it decided, so no head is verified`,
-    };
-  const green = newestDecidedThrough(steps, "verify", at);
-  if (green === undefined) return { applies: true, reason: NO_GATE_VERDICT };
-  return thisRule(green);
+  return gateFindings(
+    newestDecidedThrough(steps, "verify", at),
+    trailing?.outcome === undefined ? trailing : undefined,
+  );
 }
