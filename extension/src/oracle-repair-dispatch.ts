@@ -221,6 +221,7 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
   const judged = await judgeRepairSubmission({
     exec: deps.exec,
     baseTree: deps.baseTree,
+    baseRef: o.baseSha,
     template,
     named: o.named,
     replacements: captured.bytes.map((c) => ({

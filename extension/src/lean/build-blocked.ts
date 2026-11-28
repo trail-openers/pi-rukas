@@ -203,6 +203,17 @@ function abandoned(run: { template: string; file: string }, budgetMs: number): P
   };
 }
 
+/** How many claimed paths a refused claim's trace line names before collapsing the rest into a count. */
+const CLAIMED_PATHS_SHOWN = 8;
+
+/** The stable prefix of the refused-claim line: what was claimed, so a cell that spent its one round on a
+ *  claim the driver did not honour is attributable to the paths that bought it. */
+export function blockedClaimKey(issue: number, paths: string[]): string {
+  const shown = paths.slice(0, CLAIMED_PATHS_SHOWN).join(", ");
+  const rest = paths.length - CLAIMED_PATHS_SHOWN;
+  return `lean build #${String(issue)}: blocked report ignored (claimed ${shown}${rest > 0 ? ` (+${String(rest)} more)` : ""})`;
+}
+
 /** The child's report judged end to end. `undefined` says "not honoured". */
 export async function judgeBlockedReport(opts: {
   exec: BuildExec;
@@ -233,7 +244,11 @@ export async function judgeBlockedReport(opts: {
     ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
   });
   if (!proved.honoured) {
-    traceWarn(`lean build #${String(opts.issue)}: blocked report ignored — ${proved.why}`);
+    // The refused claim still names what was claimed: a cell that spent its one round on a refused repair is
+    // only attributable if the ledger can see the claim that bought it.
+    traceWarn(
+      `${blockedClaimKey(opts.issue, paths)} — ${proved.why}`,
+    );
     return undefined;
   }
   // Only files the driver ACTUALLY RAN enter the record (`proved.ran` stops at the red), sanitised here

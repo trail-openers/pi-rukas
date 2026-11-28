@@ -23,6 +23,7 @@ import type { BuildExec } from "./lean/build-types.ts";
  * Lives outside `src/lean/` for the line budget and for the same reason as `lean-step-bound.ts` — it is a
  * judgement over a checkout, not engine state, and it never imports the machine.
  */
+import { blobAt } from "./lean/build-git.ts";
 import { runTestFile, sha256 } from "./lean/specify-proof.ts";
 import { writeCaptured } from "./lean/specify-reset.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
@@ -76,6 +77,8 @@ export async function judgeRepairSubmission(opts: {
   /** A real checkout of the run's `baseSha` the caller created and will remove. */
   baseTree: string;
   template: string;
+  /** The commit `baseTree` checks out — the run's `baseSha`, which is also where the ORIGINAL bytes come from. */
+  baseRef: string;
   named: readonly string[];
   replacements: ReplacementInput[];
   /** Shortened by a test to watch a hung base run refuse rather than hang. */
@@ -108,7 +111,7 @@ export class RepairJudgeError extends Error {
 
 /** One file, or `undefined` when it is refused — `lastRefusal` then carries why. */
 async function judgeOne(
-  opts: { exec: BuildExec; baseTree: string; template: string; timeoutMs?: number },
+  opts: { exec: BuildExec; baseTree: string; baseRef: string; template: string; timeoutMs?: number },
   r: ReplacementInput,
 ): Promise<AcceptedReplacement | undefined> {
   const refuse = (why: string): undefined => {
@@ -140,7 +143,7 @@ async function judgeOne(
   // toolchain. It throws, and the run hands back naming the cause — the same direction the release's own
   // blocked gate takes for a file it could not classify.
   if (proof.kind !== "red") throw new RepairJudgeError(`the base run observed nothing (${proof.detail})`);
-  if (!caseIsNew(r.bytes, proof.output))
+  if (!(await provesNewRed(r, opts, proof.output)))
     return refuse("the replacement's failing case is one the frozen file already had");
   return {
     path: r.path,
@@ -158,10 +161,36 @@ async function judgeOne(
  * comparison that separates a corrected oracle from a resubmitted one, so the comparison is made line by line
  * against the original's own bytes.
  */
-export function caseIsNew(original: Buffer, output: string | undefined): boolean {
+/**
+ * Did the runner's red name a case that exists only in the replacement?
+ *
+ * Two ways a submission can steal the round, both invisible to a byte-identity check. It can keep the
+ * original's failing assertion and bolt a passing case on, so the red on the bench is the contract's own red
+ * and nothing new was proved. Or it can delete a case the original printed — those bytes differ, and the
+ * remaining red may name a line the original never printed, so the "new case" the judge accepted was bought
+ * by dropping something the oracle required. So the red must be absent from the ORIGINAL **and** every line
+ * the original printed must survive in the replacement.
+ *
+ * The original's bytes are the contract's, and read off disk they may be another submission's: a replacement
+ * is laid into the base checkout before it runs, so the comparison reads the committed blob and checks its
+ * hash against the record before trusting either.
+ */
+async function provesNewRed(
+  r: ReplacementInput,
+  opts: { exec: BuildExec; baseTree: string; baseRef: string },
+  output: string | undefined,
+): Promise<boolean> {
   if (output === undefined || output.trim() === "") return false;
-  const before = new Set(linesOf(original.toString("utf8")));
-  return linesOf(output).some((l) => !before.has(l));
+  const bytes = await blobAt(opts.exec, opts.baseTree, opts.baseRef, r.path);
+  if (bytes === undefined || sha256(bytes) !== r.frozenHash)
+    throw new RepairJudgeError(
+      `the base checkout's copy of ${r.path} is not the frozen file the run holds`,
+    );
+  const before = linesOf(bytes.toString("utf8"));
+  const after = new Set(linesOf(r.bytes.toString("utf8")));
+  if (before.some((l) => !after.has(l))) return false;
+  const seen = new Set(before);
+  return linesOf(output).some((l) => !seen.has(l));
 }
 
 /** A runner output's comparable lines: trimmed, non-empty. */
@@ -171,3 +200,4 @@ function linesOf(s: string): string[] {
     .map((l) => l.trim())
     .filter((l) => l !== "");
 }
+
