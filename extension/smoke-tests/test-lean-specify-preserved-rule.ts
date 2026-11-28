@@ -19,22 +19,17 @@
  *       (non-zero, output naming neither the path nor its basename), and nothing else standing between
  *       that file and the freeze rule. Nothing freezes, the criterion keeps its gap, the file is gone.
  *   (d) the same through the loop's keep/delete decision, where a real red proves the delete ran.
- *   (e) the disclosure bounds: `PRESERVED_CAP` and its `(+N more)` clause, and the record's
- *       `RECORD_MAX_ENTRIES` bound.
+ *   (e) the disclosure bounds live in `test-lean-specify-preserved-disclosure.ts`, beside the clause's
+ *       other renderings.
  *
  * Only the model is faked in (c) and (d): the repo, the runner, the proof and the commit are production
- * code. (a), (b) and (e) are pure and call the same functions the step imports.
+ * code. (a) and (b) are pure and call the same functions the step imports.
  */
 
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { neededFromLog } from "../src/lean/handback.ts";
-import { outcomeProblem } from "../src/lean/state-outcome.ts";
-import type { Step } from "../src/lean/state.ts";
 import { proofRule, preservedCoverage } from "../src/lean-preserved-coverage.ts";
 import { type ProvedFile, mustPassFiles } from "../src/lean-preserved-step.ts";
-import { preservedClause } from "../src/preserved-disclose.ts";
-import { RECORD_MAX_ENTRIES } from "../src/lean/state-outcome-maps.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
@@ -89,6 +84,7 @@ const pf = (
 
 const eq = (got: readonly string[], want: readonly string[]): boolean =>
   JSON.stringify(got) === JSON.stringify(want);
+
 
 // ── (a) mustPassFiles, the rule's own arms, one file each
 {
@@ -418,63 +414,5 @@ const eq = (got: readonly string[], want: readonly string[]): boolean =>
   );
 }
 
-// ── (e) the disclosure and record bounds
-{
-  const nine = Array.from({ length: 9 }, (_, i) => `AC${String(i + 1)}`);
-  const clause = preservedClause(nine, { AC1: ["tests/AC1-guard.test.sh"] });
-  check(
-    "(e) the clause counts all nine and names eight",
-    clause.startsWith("preserved 9: AC1, AC2, AC3, AC4, AC5, AC6, AC7, AC8 (+1 more)"),
-    clause,
-  );
-  check(
-    "(e) and does not print the ninth id",
-    !/(^|[,(] )AC9(,|$)/.test(clause),
-    clause,
-  );
-  const eight = preservedClause(nine.slice(0, 8));
-  check(
-    "(e) exactly at the cap there is no (+N more) clause",
-    !eight.includes("more") && eight.includes("AC8"),
-    eight,
-  );
-  check(
-    "(e) and a run with nothing to disclose says nothing",
-    preservedClause([]) === "" && preservedClause(undefined) === "",
-  );
-  const at = Array.from({ length: RECORD_MAX_ENTRIES }, (_, i) => `AC${String(i + 1)}`);
-  const over = [...at, "AC99"];
-  check(
-    "(e) the record accepts a list at the bound",
-    outcomeProblem({ kind: "ok", preserved: at }, "specify") === undefined,
-    String(outcomeProblem({ kind: "ok", preserved: at }, "specify")),
-  );
-  check(
-    "(e) and refuses one past it",
-    outcomeProblem({ kind: "ok", preserved: over }, "specify") ===
-      `outcome preserved must hold at most ${String(RECORD_MAX_ENTRIES)} criteria`,
-    String(outcomeProblem({ kind: "ok", preserved: over }, "specify")),
-  );
-  // The handback renders the clause it was given, so the bound a reader sees is the record's.
-  const step = {
-    state: "specify",
-    key: "2713:specify:0",
-    outcome: {
-      kind: "red-test-gap",
-      reason: "every test criterion is preserved",
-      preserved: nine,
-      tests: { AC1: ["tests/AC1-guard.test.sh"] },
-    },
-  } as unknown as Step;
-  let text = "";
-  await on(async () => {
-    text = neededFromLog([step]);
-  });
-  check(
-    "(e) the handback comment names eight ids and counts nine",
-    text.includes("preserved 9:") && text.includes("(+1 more)"),
-    text,
-  );
-}
 
 process.exit(failures());
