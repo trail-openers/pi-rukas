@@ -112,7 +112,9 @@ export function foldLog(
       // the head rule holding that an errored review over a certified head owes that report, and
       // only on the side of the knob the routing runs on. `reportRouteFor` (over the log up to the
       // throw) and the head rule are the judges, consulted rather than approximated.
-      const routed = routedThrowEntry(log, i);
+      const routed =
+        routedThrowEntry(log, i) ||
+        (i === log.length - 2 && reportEntryOfThrow(log, s.outcome.kind));
       if (i !== log.length - 1 && !routed)
         at(`step ${s.key} + ${JSON.stringify(s.outcome.kind)} has no arrow and is not last`);
       // A routed throw is a run still OWING its report (a crash between the runner's two saves):
@@ -132,6 +134,22 @@ export function foldLog(
     pos = next({ ...run, state: pos.state, counters: pos.counters }, s.outcome);
   }
   return { pos, before, decided: log.length > 0 && log[log.length - 1]?.outcome !== undefined };
+}
+
+/**
+ * Is this log the record a routed throw LEFT — the throw's entry, then its report's own verdict,
+ * with the run already stamped? The crash shape (`routedThrowEntry`) has the report's write-ahead;
+ * this is the FINISHED record. Both must fold, or a handed-back issue could never be opened again.
+ */
+function reportEntryOfThrow(log: Step[], kind: string): boolean {
+  if (kind !== "error") return false;
+  const last = log[log.length - 1] as Step | undefined;
+  return (
+    last?.state === "handback" &&
+    last.outcome !== undefined &&
+    log.filter((r) => r.state === "handback").length === 1 &&
+    isReportRoute(log)
+  );
 }
 
 /**
