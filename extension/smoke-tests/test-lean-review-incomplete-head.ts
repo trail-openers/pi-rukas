@@ -18,6 +18,7 @@
  */
 
 import { reviewCompleteOf } from "../src/headless/work-lean-pr.ts";
+import { NO_GATE_VERDICT, handbackHeads } from "../src/lean/handback-heads.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import {
   CAUSES,
@@ -25,6 +26,7 @@ import {
   type PanelRun,
   type ReviewCause,
 } from "./lib/lean-review-incomplete-head-panel.ts";
+import { ISSUE } from "./lib/lean-review-incomplete-head-consts.ts";
 
 const { assert, failures } = makeAssert();
 
@@ -231,6 +233,68 @@ function checkHeadFacts(cause: ReviewCause, row: PanelRun): void {
   assert(
     undecided.handback?.shippedHead === undefined,
     "a gate that decided nothing leaves no head for the report to name",
+  );
+}
+
+// The rule's own two "no verified head" findings, asked over a walk whose gate left nothing to ship.
+// A walk the machine turned back at the gate never reaches the step, so the rule is asked where the
+// walk's newest decided gate answer stands and the newest decided WORK step is a review: a green that
+// named no commit gets this file's finding, and a gate the run never let decide gets NO_GATE_VERDICT.
+// Neither wording is #2667's, and neither may earn a head field. Dropping the green condition from the
+// errored arm is what the first row here is for: with it gone the certified arm answers for the green
+// that named none, and the finding is never produced.
+{
+  const headless = (await driveRow("budgetStop", { verifyKind: "headless" })).steps;
+  assert(
+    reviewFinding(headless).includes("the green verify recorded no head"),
+    `a green that named no commit: the rule says so in its own words (${JSON.stringify(reviewFinding(headless))})`,
+  );
+  const undecided = (await driveRow("budgetStop", { verifyKind: "undecided" })).steps;
+  assert(
+    reviewFinding(undecided).includes(NO_GATE_VERDICT) ||
+      // The row's own gate answered before the walk was stopped inside the last re-verification, so the
+      // newest decided verdict the rule can read is the walk's own red: that finding, in the base rule's
+      // words, is the same claim — nothing of this run certified the bytes it stands on.
+      reviewFinding(undecided).includes("not green, so no head is verified"),
+    `a gate that decided nothing: the rule says nothing of this run certified a head (${JSON.stringify(reviewFinding(undecided))})`,
+  );
+
+  // The negative control, on the SAME shape with the switch off: the run ends exactly as the base
+  // ended it, a bare engine error with no reporting step and no comment. Drop the switch gate from
+  // the route and this is the row that goes red — the off arm would post a report the release before
+  // this knob never posted. `test-lean-review-incomplete-head-off-arm.ts` pins the same byte identity
+  // against the base commit's capture for the certified shape.
+  process.env.PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_HEAD = "0";
+  const off = await driveRow("budgetStop", { verifyKind: "headless" });
+  delete process.env.PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_HEAD;
+  assert(
+    off.review?.kind === "error" &&
+      !off.visited.includes("handback") &&
+      off.posts.length === 0 &&
+      off.handback === undefined &&
+      off.code === 10 &&
+      off.state === "handed-back" &&
+      off.reason.startsWith("handler error at review:"),
+    `the switch off, a green that named no head: the run is the base's bare engine error, with no handback comment (${JSON.stringify([off.visited.join(","), off.posts.length, off.code, off.reason.slice(0, 60)])})`,
+  );
+}
+
+/**
+ * The rule's finding over a walk's own log with the reporting entry dropped and the review step's own
+ * standing made the newest decided WORK step (its key kept, so the fold still reads it). The only record
+ * the row supplies is the review's own kind: the walk's verdicts, heads and keys are all its own bytes.
+ */
+function reviewFinding(steps: Step[]): string {
+  return (
+    handbackHeads([
+      ...steps.filter((s) => s.state !== "handback" && s.state !== "decline"),
+      {
+        key: `${String(ISSUE)}:review:0`,
+        state: "review",
+        startedAt: 1,
+        outcome: { kind: "fixed", reason: "one fix wave" },
+      },
+    ] as Step[]).reason ?? ""
   );
 }
 

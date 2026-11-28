@@ -175,16 +175,21 @@ assert(
  * only way to ask this question of a walk the machine turned back at the gate.
  */
 function handbackHeadsRedFinding(steps: Step[]): string {
-  const review = steps[steps.findIndex((s) => s.state === "publish") + 1] ?? {
-    key: `${String(ISSUE)}:review:0`,
-    state: "review",
-    startedAt: 1,
-  };
-  const log = [
-    ...steps,
-    { ...review, state: "review", outcome: { kind: "error", message: "the review did not finish" } },
-  ];
-  return handbackHeads(log as Step[]).reason ?? "";
+  // The base rule's own finding for a refused gate, asked of the rule where the run's newest decided
+  // WORK step is a `fixed` review and the walk's own gate answered red: a red verdict is one the run
+  // already paid for, and the rule must name it rather than fall back to some older green. Every
+  // verdict here is the walk's own; the only record the row supplies is the review's own kind, which is
+  // the standing an errored review leaves and the shape the machine could not route on a refused gate.
+  const gate = [...steps].reverse().find((s) => s.state === "verify" && s.outcome !== undefined);
+  return handbackHeads([
+    ...steps.filter((s) => s.state !== "handback"),
+    {
+      key: `${String(ISSUE)}:review:0`,
+      state: "review",
+      startedAt: 1,
+      outcome: { kind: "fixed", reason: "one fix wave" },
+    },
+  ] as Step[]).reason ?? `"" (the walk's newest decided gate answer was ${String(gate?.outcome?.kind)})`;
 }
 
 function count(steps: { state: string }[]): Record<string, number> {
