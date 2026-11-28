@@ -51,17 +51,24 @@ export const PANEL_CRITERIA = [
 ];
 
 /** The issue body: five `verify: "test"` criteria, the contract the step freezes against. */
-export const PANEL_BODY = `\`\`\`pi-spec v1
+export const PANEL_BODY = specBodyWith(PANEL_CRITERIA);
+
+/** A spec body over any criteria, so a case can add a criterion of its own without a second capture. */
+export function specBodyWith(
+  criteria: readonly { id: string; text: string; verify: "test" | "manual" }[],
+): string {
+  return `\`\`\`pi-spec v1
 ${JSON.stringify(
   {
     problem: "The retry helper gives up on the first transient failure.",
     size: "S",
-    criteria: PANEL_CRITERIA,
+    criteria,
   },
   null,
   2,
 )}
 \`\`\``;
+}
 
 /** A file that fails on the base and names itself — what the red proof counts as red. */
 export function redFile(): string {

@@ -78,11 +78,15 @@ function committedFiles(r: Awaited<ReturnType<typeof runPanel>>): string[] {
     .filter((l) => l.startsWith("tests/"));
 }
 
+// `PANEL_IDS` is a list of STRINGS, so this maps ids, not objects: an earlier shape read `row.id` off the
+// string and gave every row an undefined criterion, which made all five calls malformed at the extractor.
+// The run then proved nothing and the freeze rule never ran, which is how three mutants of that rule
+// survived the suite while this case reported green.
 const rowsWith = (id: string, script: string, preservedId?: string): PanelRow[] =>
   PANEL_IDS.map((row) => ({
-    id: row.id,
-    script: row.id === id ? script : redFile(),
-    ...(row.id === preservedId ? { preserves: true } : {}),
+    id: row,
+    script: row === id ? script : redFile(),
+    ...(row === preservedId ? { preserves: true } : {}),
   }));
 
 // (a) an `unclear` verdict on a declared-preserved row is a drop, not a freeze.
@@ -113,10 +117,16 @@ const rowsWith = (id: string, script: string, preservedId?: string): PanelRow[] 
     r.outcome?.preserved === undefined,
     JSON.stringify(r.outcome?.preserved),
   );
+  // The keep rule DROPS a declared non-red (silent, left in the tree for the commit's own cleanliness
+  // check to reject) rather than refusing it with a note and deleting it: the asymmetry is what a mutant
+  // that froze the file would lose, and the new case is
+  // `test-lean-specify-preserved-rule.ts` (c)/(d), which drives the state where the rule alone decides.
   check(
-    "(a) the unclear file is gone from the worktree",
-    !existsSync(`${r.worktree}/${testRel(GREEN)}`),
-    `${r.worktree}/${testRel(GREEN)} still there`,
+    "(a) the unclear file the rule dropped was neither frozen nor disclosed, and stayed in the tree",
+    existsSync(`${r.worktree}/${testRel(GREEN)}`) &&
+      Object.keys(r.outcome?.frozen ?? {}).length === 0 &&
+      r.outcome?.preserved === undefined,
+    `${r.worktree}/${testRel(GREEN)}`,
   );
 }
 

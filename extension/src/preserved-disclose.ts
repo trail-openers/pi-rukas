@@ -75,9 +75,12 @@ export function gapCauseLines(
   const rules = oc.failedRules ?? [];
   const reason = oc.reason ?? "";
   const lead = [...rules.filter((r) => !reason.includes(r)), reason];
+  // The second reading belongs to the GAP and prints on either arm; the HINT is an instruction to use the
+  // `preserves` field, and with the switch off that field is neither offered nor read, so telling an
+  // operator to use it would send them to a control the release does not have.
   const second =
     reason.includes("exited 0 on base") || (preservedIds(oc.preserved).length ?? 0) > 0
-      ? [GAP_READING, PRESERVES_HINT]
+      ? [GAP_READING, ...(leanSpecifyPreservesEnabled() ? [PRESERVES_HINT] : [])]
       : [];
   const kept = preservedClause(oc.preserved, oc.tests);
   return [...lead, ...second, kept].filter((s) => s !== "").join("\n");
