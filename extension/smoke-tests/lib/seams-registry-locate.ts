@@ -269,4 +269,45 @@ export const SEAMS_CONTINUATION: import("./seams-registry.ts").Seam[] = [
       importsSeam: /from "\.\.\/lean-step-bound\.ts"/.test(source.text),
     }),
   },
+  {
+    // #2668 — whether a blocked verdict earns the run's one repair round, read off the RUN (the switch
+    // stamped at creation, the spent counter) so a resume cannot answer differently. Its one
+    // production caller is `src/lean/machine.ts` importing `../oracle-repair-due.ts`, invisible to
+    // the flat top-level scan, and its smoke-test importers make it look test-only.
+    file: "oracle-repair-due.ts",
+    pending: {},
+    canary: {
+      symbol: "repairRoundDue",
+      importer: "lean/machine.ts",
+    },
+    locate: (source: { name: string; text: string }) => ({
+      // The transition table is the one file that asks. Type-only importers answer false, so an
+      // `import type` cannot satisfy the reachability claim.
+      production: source.name === "lean/machine.ts",
+      importsSeam: /from "\.\.\/oracle-repair-due\.ts"/.test(source.text),
+    }),
+  },
+  {
+    // #2668 — the switch that lets a run spend its one repair round, read once at run creation and
+    // stamped onto the run so nothing later re-reads the environment. Top level beside its sibling
+    // switches; its one production caller is `src/lean/command.ts` importing
+    // `../lean-oracle-repair-switch.ts`, invisible to the flat top-level scan.
+    file: "lean-oracle-repair-switch.ts",
+    pending: {},
+    testOnly: {
+      // The switch's ONE production reader is the command that stamps the run; the off/on arms and
+      // the default are pinned directly, which is why the export is also on this list.
+      leanOracleRepairEnabled:
+        "the switch's reader; test-lean-build-blocked-repair.ts pins the off/on arms and test-headless-inputs.ts pins its default",
+    },
+    canary: {
+      symbol: "leanOracleRepairEnabled",
+      importer: "lean/command.ts",
+    },
+    locate: (source: { name: string; text: string }) => ({
+      // The command that stamps the run's switch field — the only file that reads it as a value.
+      production: source.name === "lean/command.ts",
+      importsSeam: /from "\.\.\/lean-oracle-repair-switch\.ts"/.test(source.text),
+    }),
+  },
 ];
