@@ -41,6 +41,7 @@ import {
   ROSTER_DAMAGE,
   greenFile,
   panelRows,
+  redFile,
   runPanel,
   testRel,
 } from "./lib/lean-specify-preservation-fixture.ts";
@@ -109,21 +110,7 @@ await arm("false", async () =>
 }
 
 // (b) the panel shape COMPLETES: four red files, one declared-preserved green file.
-const freshRows = (preservedId?: string) =>
-  PANEL_IDS.map((id) => ({
-    id,
-    script: id === GREEN ? greenFile() : redFileFixture(),
-    ...(id === preservedId ? { preserves: true } : {}),
-  }));
-const freshRowsWith = (preservedId?: string, patch?: () => unknown) =>
-  freshRows(preservedId).map((r) =>
-    r.id === GREEN && patch !== undefined ? { ...r, ...patch() } : r,
-  );
-
-function redFileFixture() {
-  return ["#!/bin/sh", 'echo "not ok - $(basename "$0")" 1>&2', "exit 1", ""].join("\n");
-}
-const panel = await arm(undefined, () => runPanel({ issue: 2668, rows: freshRows(GREEN) }));
+const panel = await arm(undefined, () => runPanel({ issue: 2668, rows: panelRows(GREEN, GREEN) }));
 check("(b) the step froze instead of refusing", panel.threw === undefined, said(panel));
 check(
   "(b) the record kind is the ordinary freeze",
@@ -165,7 +152,7 @@ const declaredButRefused = await arm(undefined, () =>
   // names only what the step froze, so no disclosure can claim a freeze the step did not make.
   runPanel({
     issue: 2677,
-    rows: freshRows(GREEN).map((r) => (r.id === GREEN ? { ...r, id: "AC9" } : r)),
+    rows: panelRows(GREEN, GREEN).map((r) => (r.id === GREEN ? { ...r, id: "AC9" } : r)),
   }),
 );
 check(
@@ -296,9 +283,9 @@ const breaker = (names: string): string =>
 /** Four ordinary reds, plus the criterion carrying both a naming red that breaks the gate and a green. */
 const rowsBreakingGate = (preservedId?: string) =>
   PANEL_IDS.filter((id) => id !== GREEN)
-    .map((id) => ({ id, script: redFileFixture() }))
+    .map((id) => ({ id, script: redFile() }))
     .concat([
-      { id: GREEN, script: redFileFixture() },
+      { id: GREEN, script: redFile() },
       {
         id: GREEN,
         script: breaker(`not ok - ${GREEN}-guard.test.sh`),
@@ -366,9 +353,9 @@ const smuggled = await arm(undefined, () =>
   runPanel({
     issue: 2678,
     rows: PANEL_IDS.filter((id) => id !== GREEN)
-      .map((id) => ({ id, script: redFileFixture() }))
+      .map((id) => ({ id, script: redFile() }))
       .concat([
-        { id: GREEN, script: redFileFixture(), preserves: true },
+        { id: GREEN, script: redFile(), preserves: true },
         {
           id: GREEN,
           script: greenFile(),
@@ -395,7 +382,7 @@ check(
 const fixture = readPreservesFixture();
 const PANEL_PANEL_ROWS = PANEL_IDS.map((id) => ({
   id,
-  script: id === GREEN ? greenFile() : redFileFixture(),
+  script: id === GREEN ? greenFile() : redFile(),
   ...(id === GREEN ? { preserves: true } : {}),
 }));
 const offPanel = await arm("0", () => capturePreservesPanelArm(2674, PANEL_PANEL_ROWS));
@@ -421,7 +408,9 @@ check(
   `${maskPreservesText(offSchema).length} vs ${fixture.schema.length} chars`,
 );
 const onPrompts: string[] = [];
-await arm(undefined, () => runPanel({ issue: 2675, rows: freshRows(GREEN), prompts: onPrompts }));
+await arm(undefined, () =>
+  runPanel({ issue: 2675, rows: panelRows(GREEN, GREEN), prompts: onPrompts }),
+);
 check(
   "(i) the on prompt carries the declaration clause",
   (onPrompts[0] ?? "").includes("preserves: true"),

@@ -1,5 +1,3 @@
-import { type DropLabel, dropNote } from "./lean-preserved-notes.ts";
-import { type ProvedFile, mustPassFiles } from "./lean-preserved-step.ts";
 /**
  * lean-preserved-coverage — what the `specify` step must freeze once a run declared criteria preserved.
  *
@@ -12,6 +10,9 @@ import { type ProvedFile, mustPassFiles } from "./lean-preserved-step.ts";
  * Every entry is PURE — the engine keeps the loop, the runner call and the deletes, and asks this file
  * only for verdicts, so a caller cannot accidentally skip the side effect a step owes.
  */
+
+import { type DropLabel, dropNote } from "./lean-preserved-notes.ts";
+import { type ProvedFile, mustPassFiles } from "./lean-preserved-step.ts";
 import type { DeclaredPath } from "./lean/specify-tree.ts";
 import { preservedReasonClause } from "./specify-preserves.ts";
 

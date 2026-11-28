@@ -43,11 +43,6 @@ export function readPreservesArgument(args: Record<string, unknown>): {
   return { preserves: value };
 }
 
-/** Does this kept row declare its criterion as one that must keep holding? */
-export function rowPreserves(row: { preserves?: boolean }): boolean {
-  return leanSpecifyPreservesEnabled() && row.preserves === true;
-}
-
 /** The schema text for the declaration, so the reporter's field and this reader never drift apart. */
 export const PRESERVES_SCHEMA_DESCRIPTION =
   "True when this criterion states behaviour that must KEEP working, so its test passes on the base by design. The file is then frozen and must pass at head. Omit or false for an ordinary red test.";

@@ -34,11 +34,3 @@ export function keptCapRows(
 export function rowDeclaredPreserves(row: { preserves?: boolean }): boolean {
   return row.preserves === true;
 }
-
-/** The `isPreserved` probe the step asks per criterion, built once from the kept rows. */
-export function declaredPreserved(
-  rows: readonly { criterionId: string; preserves?: boolean }[],
-): (criterionId: string) => boolean {
-  const declared = new Map(rows.map((row) => [row.criterionId, rowDeclaredPreserves(row)]));
-  return (criterionId: string): boolean => declared.get(criterionId) === true;
-}

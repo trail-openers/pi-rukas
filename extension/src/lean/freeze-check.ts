@@ -1,4 +1,3 @@
-import type { DropLabel } from "../lean-preserved-notes.ts";
 /**
  * lean/freeze-check — a candidate acceptance test run against the project's own cheap content checks, BEFORE
  * it becomes frozen.
@@ -21,6 +20,8 @@ import type { DropLabel } from "../lean-preserved-notes.ts";
  * Attribution runs the same command at the base with no candidates in place: the only "the gate was fine and
  * your files were not" the step will assert.
  */
+
+import type { DropLabel } from "../lean-preserved-notes.ts";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { neverStarted, wasKilled } from "./specify-proof.ts";
 import type { VerifyExec } from "./verify-types.ts";

@@ -89,7 +89,6 @@ export function panelRepo(): { repoRoot: string; baseSha: string } {
   return makeRepo(files);
 }
 
-/** One row of the child's submission: the criterion, its file, and whether it declared itself preserved. */
 /** One row of a panel submission; also the shape the off-arm capture drives. */
 export interface PanelRow {
   id: string;
@@ -124,7 +123,6 @@ export async function runPanel(opts: PanelOpts): Promise<RunResult & { outcome?:
       ...(row.preserves === undefined ? {} : { preserves: row.preserves }),
     },
   }));
-  if (!Array.isArray(opts.rows)) throw new Error("runPanel: rows is not an array");
   const r = await runSpecify({
     repoRoot,
     baseSha,

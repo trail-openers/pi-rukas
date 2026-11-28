@@ -179,19 +179,6 @@ export function maskPreserves(record: PreservesOffRecord): PreservesOffRecord {
 export const PANEL_BODY = FIVE_BODY;
 export const PANEL_REL = REL;
 
-/**
- * The OFF arm's two texts, produced by the production path under the switch's off setting.
- *
- * The caller sets PI_ENSEMBLE_LEAN_SPECIFY_PRESERVES=0 and compares what comes back with the fixture's
- * `prompt` and `schema` fields — the pre-change tree's own bytes, captured once from the base commit by
- * the script beside the fixture. The step's own record is compared by the test through the shared panel
- * fixture, which drives the same production path the capture script drove.
- */
-export async function capturePreservesOff(): Promise<{ prompt: string; schema: string }> {
-  const arm = await capturePreservesPanelArm(issue, captureRows());
-  return { prompt: arm.prompt, schema: submitTestsSchemaText() };
-}
-
 /** The committed fixture, parsed — the pre-change tree's own answer. */
 export function readPreservesFixture(): PreservesOffRecord {
   const file = path.join(import.meta.dir, "..", PRESERVES_FIXTURE);
