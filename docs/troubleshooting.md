@@ -193,6 +193,29 @@ criterion needs restating; otherwise remove the finished run's `.pi/lean-state/<
 finished record answers a second run with its stamped result) and re-run.
 `PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK=0` restores the exit-11 decline for a host that keys on it.
 
+### Symptom: a lean run hands back with `frozen tests cannot all pass together`
+
+**Symptom:** a `build` handback names `frozen tests cannot all pass together: <path> — <reason>`, and its
+step record carries `blockedBy` with that path and `blockedEvidence` holding the command the driver ran and
+what the runner printed.
+
+**Cause:** the builder claimed a frozen acceptance test contradicts the contract, and the driver re-ran the
+named file on the builder's tree and watched it come back red. That is a proven claim, not the child's word:
+the run spends its ONE repair round on it (`PI_ENSEMBLE_LEAN_ORACLE_REPAIR`), handing the named file back to
+the adversary that wrote it in a tree reset to the commit the red was judged at, blind to the builder's diff
+and prose. What comes back is judged mechanically — a named file only, never the frozen bytes, and RED under
+the project's own runner in a real checkout of the run's base on a case the original never printed — so a
+replacement that merely drops the failing assertion is refused.
+
+**Fix:** read which of the two happened. `the repair round was refused: …` names the judge's reason and means
+the oracle still stands; re-run the issue and, if the same refusal repeats, restate the criterion, because a
+replacement nobody could make red at base is usually a criterion the base already satisfies. A run that was
+repaired and still cannot meet the contract hands back as a draft with the repaired file and whether it passes
+at head — that needs implementation work, not an oracle fix. `PI_ENSEMBLE_LEAN_ORACLE_REPAIR=0` takes the
+round out entirely and restores the immediate handback. Source: `extension/src/lean/repair.ts` (the step),
+`extension/src/oracle-repair-judge.ts` (the gate), and
+`extension/smoke-tests/test-lean-build-blocked-repair.ts` with `test-lean-oracle-repair-base-tree.ts` (the pins).
+
 ### Symptom: a lean step says `the child never submitted a test` although its files are in the tree
 
 **Symptom:** a `specify` (or `challenge`) handback names `the child never submitted a test`, yet the
