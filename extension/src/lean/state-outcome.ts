@@ -12,7 +12,7 @@
  */
 import { isFullCommitSha } from "../commit-sha.ts";
 import { repairOutcomeProblem, validatedRepairFields } from "../oracle-repair-fields.ts";
-import { preservedListProblem, validatedPreservedList } from "../preserved-record.ts";
+import { preservedOutcomeField, preservedOutcomeProblem } from "../preserved-record.ts";
 import { HANDOFF_CHANNELS } from "../work-driver-handoff-channel.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
 import { canonicalDerivedSpec } from "./state-derived-spec.ts";
@@ -168,7 +168,7 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",
-  // No other step may carry the list; the rules are `preserved-record.ts`.
+  // Rules: `preserved-record.ts`. No other step may carry it.
   preserved: "specify",
   // The build step's own account of which frozen tests it proved cannot all pass together;
   // `handback` prints it as the run's cause.
@@ -348,15 +348,12 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     const problem = blockedByProblem(oc.blockedBy);
     if (problem !== undefined) return problem;
   }
-  if (oc.preserved !== undefined) {
-    const problem = preservedListProblem(oc.preserved);
-    if (problem !== undefined) return problem;
-  }
   if (oc.headBefore !== undefined && !SHA1_HEX.test(String(oc.headBefore)))
     return "outcome headBefore must be a full commit sha";
-  // The repair round's fields: rules in `oracle-repair-fields.ts`.
   const repairProblem = repairOutcomeProblem(oc);
   if (repairProblem !== undefined) return repairProblem;
+  const preservedProblem = preservedOutcomeProblem(oc);
+  if (preservedProblem !== undefined) return preservedProblem;
   if (oc.preexistingFailures !== undefined) {
     const problem = preexistingFailuresProblem(oc.preexistingFailures);
     if (problem !== undefined) return problem;
@@ -452,7 +449,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       ? {}
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(oc.blockedBy === undefined ? {} : { blockedBy: validatedBlockedBy(oc.blockedBy) }),
-    ...(oc.preserved === undefined ? {} : { preserved: validatedPreservedList(oc.preserved) }),
+    ...preservedOutcomeField(oc),
     ...(typeof oc.headBefore === "string" && isFullCommitSha(oc.headBefore)
       ? { headBefore: oc.headBefore }
       : {}),

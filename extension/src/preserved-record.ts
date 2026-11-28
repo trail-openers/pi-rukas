@@ -33,3 +33,13 @@ export function validatedPreservedList(value: unknown): string[] {
   }
   return out;
 }
+
+/** The record's problem for a `preserved` field, or undefined when the field is absent or well formed. */
+export function preservedOutcomeProblem(oc: Record<string, unknown>): string | undefined {
+  return oc.preserved === undefined ? undefined : preservedListProblem(oc.preserved);
+}
+
+/** The rebuilt field for `buildOutcome`: empty when the record declared nothing, one key when it did. */
+export function preservedOutcomeField(oc: Record<string, unknown>): { preserved?: string[] } {
+  return oc.preserved === undefined ? {} : { preserved: validatedPreservedList(oc.preserved) };
+}

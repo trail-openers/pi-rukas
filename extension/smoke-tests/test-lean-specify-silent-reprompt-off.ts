@@ -27,6 +27,7 @@
  */
 
 import { rmSync } from "node:fs";
+import { withEnv } from "./lib/env-scope.ts";
 import {
   ROOTS,
   type RunResult,
@@ -34,20 +35,19 @@ import {
   redScript,
   runSpecify,
   submit,
-  report as reportShared,
 } from "./lib/lean-specify-fixture.ts";
-import { withEnv } from "./lib/env-scope.ts";
-// The shared constants and helpers live in the fixture both files import, so the
-// pair cannot drift apart and disagree about what the nudge text or the retry marker
-// is — a pair that disagrees about its needle asserts nothing about the pair.
 import {
   CONFIG,
   NEVER_SUBMITTED,
   NUDGE,
   RETRY_NOTE,
   TEST_REL,
+  report as reportShared,
   writeTest,
-} from "./lib/lean-specify-fixture.ts";
+} from "./lib/lean-specify-reprompt-constants.ts";
+// The shared constants and helpers live in the module both files import, so the
+// pair cannot drift apart and disagree about what the nudge text or the retry marker
+// is — a pair that disagrees about its needle asserts nothing about the pair.
 
 let exit = 0;
 /** The one assertion both files share, on this file's own tally. */
@@ -73,19 +73,22 @@ function assert(cond: boolean, msg: string): void {
   const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
   const prompts: string[] = [];
   let r: RunResult | undefined;
-  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0", PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK: "0" }, async () => {
-    r = await runSpecify({
-      repoRoot,
-      baseSha,
-      issue: 18,
-      config: CONFIG,
-      prompts,
-      writes: (wt) => {
-        writeTest(wt, redScript());
-      },
-      toolUses: () => [],
-    });
-  });
+  await withEnv(
+    { PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0", PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK: "0" },
+    async () => {
+      r = await runSpecify({
+        repoRoot,
+        baseSha,
+        issue: 18,
+        config: CONFIG,
+        prompts,
+        writes: (wt) => {
+          writeTest(wt, redScript());
+        },
+        toolUses: () => [],
+      });
+    },
+  );
   report(r!, "(8)");
   assert(
     r!.dispatched === 2,
@@ -129,20 +132,23 @@ function assert(cond: boolean, msg: string): void {
   const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
   const prompts: string[] = [];
   let r: RunResult | undefined;
-  await withEnv({ PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0", PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK: "0" }, async () => {
-    r = await runSpecify({
-      repoRoot,
-      baseSha,
-      issue: 19,
-      config: CONFIG,
-      prompts,
-      writes: (wt, dispatch) => {
-        writeTest(wt, redScript());
-        if (dispatch === 1) return;
-      },
-      toolUses: (dispatch) => (dispatch === 1 ? [] : [submit("AC1", [TEST_REL])]),
-    });
-  });
+  await withEnv(
+    { PI_ENSEMBLE_LEAN_RUNNER_PREFLIGHT: "0", PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK: "0" },
+    async () => {
+      r = await runSpecify({
+        repoRoot,
+        baseSha,
+        issue: 19,
+        config: CONFIG,
+        prompts,
+        writes: (wt, dispatch) => {
+          writeTest(wt, redScript());
+          if (dispatch === 1) return;
+        },
+        toolUses: (dispatch) => (dispatch === 1 ? [] : [submit("AC1", [TEST_REL])]),
+      });
+    },
+  );
   report(r!, "(9)");
   assert(
     r!.dispatched === 2,

@@ -27,19 +27,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { extractSubmitTests } from "../src/lean/submit-tests-extract.ts";
 import { didNoWork } from "../src/lean/build-dispatch.ts";
-import {
-  CONFIG,
-  NUDGE,
-  ROOTS,
-  makeRepo,
-  redScript,
-  report as reportShared,
-  runSpecify,
-  writeTest,
-} from "./lib/lean-specify-fixture.ts";
-import { ROOTS as BUILD_ROOTS, runBuild } from "./lib/lean-build-fixture.ts";
+import { extractSubmitTests } from "../src/lean/submit-tests-extract.ts";
 import {
   blockedArgs,
   codemodeResult,
@@ -47,7 +36,15 @@ import {
   nestedOk,
   submitArgs,
 } from "./fixtures/nested-call-events.ts";
+import { ROOTS as BUILD_ROOTS, runBuild } from "./lib/lean-build-fixture.ts";
 import { collapsedChild } from "./lib/lean-nested-submit.ts";
+import { ROOTS, makeRepo, redScript, runSpecify } from "./lib/lean-specify-fixture.ts";
+import {
+  CONFIG,
+  NUDGE,
+  report as reportShared,
+  writeTest,
+} from "./lib/lean-specify-reprompt-constants.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -84,7 +81,8 @@ async function repo(): Promise<{ repoRoot: string; baseSha: string }> {
     baseSha,
     issue: 2618,
     config: CONFIG,
-    prompts,    writes: (wt) => writeTest(wt, redScript()),
+    prompts,
+    writes: (wt) => writeTest(wt, redScript()),
     // The step reads whatever the collapse produced, so the case supplies the
     // transcript and the helper supplies the collapse. `toolUses: []` keeps the
     // fixture's own field from overwriting the collapsed one.
@@ -172,9 +170,11 @@ async function repo(): Promise<{ repoRoot: string; baseSha: string }> {
         messages: [
           codemodeTurn("call-codemode-1"),
           codemodeResult("call-codemode-1", [
-            nestedOk("call-codemode-1/1", "report_blocked", blockedArgs([
-              { path: "tests/AC1-retry.test.sh", reason: CONFLICT },
-            ])),
+            nestedOk(
+              "call-codemode-1/1",
+              "report_blocked",
+              blockedArgs([{ path: "tests/AC1-retry.test.sh", reason: CONFLICT }]),
+            ),
           ]),
         ],
       }),
@@ -201,11 +201,15 @@ async function repo(): Promise<{ repoRoot: string; baseSha: string }> {
     didNoWork(child) === false,
     "(3b) a child whose only calls were nested is not read as having done no work",
   );
-  const idle = collapsedChild("developer", { messages: [] }, {
-    ok: false,
-    exitCode: 1,
-    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
-  });
+  const idle = collapsedChild(
+    "developer",
+    { messages: [] },
+    {
+      ok: false,
+      exitCode: 1,
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 },
+    },
+  );
   assert(
     didNoWork(idle) === true,
     "(3b) while a child that made no call at all still is (the credit is not a free pass)",
@@ -219,7 +223,10 @@ async function repo(): Promise<{ repoRoot: string; baseSha: string }> {
     issue: 2622,
     // The frozen file stays red, so the anti-forgery gate honours either report.
     toolUses: [
-      { name: "report_blocked", arguments: blockedArgs([{ path: "tests/AC1-retry.test.sh", reason: CONFLICT }]) },
+      {
+        name: "report_blocked",
+        arguments: blockedArgs([{ path: "tests/AC1-retry.test.sh", reason: CONFLICT }]),
+      },
     ],
   });
   assert(
