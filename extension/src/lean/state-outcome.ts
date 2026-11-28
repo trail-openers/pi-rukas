@@ -350,7 +350,10 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     return "outcome headBefore must be a full commit sha";
   const repairProblem = repairOutcomeProblem(oc);
   if (repairProblem !== undefined) return repairProblem;
-  if (preservedOutcomeProblem(oc) !== undefined) return "outcome preserved is malformed";
+  // The specific problem, not a collapsed one: an operator reading a refused record has to be able to
+  // tell a non-list from an empty list from an id that is not `AC<n>`.
+  const preservedProblem = preservedOutcomeProblem(oc);
+  if (preservedProblem !== undefined) return preservedProblem;
   if (oc.preexistingFailures !== undefined) {
     const problem = preexistingFailuresProblem(oc.preexistingFailures);
     if (problem !== undefined) return problem;
@@ -444,7 +447,6 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       ? {}
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(oc.blockedBy === undefined ? {} : { blockedBy: validatedBlockedBy(oc.blockedBy) }),
-    ...preservedOutcomeField(oc),
     ...(typeof oc.headBefore === "string" && isFullCommitSha(oc.headBefore)
       ? { headBefore: oc.headBefore }
       : {}),
@@ -480,8 +482,12 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     // `ready`'s two run-level facts, at the END of the spread: the key order above is what the
     // handback key-list case pins, and a field inserted mid-list rewrites those bytes. Only
     // `ready` may carry either field, and `outcomeProblem` has refused it anywhere else BEFORE
-    // this runs. The pair is rebuilt in `state-outcome-spec-fields.ts`, which canonicalises the
-    // contract through the contract's own reader rather than carrying the file's shape.
+    // this runs. `preserved` sits here for the same reason: it is a `specify`-owned field a resumed run
+    // reads back, so a state file written by an older build reloads in the same order, and the record's
+    // own rule (absent, never empty) is applied by the rebuild rather than assumed. The pair of
+    // `ready`'s facts is rebuilt in `state-outcome-spec-fields.ts`, which canonicalises the contract
+    // through the contract's own reader rather than carrying the file's shape.
+    ...preservedOutcomeField(oc),
     ...derivedSpecOutcomeFields(oc),
   };
 }

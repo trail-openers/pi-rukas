@@ -22,6 +22,8 @@
 import { existsSync } from "node:fs";
 import { git } from "./lib/lean-specify-fixture.ts";
 import { neededFromLog } from "../src/lean/handback.ts";
+import { buildOutcome, outcomeProblem } from "../src/lean/state-outcome.ts";
+import { preservedClause, preservedIds } from "../src/preserved-disclose.ts";
 import type { Step } from "../src/lean/state.ts";
 import { withEnv } from "./lib/env-scope.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
@@ -217,6 +219,60 @@ const rowsWith = (id: string, script: string, preservedId?: string): PanelRow[] 
     "(e) it names the criteria the child claimed",
     text.includes(PANEL_IDS.join(", ")),
     text.slice(0, 300),
+  );
+}
+
+// (f) the record's own rules, driven through the loader path that rebuilds an outcome field by field.
+{
+  const rebuilt = (oc: Record<string, unknown>): Record<string, unknown> =>
+    buildOutcome(oc) as unknown as Record<string, unknown>;
+  check(
+    "(f) a list of ids rebuilds to that list",
+    JSON.stringify(rebuilt({ kind: "ok", preserved: ["AC4", "AC5"] }).preserved) ===
+      JSON.stringify(["AC4", "AC5"]),
+    JSON.stringify(rebuilt({ kind: "ok", preserved: ["AC4", "AC5"] })),
+  );
+  // The validator refuses a written `[]`; the rebuilder must agree, or a record whose every entry was
+  // invalid would carry a key claiming the field existed and named nothing.
+  check(
+    "(f) an empty list rebuilds to NO key, as the validator refuses it",
+    !("preserved" in rebuilt({ kind: "ok", preserved: [] })),
+    JSON.stringify(rebuilt({ kind: "ok", preserved: [] })),
+  );
+  check(
+    "(f) a wholly invalid list rebuilds to NO key either",
+    !("preserved" in rebuilt({ kind: "ok", preserved: ["nope", 7] })),
+    JSON.stringify(rebuilt({ kind: "ok", preserved: ["nope", 7] })),
+  );
+  check(
+    "(f) the key order is the one a resumed state file keeps: preserved last, beside derivedSpec",
+    Object.keys(rebuilt({ kind: "ok", preserved: ["AC4"] })).at(-1) === "preserved",
+    Object.keys(rebuilt({ kind: "ok", preserved: ["AC4"] })).join(","),
+  );
+  check(
+    "(f) a non-array refusal names the problem rather than collapsing it",
+    outcomeProblem({ kind: "ok", preserved: "AC4" }, "specify") ===
+      "outcome preserved must be a string[]",
+    String(outcomeProblem({ kind: "ok", preserved: "AC4" }, "specify")),
+  );
+  check(
+    "(f) and so does an empty one",
+    outcomeProblem({ kind: "ok", preserved: [] }, "specify") ===
+      "outcome preserved must be absent rather than empty",
+    String(outcomeProblem({ kind: "ok", preserved: [] }, "specify")),
+  );
+  check(
+    "(f) and one holding a name that is not AC<n>",
+    outcomeProblem({ kind: "ok", preserved: ["nope"] }, "specify") ===
+      "outcome preserved holds a name that is not AC<n>",
+    String(outcomeProblem({ kind: "ok", preserved: ["nope"] }, "specify")),
+  );
+  // The disclosure reads the record back, so it must survive a value the validator would never have
+  // written — the same `Array.isArray` guard the validator carries.
+  check(
+    "(f) a non-array preserved value discloses nothing rather than throwing",
+    preservedClause("AC4" as unknown as string[]) === "" &&
+      preservedIds("AC4" as unknown as string[]).length === 0,
   );
 }
 

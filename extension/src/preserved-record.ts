@@ -35,7 +35,13 @@ export function preservedOutcomeProblem(oc: Record<string, unknown>): string | u
     : "outcome preserved holds a name that is not AC<n>";
 }
 
-/** The rebuilt field for `buildOutcome`: empty when the record declared nothing, one key when it did. */
+/**
+ * The rebuilt field for `buildOutcome`: one key when the record named something, NO key when it named
+ * nothing. An empty rebuild is the same refusal the validator makes of a written record — `preserved: []`
+ * is a key claiming the field existed and named nothing, where the truth is that no declaration was made.
+ */
 export function preservedOutcomeField(oc: Record<string, unknown>): { preserved?: string[] } {
-  return oc.preserved === undefined ? {} : { preserved: validatedPreservedList(oc.preserved) };
+  if (oc.preserved === undefined) return {};
+  const list = validatedPreservedList(oc.preserved);
+  return list.length === 0 ? {} : { preserved: list };
 }
