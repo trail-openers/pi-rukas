@@ -17,12 +17,12 @@
  * Change it and those cases go red rather than passing on a brief nobody reads.
  */
 import { TEST_RUNNER_PLACEHOLDER } from "./lean/config.ts";
-import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./lean/state-outcome-maps.ts";
-import { BLOCKED_EVIDENCE_OUTPUT_CAP } from "./oracle-repair-record.ts";
 import { criteriaBlock, scopeBlock } from "./lean/spec-blocks.ts";
 import type { PiSpec } from "./lean/spec.ts";
+import { BLOCKED_PATH_CAP, BLOCKED_REASON_CAP } from "./lean/state-outcome-maps.ts";
 import { fenceText, oneLine } from "./lean/text-fence.ts";
 import type { EvidenceRow, HeadEvidenceRow } from "./oracle-repair-evidence.ts";
+import { BLOCKED_EVIDENCE_OUTPUT_CAP } from "./oracle-repair-record.ts";
 
 /** The heading a repair brief carries and no other lean brief contains. */
 export const REPAIR_HEADING = "## Repair the named frozen tests";
@@ -72,10 +72,10 @@ function evidenceLine(e: HeadEvidenceRow): string {
   // The output is the one field long enough to want a block, and `fenceText` is the module that owns folding a
   // payload into a fence: it neutralises every 3+ backtick run inside, so nothing the runner printed closes
   // the fence this line opens.
-  return (
-    `- \`${inlinePrompt(e.path, BLOCKED_PATH_CAP)}\` run as \`${inlinePrompt(e.cmd, BLOCKED_PATH_CAP)}\` came back red:\n\n` +
-    fenceText(inlinePrompt(e.output, BLOCKED_EVIDENCE_OUTPUT_CAP), BLOCKED_EVIDENCE_OUTPUT_CAP)
-  );
+  return `- \`${inlinePrompt(e.path, BLOCKED_PATH_CAP)}\` run as \`${inlinePrompt(e.cmd, BLOCKED_PATH_CAP)}\` came back red:\n\n${fenceText(
+    inlinePrompt(e.output, BLOCKED_EVIDENCE_OUTPUT_CAP),
+    BLOCKED_EVIDENCE_OUTPUT_CAP,
+  )}`;
 }
 
 /** Build the repair seat's kickoff prompt. */
