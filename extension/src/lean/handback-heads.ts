@@ -11,7 +11,11 @@
  * `verify` must be `green` and must name a head.
  */
 import { isFullCommitSha } from "../commit-sha.ts";
-import { leanReviewIncompleteHeadEnabled } from "../lean-review-incomplete-head-switch.ts";
+import {
+  erroredReviewHandbackEnabled,
+  erroredReviewReading,
+  isErroredReview,
+} from "../lean-review-incomplete-head.ts";
 import { type LeanState, REPORT_STATES, type Step } from "./state.ts";
 
 /**
@@ -25,7 +29,8 @@ export const NO_GATE_VERDICT =
  * True when this handback stands over bytes no gate of this run certified: a `fixed` review the gate has not
  * spoken for since (a gate visit ENTERED and never answered counts as not speaking), an errored review over a
  * head the gate certified — a review that threw judged nothing, so its head is owed the same reading — or a
- * draft publish whose own head no green covers.
+ * draft publish whose own head no green covers. The errored arm's reading lives in
+ * `../lean-review-incomplete-head.ts`.
  */
 export interface HandbackHeads {
   applies: boolean;
@@ -78,6 +83,30 @@ function newestDecidedThrough(
 }
 
 /**
+ * A green that named no commit is the same standing as no green at all: the run shipped bytes this
+ * rule cannot name. The finding is the rule's own, so the comment can say whether the gate spoke
+ * at all. Exported for the errored arm, which reads the same head test through this file.
+ */
+export function noVerifiedHead(head: unknown): HandbackHeads {
+  if (typeof head !== "string" || !isFullCommitSha(head))
+    return {
+      applies: true,
+      reason: "the green verify recorded no head, so there is no verified head to ship",
+    };
+  return { applies: true, verifiedHead: head };
+}
+
+/**
+ * Does a review step's kind make a handback of this log worth reading at all? `fixed` always does;
+ * an `error` does only with #2667's switch on, because a review that threw judged nothing.
+ */
+function reviewKindHandbackable(step: Step, errored: boolean): boolean {
+  if (step.state !== "review" || step.outcome === undefined) return false;
+  if (step.outcome.kind === "fixed") return true;
+  return errored && erroredReviewHandbackEnabled();
+}
+
+/**
  * The head a handback of this log should ship, or the reason it cannot. A log whose newest work step is
  * neither a `fixed` review, an errored review over a certified head, nor a draft publish gets
  * `{applies: false}` with no reason.
@@ -97,16 +126,10 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
       return { applies: false };
     return { applies: true, shippedHead: head, shippedVerified: false };
   }
-  const review = newest.state === "review";
-  // #2667, on the switch: a review that THREW over a head the gate certified judged nothing, which is the
-  // same standing a `fixed` review the gate has not spoken for has. Off, or for any kind outside the pair,
-  // the rule is silent exactly as it was before the knob: an errored review is not a handback shape.
-  const errored = review && newest.outcome.kind === "error";
-  if (
-    !review ||
-    (newest.outcome.kind !== "fixed" && !(errored && leanReviewIncompleteHeadEnabled()))
-  )
-    return { applies: false };
+  // #2667, on the switch: a review that THREW over a head the gate certified is read by
+  // `../lean-review-incomplete-head.ts`; every other kind outside the pair is silent.
+  const errored = isErroredReview(newest);
+  if (!reviewKindHandbackable(newest, errored)) return { applies: false };
   const at = steps.indexOf(newest);
   const trailing = newestStateStepAfter(steps, "verify", at);
   if (trailing !== undefined && trailing.outcome === undefined)
@@ -115,24 +138,15 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
       reason: `the run entered the gate again at ${trailing.key} and never recorded what it decided, so no head is verified`,
     };
   const green = newestDecidedThrough(steps, "verify", at);
-  // An errored review with nothing decided behind it has no head this rule may name: it is not a handback
-  // over unverified BYTES the run shipped, and the rule's finding would be the run's whole sentence.
-  if (errored && green === undefined) return { applies: false };
+  if (errored) {
+    const reading = erroredReviewReading(green);
+    if (reading !== undefined) return reading;
+  }
   if (green === undefined) return { applies: true, reason: NO_GATE_VERDICT };
   if (green.outcome?.kind !== "green")
     return {
       applies: true,
       reason: `the newest decided verify is ${String(green.outcome?.kind)}, not green, so no head is verified`,
     };
-  const head = green.outcome.verifiedHead;
-  // A green that named no commit is the same standing as no green at all: the run shipped
-  // bytes this rule cannot name. The distinction is still worth one clause, because a reader
-  // of the comment needs to know whether the gate spoke at all — and the rule's own finding for
-  // each case is what the comment quotes, so both keep their separate wording.
-  if (typeof head !== "string" || !isFullCommitSha(head))
-    return {
-      applies: true,
-      reason: "the green verify recorded no head, so there is no verified head to ship",
-    };
-  return { applies: true, verifiedHead: head };
+  return noVerifiedHead(green.outcome.verifiedHead);
 }

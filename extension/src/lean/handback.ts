@@ -9,6 +9,7 @@
  * verdict.
  */
 import { execp } from "../exec.ts";
+import { endedBy } from "../lean-handback-cause.ts";
 import { frozenFromLog } from "../lean-log.ts";
 import { repairCause } from "../oracle-repair-disclose.ts";
 import { gapCauseLines } from "../preserved-disclose.ts";
@@ -61,24 +62,6 @@ function newestReason(steps: Step[], state: "verify" | "ci", kind: "red" | "gree
     break;
   }
   return found;
-}
-
-/**
- * The cause the run ended on: the newest decided WORK step's own reason. A decided `handback`
- * entry is excluded — it is a report, not a cause — and a cause on any other step is one that
- * already spoke for itself.
- */
-function endedBy(steps: Step[]): string | undefined {
-  const ended = newestDecidedWorkStep(steps);
-  const reason = ended?.outcome?.reason ?? ended?.outcome?.message;
-  if (typeof reason !== "string" || reason.trim() === "") return undefined;
-  // A review that THREW is not a verdict, and the operator needs the two facts apart: the
-  // step never finished, and here is what stopped it. The heading is the rule's own line and
-  // the sentence under it is the throw's, unedited — the reason a bare engine error is not a
-  // handoff is that nobody said which step owed the work.
-  return ended?.state === "review" && ended.outcome?.kind === "error"
-    ? `the review did not complete. Why the review did not complete: ${reason}`
-    : reason;
 }
 
 /** Why the run is ending, in the record's own words. */
