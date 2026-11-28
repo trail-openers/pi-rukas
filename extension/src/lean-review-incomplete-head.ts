@@ -39,13 +39,18 @@ export function incompleteHeadOn(): boolean {
 }
 
 /**
- * The reading an errored `review` gets, asked of the gate's newest decided verdict. `undefined` is the
- * hand-back to the base rule: only a verdict the gate ANSWERED green is this file's, and only a green that
- * NAMED a full commit sha carries a head for the report to ship.
+ * The reading an errored `review` gets, asked of the gate's newest decided verdict.
+ *
+ * A green that NAMED a full commit sha is the certified arm: its head is what the report ships. A green
+ * that ANSWERED and named none applies with no head and no reason: the report runs, writes no head field,
+ * prints no head line, asks for no rewind, and its NEEDING line is the run's own sentence. Anything the
+ * gate never certified — a verdict that was not green, or a gate the run never let decide — is
+ * `{applies: false}`: a run whose gate named no bytes shipped nothing this step could ship, so it keeps
+ * the plain stamp, byte for byte as before this knob existed.
  */
-export function incompleteReviewHandback(green: Step | undefined): IncompleteReviewHeads | undefined {
+export function incompleteReviewHandback(green: Step | undefined): IncompleteReviewHeads {
   const outcome: Outcome | undefined = green?.outcome;
-  if (outcome?.kind !== "green") return undefined;
+  if (outcome?.kind !== "green") return { applies: false };
   return isVerifiedHeadName(outcome.verifiedHead)
     ? { applies: true, verifiedHead: outcome.verifiedHead }
     : { applies: true };

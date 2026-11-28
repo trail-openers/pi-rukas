@@ -127,19 +127,13 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
   if (newest.state !== "review" || (newest.outcome.kind !== "fixed" && !errored))
     return { applies: false };
   if (errored && !incompleteHeadOn()) return { applies: false };
-  // One reading, asked of the gate's newest DECIDED verdict. A green that named a commit is the certified
-  // arm and its head is what the report ships. A green that named none — and a gate the run never let
-  // decide — is the plain stamp's shape: such a run shipped no bytes of its own, so the arm stays silent
-  // exactly as it was before this knob existed, and the run keeps the bare stamp and its own NEEDING line.
-  // The one exception the arm does owe is the sentence for a verdict the gate DID record and left
-  // uncertified, which the report quotes when the run reaches it by the table's own route.
-  if (errored) {
-    const gate = newestDecidedThrough(steps, "verify", at);
-    if (gate === undefined) return { applies: false };
-    // A green that named no commit still owes the report: it applies, names no head, prints no head line
-    // and asks for no rewind. Only a verdict the gate never made green, or no verdict at all, stays silent.
-    return incompleteReviewHandback(gate) ?? thisRule(gate);
-  }
+  // One reading, asked of the gate's newest DECIDED verdict. A green that NAMED a commit is the certified
+  // arm and its head is what the report ships. A green that ANSWERED and named none applies with no head
+  // and no reason of its own: the report runs, writes no head field, prints no head line and asks for no
+  // rewind, and its NEEDING line is the run's own sentence. Everything the gate never certified — a verdict
+  // that was not green, or a gate the run never let decide — is silent, as it was before this knob existed:
+  // a run whose gate named no bytes shipped nothing this step could ship, so it keeps the plain stamp.
+  if (errored) return incompleteReviewHandback(newestDecidedThrough(steps, "verify", at));
   const trailing = newestStateStepAfter(steps, "verify", at);
   if (trailing !== undefined && trailing.outcome === undefined)
     return {
