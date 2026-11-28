@@ -12,6 +12,8 @@
  *   5. The agent dir is Pi's PI_CODING_AGENT_DIR, not PI_AGENT_DIR
  *   6. settings.json npm/git packages with no extensions/ entry are forwarded,
  *      per-package filters honoured, pi-rukas and pi-mcp-adapter skipped
+ *   7. pi-lens, from either source, reaches the developer alone, and its argv
+ *      carries the flags that turn its file rewrites and tests off
  *
  * No Pi, no network.
  */
@@ -23,6 +25,7 @@ import path from "node:path";
 import {
   discoverInstalledExtensions,
   discoverPackageExtensions,
+  extensionForwardArgs,
 } from "../src/spawn-extension-forward.ts";
 
 let exit = 0;
@@ -86,6 +89,13 @@ await writePkg(path.join(extDir, "pi-mcp-adapter"), {
   pi: { extensions: ["dist/index.js"] },
 });
 
+// (f2) pi-lens — forwarded to the developer only
+await writePkg(path.join(extDir, "pi-lens"), {
+  name: "pi-lens",
+  version: "4.5.2",
+  pi: { extensions: ["dist/index.js"] },
+});
+
 // (g) packages installed by `pi install` — under Pi's npm/git dirs, declared
 // in settings.json, with no entry under extensions/.
 async function writeExt(file: string): Promise<void> {
@@ -115,6 +125,12 @@ await writePkg(path.join(npmRoot, "pi-mcp-adapter"), {
   pi: { extensions: ["./index.ts"] },
 });
 await writeExt(path.join(npmRoot, "pi-mcp-adapter", "index.ts"));
+await writePkg(path.join(npmRoot, "pi-lens"), {
+  name: "pi-lens",
+  version: "4.5.2",
+  pi: { extensions: ["./index.ts"] },
+});
+await writeExt(path.join(npmRoot, "pi-lens", "index.ts"));
 await fs.writeFile(
   path.join(piAgentDir, "settings.json"),
   // A leading BOM: Pi accepts it, so discovery must too.
@@ -124,6 +140,7 @@ await fs.writeFile(
       { source: "git:github.com/example/pi-tools@v1", extensions: ["!extensions/legacy.ts"] },
       "npm:@trail-openers/pi-rukas",
       "npm:pi-mcp-adapter",
+      "npm:pi-lens",
       "npm:pi-not-installed",
     ],
   })}`,
@@ -139,7 +156,7 @@ process.env.PI_AGENT_DIR = decoyAgentDir;
 process.env.PI_CODING_AGENT_DIR = piAgentDir;
 delete process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD;
 
-const result = discoverInstalledExtensions("test");
+const result = discoverInstalledExtensions("test").map((ext) => ext.path);
 console.log("forwarded:", result);
 
 assert(result.length === 2, `forwards exactly 2 extensions (got ${result.length})`);
@@ -164,7 +181,9 @@ assert(!hasNotPi, "package.json without pi.extensions is filtered out");
 const hasAdapter = result.some((p) => p.endsWith("/pi-mcp-adapter"));
 assert(!hasAdapter, "pi-mcp-adapter is filtered out (issue #959: its /mcp registration would replace native MCP)");
 
-const packages = (await discoverPackageExtensions("test")).map((p) => path.relative(piAgentDir, p));
+const packages = (await discoverPackageExtensions("test")).map((ext) =>
+  path.relative(piAgentDir, ext.path),
+);
 console.log("package extensions:", packages);
 assert(
   JSON.stringify(packages.sort()) ===
@@ -175,6 +194,30 @@ assert(
       ].sort(),
     ),
   "settings.json packages forward their extension files: filter honoured, pi-rukas/adapter/uninstalled skipped",
+);
+
+assert(!result.some((p) => p.endsWith("/pi-lens")), "pi-lens is not forwarded to a non-developer role");
+const lensFlags = ["--no-autoformat", "--no-autofix", "--no-tests"];
+const plainArgs = extensionForwardArgs(discoverInstalledExtensions("test"));
+assert(!lensFlags.some((f) => plainArgs.includes(f)), "no pi-lens flags without pi-lens");
+for (const role of ["explore", "code-review-specialist", "adversarial-developer", "ops"]) {
+  const scan = discoverInstalledExtensions(role);
+  const pkgs = await discoverPackageExtensions(role);
+  assert(
+    ![...scan, ...pkgs].some((ext) => ext.name === "pi-lens"),
+    `pi-lens is not forwarded to ${role} from either source`,
+  );
+}
+const devScanArgs = extensionForwardArgs(discoverInstalledExtensions("developer"));
+assert(
+  devScanArgs.some((a) => a.endsWith("/pi-lens")) && lensFlags.every((f) => devScanArgs.includes(f)),
+  "the extensions/ scan forwards pi-lens to the developer, with its rewrite/test flags",
+);
+const devPkgArgs = extensionForwardArgs(await discoverPackageExtensions("developer"));
+assert(
+  devPkgArgs.some((a) => a.includes(`${path.sep}pi-lens${path.sep}`)) &&
+    lensFlags.every((f) => devPkgArgs.includes(f)),
+  "a settings.json pi-lens package reaches the developer, with its rewrite/test flags",
 );
 
 // Opt-out env var

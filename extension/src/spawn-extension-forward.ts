@@ -12,6 +12,9 @@
  * side borrows the running Pi's exported package manager. Split out of
  * spawn.ts (#171); consumed by `spawnSpecialist`.
  *
+ * pi-lens reaches only the developer role, with its own file rewrites off —
+ * see PI_LENS_PACKAGE_NAME.
+ *
  * Note: this module deliberately does NOT read mcp.json or interact with
  * Pi's native MCP subsystem. Children get MCP through the `-e builtin:mcp`
  * flag (see spawn-support.ts childArgsBase()) — no extension forwarding
@@ -57,8 +60,34 @@ const PI_ENSEMBLE_PACKAGE_NAME = "@trail-openers/pi-rukas";
 // ~/.pi/agent/extensions/.
 const PI_MCP_ADAPTER_PACKAGE_NAME = "pi-mcp-adapter";
 
-const isSkippedPackage = (name: string | undefined) =>
-  name === PI_ENSEMBLE_PACKAGE_NAME || name === PI_MCP_ADAPTER_PACKAGE_NAME;
+// pi-lens rewrites files on its own (autoformat, autofix) and runs tests on
+// write, through the filesystem rather than a tool call, so neither
+// `--exclude-tools` nor the write fence sees it. It is forwarded to the
+// developer alone, the role that writes code, and there with those three off
+// (its CLI flags outrank a project `.pi-lens.json`): the developer keeps the
+// LSP diagnostics and navigation, its diff stays what it wrote, and the verify
+// step runs the checks.
+const PI_LENS_PACKAGE_NAME = "pi-lens";
+const PI_LENS_ROLE = "developer";
+const PI_LENS_CHILD_FLAGS = ["--no-autoformat", "--no-autofix", "--no-tests"];
+
+/** A forwarded extension entry and the package it belongs to. */
+export interface ForwardedExtension {
+  path: string;
+  name: string | undefined;
+}
+
+const isSkippedPackage = (name: string | undefined, role: string) =>
+  name === PI_ENSEMBLE_PACKAGE_NAME ||
+  name === PI_MCP_ADAPTER_PACKAGE_NAME ||
+  (name === PI_LENS_PACKAGE_NAME && role !== PI_LENS_ROLE);
+
+/** Child argv for the forwarded extensions, plus pi-lens's flags when it is among them. */
+export function extensionForwardArgs(forwarded: readonly ForwardedExtension[]): string[] {
+  const args = forwarded.flatMap((ext) => ["--extension", ext.path]);
+  if (forwarded.some((ext) => ext.name === PI_LENS_PACKAGE_NAME)) args.push(...PI_LENS_CHILD_FLAGS);
+  return args;
+}
 
 function forwardDisabled(role: string): boolean {
   if (process.env.PI_ENSEMBLE_DISABLE_EXTENSION_FORWARD !== "1") return false;
@@ -116,10 +145,11 @@ export function piEnsembleExtensionPath(): string | undefined {
  *  - Skip pi-mcp-adapter by package name (its /mcp registration replaces
  *    the built-in MCP, which would disable native MCP in every child —
  *    see the PI_MCP_ADAPTER_PACKAGE_NAME constant for the full rationale).
+ *  - Skip pi-lens for every role but the developer (PI_LENS_PACKAGE_NAME).
  *  - Resolve through `realpathSync` because `~/.pi/agent/extensions/<name>`
  *    is typically a symlink to the source checkout.
  */
-export function discoverInstalledExtensions(role: string): string[] {
+export function discoverInstalledExtensions(role: string): ForwardedExtension[] {
   if (forwardDisabled(role)) return [];
   const extensionsDir = path.join(agentDir(), "extensions");
 
@@ -130,12 +160,12 @@ export function discoverInstalledExtensions(role: string): string[] {
     return [];
   }
 
-  const forwarded: string[] = [];
+  const forwarded: ForwardedExtension[] = [];
   for (const entry of entries) {
     const entryPath = path.join(extensionsDir, entry);
     const pkg = readPackageJson(entryPath);
     if (!pkg?.pi?.extensions || pkg.pi.extensions.length === 0) continue;
-    if (isSkippedPackage(pkg.name)) continue;
+    if (isSkippedPackage(pkg.name, role)) continue;
 
     let resolved: string;
     try {
@@ -143,7 +173,7 @@ export function discoverInstalledExtensions(role: string): string[] {
     } catch {
       resolved = entryPath;
     }
-    forwarded.push(resolved);
+    forwarded.push({ path: resolved, name: pkg.name });
     trace(`spawn[${role}]: auto-forward --extension ${resolved} (${pkg.name ?? entry})`);
   }
   return forwarded;
@@ -159,11 +189,12 @@ export function discoverInstalledExtensions(role: string): string[] {
  *    not run npm or git.
  *  - Only `origin: "package"` resources count; the scan above owns
  *    `extensions/`, and project `.pi/settings.json` packages are not read.
- *  - pi-rukas and pi-mcp-adapter are skipped by package name, as in the scan.
+ *  - pi-rukas, pi-mcp-adapter and (off the developer) pi-lens are skipped by
+ *    package name, as in the scan.
  *  - A Pi without this API forwards nothing and says so: the child then lacks
  *    the package's provider setup, which must not be silent.
  */
-export async function discoverPackageExtensions(role: string): Promise<string[]> {
+export async function discoverPackageExtensions(role: string): Promise<ForwardedExtension[]> {
   if (forwardDisabled(role)) return [];
   const dir = agentDir();
   let settings: { packages?: PackageSource[]; npmCommand?: string[] };
@@ -187,9 +218,11 @@ export async function discoverPackageExtensions(role: string): Promise<string[]>
     const { extensions } = await pm.resolve(async () => "skip");
     const forwarded = extensions
       .filter((r) => r.enabled && r.metadata.origin === "package")
-      .filter((r) => !isSkippedPackage(readPackageJson(r.metadata.packageRoot)?.name))
-      .map((r) => r.path);
-    for (const p of forwarded) trace(`spawn[${role}]: auto-forward --extension ${p} (package)`);
+      .map((r) => ({ path: r.path, name: readPackageJson(r.metadata.packageRoot)?.name }))
+      .filter((ext) => !isSkippedPackage(ext.name, role));
+    for (const { path: p } of forwarded) {
+      trace(`spawn[${role}]: auto-forward --extension ${p} (package)`);
+    }
     return forwarded;
   } catch (err) {
     traceWarn(`spawn[${role}]: settings.json packages not forwarded: ${(err as Error).message}`);
