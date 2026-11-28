@@ -10,6 +10,8 @@
  */
 import { execp } from "../exec.ts";
 import { frozenFromLog } from "../lean-log.ts";
+import { preservedClause } from "../preserved-disclose.ts";
+import { PRESERVES_HINT } from "../specify-preserves.ts";
 import { repairCause } from "../oracle-repair-disclose.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { HandlerCtx } from "./engine.ts";
@@ -107,8 +109,9 @@ function gapCause(steps: Step[]): string | undefined {
   const rules = oc.failedRules ?? [];
   const reason = oc.reason ?? "";
   const lead = [...rules.filter((r) => !reason.includes(r)), reason];
-  const reading = reason.includes("exited 0 on base") ? [GAP_READING] : [];
-  return [...lead, ...reading].filter((s) => s !== "").join("\n");
+  const reading = reason.includes("exited 0 on base") ? [GAP_READING, PRESERVES_HINT] : [];
+  const kept = preservedClause(oc.preserved, oc.tests);
+  return [...lead, ...reading, kept].filter((s) => s !== "").join("\n");
 }
 
 /**

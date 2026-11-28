@@ -132,7 +132,7 @@ export async function validateSubmitRows(
   },
 ): Promise<{ kept: SubmitTestsRow[]; dropped: DroppedRow[] }> {
   const testable = new Set(opts.spec.criteria.filter((c) => c.verify === "test").map((c) => c.id));
-  const keptByCriterion = new Map<string, string[]>();
+  const keptByCriterion = new Map<string, [string[], boolean]>();
   // ONE counter per criterion: the quota is RUN-level, so a criterion starts at what the run froze.
   const quota = new Map<string, number>();
   for (const [id, files] of Object.entries(opts.frozenByCriterion ?? {})) {
@@ -156,7 +156,7 @@ export async function validateSubmitRows(
       });
       continue;
     }
-    const files = keptByCriterion.get(row.criterionId) ?? [];
+    const files = keptByCriterion.get(row.criterionId)?.[0] ?? [];
     if (row.testFiles.length > MAX_TEST_FILES_PER_ROW) {
       dropped.push({
         criterionId: row.criterionId,
@@ -268,11 +268,12 @@ export async function validateSubmitRows(
       keptRels.set(row.criterionId, seen);
       quota.set(row.criterionId, (quota.get(row.criterionId) ?? 0) + 1);
     }
-    if (files.length > 0) keptByCriterion.set(row.criterionId, files);
+    if (files.length > 0) keptByCriterion.set(row.criterionId, [files, row.preserves === true]);
   }
-  const kept: SubmitTestsRow[] = [...keptByCriterion.entries()].map(([criterionId, testFiles]) => ({
+  const kept: SubmitTestsRow[] = [...keptByCriterion.entries()].map(([criterionId, held]) => ({
     criterionId,
-    testFiles,
+    testFiles: held[0],
+    ...(held[1] ? { preserves: true } : {}),
   }));
   return { kept, dropped };
 }

@@ -37,6 +37,7 @@ import {
   validatedPreexistingFailures,
   validatedProjectRoster,
 } from "./state-outcome-maps.ts";
+import { preservedListProblem, validatedPreservedList } from "../preserved-record.ts";
 import type { LeanState, Outcome } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
@@ -167,6 +168,8 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",
+  // `specify` alone froze a declared criterion as must-pass; no other step may carry the list.
+  preserved: "specify",
   // The build step's own account of which frozen tests it proved cannot all pass together;
   // `handback` prints it as the run's cause.
   blockedBy: "build",
@@ -345,6 +348,10 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     const problem = blockedByProblem(oc.blockedBy);
     if (problem !== undefined) return problem;
   }
+  if (oc.preserved !== undefined) {
+    const problem = preservedListProblem(oc.preserved);
+    if (problem !== undefined) return problem;
+  }
   if (oc.headBefore !== undefined && !SHA1_HEX.test(String(oc.headBefore)))
     return "outcome headBefore must be a full commit sha";
   // The repair round's fields: rules in `oracle-repair-fields.ts`.
@@ -445,6 +452,7 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       ? {}
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(oc.blockedBy === undefined ? {} : { blockedBy: validatedBlockedBy(oc.blockedBy) }),
+    ...(oc.preserved === undefined ? {} : { preserved: validatedPreservedList(oc.preserved) }),
     ...(typeof oc.headBefore === "string" && isFullCommitSha(oc.headBefore)
       ? { headBefore: oc.headBefore }
       : {}),

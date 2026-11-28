@@ -12,6 +12,7 @@ import { type TestLocation, testDirsNamed } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import { leanIssueSection } from "./issue-prose.ts";
 import { criteriaBlock, scopeBlock } from "./spec-blocks.ts";
+import { preservesPromptClause } from "../specify-preserves-prompt.ts";
 import type { PiSpec } from "./spec.ts";
 import { MAX_TEST_BYTES, MAX_TEST_FILES_PER_CRITERION, MAX_TEST_LINES } from "./test-size.ts";
 import { oneLine } from "./text-fence.ts";
@@ -237,6 +238,8 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
           : testLocationInstruction(opts.testLocation),
         "",
         tests.length === 0 ? "" : TEST_SCOPE_CONTRACT,
+        "",
+        tests.length === 0 ? "" : preservesPromptClause(),
         "",
         tests.length === 0 ? "" : IMPLIED_REQUIREMENTS,
         "",

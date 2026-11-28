@@ -227,6 +227,14 @@ export interface RunResult {
    */
   fetched: number;
   worktree: string;
+  /** The repository the run worked in, so a case can read base blobs with git itself. */
+  repoRoot: string;
+  /** The base commit the run froze against — the blob a preserved file must still equal. */
+  baseSha: string;
+  /** The kickoff prompts, in dispatch order, as the fake child recorded them. */
+  prompts?: string[];
+  /** How many children the step dispatched. */
+  dispatchCount: number;
 }
 
 export interface RunOpts {
@@ -410,7 +418,17 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
     const ctx = ctxFor(opts.repoRoot, opts.baseSha, issue, now, deadline, opts.stepStartedAt);
     if (opts.derivedSpec !== undefined) ctx.run = { ...ctx.run, derivedSpec: opts.derivedSpec };
     const outcome = await specify.specifyOutcome(ctx, deps);
-    return { outcome, sawBaseHealthy, dispatched, fetched, worktree };
+    return {
+      outcome,
+      sawBaseHealthy,
+      dispatched,
+      fetched,
+      worktree,
+      repoRoot: opts.repoRoot,
+      baseSha: opts.baseSha,
+      prompts: opts.prompts,
+      dispatchCount: dispatched,
+    };
   } catch (err) {
     return {
       threw: err as Error,
@@ -419,6 +437,10 @@ export async function runSpecify(opts: RunOpts): Promise<RunResult> {
       dispatched,
       fetched,
       worktree,
+      repoRoot: opts.repoRoot,
+      baseSha: opts.baseSha,
+      prompts: opts.prompts,
+      dispatchCount: dispatched,
     };
   }
 }

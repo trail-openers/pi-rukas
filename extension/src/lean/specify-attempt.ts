@@ -16,6 +16,11 @@ import { statReporterPath } from "../reporter-preflight.ts";
 import { makeRunId } from "../spawn-support.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult } from "../types.ts";
+import {
+  nothingToBuild,
+  preservedCriteria,
+  preservesDeclarationMalformed,
+} from "../lean-preserved-step.ts";
 import { didNoWork } from "./build-dispatch.ts";
 import type { TestLocation } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
@@ -26,6 +31,7 @@ import type { Criterion, PiSpec } from "./spec.ts";
 import { RED_TEST_GAP, leanSpecifyGapHandbackEnabled } from "./specify-gap-switch.ts";
 import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { specifyPrompt } from "./specify-prompt.ts";
+import { allPreservedReason } from "../specify-preserves.ts";
 import {
   adversaryDispatchOpts,
   leanSpecifyReaskEnabled,
@@ -300,7 +306,13 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       dispatched: rows,
     };
   const declaredRows = reask === undefined ? first.rows : [...first.rows, ...reask.rows];
-  const skipped = first.skipped + (reask?.skipped ?? 0);
+  const preservedRows = preservedCriteria(declaredRows);
+  const wantedIds = wanted.map((c) => c.id);
+  const skipped =
+    first.skipped +
+    (reask?.skipped ?? 0) +
+    // A declaration of the wrong type is a malformed call, counted where the malformed calls are counted.
+    declaredRows.filter((r) => preservesDeclarationMalformed(r.preserves)).length;
   const note = reask?.note;
   /** The attributed drops whose reason is a size refusal — see `SIZE_REFUSAL`. */
   const sizeRefused: string[] = [];
@@ -316,7 +328,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       // `specify`'s claim is that EVERY test criterion is falsifiable, so one uncovered criterion
       // refuses the run — what `coverage: "all-criteria"` asks the shared pipeline for.
       coverage: "all-criteria",
-      wanted: wanted.map((c) => c.id),
+      wanted: wantedIds,
       extract: () => ({ rows: declaredRows, skipped }),
       validate: async (rows) => {
         const verdict = await validateSubmitRows(rows, boundary);
@@ -355,6 +367,8 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
           kind: "ok",
           frozen: pipeline.frozen,
           tests: pipeline.tests,
+          // Absent, never empty: `preserved-record.ts` refuses an empty list.
+          ...(preservedRows.length === 0 ? {} : { preserved: preservedRows }),
           reason: pipeline.reason,
           dispatches: rows,
         },
@@ -366,6 +380,25 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
     };
   // The child's own gap — not a refused spec — so the switch picks its kind (see `specify-gap-switch.ts`).
   const gapKind = leanSpecifyGapHandbackEnabled() ? RED_TEST_GAP : "no-red-test";
+  // A spec whose every test criterion is preserved has nothing to build: its own stable reason, never a
+  // freeze of a contract made of guards alone.
+  if (nothingToBuild(wantedIds, preservedRows)) {
+    const rule = allPreservedReason(preservedRows);
+    return {
+      outcome: withReaskNote(
+        {
+          kind: gapKind,
+          failedRules: wanted.map((c) => `criterion ${c.id} has no red test`),
+          reason: rule,
+          dispatches: rows,
+        },
+        note,
+      ),
+      refused,
+      silent: false,
+      dispatched: rows,
+    };
+  }
   if (pipeline.kind === "uncovered")
     return {
       outcome: withReaskNote(

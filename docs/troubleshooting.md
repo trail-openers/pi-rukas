@@ -193,6 +193,25 @@ criterion needs restating; otherwise remove the finished run's `.pi/lean-state/<
 finished record answers a second run with its stamped result) and re-run.
 `PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK=0` restores the exit-11 decline for a host that keys on it.
 
+### Symptom: a red-test-gap handback names a criterion that was meant to keep holding
+
+**Symptom:** a `red-test-gap` handback lists a criterion whose test the child wrote as a guard for
+existing behaviour, and the comment carries the line *a test that passes on the base may also mean the
+criterion already holds there*, beside the newer *if this criterion must keep holding, declare it as
+preserved when submitting*.
+
+**Cause:** the child wrote a good red test for every other criterion and a green guard for that one, and
+did not declare it. A preservation criterion states behaviour the base already has, so its file cannot be
+red there; before the declaration existed that was simply the gap and the cycle ended.
+
+**Fix:** re-run with a child that passes `preserves: true` on that criterion's `submit_tests` call (the
+specify prompt names the field, so a current child can state it itself). The declared file is frozen as a
+must-pass file and `verify` runs it at head, so it is a real check rather than a waived one. What the run
+still refuses: a criterion with no file, a file that cannot fail, and a spec whose every criterion is
+preserved. A preserved test that asserts nothing looks exactly like a genuine guard at specify - the
+mitigations are that it must stay green at head and that the ids are named in the handback comment and the
+PR body. `PI_ENSEMBLE_LEAN_SPECIFY_PRESERVES=0` restores the release where the field did not exist.
+
 ### Symptom: a lean run hands back with `frozen tests cannot all pass together`
 
 **Symptom:** a `build` handback names `frozen tests cannot all pass together: <path> — <reason>`, and its

@@ -19,6 +19,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { leanSpecifyPreservesEnabled } from "../lean-specify-preserves-switch.ts";
 import { Type } from "@sinclair/typebox";
 
 /**
@@ -32,10 +33,15 @@ export const SUBMIT_TESTS_REPORTER_PATH = path.join(
   "submit-tests-reporter.ts",
 );
 
+/** The declaration's own description, so the schema text is one string the off arm simply omits. */
+const PRESERVES_SCHEMA_DESCRIPTION =
+  "True when this criterion states behaviour that must KEEP working, so its test passes on the base by design. The file is then frozen and must pass at head. Omit or false for an ordinary red test.";
+
 interface SubmitTestsInput {
   criterionId: string;
   testFiles: string[];
   note?: string;
+  preserves?: boolean;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -61,6 +67,13 @@ export default function (pi: ExtensionAPI) {
           description: "One line on what the test asserts and why it fails today.",
         }),
       ),
+      ...(leanSpecifyPreservesEnabled()
+        ? {
+            preserves: Type.Optional(
+              Type.Boolean({ description: PRESERVES_SCHEMA_DESCRIPTION }),
+            ),
+          }
+        : {}),
     }),
     async execute(_id, raw) {
       const params = raw as SubmitTestsInput;
