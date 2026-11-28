@@ -45,38 +45,35 @@ export function isReportRoute(log: Step[]): boolean {
 
 /**
  * Does the newest work step `newest` make the report entry the engine's route? The fold asks it
- * twice, about two logs: at the MOVE, and at a no-arrow entry (#2667's routed record).
+ * about the log it is judging, and the routing acts on the same answer: an entry the routing writes
+ * must be one the fold admits, and a run the head rule refuses must have no report entry at all.
  */
 export function reportRouteFor(newest: Step, log: Step[]): boolean {
   if (newest.outcome?.kind === "fixed") return true;
   // The errored arm (#2667), and only with the switch on: the run the head rule would hand back is the
-  // run whose report entry this is. "Would hand back" is the head rule's own reading, asked over the same
-  // log the fold is judging, so the two readers cannot drift apart — and a green that named no head still
-  // earns the report, it just names no head.
+  // run whose report entry this is, and only over bytes its own gate NAMED — the head rule's reading is
+  // the judge, asked over the log the fold is judging, so the two readers cannot drift apart.
   return (
     newest.outcome?.kind === "error" &&
     leanReviewIncompleteHeadEnabled() &&
-    handbackHeads(log).applies
+    handbackHeads(log).verifiedHead !== undefined
   );
 }
 
 /**
- * Is the no-arrow entry `s` at index `i` the throw the route handed on, with the report's own
- * write-ahead after it? Stated as narrowly as the move: the throw's entry, then exactly one
- * report entry with nothing of the walk between them, the head rule holding that an errored
- * review over a certified head owes that report, and only on the side of the knob the routing
- * runs on. The route predicate and the head rule are consulted, not approximated.
+ * Is the entry at `i` a routed throw, with the report's own entry after it and nothing of the walk
+ * between? Stated as narrowly as the move, and only on the side of the knob the routing runs on: the
+ * route predicate and the head rule are consulted, not approximated.
  */
 export function routedThrowEntry(log: Step[], i: number): boolean {
   const s = log[i] as Step | undefined;
+  const report = log[i + 1];
   return (
     s?.state === "review" &&
     s.outcome?.kind === "error" &&
     i === log.length - 2 &&
-    log[i + 1]?.state === "handback" &&
-    log[i + 1]?.outcome === undefined &&
+    report?.state === "handback" &&
     log.filter((r) => r.state === "handback").length === 1 &&
-    leanReviewIncompleteHeadEnabled() &&
     reportRouteFor(s, log.slice(0, i + 1))
   );
 }

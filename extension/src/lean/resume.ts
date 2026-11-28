@@ -101,7 +101,7 @@ export function foldLog(
       // where a later save follows the write-ahead: the throw the runner stamped first, then the
       // report's visit, with the verdict left for the save that ends the run. The route's own
       // predicate decides that pairing; nothing else may put an entry after a write-ahead.
-      if (i !== log.length - 1 && !isReportRoute(log))
+      if (i !== log.length - 1 && !writeAheadThenRoute(log, i))
         at(`step ${s.key} carries no outcome but is not the newest step`);
       break;
     }
@@ -112,9 +112,7 @@ export function foldLog(
       // the head rule holding that an errored review over a certified head owes that report, and
       // only on the side of the knob the routing runs on. `reportRouteFor` (over the log up to the
       // throw) and the head rule are the judges, consulted rather than approximated.
-      const routed =
-        routedThrowEntry(log, i) ||
-        (i === log.length - 2 && reportEntryOfThrow(log, s.outcome.kind));
+      const routed = routedThrowEntry(log, i) || reportEntryOfThrow(log, s.outcome.kind);
       if (i !== log.length - 1 && !routed)
         at(`step ${s.key} + ${JSON.stringify(s.outcome.kind)} has no arrow and is not last`);
       // A routed throw is a run still OWING its report (a crash between the runner's two saves):
@@ -142,14 +140,16 @@ export function foldLog(
  * this is the FINISHED record. Both must fold, or a handed-back issue could never be opened again.
  */
 function reportEntryOfThrow(log: Step[], kind: string): boolean {
-  if (kind !== "error") return false;
-  const last = log[log.length - 1] as Step | undefined;
-  return (
-    last?.state === "handback" &&
-    last.outcome !== undefined &&
-    log.filter((r) => r.state === "handback").length === 1 &&
-    isReportRoute(log)
-  );
+  return kind === "error" && isReportRoute(log);
+}
+
+/**
+ * Is the verdictless entry at `i` the report's own write-ahead, standing where a routed throw left it?
+ * The route predicate judges the log (#2667's routed record is the one shape where a save follows a
+ * write-ahead), and the entry's own position says it is the last thing the run wrote.
+ */
+function writeAheadThenRoute(log: Step[], i: number): boolean {
+  return i === log.length - 1 && isReportRoute(log);
 }
 
 /**
