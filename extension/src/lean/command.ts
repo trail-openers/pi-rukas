@@ -426,8 +426,8 @@ export async function runWorkLean(
     repoRoot,
     issue,
     handlers: handlersFor(repoRoot, issue, opts, seed),
-    // The switch is read ONCE, at creation, and persisted: a run is judged by the rules it started under, and
-    // a resume ignores the seed, so it keeps the value its first visit stamped.
+    // Read ONCE, at creation, and persisted: a resume ignores the seed, so a run keeps the reading its
+    // first visit stamped.
     seed: { version: seed.version, baseSha: seed.baseSha, oracleRepair: leanOracleRepairEnabled() },
     // The flag travels as a VALUE (`flagBudgetMs` mints the brand from the verb's parsed
     // minutes), never as an env write: one run's `--timeout` must not become the deadline of every

@@ -152,16 +152,18 @@ export async function buildOutcome(
   const config = await deps.loadConfig(repoRoot, base).catch((err: unknown) => {
     throw new BuildInfraError(`could not load the project config: ${(err as Error).message}`);
   });
-  // The spec, re-read from the forge: a build against an unread spec is fiction. The accessor, because a
-  // derived run has no block on its issue and `ready` validated its contract.
+  // The spec, re-read from the forge: a build against an unread spec is fiction. The accessor,
+  // because a derived run has no block on its issue and `ready` already validated its contract.
   const { spec, body: issueBody } = await rereadSpec(
     () => deps.fetchIssueBody(repoRoot, issue),
     ctx.run,
     (m) => new BuildInfraError(m),
   );
-  // Rounds this run has DISPATCHED and paid for: `buildAttempts` counts dispatches, not
-  // table visits, since the table bills a round on entering `build` and never on leaving it.
-  // The round this visit is running is not in the count yet — the edge entering `build`
+  // Rounds this run has DISPATCHED and paid for. `buildAttempts` is the authority
+  // because the table bills a round on entering `build` and never on leaving it: it
+  // counts dispatches, not table visits, so one child a ceiling stopped costs one
+  // round and the retry loop below stops only when the budget is spent. The round
+  // this visit is running is not in the count yet — the edge that enters `build`
   // bills it when the engine applies the verdict — hence the +1 below.
   const dispatchedBefore = ctx.run.counters.buildAttempts;
   // What the child's prompt and its commit subject call the round: the decided
