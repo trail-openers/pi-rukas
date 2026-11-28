@@ -189,7 +189,7 @@ export async function runTestPipeline(
     Object.fromEntries(kept.map((row) => [row.criterionId, row.testFiles])),
   );
   const skippedNote = skipped > 0 ? ` (${skipped} malformed submit_tests call(s))` : "";
-  // The preservation rule and its wording: `lean-preserved-step.ts`, `lean-preserved-coverage.ts`.
+  // The rule and its wording: `lean-preserved-step.ts`, `lean-preserved-coverage.ts`.
   const isPreserved = declaredPreserved(kept);
   if (candidates.length === 0) {
     return {
@@ -373,7 +373,7 @@ export async function runTestPipeline(
   }
 
   // 6. Coverage. ONLY `"all-criteria"` refuses a gap: `specify` needs a red for every test criterion, while
-  //    `challenge` keeps whatever red it earned. Only a DECLARED preserved criterion is excused (see below).
+  //    `challenge` keeps whatever red it earned. Only a DECLARED criterion is excused.
   const coverage = preservedCoverage({ candidates, kinds, rows: kept, wanted: args.wanted });
   const { mustPass, preservedIds } = coverage;
   if (args.coverage === "all-criteria") {
@@ -389,7 +389,7 @@ export async function runTestPipeline(
     }
   }
 
-  // 7. COMMIT the red and preserved must-pass files, and assert the commit is exactly them.
+  // 7. COMMIT them, and assert the commit is exactly them.
   const paths = [...new Set([...red.map((r) => r.path), ...mustPass])];
   try {
     await commitTestFiles(exec, wt, headBefore, paths, args.commitMessage);
