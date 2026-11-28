@@ -44,10 +44,9 @@ import {
 } from "./lean-review-incomplete-head-consts.ts";
 import {
   completedReview,
-  erroredReview,
   gateRefusal,
   gateVerdict,
-  plantStranger,
+  pendingStranger,
 } from "./lean-review-incomplete-head-gate.ts";
 import {
   CAUSES,
@@ -191,6 +190,12 @@ export async function driveRow(
     verifyKind?: "green" | "red" | "headless" | "undecided";
     reviewKind?: "throw" | "done" | "fixed";
     pushStranger?: boolean;
+    /**
+     * Moves origin off the certified head BEFORE the reporting step reads it, which is the arm
+     * where the rewind finds a head it does not own and must not overwrite. `pushStranger` moves
+     * it inside the push's own window instead, which is the arm the lease answers.
+     */
+    movedBeforeRead?: boolean;
   } = {},
 ): Promise<PanelRun> {
   const { repoRoot, origin, baseSha } = makeRepo();
@@ -376,42 +381,80 @@ export async function driveRow(
   }
 
 
-  // The stranger arm has no review to plant in — the review completed, and it is the REPORT
-  // that must find origin holding a head nobody certified. Its handler plants the stranger
-  // between the report's rewind and its own read of origin.
-  // What the reporting step's own origin read saw, and whether it planted the stranger. Both
-  // are outputs of the step, read back after the run.
+  // Two stranger arms, because the reporting step answers differently depending on WHEN origin
+  // moved, and a row has to say which one it drove.
+  //
+  //   `movedBeforeRead` — origin moves before the reporting step is called. Its rewind reads a head
+  //     the run never pushed, and its own `alreadyAtVerified` / refusal wording is what the record
+  //     has to carry.
+  //   `pushStranger` — origin moves from inside the rewind's own push, after that step read origin.
+  //     That is the window `--force-with-lease=<branch>:<held>` guards, and the refusal it produces
+  //     says `the lease refused the rewind`.
+  //
+  // `pendingStranger` makes the commit once and leaves the instant to the caller. The stranger
+  // travels to origin over a transport and its object is fetched into the clone the rewind pushes
+  // from: a stranger that only ever appears in origin's ref store makes origin name bytes it never
+  // received, and the push then dies at `bad object` with the lease never evaluated.
   let planted: string | undefined;
   let originAtReport: string | undefined;
-  const strangerHandback: LeanHandlers["handback"] = (ctx) => {
-    visited.push("handback");
-    seen.handback = (seen.handback ?? 0) + 1;
-    return handbackOutcome(
-      ctx,
-      async (_r, _i, body) => void posts.push(body),
-      // The rewind reads origin, checks its lease against that value and pushes. Planting the
-      // stranger before that read means the value the rewind authorised is not origin's, and
-      // the lease is what refuses the move.
-      async (verified) => {
-        // The rewind reads origin, decides its lease against that value, and pushes. Planting
-        // the stranger on the first call — before that read — is the arm: the value the lease
-        // was authorised against is no longer origin's when the push runs, so the rewind has to
-        // refuse rather than overwrite a head it never saw.
-        if (planted === undefined) planted = plantStranger(origin, verifiedHead);
-        return await rewindToVerified(exec, { repoRoot, issue: ISSUE, run: ctx.run }, verified, {
-          net: true,
-        });
-      },
-      () => {
-        originAtReport = originRef(origin);
-        return originAtReport;
-      },
-    );
+  const strangerHandback = (arm: "read" | "push"): LeanHandlers["handback"] => {
+    return (ctx) => {
+      visited.push("handback");
+      seen.handback = (seen.handback ?? 0) + 1;
+      const stranger = pendingStranger(origin, verifiedHead, repoRoot);
+      let raced = false;
+      const move = (): string => {
+        if (planted === undefined) {
+          planted = stranger.push();
+          // The bare sha form, which refreshes no ref: the branch is checked out in the run's
+          // worktree, and git refuses a fetch that would write a checked-out branch.
+          git(repoRoot, "fetch", "-q", "origin", planted);
+          if (originRef(origin) === verifiedHead)
+            throw new Error(`origin's ${BRANCH} did not move, so the row proved nothing`);
+        }
+        return planted;
+      };
+      if (arm === "read") {
+        // Origin moves, and the clone the rewind pushes from is NOT told: that is what makes the
+        // rewind's refusal a refusal of its own rules rather than a transport accident.
+        planted = stranger.moveUnseen();
+      }
+      const rigExec: typeof exec = async (cmd, opts) => {
+        if (arm === "push" && (opts?.argv ?? []).includes("push") && !raced) {
+          if (raced) throw new Error("the rewind pushed twice, so a second refusal proves nothing");
+          raced = true;
+          move();
+        }
+        return await exec(cmd, opts);
+      };
+      return handbackOutcome(
+        ctx,
+        async (_r, _i, body) => void posts.push(body),
+        (verified) =>
+          rewindToVerified(
+            arm === "push" ? rigExec : exec,
+            { repoRoot, issue: ISSUE, run: ctx.run },
+            verified,
+            { net: true },
+          ),
+        // Where the reporting step found origin once the rewind is done: read back off origin, never
+        // handed to the record as a literal.
+        () => {
+          originAtReport = originRef(origin);
+          return originAtReport;
+        },
+      );
+    };
   };
   const r = await runLean({
     repoRoot,
     issue: ISSUE,
-    handlers: opts.pushStranger === true ? { ...handlers, handback: strangerHandback } : handlers,
+    handlers:
+      opts.pushStranger === true
+        ? { ...handlers, handback: strangerHandback("push") }
+        : opts.movedBeforeRead === true
+          ? { ...handlers, handback: strangerHandback("read") }
+          : handlers,
     now: clock,
     seed: { baseSha, branch: BRANCH },
   });

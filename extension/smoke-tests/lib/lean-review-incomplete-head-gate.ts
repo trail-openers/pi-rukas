@@ -7,20 +7,14 @@
  * not the one under test. The step under test (the review) is driven for real by the panel.
  */
 
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Outcome, Step } from "../../src/lean/state.ts";
 import { git } from "./lean-review-fixtures.ts";
 import { put } from "./lean-build-fixture.ts";
 import { landedRoster } from "./lean-roster-fixture.ts";
-import { BRANCH } from "./lean-review-incomplete-head-consts.ts";
-
-/** The record the engine writes when a handler throws: `errorOutcome`'s own shape. */
-export function erroredReview(): Outcome {
-  return { kind: "error", message: "the row's gate named no head, so the review step cannot run" };
-}
-
+import { BRANCH, ISSUE } from "./lean-review-incomplete-head-consts.ts";
 
 /** The step's own words for a head it is told it cannot answer on. */
 export function gateRefusal(verdict: "red" | "headless" | "undecided"): string {
@@ -80,18 +74,28 @@ export function completedReview(kind: "done" | "fixed", steps: Step[]): Outcome 
 }
 
 /**
- * A commit on top of the branch's head, pushed to origin so the rewind's lease must refuse.
+ * A commit nobody certified, on top of the branch's head, and the one call that puts it on origin.
  *
- * Made in a scratch detached worktree, not by checking the branch out in the clone: the run's
- * own worktree owns the branch, and pushing a new commit by sha needs no checkout. The stranger
- * is then fetched into the clone's own tracking ref, so the rewind reaches its lease check with
- * an object it can prove rather than failing the earlier "this clone cannot see that head" guard.
+ * Made in a scratch detached worktree, not by checking the branch out in the clone: the run's own
+ * worktree owns the branch, and pushing a new commit by sha needs no checkout. The caller decides
+ * WHEN origin moves, because the two refusals a rewind gives live in two different windows:
+ *
+ *   - `push()` BEFORE the step reads origin — the step reads a head it never pushed and refuses to
+ *     overwrite a head it does not own;
+ *   - `push()` from inside the rewind's push, AFTER that step read origin — the lease binds to the
+ *     value the step read, so the lease is what refuses, and the refusal says so. A stranger that
+ *     only ever appears in origin's ref store, never over a transport, makes origin name bytes it
+ *     never received: the push then dies at `bad object` with the lease never evaluated, which is
+ *     the transport's refusal and not this arm.
+ *
+ * `fetchInto` puts the object in the clone the rewind pushes from, which is what lets the
+ * keeping-ref spec name a provable object instead of failing at `bad object`.
  */
-export function plantStranger(origin: string, head: string): string {
-  // A clone of the run's own origin, and the stranger committed on the certified head. The
-  // run's clone is never written to: a stranger it could see is a stranger a lease accepts, and
-  // this row is about the refusal. The branch is not checked out in origin itself, so origin's
-  // `receive.denyCurrentBranch` does not answer for the push — the lease does.
+export function pendingStranger(
+  origin: string,
+  head: string,
+  fetchInto?: string,
+): { sha: string; push: () => string; fetched: () => string } {
   const stranger = mkdtempSync(path.join(tmpdir(), "lean-stranger-"));
   git(stranger, "clone", "-q", "--no-checkout", origin, "repo");
   const repo = path.join(stranger, "repo");
@@ -101,6 +105,53 @@ export function plantStranger(origin: string, head: string): string {
   git(w, "add", "-A");
   git(w, "commit", "-q", "-m", "a head nobody verified");
   const sha = git(w, "rev-parse", "HEAD");
-  git(repo, "push", "-q", "origin", `+${sha}:refs/heads/${BRANCH}`);
-  return sha;
+  let pushed = false;
+  let fetched = false;
+  return {
+    sha,
+    /** Move origin's branch to the stranger, and teach the rewind's clone the object. */
+    push: () => {
+      if (!pushed) {
+        git(repo, "push", "-q", "origin", `+${sha}:refs/heads/${BRANCH}`);
+        pushed = true;
+      }
+      return sha;
+    },
+    /**
+     * Move origin's branch to the stranger WITHOUT the rewind's clone learning it was told.
+     *
+     * Two steps, both needed. The objects travel on a ref the rewind never names, from the clone
+     * that holds them, so origin really received the bytes — a branch file written by hand makes
+     * origin name bytes it never got, and the rewind's push then dies at `bad object` with none of
+     * its rules consulted. The branch is then repointed at that sha, so the rewind reads a head it
+     * has no licence to move and must refuse rather than overwrite somebody else's work.
+     */
+    moveUnseen: () => {
+      if (!pushed) {
+        git(repo, "push", "-q", "origin", `+${sha}:refs/lean/stranger/${String(ISSUE)}`);
+        const ref = `refs/heads/${BRANCH}`;
+        const file = path.join(origin, ...ref.split("/"));
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, `${sha}\n`, { encoding: "utf8" });
+        if (git(origin, "rev-parse", ref) !== sha)
+          throw new Error(`origin's ${ref} was not moved to ${sha}, so the row moved nothing`);
+        pushed = true;
+      }
+      return sha;
+    },
+    fetched: () => {
+      if (fetchInto !== undefined && !fetched) {
+        git(fetchInto, "fetch", "-q", "origin", sha);
+        fetched = true;
+      }
+      return sha;
+    },
+  };
+}
+
+/** The one-shot form: make the stranger and move origin to it at once. */
+export function plantStranger(origin: string, head: string, clone?: string): string {
+  const stranger = pendingStranger(origin, head, clone);
+  stranger.fetched();
+  return stranger.push();
 }

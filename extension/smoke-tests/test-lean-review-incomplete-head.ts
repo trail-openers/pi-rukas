@@ -298,34 +298,58 @@ function reviewFinding(steps: Step[]): string {
   );
 }
 
-// The rewind-refused arm, earned rather than asserted: origin moved after the review's
-// guards read it, so the lease must refuse and the head is disclosed, never pushed.
+// The rewind-refused arm, earned rather than asserted: the stranger is a commit that reached
+// origin over a real transport and whose objects the run's clone was never taught, so the rewind
+// reaches its own refusal rules with an object it cannot supply — the state a resumed run whose
+// clone never fetched the stranger is really in. The head is disclosed, nothing is pushed, and the
+// run stays a handback.
 {
-  const refused = await driveRow("budgetStop", { pushStranger: true });
+  const refused = await driveRow("budgetStop", { movedBeforeRead: true });
   assert(
-    refused.handback !== undefined,
-    "refused rewind: the row reached the reporting step to refuse at",
+    refused.handback !== undefined && refused.posts.length === 1,
+    `refused rewind: the row reached the reporting step to refuse at and posted once (posts ${String(refused.posts.length)})`,
   );
   assert(
-    refused.handback?.unshippedHead === refused.verifiedHead ||
-      refused.handback?.shippedHead !== refused.verifiedHead,
-    "refused rewind: origin's head is disclosed as what shipped, and it is not the certified one",
+    refused.originAfter !== refused.verifiedHead,
+    `refused rewind: the fixture really moved origin off the certified head (${refused.originAfter.slice(0, 8)} vs ${refused.verifiedHead.slice(0, 8)})`,
   );
   assert(
-    typeof refused.handback?.unshippedReason === "string",
-    "refused rewind: the record carries the refusal's own reason",
+    refused.handback?.shippedHead === refused.originAfter &&
+      refused.handback?.unshippedHead === undefined,
+    `refused rewind: origin's own head is disclosed as what shipped, and the step records nothing it displaced (${JSON.stringify([refused.handback?.shippedHead?.slice(0, 8), refused.originAfter.slice(0, 8), refused.handback?.unshippedHead?.slice(0, 8)])})`,
   );
   assert(
     refused.handback?.shippedVerified === false,
     "refused rewind: what origin holds is recorded as shipped and NOT certified",
   );
+  // The refusal is the rewind's own, in the rewind's own words, and it names the head origin
+  // really holds — read back off origin, not typed here.
   assert(
-    refused.code === 10 && refused.state === "handed-back",
-    "refused rewind: still a handback, never a landing",
+    typeof refused.handback?.unshippedReason === "string" &&
+      refused.handback.unshippedReason.includes("origin still holds") &&
+      refused.handback.unshippedReason.includes(refused.originAfter.slice(0, 12)),
+    `refused rewind: the record names origin's real head in the rewind's own words (${JSON.stringify(refused.handback?.unshippedReason)})`,
+  );
+  // The lease is one of two refusals this wording admits, and the row says WHICH: a lease refusal
+  // needs origin to have moved after the step read it, which `test-lean-rewind-lease-binds.ts`
+  // drives against a real origin. Here the step read the stranger, so the lease it bound matched
+  // and git refused for the reason the record carries. Asserting the lease wording on this row
+  // would pin a string rather than a refusal git gave.
+  assert(
+    refused.handback?.unshippedReason?.includes("the lease refused") !== true,
+    `refused rewind: the row names the refusal git actually gave, not the one the row is named for (${JSON.stringify(refused.handback?.unshippedReason)})`,
   );
   assert(
-    refused.handback?.shippedHead === refused.originAfter,
-    "refused rewind: the record's shipped head is what origin actually holds, unread by the run",
+    refused.keptRef === undefined,
+    `refused rewind: the atomic push wrote nothing under the keeping-ref (${String(refused.keptRef)})`,
+  );
+  assert(
+    refused.code === 10 && refused.state === "handed-back",
+    `refused rewind: still a handback, never a landing (code ${String(refused.code)}, ${refused.state})`,
+  );
+  assert(
+    !refused.visited.includes("ci") && !refused.visited.includes("land"),
+    `refused rewind: no ci and no land ran for a head its report refused (${refused.visited.join(",")})`,
   );
 }
 
