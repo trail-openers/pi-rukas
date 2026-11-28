@@ -73,9 +73,9 @@ function checkRow(cause: ReviewCause, row: PanelRun): void {
     `${cause}: the result names why review did not complete (${row.reason})`,
   );
   assert(
-    row.posts[0]?.includes("Why the review did not complete") === true &&
+    row.posts[0]?.includes("the review did not complete: ") === true &&
       row.posts[0]?.includes(thrown.slice(0, 24)) === true,
-    `${cause}: the comment says the review did not complete, in the throw's own words`,
+    `${cause}: the comment says the review did not complete, once, in the throw's own words`,
   );
   // The walk's own gate certified the head this row rewinds to — never a fixture literal.
   // A row that asked its gate to name no head proves the opposite: no head field anywhere.

@@ -108,6 +108,7 @@ export function endedBy(steps: Step[]): string | undefined {
   if (steps.some((s) => s.state === "handback" || s.state === "decline")) return undefined;
   const reason = ended.outcome.message ?? ended.outcome.reason;
   if (typeof reason !== "string" || reason.trim() === "") return undefined;
-  // A bare engine error is not a handoff because nobody said which step owed the work; this says so.
-  return `the review did not complete. Why the review did not complete: ${reason}`;
+  // A bare engine error is not a handoff because nobody said which step owed the work; this says so,
+  // once. The clause is stated one time with the reason after it, never twice around it.
+  return `the review did not complete: ${reason}`;
 }

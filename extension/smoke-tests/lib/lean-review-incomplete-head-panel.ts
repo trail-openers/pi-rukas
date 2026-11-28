@@ -58,6 +58,53 @@ import {
 /** Every row of the panel, in the order the issue's table lists them. */
 export { CAUSES, type ReviewCause };
 
+/**
+ * The walk that built a row's log, without its reporting step.
+ *
+ * A row that asks the head rule or the route predicate what they make of an errored review needs
+ * the walk's own bytes — its keys, its heads, its verdicts — with only the review's standing
+ * supplied. `handback` and `decline` are the two records the route and the rule count as their
+ * own entry, so a row about the shape BEFORE either drops them; which is what the
+ * `reportRouteFor` fold consultation reads too, over the log up to the throw. The rows that ask
+ * the question WITHOUT changing the review's standing — the `erroredReviewOver` rows below — keep
+ * the reporting entry in place, because the route is a claim about the record the run wrote.
+ */
+export function panelWalk(steps: Step[]): Step[] {
+  return steps.filter((s) => s.state !== "handback" && s.state !== "decline");
+}
+
+/**
+ * The same log with the newest decided WORK step made an `error` `review`, its key kept.
+ *
+ * One entry, the review's own standing and the error kind the engine's own `errorOutcome` writes
+ * for a handler that threw. The record's `message` is the first reason the reporting step's cause
+ * readers come to when the step above them does not answer, so it is what the NEEDING line quotes.
+ * `keepReport` leaves the walk's own reporting entry in place: the rows that ask what the ROUTING
+ * made of a run that really ended on a report are about those bytes, and dropping the entry they
+ * name would ask the question of a record no run wrote.
+ */
+export function erroredReviewOver(
+  steps: Step[],
+  opts: { message: string; keepReport?: boolean } = { message: "the review step threw" },
+): Step[] {
+  const walk = opts.keepReport === true ? steps : panelWalk(steps);
+  // The step whose standing is replaced is the walk's newest decided WORK entry, read the way the
+  // rule reads it: `REPORT_STATES` is excluded, so a row that keeps its reporting entry still puts
+  // the review's standing on the work step and not on the report.
+  const newest = [...walk]
+    .reverse()
+    .find((s) => s.outcome !== undefined && !["handback", "decline"].includes(s.state));
+  if (newest === undefined) throw new Error("erroredReviewOver: the walk decided no work step");
+  const entry: Step = {
+    key: newest.key,
+    state: "review",
+    startedAt: newest.startedAt,
+    ...(newest.endedAt === undefined ? {} : { endedAt: newest.endedAt }),
+    ...(newest.progress === undefined ? {} : { progress: newest.progress }),
+    outcome: errorOutcome("review", new Error(opts.message)),
+  };  return [...walk.filter((s) => s.key !== newest.key), entry];
+}
+
 /** A `budgets.review` with only the lever the row needs armed. */
 export function cfgWith(budget: Partial<Budget>) {
   const cfg = defaultConfig();
@@ -260,7 +307,9 @@ export async function driveRow(
       // engine writes for the row's refusal is `errorOutcome`'s own shape. The `headless` row
       // runs the step for real, because a green that named nothing does route.
       if (opts.verifyKind === "red" || opts.verifyKind === "undecided")
-        return errorOutcome("review", new Error(gateRefusal(opts.verifyKind)));
+      // The engine's own record for a handler that threw, so the refusal names the shape a throw
+      // really leaves rather than a stub's guess at it.
+      return errorOutcome("review", new Error(gateRefusal(opts.verifyKind)));
       return await reviewOutcome(ctx, deps);
     },
     // The control's walk is cut short the honest way: `ci` refuses the head. `ci + red` is the
