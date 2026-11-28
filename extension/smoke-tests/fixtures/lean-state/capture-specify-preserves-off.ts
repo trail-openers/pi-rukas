@@ -31,9 +31,18 @@
  */
 
 import { rmSync, writeFileSync } from "node:fs";
-import { captureOffArm, capturePreservesPanel, maskPreserves } from "../../lib/lean-specify-preserves-golden.ts";
+import {
+  captureOffArm,
+  capturePreservesPanel,
+  maskPreserves,
+} from "../../lib/lean-specify-preserves-golden.ts";
 import { ROOTS } from "../../lib/lean-specify-fixture.ts";
-import { PANEL_IDS, greenFile, redFile, testRel } from "../../lib/lean-specify-preservation-fixture.ts";
+import {
+  PANEL_IDS,
+  greenFile,
+  redFile,
+  testRel,
+} from "../../lib/lean-specify-preservation-fixture.ts";
 
 const PANEL_ROWS = PANEL_IDS.map((id) => ({
   id,

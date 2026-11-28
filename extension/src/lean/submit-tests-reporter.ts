@@ -19,8 +19,8 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { leanSpecifyPreservesEnabled } from "../lean-specify-preserves-switch.ts";
 import { Type } from "@sinclair/typebox";
+import { leanSpecifyPreservesEnabled } from "../lean-specify-preserves-switch.ts";
 
 /**
  * Where this file lives — the source directory of the extension — so `--extension` gets the real
@@ -69,9 +69,7 @@ export default function (pi: ExtensionAPI) {
       ),
       ...(leanSpecifyPreservesEnabled()
         ? {
-            preserves: Type.Optional(
-              Type.Boolean({ description: PRESERVES_SCHEMA_DESCRIPTION }),
-            ),
+            preserves: Type.Optional(Type.Boolean({ description: PRESERVES_SCHEMA_DESCRIPTION })),
           }
         : {}),
     }),

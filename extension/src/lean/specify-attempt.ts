@@ -11,16 +11,17 @@
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { verdictReasonClause } from "../lean-step-bound.ts";
-import { statReporterPath } from "../reporter-preflight.ts";
-import { makeRunId } from "../spawn-support.ts";
-import { traceWarn } from "../trace.ts";
-import type { DispatchResult } from "../types.ts";
 import {
   nothingToBuild,
   preservedCriteria,
   preservesDeclarationMalformed,
 } from "../lean-preserved-step.ts";
+import { verdictReasonClause } from "../lean-step-bound.ts";
+import { statReporterPath } from "../reporter-preflight.ts";
+import { makeRunId } from "../spawn-support.ts";
+import { allPreservedReason } from "../specify-preserves.ts";
+import { traceWarn } from "../trace.ts";
+import type { DispatchResult } from "../types.ts";
 import { didNoWork } from "./build-dispatch.ts";
 import type { TestLocation } from "./config-test-location.ts";
 import type { WorkConfig } from "./config.ts";
@@ -31,7 +32,6 @@ import type { Criterion, PiSpec } from "./spec.ts";
 import { RED_TEST_GAP, leanSpecifyGapHandbackEnabled } from "./specify-gap-switch.ts";
 import { existsInCommit, fileProblem } from "./specify-path.ts";
 import { specifyPrompt } from "./specify-prompt.ts";
-import { allPreservedReason } from "../specify-preserves.ts";
 import {
   adversaryDispatchOpts,
   leanSpecifyReaskEnabled,

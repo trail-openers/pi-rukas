@@ -14,13 +14,7 @@
 
 import type { WorkConfig } from "../../src/lean/config.ts";
 import type { Outcome } from "../../src/lean/state.ts";
-import {
-  type RunResult,
-  configWith,
-  makeRepo,
-  put,
-  runSpecify,
-} from "./lean-specify-fixture.ts";
+import { type RunResult, configWith, makeRepo, put, runSpecify } from "./lean-specify-fixture.ts";
 
 /** The runner template every case configures: `sh <file>`, so the shell grades the script itself. */
 export const RUNNER = "sh {file}";
@@ -71,12 +65,12 @@ ${JSON.stringify(
 
 /** A file that fails on the base and names itself — what the red proof counts as red. */
 export function redFile(): string {
-  return ['#!/bin/sh', 'echo "not ok - $(basename "$0")" 1>&2', "exit 1", ""].join("\n");
+  return ["#!/bin/sh", 'echo "not ok - $(basename "$0")" 1>&2', "exit 1", ""].join("\n");
 }
 
 /** A file that passes on the base: the shape a coverage gap and a preservation file share. */
 export function greenFile(): string {
-  return ['#!/bin/sh', 'echo "ok - $(basename "$0")"', "exit 0", ""].join("\n");
+  return ["#!/bin/sh", 'echo "ok - $(basename "$0")"', "exit 0", ""].join("\n");
 }
 
 /** The path the child writes for one criterion, named to carry the id as the boundary asks. */
@@ -90,7 +84,8 @@ export const ROSTER_FILES = 35;
 /** The base tree: a source file plus the project's own roster of test files. */
 export function panelRepo(): { repoRoot: string; baseSha: string } {
   const files: Record<string, string> = { "src/retry.ts": "export const retry = () => {};\n" };
-  for (let i = 0; i < ROSTER_FILES; i++) files[`project-tests/roster-${String(i)}.sh`] = "#!/bin/sh\nexit 0\n";
+  for (let i = 0; i < ROSTER_FILES; i++)
+    files[`project-tests/roster-${String(i)}.sh`] = "#!/bin/sh\nexit 0\n";
   return makeRepo(files);
 }
 
@@ -102,7 +97,7 @@ export interface PanelRow {
   script?: string;
   /** The `preserves` value the child puts on the call, if any. */
   preserves?: unknown;
-    /** Give this row its own path, so one criterion can carry two files. */
+  /** Give this row its own path, so one criterion can carry two files. */
   rel?: string;
 }
 

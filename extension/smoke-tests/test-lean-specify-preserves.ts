@@ -80,20 +80,32 @@ function headOf(r: Awaited<ReturnType<typeof runPanel>>): string {
   return execFileSync("git", ["-C", r.worktree, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 }
 
-const rowsWith = (preservedId?: string, patch?: (row: ReturnType<typeof panelRows>[number]) => unknown) =>
-  panelRows(GREEN, preservedId).map((r) => (patch !== undefined && r.id === GREEN ? { ...r, ...patch(r) } : r));
+const rowsWith = (
+  preservedId?: string,
+  patch?: (row: ReturnType<typeof panelRows>[number]) => unknown,
+) =>
+  panelRows(GREEN, preservedId).map((r) =>
+    patch !== undefined && r.id === GREEN ? { ...r, ...patch(r) } : r,
+  );
 
 // (a) the switch: on by default, off only for the literal "0", and documented.
 await arm(undefined, async () =>
-  check("(a) unset means on", leanSpecifyPreservesEnabled() === true));
+  check("(a) unset means on", leanSpecifyPreservesEnabled() === true),
+);
 await arm("0", async () =>
-  check("(a) only the literal 0 turns it off", leanSpecifyPreservesEnabled() === false));
+  check("(a) only the literal 0 turns it off", leanSpecifyPreservesEnabled() === false),
+);
 await arm("false", async () =>
-  check("(a) any other value leaves it on", leanSpecifyPreservesEnabled() === true));
+  check("(a) any other value leaves it on", leanSpecifyPreservesEnabled() === true),
+);
 {
   const doc = readFileSync(path.join(import.meta.dir, "../../docs/configuration.md"), "utf8");
   const row = doc.split("\n").find((l) => l.includes("`PI_ENSEMBLE_LEAN_SPECIFY_PRESERVES`"));
-  check("(a) the knob is documented with its default", row !== undefined && row.includes("| `1` |"), String(row));
+  check(
+    "(a) the knob is documented with its default",
+    row !== undefined && row.includes("| `1` |"),
+    String(row),
+  );
 }
 
 // (b) the panel shape COMPLETES: four red files, one declared-preserved green file.
@@ -104,14 +116,20 @@ const freshRows = (preservedId?: string) =>
     ...(id === preservedId ? { preserves: true } : {}),
   }));
 const freshRowsWith = (preservedId?: string, patch?: () => unknown) =>
-  freshRows(preservedId).map((r) => (r.id === GREEN && patch !== undefined ? { ...r, ...patch() } : r));
+  freshRows(preservedId).map((r) =>
+    r.id === GREEN && patch !== undefined ? { ...r, ...patch() } : r,
+  );
 
 function redFileFixture() {
-  return ['#!/bin/sh', 'echo "not ok - $(basename "$0")" 1>&2', "exit 1", ""].join("\n");
+  return ["#!/bin/sh", 'echo "not ok - $(basename "$0")" 1>&2', "exit 1", ""].join("\n");
 }
 const panel = await arm(undefined, () => runPanel({ issue: 2668, rows: freshRows(GREEN) }));
 check("(b) the step froze instead of refusing", panel.threw === undefined, said(panel));
-check("(b) the record kind is the ordinary freeze", panel.outcome?.kind === "ok", String(panel.outcome?.kind));
+check(
+  "(b) the record kind is the ordinary freeze",
+  panel.outcome?.kind === "ok",
+  String(panel.outcome?.kind),
+);
 check(
   "(b) the record names the preserved criterion",
   JSON.stringify(panel.outcome?.preserved) === JSON.stringify([GREEN]),
@@ -119,7 +137,9 @@ check(
 );
 check(
   "(b) all five criteria hold exactly one frozen file",
-  PANEL_IDS.every((id) => JSON.stringify(panel.outcome?.tests?.[id]) === JSON.stringify([testRel(id)])),
+  PANEL_IDS.every(
+    (id) => JSON.stringify(panel.outcome?.tests?.[id]) === JSON.stringify([testRel(id)]),
+  ),
   JSON.stringify(panel.outcome?.tests),
 );
 check(
@@ -129,7 +149,9 @@ check(
 );
 check(
   "(b) the reason discloses the freeze by name",
-  String(panel.outcome?.reason).includes(`preserved 1 criterion/criteria (${GREEN}), frozen as must-pass at head`),
+  String(panel.outcome?.reason).includes(
+    `preserved 1 criterion/criteria (${GREEN}), frozen as must-pass at head`,
+  ),
   said(panel),
 );
 check(
@@ -141,7 +163,10 @@ check(
 const declaredButRefused = await arm(undefined, () =>
   // A declared row the boundary refuses (an id the spec does not carry) keeps the RECORD honest: the list
   // names only what the step froze, so no disclosure can claim a freeze the step did not make.
-  runPanel({ issue: 2677, rows: freshRows(GREEN).map((r) => (r.id === GREEN ? { ...r, id: "AC9" } : r)) }),
+  runPanel({
+    issue: 2677,
+    rows: freshRows(GREEN).map((r) => (r.id === GREEN ? { ...r, id: "AC9" } : r)),
+  }),
 );
 check(
   "(b) a declared criterion the spec does not carry is no exemption",
@@ -163,12 +188,18 @@ const handbackText = neededFromLog([
 ]);
 check(
   "(b) a handback's own cause names the preserved criterion and its file",
-  handbackText.includes(`preserved 1: ${GREEN} (${testRel(GREEN)}); each is frozen and must pass at head`),
+  handbackText.includes(
+    `preserved 1: ${GREEN} (${testRel(GREEN)}); each is frozen and must pass at head`,
+  ),
   handbackText.slice(-220),
 );
 const body = publishBody({
   issue: 2668,
-  spec: { problem: "p", size: "S", criteria: PANEL_IDS.map((id) => ({ id, text: id, verify: "test" as const })) },
+  spec: {
+    problem: "p",
+    size: "S",
+    criteria: PANEL_IDS.map((id) => ({ id, text: id, verify: "test" as const })),
+  },
   tests: panel.outcome?.tests ?? {},
   draft: false,
   version: "0.0.0",
@@ -176,27 +207,85 @@ const body = publishBody({
   baseSha: panel.baseSha,
   preserved: panel.outcome?.preserved,
 });
-check("(b) the PR body carries its own preserved line", body.includes(`- preserved: preserved 1: ${GREEN} (${testRel(GREEN)}); each is frozen and must pass at head`), body.split("\n").filter((l) => l.includes("preserv")).join(" | ") || "NO PRESERVED LINE");
+check(
+  "(b) the PR body carries its own preserved line",
+  body.includes(
+    `- preserved: preserved 1: ${GREEN} (${testRel(GREEN)}); each is frozen and must pass at head`,
+  ),
+  body
+    .split("\n")
+    .filter((l) => l.includes("preserv"))
+    .join(" | ") || "NO PRESERVED LINE",
+);
 
 // (c) the SAME shape with no declaration is still the gap.
 const undeclared = await arm(undefined, () => runPanel({ issue: 2669, rows: rowsWith(undefined) }));
-check("(c) an undeclared green is still refused", undeclared.outcome?.kind === "red-test-gap", String(undeclared.outcome?.kind));
-check("(c) naming the criterion the child refused to prove", said(undeclared).includes(`criterion ${GREEN} has no red test`), said(undeclared));
-check("(c) and the ordinary gap accounting is untouched", undeclared.dispatched === 1, String(undeclared.dispatched));
+check(
+  "(c) an undeclared green is still refused",
+  undeclared.outcome?.kind === "red-test-gap",
+  String(undeclared.outcome?.kind),
+);
+check(
+  "(c) naming the criterion the child refused to prove",
+  said(undeclared).includes(`criterion ${GREEN} has no red test`),
+  said(undeclared),
+);
+check(
+  "(c) and the ordinary gap accounting is untouched",
+  undeclared.dispatched === 1,
+  String(undeclared.dispatched),
+);
 check("(c) with no preserved record", undeclared.outcome?.preserved === undefined);
 
 // (d) a row that declares preservation and writes nothing is a MISSING test, not a frozen nothing.
-const phantom = await arm(undefined, () => runPanel({ issue: 2670, rows: panelRows(GREEN, GREEN).map((r) => (r.id === GREEN ? { ...r, script: undefined } : r)) }));
-check("(d) a preserved row with no file is still a missing test", phantom.outcome?.kind === "red-test-gap", said(phantom));
-check("(d) and the reason is the missing-file rule", said(phantom).includes("does not exist in the worktree"), said(phantom));
+const phantom = await arm(undefined, () =>
+  runPanel({
+    issue: 2670,
+    rows: panelRows(GREEN, GREEN).map((r) => (r.id === GREEN ? { ...r, script: undefined } : r)),
+  }),
+);
+check(
+  "(d) a preserved row with no file is still a missing test",
+  phantom.outcome?.kind === "red-test-gap",
+  said(phantom),
+);
+check(
+  "(d) and the reason is the missing-file rule",
+  said(phantom).includes("does not exist in the worktree"),
+  said(phantom),
+);
 
 // (e) a spec made ENTIRELY of guards has nothing to build, and says so once.
-const allPreserved = await arm(undefined, () => runPanel({ issue: 2671, rows: PANEL_IDS.map((id) => ({ id, script: greenFile(), preserves: true })) }));
-check("(e) an all-preserved spec is refused", allPreserved.outcome?.kind === "red-test-gap", said(allPreserved));
-check("(e) with its own reason, not 'wrote nothing usable'", said(allPreserved).includes("every test criterion is preserved"), said(allPreserved));
-check("(e) the reason is the rule module's own sentence", said(allPreserved).startsWith(allPreservedReason(PANEL_IDS)), said(allPreserved));
-check("(e) so it froze nothing and re-asked nobody", Object.keys(allPreserved.outcome?.frozen ?? {}).length === 0 && allPreserved.dispatched <= 1, String(allPreserved.dispatched));
-check("(e) and the rule is stable for the same ids", allPreservedReason(PANEL_IDS) === allPreservedReason(PANEL_IDS));
+const allPreserved = await arm(undefined, () =>
+  runPanel({
+    issue: 2671,
+    rows: PANEL_IDS.map((id) => ({ id, script: greenFile(), preserves: true })),
+  }),
+);
+check(
+  "(e) an all-preserved spec is refused",
+  allPreserved.outcome?.kind === "red-test-gap",
+  said(allPreserved),
+);
+check(
+  "(e) with its own reason, not 'wrote nothing usable'",
+  said(allPreserved).includes("every test criterion is preserved"),
+  said(allPreserved),
+);
+check(
+  "(e) the reason is the rule module's own sentence",
+  said(allPreserved).startsWith(allPreservedReason(PANEL_IDS)),
+  said(allPreserved),
+);
+check(
+  "(e) so it froze nothing and re-asked nobody",
+  Object.keys(allPreserved.outcome?.frozen ?? {}).length === 0 && allPreserved.dispatched <= 1,
+  String(allPreserved.dispatched),
+);
+check(
+  "(e) and the rule is stable for the same ids",
+  allPreservedReason(PANEL_IDS) === allPreservedReason(PANEL_IDS),
+);
 
 // (f)+(g) THE ROSTER IS NEVER EXCUSED. A declared criterion that also carries a red file gets that file
 // proved, so its row reaches the freeze check; a file the project's own gate cannot stand is deleted and the
@@ -206,32 +295,70 @@ const breaker = (names: string): string =>
   `#!/bin/sh\necho "${names}" 1>&2\necho "${ROSTER_DAMAGE}" 1>&2\nexit 1\n`;
 /** Four ordinary reds, plus the criterion carrying both a naming red that breaks the gate and a green. */
 const rowsBreakingGate = (preservedId?: string) =>
-  PANEL_IDS.filter((id) => id !== GREEN).map((id) => ({ id, script: redFileFixture() })).concat([
-    { id: GREEN, script: redFileFixture() },
-    {
-      id: GREEN,
-      script: breaker(`not ok - ${GREEN}-guard.test.sh`),
-      rel: `tests/${GREEN}-guard.test.sh`,
-      ...(preservedId === GREEN ? { preserves: true } : {}),
-    },
-  ]);
+  PANEL_IDS.filter((id) => id !== GREEN)
+    .map((id) => ({ id, script: redFileFixture() }))
+    .concat([
+      { id: GREEN, script: redFileFixture() },
+      {
+        id: GREEN,
+        script: breaker(`not ok - ${GREEN}-guard.test.sh`),
+        rel: `tests/${GREEN}-guard.test.sh`,
+        ...(preservedId === GREEN ? { preserves: true } : {}),
+      },
+    ]);
 const brokeUndeclared = await arm(undefined, () =>
   runPanel({ issue: 2672, rows: rowsBreakingGate(undefined), config: CONFIG_WITH_FREEZE_CHECK }),
 );
-check("(f) a candidate the project's gate cannot stand is refused", brokeUndeclared.outcome?.kind === "red-test-gap", said(brokeUndeclared));
-check("(f) and the offender is disclosed by the gate's own words", said(brokeUndeclared).includes(ROSTER_DAMAGE), said(brokeUndeclared));
-check("(f) with no criterion excused", said(brokeUndeclared).includes(`criterion ${GREEN} has no red test`), said(brokeUndeclared));
-check("(f) and nothing was frozen", Object.keys(brokeUndeclared.outcome?.frozen ?? {}).length === 0, JSON.stringify(brokeUndeclared.outcome?.frozen));
+check(
+  "(f) a candidate the project's gate cannot stand is refused",
+  brokeUndeclared.outcome?.kind === "red-test-gap",
+  said(brokeUndeclared),
+);
+check(
+  "(f) and the offender is disclosed by the gate's own words",
+  said(brokeUndeclared).includes(ROSTER_DAMAGE),
+  said(brokeUndeclared),
+);
+check(
+  "(f) with no criterion excused",
+  said(brokeUndeclared).includes(`criterion ${GREEN} has no red test`),
+  said(brokeUndeclared),
+);
+check(
+  "(f) and nothing was frozen",
+  Object.keys(brokeUndeclared.outcome?.frozen ?? {}).length === 0,
+  JSON.stringify(brokeUndeclared.outcome?.frozen),
+);
 check("(f) with no preserved list", brokeUndeclared.outcome?.preserved === undefined);
 
 const brokeDeclared = await arm(undefined, () =>
   runPanel({ issue: 2673, rows: rowsBreakingGate(GREEN), config: CONFIG_WITH_FREEZE_CHECK }),
 );
-check("(g) declaring does not excuse the project's own tests", brokeDeclared.outcome?.kind === "red-test-gap", said(brokeDeclared));
-check("(g) the criterion is not excused", said(brokeDeclared).includes(`criterion ${GREEN} has no red test`), said(brokeDeclared));
-check("(g) its files are absent from the contract", brokeDeclared.outcome?.tests?.[GREEN] === undefined, JSON.stringify(brokeDeclared.outcome?.tests?.[GREEN]));
-check("(g) and the offender is disclosed", said(brokeDeclared).includes(ROSTER_DAMAGE), said(brokeDeclared));
-check("(g) so a declaration froze nothing", brokeDeclared.outcome?.preserved === undefined, JSON.stringify(brokeDeclared.outcome?.preserved));
+check(
+  "(g) declaring does not excuse the project's own tests",
+  brokeDeclared.outcome?.kind === "red-test-gap",
+  said(brokeDeclared),
+);
+check(
+  "(g) the criterion is not excused",
+  said(brokeDeclared).includes(`criterion ${GREEN} has no red test`),
+  said(brokeDeclared),
+);
+check(
+  "(g) its files are absent from the contract",
+  brokeDeclared.outcome?.tests?.[GREEN] === undefined,
+  JSON.stringify(brokeDeclared.outcome?.tests?.[GREEN]),
+);
+check(
+  "(g) and the offender is disclosed",
+  said(brokeDeclared).includes(ROSTER_DAMAGE),
+  said(brokeDeclared),
+);
+check(
+  "(g) so a declaration froze nothing",
+  brokeDeclared.outcome?.preserved === undefined,
+  JSON.stringify(brokeDeclared.outcome?.preserved),
+);
 
 // (g2) A declaration may not smuggle a second, green file into the contract for a criterion that already
 // has a red one: the row is an ordinary red test, and only the file the proof saw fail is frozen.
@@ -272,27 +399,81 @@ const PANEL_PANEL_ROWS = PANEL_IDS.map((id) => ({
   ...(id === GREEN ? { preserves: true } : {}),
 }));
 const offPanel = await arm("0", () => capturePreservesPanelArm(2674, PANEL_PANEL_ROWS));
-check("(h) the panel shape is refused again with the switch off", offPanel.record.kind === "red-test-gap", offPanel.record.kind);
-check("(h) the off record is the pre-field record of the same panel run", JSON.stringify(offPanel.record.outcome) === JSON.stringify(fixture.panel?.outcome), JSON.stringify(offPanel.record.outcome));
-check("(h) the off prompt is the pre-field prompt, byte for byte", maskPreservesText(offPanel.prompt) === fixture.prompt, `${maskPreservesText(offPanel.prompt).length} vs ${fixture.prompt.length} chars`);
+check(
+  "(h) the panel shape is refused again with the switch off",
+  offPanel.record.kind === "red-test-gap",
+  offPanel.record.kind,
+);
+check(
+  "(h) the off record is the pre-field record of the same panel run",
+  JSON.stringify(offPanel.record.outcome) === JSON.stringify(fixture.panel?.outcome),
+  JSON.stringify(offPanel.record.outcome),
+);
+check(
+  "(h) the off prompt is the pre-field prompt, byte for byte",
+  maskPreservesText(offPanel.prompt) === fixture.prompt,
+  `${maskPreservesText(offPanel.prompt).length} vs ${fixture.prompt.length} chars`,
+);
 const offSchema = await arm("0", () => offArmSchemaText());
-check("(h) the off schema is the pre-field schema", maskPreservesText(offSchema) === fixture.schema, `${maskPreservesText(offSchema).length} vs ${fixture.schema.length} chars`);
+check(
+  "(h) the off schema is the pre-field schema",
+  maskPreservesText(offSchema) === fixture.schema,
+  `${maskPreservesText(offSchema).length} vs ${fixture.schema.length} chars`,
+);
 const onPrompts: string[] = [];
 await arm(undefined, () => runPanel({ issue: 2675, rows: freshRows(GREEN), prompts: onPrompts }));
-check("(i) the on prompt carries the declaration clause", (onPrompts[0] ?? "").includes("preserves: true"), (onPrompts[0] ?? "").slice(-200));
-check("(i) and the off prompt never mentions the field", !offPanel.prompt.includes("preserves: true"), offPanel.prompt.slice(-200));
+check(
+  "(i) the on prompt carries the declaration clause",
+  (onPrompts[0] ?? "").includes("preserves: true"),
+  (onPrompts[0] ?? "").slice(-200),
+);
+check(
+  "(i) and the off prompt never mentions the field",
+  !offPanel.prompt.includes("preserves: true"),
+  offPanel.prompt.slice(-200),
+);
 
 // (i) a non-boolean declaration is a malformed call: skipped, never coerced.
-const malformed = await arm(undefined, () => runPanel({ issue: 2676, rows: panelRows(GREEN, GREEN).map((r) => (r.id === GREEN ? { ...r, preserves: "yes" } : r)) }));
-check("(i) a non-boolean preserves freezes nothing", malformed.outcome?.kind === "red-test-gap", said(malformed));
-check("(i) the call is counted as malformed", said(malformed).includes("malformed"), said(malformed));
+const malformed = await arm(undefined, () =>
+  runPanel({
+    issue: 2676,
+    rows: panelRows(GREEN, GREEN).map((r) => (r.id === GREEN ? { ...r, preserves: "yes" } : r)),
+  }),
+);
+check(
+  "(i) a non-boolean preserves freezes nothing",
+  malformed.outcome?.kind === "red-test-gap",
+  said(malformed),
+);
+check(
+  "(i) the call is counted as malformed",
+  said(malformed).includes("malformed"),
+  said(malformed),
+);
 check("(i) no criterion was excused by it", malformed.outcome?.preserved === undefined);
 
 // (j) the record's own rules.
-check("(j) a list of ids validates", outcomeProblem({ kind: "done", preserved: ["AC1", "AC3"] }, "specify") === undefined);
-check("(j) an empty list is refused, so absence and emptiness read apart", outcomeProblem({ kind: "done", preserved: [] }, "specify") !== undefined);
-check("(j) a non-AC id is refused", outcomeProblem({ kind: "done", preserved: ["x"] }, "specify") !== undefined);
-check("(j) no other step may carry it", outcomeProblem({ kind: "done", preserved: ["AC1"] }, "verify") !== undefined);
-check("(j) the rule reads declared rows only", JSON.stringify(preservedCriteria([{ criterionId: "AC1", preserves: true }, { criterionId: "AC2" }])) === JSON.stringify(["AC1"]));
+check(
+  "(j) a list of ids validates",
+  outcomeProblem({ kind: "done", preserved: ["AC1", "AC3"] }, "specify") === undefined,
+);
+check(
+  "(j) an empty list is refused, so absence and emptiness read apart",
+  outcomeProblem({ kind: "done", preserved: [] }, "specify") !== undefined,
+);
+check(
+  "(j) a non-AC id is refused",
+  outcomeProblem({ kind: "done", preserved: ["x"] }, "specify") !== undefined,
+);
+check(
+  "(j) no other step may carry it",
+  outcomeProblem({ kind: "done", preserved: ["AC1"] }, "verify") !== undefined,
+);
+check(
+  "(j) the rule reads declared rows only",
+  JSON.stringify(
+    preservedCriteria([{ criterionId: "AC1", preserves: true }, { criterionId: "AC2" }]),
+  ) === JSON.stringify(["AC1"]),
+);
 
 process.exit(failures());

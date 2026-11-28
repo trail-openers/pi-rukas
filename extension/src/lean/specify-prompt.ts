@@ -1,3 +1,4 @@
+import { preservesPromptClause } from "../specify-preserves-prompt.ts";
 /**
  * lean/specify-prompt — the adversary's instructions for the specify step.
  *
@@ -12,7 +13,6 @@ import { type TestLocation, testDirsNamed } from "./config-test-location.ts";
 import { TEST_RUNNER_PLACEHOLDER } from "./config.ts";
 import { leanIssueSection } from "./issue-prose.ts";
 import { criteriaBlock, scopeBlock } from "./spec-blocks.ts";
-import { preservesPromptClause } from "../specify-preserves-prompt.ts";
 import type { PiSpec } from "./spec.ts";
 import { MAX_TEST_BYTES, MAX_TEST_FILES_PER_CRITERION, MAX_TEST_LINES } from "./test-size.ts";
 import { oneLine } from "./text-fence.ts";

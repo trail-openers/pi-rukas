@@ -1,3 +1,4 @@
+import { leanSpecifyPreservesEnabled } from "./lean-specify-preserves-switch.ts";
 /**
  * lean-preserved-step — the preservation half of the `specify` step, kept outside the lean directory.
  *
@@ -7,7 +8,6 @@
  * and what the step's own red proof already said about each file.
  */
 import { isPreservesValue } from "./submit-tests-preserves.ts";
-import { leanSpecifyPreservesEnabled } from "./lean-specify-preserves-switch.ts";
 
 /** One submitted row, as far as this module cares: the criterion and its declaration. */
 export interface PreservesRowInput {

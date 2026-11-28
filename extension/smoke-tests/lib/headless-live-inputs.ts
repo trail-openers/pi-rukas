@@ -217,7 +217,7 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // pinned by test-lean-specify-gap-handback.ts.
   ["PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK", leanSpecifyGapHandbackEnabled],
   // The specify preservation declaration: its default is pinned here, its truth table, its off-arm
-  // byte-identity and its docs row by `test-lean-specify-preserves-off-arm.ts`.
+  // byte-identity and its docs row by `test-lean-specify-preserves.ts`.
   ["PI_ENSEMBLE_LEAN_SPECIFY_PRESERVES", leanSpecifyPreservesEnabled],
   // The oracle repair round: its default is pinned here, its truth table and both arms by
   // `test-lean-build-blocked-repair.ts`. Read at run creation, so the gate's LIVE loop pins "unset means on".

@@ -12,6 +12,7 @@
  */
 import { isFullCommitSha } from "../commit-sha.ts";
 import { repairOutcomeProblem, validatedRepairFields } from "../oracle-repair-fields.ts";
+import { preservedListProblem, validatedPreservedList } from "../preserved-record.ts";
 import { HANDOFF_CHANNELS } from "../work-driver-handoff-channel.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
 import { canonicalDerivedSpec } from "./state-derived-spec.ts";
@@ -37,7 +38,6 @@ import {
   validatedPreexistingFailures,
   validatedProjectRoster,
 } from "./state-outcome-maps.ts";
-import { preservedListProblem, validatedPreservedList } from "../preserved-record.ts";
 import type { LeanState, Outcome } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 

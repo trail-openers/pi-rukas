@@ -1,7 +1,7 @@
 /**
  * lib/lean-specify-preserves-golden — the OFF-arm record of the specify preservation declaration.
  *
- * `test-lean-specify-preserves-off-arm.ts` compares what `PI_ENSEMBLE_LEAN_SPECIFY_PRESERVES=0` produces
+ * `test-lean-specify-preserves.ts` compares what `PI_ENSEMBLE_LEAN_SPECIFY_PRESERVES=0` produces
  * against `fixtures/lean-state/specify-preserves-off-2668.json`, captured ONCE from `231491a7f8` — the
  * commit this change is based on, whose `submit_tests` schema, specify prompt and specify record have no
  * knowledge of the field. A record re-rendered by the code under test would only prove the module agrees
@@ -50,14 +50,9 @@ const FIVE_BODY = PANEL_BODY_FIXTURE;
 
 const REL = "tests/AC4-guard.test.sh";
 /** A file that passes on the base: the child's own `preserves: true` is its claim about it. */
-const GREEN = "#!/bin/sh\necho \"ok - $(basename \"$0\")\"\nexit 0\n";
+const GREEN = '#!/bin/sh\necho "ok - $(basename "$0")"\nexit 0\n';
 /** A file that fails on the base and names itself — the ordinary red test. */
-const RED = [
-  "#!/bin/sh",
-  'echo "not ok - $(basename \"$0\")" 1>&2',
-  "exit 1",
-  "",
-].join("\n");
+const RED = ["#!/bin/sh", 'echo "not ok - $(basename "$0")" 1>&2', "exit 1", ""].join("\n");
 
 /** One specify run's record: the kind, the reason, and every field the step wrote. */
 export interface PreservesRunRecord {
@@ -110,7 +105,11 @@ export function offArmSchemaText(): string {
 }
 
 /** Run the real specify step over a real repo with one declared file, whose content the caller chooses. */
-async function driveSpecify(issue: number, body: string, script: string): Promise<PreservesRunRecord> {
+async function driveSpecify(
+  issue: number,
+  body: string,
+  script: string,
+): Promise<PreservesRunRecord> {
   const { repoRoot, baseSha } = makeRepo({ "src/retry.ts": "export const retry = () => {};\n" });
   const config = configWith({ fast: "true", test: "sh {file}" });
   const r = await runSpecify({
@@ -120,7 +119,12 @@ async function driveSpecify(issue: number, body: string, script: string): Promis
     config,
     specBody: body,
     writes: (wt) => put(wt, REL, script),
-    toolUses: [{ name: "submit_tests", arguments: { criterionId: "AC4", testFiles: [REL], preserves: true } }],
+    toolUses: [
+      {
+        name: "submit_tests",
+        arguments: { criterionId: "AC4", testFiles: [REL], preserves: true },
+      },
+    ],
   });
   if (r.threw !== undefined) throw new Error(`specify threw: ${r.threw.message}`);
   const oc = r.outcome as Outcome | undefined;
@@ -214,7 +218,8 @@ export async function capturePreservesPanel(
     config: configWith({ fast: "true", test: "sh {file}" }),
     specBody: FIVE_BODY,
     writes: (wt) => {
-      for (const row of rows) if (row.script !== undefined) put(wt, row.rel ?? testRel(row.id), row.script);
+      for (const row of rows)
+        if (row.script !== undefined) put(wt, row.rel ?? testRel(row.id), row.script);
     },
     toolUses: rows.map((row) => ({
       name: "submit_tests",
@@ -252,7 +257,8 @@ export async function capturePreservesPanelArm(
     specBody: PANEL_BODY_FIXTURE,
     prompts,
     writes: (wt) => {
-      for (const row of rows) if (row.script !== undefined) put(wt, row.rel ?? testRel(row.id), row.script);
+      for (const row of rows)
+        if (row.script !== undefined) put(wt, row.rel ?? testRel(row.id), row.script);
     },
     toolUses: rows.map((row) => ({
       name: "submit_tests",
@@ -267,7 +273,10 @@ export async function capturePreservesPanelArm(
   const oc = r.outcome as Outcome | undefined;
   if (oc === undefined) throw new Error("specify recorded no outcome");
   return {
-    record: { kind: oc.kind, outcome: JSON.parse(maskPreservesText(JSON.stringify(oc))) as unknown },
+    record: {
+      kind: oc.kind,
+      outcome: JSON.parse(maskPreservesText(JSON.stringify(oc))) as unknown,
+    },
     prompt: prompts[0] ?? "",
   };
 }
