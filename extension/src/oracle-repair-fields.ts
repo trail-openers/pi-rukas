@@ -13,7 +13,8 @@
  *     rather than inferring a pass from a green `verify`.
  *
  * The round is one-shot: `repairsSpent` on the counters is the ONE statement of a spent round, billed on the
- * edge that enters the step, so a run that spent it and handed back cannot buy another.
+ * edge that leaves the step — the edge that dispatches the build the corrected oracle is for — so a run that
+ * spent it cannot buy another, and never owes a build round merely for entering the round.
  */
 import { isFullCommitSha } from "./commit-sha.ts";
 import { BLOCKED_PATH_CAP, RECORD_MAX_ENTRIES } from "./lean/state-outcome-maps.ts";

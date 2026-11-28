@@ -1,7 +1,7 @@
 /**
  * oracle-repair-record — the `blockedEvidence` field the repair round reads, and the rules that keep it a
  * fact. Pure over plain values, so it lives outside `src/lean/`: the engine calls into the judgement rather
- * than owning it. See `oracle-repair-fields.ts` for the round's other field.
+ * than owning it. The round's own verdict field, `repair`, and its rules: `oracle-repair-fields.ts`.
  *
  * `blockedBy` says which frozen file the driver proved cannot pass. This says what the project's runner
  * actually printed when the driver ran it, which is the only thing a repair brief may quote: a seat that read
