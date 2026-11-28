@@ -16,11 +16,18 @@
  * was produced by the code that hands it back.
  */
 
+import { submissionScopeProblem } from "../src/oracle-repair-judge.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { makeAssert } from "./lib/lean-engine-fixtures.ts";
 import { FROZEN, HANGING_REL, TWO_SUBMISSIONS, driveRound } from "./lib/lean-oracle-repair-round.ts";
 
 const { assert, failures } = makeAssert();
+
+/** The shared scope rule's own sentences, imported rather than restated: the round must refuse with THESE. */
+const SHARED_NONE = submissionScopeProblem([], []);
+const SHARED_SCOPE = submissionScopeProblem([HANGING_REL], []);
+/** The one wording this round adds: unreadable calls are not a seat that named nothing. */
+const EXPECTED_UNREADABLE = "the repair child's 1 submission was unreadable";
 
 /** The usage trio a paid child reports, in the shape the loader accepts. */
 const PAID = {
@@ -98,13 +105,11 @@ const allUnreadable = await driveRound(2804, {
   named: [FROZEN],
 });
 assert(
-  noneCalled.kind === "refused" &&
-    noneCalled.why === "the repair child submitted no test file",
+  noneCalled.kind === "refused" && noneCalled.why === SHARED_NONE,
   `(3) a seat that called the tool never says so (${noneCalled.kind}: ${noneCalled.why})`,
 );
 assert(
-  allUnreadable.kind === "refused" &&
-    allUnreadable.why === "the repair child's 1 submission was unreadable",
+  allUnreadable.kind === "refused" && allUnreadable.why === EXPECTED_UNREADABLE,
   `(3) a seat whose only call was unreadable does not get the "named none" sentence (${allUnreadable.kind}: ${allUnreadable.why})`,
 );
 assert(
@@ -113,18 +118,21 @@ assert(
 );
 
 // (4) The scope refusal is the shared helper's wording.
-const strayed = await driveRound(2805, {
-  submit: [{ criterionId: "AC1", testFiles: [FROZEN, HANGING_REL] }],
-  tracked: [FROZEN],
-  named: [FROZEN],
-});
+const strayed = await driveRound(
+  2805,
+  { submit: [{ criterionId: "AC1", testFiles: [FROZEN, HANGING_REL] }] },
+  { tracked: [FROZEN], named: [FROZEN] },
+);
 assert(
-  strayed.kind === "refused" &&
-    strayed.why ===
-      `the repair replaced 1 file(s) the blocked report never named: ${HANGING_REL}`,
+  strayed.kind === "refused" && strayed.why === SHARED_SCOPE,
   `(4) the out-of-scope refusal carries the shared helper's sentence (${strayed.kind}: ${strayed.why})`,
 );
-assert(strayed.rows.length === 1, "(4) the refused round still bills its one seat");
+// The round bills the seat it ran, whatever it then made of the submission: the refused round keeps its row.
+// Read off this round's own outcome rather than a case that never dispatched.
+assert(
+  rowsOf(allUnreadable.outcome).length === 1,
+  `(4) the refused round still bills its one seat (${JSON.stringify(rowsOf(allUnreadable.outcome))})`,
+);
 
 void TWO_SUBMISSIONS;
 if (failures() > 0) process.exitCode = 1;

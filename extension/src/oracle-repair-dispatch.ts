@@ -229,10 +229,11 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
     return refuse(`the repair child could not run: ${(err as Error).message}`, rowsFromError(err));
   }
   // The seat's own report comes before anything else: a child the seam says never finished has no submission
-  // worth judging, and the bytes it left are the bytes a judgement would freeze.
+  // worth judging, and the bytes it left are the bytes a judgement would freeze. Its cost row is recorded
+  // first: a child the harness paid for is billed whether or not what it left was usable.
   const seat = seatProblem(result);
-  if (seat !== undefined) return refuse(seat);
   rows.push(dispatchUsageRow(result));
+  if (seat !== undefined) return refuse(seat);
   const read = readDispatched(result);
   if ("stop" in read) return refuse("the repair child stopped at its own ceiling");
 
@@ -247,7 +248,7 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
   if (scope !== undefined)
     return refuse(
       extracted.skipped > 0 && scope === "the repair submitted no test file"
-        ? `the repair child's ${String(extracted.skipped)} submission${extracted.skipped === 1 ? "" : "s"} were unreadable`
+        ? `the repair child's ${String(extracted.skipped)} submission${extracted.skipped === 1 ? " was" : "s were"} unreadable`
         : scope,
     );
   for (const p of paths) {
