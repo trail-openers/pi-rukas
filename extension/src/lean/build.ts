@@ -55,18 +55,20 @@ import {
   testsFromLog,
 } from "../lean-log.ts";
 import { armsStepBudget, stepDispatchArms, stopReasonClause } from "../lean-step-bound.ts";
+import { foldStoppedBuild } from "../oracle-repair-fold.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
-import { foldStoppedBuild, judgeBlockedReport } from "./build-blocked.ts";
+import { judgeBlockedReport } from "./build-blocked.ts";
 import { buildWriteFence, dispatchBuilder } from "./build-dispatch.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
 import { assertFrozenIntact, normaliseBuild } from "./build-normalise.ts";
 import { budgetFoldAccumulator, failingClause, foldClauses, keptClause } from "./build-reasons.ts";
+import { buildRepairFields } from "./build-repair-fields.ts";
 import type { BuildDispatch, BuildExec, NormaliseReport } from "./build-types.ts";
 import { leanChildOpts } from "./child-opts.ts";
 import { type WorkConfig, loadWorkConfig, protectedPathsOf } from "./config.ts";
@@ -346,11 +348,14 @@ export async function buildOutcome(
     ...(deps.blockedTimeoutMs === undefined ? {} : { timeoutMs: deps.blockedTimeoutMs }),
   });
   if (blocked !== undefined) {
-    // No commit: `verify` never judges a tree this step cannot account for.
+    // No commit: `verify` never judges a tree this step cannot account for. The head and the executed red ride
+    // beside the cause only for a run that earns a repair round: the round is their only reader, and the off
+    // arm's record is the one the release wrote without them (`build-repair-fields.ts`).
     return {
       kind: "blocked",
       reason: blocked.reason,
       blockedBy: blocked.blockedBy,
+      ...buildRepairFields(ctx.steps, headBefore, blocked.evidence),
       dispatches: rows,
     };
   }
@@ -448,6 +453,9 @@ function okVerdict(
       ...foldClauses(report),
       waitNote(),
     ]),
+    // No `headBefore` here: an `ok` round buys no repair round, so the field has no reader on this arm, and a
+    // key the pre-change build never wrote widens the record whichever way the switch reads. The rule and its
+    // reason are in `build-repair-fields.ts`.
     dispatches: rows,
   };
 }

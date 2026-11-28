@@ -59,6 +59,10 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // is `leanPreVerifySharePercent` in lean/pre-verify-share-switch.ts; the bound it feeds — the
   // no-dispatch stop on `specify`'s retry and the `challenge` skip with its recorded reason — is
   // lean/pre-verify-share.ts. It never cuts a child already running.
+  // A blocked build report the driver PROVED buys ONE blind specify-adversary round to correct the frozen
+  // test before the run hands back. `0` restores the handback byte for byte. The reader is
+  // `leanOracleRepairEnabled` in lean-oracle-repair-switch.ts, read once at run creation.
+  flag("LEAN_ORACLE_REPAIR", true),
   int("LEAN_PRE_VERIFY_SHARE", 40),
   // A review fix wave saves the head it starts from before the fixer runs, and the
   // range rides the step's reason, a PR comment, the handback and `issues[].preFixHead`. `0`

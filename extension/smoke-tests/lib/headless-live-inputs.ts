@@ -39,6 +39,7 @@ import { leanProjectRosterEnabled } from "../../src/lean/project-roster-switch.t
 import { leanPrefixHeadEnabled } from "../../src/lean/review-log.ts";
 import { leanRunnerPreflightEnabled } from "../../src/lean/runner-preflight-switch.ts";
 import { leanSpecifyGapHandbackEnabled } from "../../src/lean/specify-gap-switch.ts";
+import { leanOracleRepairEnabled } from "../../src/lean-oracle-repair-switch.ts";
 import { leanSpecifyReaskEnabled } from "../../src/lean/specify-reask.ts";
 import { claimScanEnabled, evidenceSupplyEnabled } from "../../src/lens-evidence.ts";
 import { lensLargeDiffEnabled } from "../../src/lens-large-diff-switch.ts";
@@ -214,6 +215,9 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // deleted) pins "unset means on"; the truth table, docs row and both arms' goldens are
   // pinned by test-lean-specify-gap-handback.ts.
   ["PI_ENSEMBLE_LEAN_SPECIFY_GAP_HANDBACK", leanSpecifyGapHandbackEnabled],
+  // The oracle repair round: its default is pinned here, its truth table and both arms by
+  // `test-lean-build-blocked-repair.ts`. Read at run creation, so the gate's LIVE loop pins "unset means on".
+  ["PI_ENSEMBLE_LEAN_ORACLE_REPAIR", leanOracleRepairEnabled],
   // The truncated-fixer continuation: its default is pinned here, its truth table by
   // `test-lean-review-fix-reask-pure.ts` and its off arm by
   // `test-lean-review-fixer-truncation-off-arm.ts`.

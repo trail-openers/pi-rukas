@@ -28,6 +28,7 @@ import { type DerivedSpec, assertDerivedSpec } from "./state-derived-spec.ts";
 import type { Outcome } from "./state-outcome-record.ts";
 export type { Outcome } from "./state-outcome-record.ts";
 export type { ReviewBoundRecord } from "./review-bound.ts";
+import { countersRepairProblem } from "../oracle-repair-fields.ts";
 import { buildOutcome, outcomeProblem, progressProblem } from "./state-outcome.ts";
 // The store is re-exported so every caller of the record keeps one import site;
 // the layout of `.pi/lean-state/` is stated once, in `state-store.ts`.
@@ -49,6 +50,9 @@ export type LeanState =
   | "ready"
   | "specify"
   | "build"
+  /** One blind adversary correcting the frozen tests the driver PROVED unsatisfiable. A handler state, so a
+   *  step that dies before deciding re-decides on resume instead of re-buying. */
+  | "repair"
   | "challenge"
   | "verify"
   | "publish"
@@ -124,6 +128,10 @@ export interface RunCounters {
   reviewDone: boolean;
   ciFixUsed: boolean;
   draft: boolean;
+  /** Repair rounds paid for, billed on the edge that leaves the step. Absent: none spent.
+   *  Optional on purpose: the key exists only on a run the repair round touched, so a run
+   *  the round never entered holds the bytes it held before the round existed. */
+  repairsSpent?: number;
 }
 
 /**
@@ -163,6 +171,9 @@ export interface LeanRun {
    * files keep loading — same schema version.
    */
   derivedSpec?: DerivedSpec;
+  /** The switch's reading, stamped at creation and persisted: a run is judged by the rules it started under.
+   *  Absent reads as OFF; read only by `repairRoundDue`. */
+  oracleRepair?: boolean;
 }
 
 export const INITIAL_COUNTERS: RunCounters = {
@@ -199,7 +210,8 @@ export function nextAttempt(run: LeanRun, state: LeanState): number {
 }
 
 export function createRun(
-  init: Pick<LeanRun, "issue" | "version" | "models" | "baseSha" | "branch">,
+  init: Pick<LeanRun, "issue" | "version" | "models" | "baseSha" | "branch"> &
+    Partial<Pick<LeanRun, "oracleRepair">>,
 ): LeanRun {
   return {
     schema: SCHEMA_VERSION,
@@ -211,6 +223,8 @@ export function createRun(
     state: "ready",
     counters: { ...INITIAL_COUNTERS },
     steps: [],
+    // Only stamped when ON: no key is a record from before the round, and the two must stay distinguishable.
+    ...(init.oracleRepair === true ? { oracleRepair: true } : {}),
   };
 }
 
@@ -257,6 +271,16 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
   for (const key of ["challengeDone", "reviewDone", "ciFixUsed", "draft"] as const) {
     if (typeof c[key] !== "boolean") bad(`counters.${key} must be a boolean`);
   }
+  // Both repair facts are validated by the round's own module.
+  const spend = countersRepairProblem(c);
+  if (spend !== undefined) bad(spend);
+  // The stamp is the run's copy of a switch the environment holds, written once at
+  // creation so a resume answers as the first visit did. Carried by a cast it would
+  // reach the table as any truthy value, and `"yes"` — the shape an operator types,
+  // and the shape every other reader of this knob calls false — would buy a round the
+  // run was never created to spend. Refused like the booleans beside it.
+  if (r.oracleRepair !== undefined && typeof r.oracleRepair !== "boolean")
+    bad("oracleRepair must be a boolean when present");
   const models = r.models as Record<string, unknown> | undefined;
   if (!models || typeof models !== "object" || Array.isArray(models))
     bad("models must be an object");
@@ -340,11 +364,15 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
       reviewDone: c.reviewDone as boolean,
       ciFixUsed: c.ciFixUsed as boolean,
       draft: c.draft as boolean,
+      // Rebuilt member by member, never spread: the repair counter keeps its position at the
+      // end, so a file written by this build reads back with the key order it was written with.
+      ...(c.repairsSpent === undefined ? {} : { repairsSpent: c.repairsSpent as number }),
     },
     steps,
     ...(r.result !== undefined ? { result: assertResult(r.result, bad) } : {}),
     ...(r.deadlineMs === undefined ? {} : { deadlineMs: assertDeadline(r.deadlineMs) }),
     ...(r.derivedSpec === undefined ? {} : { derivedSpec: assertDerivedSpec(r.derivedSpec) }),
+    ...(r.oracleRepair === undefined ? {} : { oracleRepair: r.oracleRepair as boolean }),
   };
 }
 
@@ -367,6 +395,7 @@ const NON_TERMINAL: readonly LeanState[] = [
   "ready",
   "specify",
   "build",
+  "repair",
   "challenge",
   "verify",
   "publish",

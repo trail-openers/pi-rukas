@@ -1,3 +1,5 @@
+import type { RepairRecord } from "../oracle-repair-fields.ts";
+import type { EvidenceLine } from "../oracle-repair-record.ts";
 /**
  * lean/state-outcome-record — what a step's handler returned.
  *
@@ -34,6 +36,14 @@ export interface Outcome {
   commandNotRunnable?: Record<string, string>;
   /** `build` only (kind `blocked`): frozen test path -> the contradiction the driver itself re-proved red. `handback` prints it; exit 10 alone never names a cause. */
   blockedBy?: Record<string, string>;
+  /** `build` only (kind `blocked`): the at-head red the DRIVER watched the runner print — the only failure
+   *  evidence a repair brief may quote. Rules and reader: `oracle-repair-record.ts`. */
+  blockedEvidence?: EvidenceLine[];
+  /** `build` only: the head this round started from, read off the tree before its child ran. On `blocked` it is
+   *  the commit the driver ran the named files at — the red's commit, where a repair round resets its seat. */
+  headBefore?: string;
+  /** `build` only: the repair round's observed facts, once bought. Rules: `oracle-repair-fields.ts`. */
+  repair?: RepairRecord;
   /** The two fields `ready` owns and the engine copies onto the RUN (`applyReadyFacts`): the commit the config was read at, and — for a `derive` run — the contract the engine drafted, which is durable because a derived one exists nowhere else. Checked on load against the contract's own rules. */
   baseSha?: string;
   derivedSpec?: DerivedSpec;

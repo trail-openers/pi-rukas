@@ -1,3 +1,4 @@
+import { repairRoundDue } from "../oracle-repair-due.ts";
 /**
  * lean/machine — the whole transition table, in one pure function.
  *
@@ -8,7 +9,7 @@
  *
  * Loop guards, all counters in the run so a resumed run sees the same caps: `buildAttempts` caps build rounds
  * DISPATCHED (billed on entering `build`, never leaving); `challengeDone` and `reviewDone` make each step run
- * at most once; `ciFixUsed` gives a red CI one fix round.
+ * at most once; `ciFixUsed` gives a red CI one fix round; `repairsSpent` one repair.
  */
 import { type LeanRun, type LeanState, type Outcome, newestDecided } from "./state.ts";
 import { type Transition, to, viaBuild } from "./transitions.ts";
@@ -28,6 +29,9 @@ export const OUTCOME_KINDS = {
   // `blocked` is the child's own "these frozen tests cannot all pass together", honoured only after the
   // driver re-ran the named tests itself. It is not `exhausted`: the route must never reach `publish`.
   build: ["ok", "exhausted", "budget", "blocked"],
+  // `repaired` rebuilds against the corrected contract, `refused` against the same one with the red marker
+  // standing. Both spend the round.
+  repair: ["repaired", "refused"],
   challenge: ["new-tests", "none", "budget", "skipped"],
   verify: ["green", "red"],
   publish: ["ok"],
@@ -137,8 +141,13 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
           return to(run, c.challengeDone ? "verify" : "challenge");
         case "blocked":
-          // Never through the `exhausted` route: publishing a PR over tests the builder proved unsatisfiable
-          // is the one shape where an unsatisfied contract reaches `land`.
+          // Never through `exhausted`: publishing over tests the driver proved unsatisfiable is how a
+          // contract lands broken.
+          //
+          // The entry bills no build attempt. An attempt is a round DISPATCHED, and this edge dispatches no
+          // builder: the round that follows pays for an adversary, not a builder. `viaBuild` is reserved for
+          // edges whose destination is `build`, and the round's own exits are those edges.
+          if (repairRoundDue(run)) return to(run, "repair");
           return to(run, "handback");
         case "exhausted":
           // The publish arm is the GREEN arm and nothing else: the gate decides whether a head may ship, so
@@ -148,6 +157,22 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           if (newestDecided(run.steps, "verify")?.outcome?.kind === "green")
             return viaBuild(run, "publish", true);
           return viaBuild(run, "handback", true);
+      }
+      break;
+
+    case "repair":
+      switch (outcome.kind) {
+        case "repaired":
+          // Both exits BILL the build they dispatch and spend the round. The build attempt is owed here
+          // rather than on the round's entry because this is where a builder actually goes on the wire, and
+          // `repairsSpent` is owed here rather than earlier because a run that never answered the question
+          // bought nothing: the counter is charged on the edge that leaves the round, so a round cannot be
+          // re-bought by the next blocked report.
+          return viaBuild(run, "build", undefined, { repairsSpent: (c.repairsSpent ?? 0) + 1 });
+        case "refused":
+          // The red marker stands: a run must not land over a proven-bad oracle. Billed like its sibling, or
+          // a re-buyable round would loop on the same refusal.
+          return viaBuild(run, "build", true, { repairsSpent: (c.repairsSpent ?? 0) + 1 });
       }
       break;
 

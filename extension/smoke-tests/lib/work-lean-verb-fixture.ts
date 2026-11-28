@@ -24,7 +24,7 @@ import { runSubcommand } from "../../src/headless/cli.ts";
 import { runWorkLeanVerb } from "../../src/headless/work-lean.ts";
 import type { LeanRunOutcome } from "../../src/headless/work-lean.ts";
 import type { RunLeanResult } from "../../src/lean/engine.ts";
-import type { LeanState, Step } from "../../src/lean/state.ts";
+import { INITIAL_COUNTERS, type LeanState, type Step } from "../../src/lean/state.ts";
 import type { DriverHost } from "../../src/work-driver-host.ts";
 import { runVerb } from "../headless-verb-harness.ts";
 
@@ -61,6 +61,7 @@ export function fakeRun(overrides: {
       branch: "feature/issue-7-thing",
       state: overrides.state,
       counters: {
+        ...INITIAL_COUNTERS,
         buildAttempts: 1,
         challengeDone: true,
         reviewDone: false,

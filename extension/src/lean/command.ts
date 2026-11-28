@@ -18,6 +18,8 @@
  */
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { execp } from "../exec.ts";
+import { leanOracleRepairEnabled } from "../lean-oracle-repair-switch.ts";
+import { repairDeps } from "../oracle-repair-wiring.ts";
 import { spawnSpecialist } from "../spawn.ts";
 import type { DispatchSpec } from "../types.ts";
 import { type CycleBudgetMs, flagBudgetMs } from "../work-driver-deadline.ts";
@@ -32,6 +34,7 @@ import { type Budget, type WorkConfig, loadWorkConfig } from "./config.ts";
 import { type LeanHandlers, type RunLeanResult, runLean } from "./engine.ts";
 import { fetchIssueBody, mainlineSha, postDerivedSpec } from "./io.ts";
 import { readySetup } from "./ready-setup.ts";
+import { repairOutcome } from "./repair.ts";
 import { reportHandlers } from "./report-handlers.ts";
 import { reviewDeps } from "./review-deps.ts";
 import { reviewOutcome } from "./review.ts";
@@ -373,6 +376,8 @@ export function phase1Handlers(
   };
   handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps(headless));
   handlers.build = (ctx) => buildOutcome(ctx, buildDeps(headless), headless);
+  handlers.repair = (ctx) =>
+    repairOutcome(ctx, repairDeps(headless, repoRoot, issue, ctx), headless);
   handlers.challenge = (ctx) => challengeOutcome(ctx, challengeDeps(headless));
   handlers.verify = (ctx) => verifyOutcome(ctx, verifyDeps());
   // The two post-publish steps, in the same one-line shape as the ones above: the step body is
@@ -421,7 +426,9 @@ export async function runWorkLean(
     repoRoot,
     issue,
     handlers: handlersFor(repoRoot, issue, opts, seed),
-    seed: { version: seed.version, baseSha: seed.baseSha },
+    // Read ONCE, at creation, and persisted: a resume ignores the seed, so a run keeps the reading its
+    // first visit stamped.
+    seed: { version: seed.version, baseSha: seed.baseSha, oracleRepair: leanOracleRepairEnabled() },
     // The flag travels as a VALUE (`flagBudgetMs` mints the brand from the verb's parsed
     // minutes), never as an env write: one run's `--timeout` must not become the deadline of every
     // later dispatch this process makes.

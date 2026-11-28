@@ -11,6 +11,7 @@
  * wrong shape is a record that reads as evidence and never matches.
  */
 import { isFullCommitSha } from "../commit-sha.ts";
+import { repairOutcomeProblem, validatedRepairFields } from "../oracle-repair-fields.ts";
 import { HANDOFF_CHANNELS } from "../work-driver-handoff-channel.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
 import { canonicalDerivedSpec } from "./state-derived-spec.ts";
@@ -127,6 +128,10 @@ export const DISPATCH_STATES: readonly LeanState[] = [
   "review",
   "ready",
   "publish",
+  // The repair round pays for one adversary, so its rows are cost the run really spent. A step outside this
+  // set has its rows DROPPED rather than refused — the quiet failure, where the file loads and the round's
+  // cost is simply absent.
+  "repair",
 ];
 
 /**
@@ -165,6 +170,15 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   // The build step's own account of which frozen tests it proved cannot all pass together;
   // `handback` prints it as the run's cause.
   blockedBy: "build",
+  // The driver's own executed red, and the head it was run at. Both are written by `build` and read back
+  // many visits later by the round that repairs it, so `build` holds them alone.
+  blockedEvidence: "build",
+  headBefore: "build",
+  // The round's own facts: the corrected contract it froze, and what its judge observed of the replacement.
+  // `frozen` is the contract, so the two steps that hold one own it — the freeze that wrote it and the round
+  // that corrected it. The repair record belongs to the one step that ran the judge.
+  frozen: ["specify", "repair"],
+  repair: "repair",
   // The tiers a verify/ci step excused over the base commit: they license a GREEN over a
   // tier that exited non-zero, so a step that never ran that tier may not carry the record.
   preexistingFailures: ["verify", "ci"],
@@ -331,6 +345,11 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
     const problem = blockedByProblem(oc.blockedBy);
     if (problem !== undefined) return problem;
   }
+  if (oc.headBefore !== undefined && !SHA1_HEX.test(String(oc.headBefore)))
+    return "outcome headBefore must be a full commit sha";
+  // The repair round's fields: rules in `oracle-repair-fields.ts`.
+  const repairProblem = repairOutcomeProblem(oc);
+  if (repairProblem !== undefined) return repairProblem;
   if (oc.preexistingFailures !== undefined) {
     const problem = preexistingFailuresProblem(oc.preexistingFailures);
     if (problem !== undefined) return problem;
@@ -426,6 +445,10 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
       ? {}
       : { commandNotRunnable: validatedCommandNotRunnable(oc.commandNotRunnable) }),
     ...(oc.blockedBy === undefined ? {} : { blockedBy: validatedBlockedBy(oc.blockedBy) }),
+    ...(typeof oc.headBefore === "string" && isFullCommitSha(oc.headBefore)
+      ? { headBefore: oc.headBefore }
+      : {}),
+    ...validatedRepairFields(oc),
     ...(oc.preexistingFailures === undefined
       ? {}
       : { preexistingFailures: validatedPreexistingFailures(oc.preexistingFailures) }),

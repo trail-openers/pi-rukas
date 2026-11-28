@@ -10,6 +10,7 @@
  */
 import { execp } from "../exec.ts";
 import { frozenFromLog } from "../lean-log.ts";
+import { repairCause } from "../oracle-repair-disclose.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { NO_GATE_VERDICT, handbackHeads, newestDecidedWorkStep } from "./handback-heads.ts";
@@ -116,6 +117,7 @@ function gapCause(steps: Step[]): string | undefined {
  */
 export function neededFromLog(steps: Step[]): string {
   const reason =
+    repairCause(steps) ??
     blockedCause(steps) ??
     gapCause(steps) ??
     budgetCause(steps) ??
