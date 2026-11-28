@@ -32,7 +32,11 @@ import { SUBMIT_TESTS_REPORTER_PATH } from "./lean/submit-tests-reporter.ts";
 import { repairPrompt } from "./oracle-repair-brief.ts";
 import { readRepairSubmission } from "./oracle-repair-capture.ts";
 import type { EvidenceRow, HeadEvidenceRow } from "./oracle-repair-evidence.ts";
-import { RepairJudgeError, judgeRepairSubmission } from "./oracle-repair-judge.ts";
+import {
+  RepairJudgeError,
+  judgeRepairSubmission,
+  submissionScopeProblem,
+} from "./oracle-repair-judge.ts";
 import { LoopBudget, runLimits } from "./oracle-repair-prove.ts";
 import { statReporterPath } from "./reporter-preflight.ts";
 import { traceWarn } from "./trace.ts";
@@ -104,10 +108,15 @@ export interface RepairRoundOpts {
   scratch: string;
 }
 
-/** A refusal, worded for the handback and traced for the log. */
-function refused(issue: number, why: string, rows: DispatchUsageRow[]): RepairOutcome {
+/** A refusal, worded for the handback and traced for the log. Rows a caller already read travel with it. */
+function refused(
+  issue: number,
+  why: string,
+  rows: DispatchUsageRow[],
+  extra: DispatchUsageRow[] = [],
+): RepairOutcome {
   traceWarn(`lean repair #${String(issue)}: refused — ${why}`);
-  return { kind: "refused", why, rows };
+  return { kind: "refused", why, rows: [...rows, ...extra] };
 }
 
 /**
@@ -127,12 +136,38 @@ async function commitOnHead(exec: BuildExec, wt: string, headBefore: string): Pr
 }
 
 /**
+ * The cost rows a dispatch that threw still managed to report.
+ *
+ * A child the harness could not run to the end cost real tokens, and the dispatch seam hands those rows on the
+ * error rather than on a result — the same field `lean/specify-attempt.ts` and `lean/error-outcome.ts` read.
+ * A round that threw the error onward without reading it billed nothing for a child the run paid for.
+ */
+function rowsFromError(err: unknown): DispatchUsageRow[] {
+  const raw = (err as { dispatches?: unknown } | null)?.dispatches;
+  return Array.isArray(raw) ? (raw as DispatchUsageRow[]) : [];
+}
+
+/**
+ * Why a seat that came back is not a seat this round may judge.
+ *
+ * `ok` is what the spawn seam sets from the child's own exit (and from an error stop), and `exitCode` is the
+ * exit it saw: a seat that never answered cleanly left a tree nobody can vouch for, and its half-written files
+ * are exactly what a judgement run over them would freeze. The check runs BEFORE the judge, not after it.
+ */
+function seatProblem(result: DispatchResult): string | undefined {
+  if (result.ok !== true || result.exitCode !== 0)
+    return `the repair child could not finish cleanly (ok ${String(result.ok)}, exit ${String(result.exitCode)})`;
+  return undefined;
+}
+
+/**
  * Run the round. The caller owns the base checkout; everything else about the round happens here.
  */
 export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome> {
   const { deps, ctx, config, wt, issue, baseSha } = o;
   const rows: DispatchUsageRow[] = [];
-  const refuse = (why: string): RepairOutcome => refused(issue, why, rows);
+  const refuse = (why: string, extra: DispatchUsageRow[] = []): RepairOutcome =>
+    refused(issue, why, rows, extra);
 
   // 1. The seat is paid for only after its tree is at a commit that carries the frozen test it is being
   //    asked to correct, and holds none of the builder's implementation. That commit is the BUILD HEAD the
@@ -189,24 +224,31 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
     // rather than tidiness: the round is billed on the edge that ENTERED this step, so an outcome that left
     // the state machine (an `error`) would hand back with the counter spent for nothing, while a `refused`
     // puts the builder back on the same contract with the red marker standing, which is where a run that
-    // cannot answer the question belongs.
-    return refuse(`the repair child could not run: ${(err as Error).message}`);
+    // cannot answer the question belongs. The rows the dispatch did report travel on the refusal for the same
+    // reason: a child that died mid-session is still a child the run paid for.
+    return refuse(`the repair child could not run: ${(err as Error).message}`, rowsFromError(err));
   }
+  // The seat's own report comes before anything else: a child the seam says never finished has no submission
+  // worth judging, and the bytes it left are the bytes a judgement would freeze.
+  const seat = seatProblem(result);
+  if (seat !== undefined) return refuse(seat);
   rows.push(dispatchUsageRow(result));
   const read = readDispatched(result);
   if ("stop" in read) return refuse("the repair child stopped at its own ceiling");
 
   // 3. What it submitted, at the boundary the specify step uses, and only those bytes.
-  const submitted = extractSubmitTests(result.toolUses ?? []).rows.flatMap((r) =>
-    r.testFiles.map((f) => normaliseRelPath(f)),
-  );
+  const extracted = extractSubmitTests(result.toolUses ?? []);
+  const submitted = extracted.rows.flatMap((r) => r.testFiles.map((f) => normaliseRelPath(f)));
   const paths = [...new Set(submitted)];
-  const outside = paths.filter((p) => !o.named.includes(p));
-  if (outside.length > 0)
+  // One scope rule, from the module that owns it, so the round and the judge cannot word a refusal twice and
+  // disagree. The skipped count comes along: an unreadable call is not a child that named nothing, and the
+  // handback has to say which of the two the seat did.
+  const scope = submissionScopeProblem(paths, o.named);
+  if (scope !== undefined)
     return refuse(
-      `the repair replaced ${String(outside.length)} file(s) the blocked report never named: ${outside
-        .slice(0, 4)
-        .join(", ")}`,
+      extracted.skipped > 0 && scope === "the repair submitted no test file"
+        ? `the repair child's ${String(extracted.skipped)} submission${extracted.skipped === 1 ? "" : "s"} were unreadable`
+        : scope,
     );
   for (const p of paths) {
     const bad = fileProblem(wt, p);

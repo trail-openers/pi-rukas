@@ -89,6 +89,8 @@ export interface Seat {
   result?: Partial<DispatchResult>;
   /** Throw instead of returning, to watch the round bill a child that never came back. */
   throws?: Error;
+  /** Leave the tree and the tool calls alone, for a case whose seat must submit nothing readable. */
+  silent?: boolean;
 }
 
 /** What one round left behind. */
@@ -280,10 +282,12 @@ export async function driveRound(
         ms: 1,
         exitCode: 0,
         usage: { input: 5, output: 6, cacheRead: 1, cacheWrite: 2, cost: 0.1, turns: 3 },
-        toolUses: (
-          seat.submit ??
-          (tracked.includes(HANGING_REL) ? TWO_SUBMISSIONS : TWO_SUBMISSIONS.slice(0, 1))
-        ).map((s) => ({
+        toolUses: seat.silent
+          ? []
+          : (
+              seat.submit ??
+              (tracked.includes(HANGING_REL) ? TWO_SUBMISSIONS : TWO_SUBMISSIONS.slice(0, 1))
+            ).map((s) => ({
           name: "submit_tests",
           arguments: s,
         })),
