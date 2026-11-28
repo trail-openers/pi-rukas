@@ -141,9 +141,8 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
           return to(run, c.challengeDone ? "verify" : "challenge");
         case "blocked":
-          // The adversary who wrote the tests gets the question first, when the run has a round to spend;
-          // otherwise the release's route. Never through `exhausted`: publishing over tests the driver
-          // proved unsatisfiable is how a contract lands broken.
+          // Never through `exhausted`: publishing over tests the driver proved unsatisfiable is how a
+          // contract lands broken.
           if (repairRoundDue(run)) return viaBuild(run, "repair");
           return to(run, "handback");
         case "exhausted":
@@ -160,14 +159,11 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
     case "repair":
       switch (outcome.kind) {
         case "repaired":
-          // The corrected oracle is the contract now, so the builder rebuilds against it with no red marker.
-          // Both edges DISPATCH a round and so BILL it: an unspent round could be bought again by the next
-          // blocked report.
+          // Both edges BILL the round: an unspent round could be bought again by the next blocked report.
           return viaBuild(run, "build", undefined, { repairsSpent: c.repairsSpent + 1 });
         case "refused":
-          // Nothing was corrected, so the red marker stands: a run must not land over a proven-bad oracle.
-          // Billed like its sibling — the seat was paid for even when nothing came back the judge could
-          // accept, and a re-buyable round would loop on the same refusal.
+          // The red marker stands: a run must not land over a proven-bad oracle. Billed like its sibling, or
+          // a re-buyable round would loop on the same refusal.
           return viaBuild(run, "build", true, { repairsSpent: c.repairsSpent + 1 });
       }
       break;

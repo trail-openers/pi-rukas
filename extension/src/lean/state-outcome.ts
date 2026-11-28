@@ -337,7 +337,7 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
   }
   if (oc.headBefore !== undefined && !SHA1_HEX.test(String(oc.headBefore)))
     return "outcome headBefore must be a full commit sha";
-  // The repair round's fields: their rules live with the round (`oracle-repair-fields.ts`).
+  // The repair round's fields: rules in `oracle-repair-fields.ts`.
   const repairProblem = repairOutcomeProblem(oc);
   if (repairProblem !== undefined) return repairProblem;
   if (oc.preexistingFailures !== undefined) {

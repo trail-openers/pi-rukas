@@ -270,7 +270,7 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
   for (const key of ["challengeDone", "reviewDone", "ciFixUsed", "draft"] as const) {
     if (typeof c[key] !== "boolean") bad(`counters.${key} must be a boolean`);
   }
-  // Both repair facts are validated by the round's own module, so their rules live beside its fields.
+  // Both repair facts are validated by the round's own module.
   const spend = countersRepairProblem(c);
   if (spend !== undefined) bad(spend);
   const models = r.models as Record<string, unknown> | undefined;
