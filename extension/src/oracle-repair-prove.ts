@@ -11,6 +11,7 @@ import type { BuildExec } from "./lean/build-types.ts";
 import {
   type Proof,
   TEST_TIMEOUT_MS,
+  type TestRunLimits,
   renderTestCommand,
   runTestFile,
   sha256,
@@ -127,8 +128,13 @@ export class LoopBudget {
   }
 }
 
-/** One file's verdict under the loop's ONE budget: a runner that swallows the SIGKILL, or one a grandchild holds
+/**
+ * One file's verdict under the loop's ONE budget: a runner that swallows the SIGKILL, or one a grandchild holds
  * open, is ABANDONED at the bound and counts `infra`.
+ *
+ * The env and the ceiling travel together on purpose. Every caller that bounds a runner of a project's own
+ * command also wants the scrubbed environment, and a `limits` field a caller could forget is how a run ends up
+ * on the driver's env with no kill ceiling at all.
  */
 export async function runFrozen(
   exec: BuildExec,
@@ -137,12 +143,18 @@ export async function runFrozen(
 ): Promise<Proof> {
   if (budget.over()) return abandoned(run, budget.ms);
   return Promise.race([
-    runTestFile(exec, {
-      ...run,
-      limits: { timeoutMs: Math.min(TEST_TIMEOUT_MS, budget.left()), env: verifyChildEnv() },
-    }),
+    runTestFile(exec, { ...run, limits: runLimits(budget) }),
     budget.expired.then(() => abandoned(run, budget.ms)),
   ]);
+}
+
+/**
+ * The limits every bounded runner of a project's own command carries: the scrubbed environment, and a kill
+ * ceiling that is the lesser of the runner's own default and what the loop's ONE budget has left. One place,
+ * so a caller that bounds a runner cannot forget the env, or the other way round.
+ */
+export function runLimits(budget: { left(): number }): TestRunLimits {
+  return { timeoutMs: Math.min(TEST_TIMEOUT_MS, budget.left()), env: verifyChildEnv() };
 }
 
 /** The verdict of a run the budget took: nothing may be read into it, so it is `infra`. */

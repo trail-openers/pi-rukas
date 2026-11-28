@@ -25,8 +25,8 @@
 import { blobAt } from "./lean/build-git.ts";
 import type { BuildExec } from "./lean/build-types.ts";
 import { runTestFile, sha256 } from "./lean/specify-proof.ts";
-import { LoopBudget, runFrozen } from "./oracle-repair-prove.ts";
 import { writeCaptured } from "./lean/specify-reset.ts";
+import { type LoopBudget, runFrozen } from "./oracle-repair-prove.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 
 /** The case the driver watched fail at the base, and the facts a reader needs to audit the acceptance. */

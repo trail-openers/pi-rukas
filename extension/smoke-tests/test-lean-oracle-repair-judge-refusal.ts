@@ -81,7 +81,11 @@ const [green, resubmit] = await Promise.all([
     template: RUNNER,
     named: [GREEN],
     replacements: [
-      { path: GREEN, bytes: Buffer.from(`${GREEN_ORIGINAL}\nexit 0\n`), frozenHash: sha256(GREEN_ORIGINAL) },
+      {
+        path: GREEN,
+        bytes: Buffer.from(`${GREEN_ORIGINAL}\nexit 0\n`),
+        frozenHash: sha256(GREEN_ORIGINAL),
+      },
     ],
   }),
   judgeRepairSubmission({
@@ -90,7 +94,9 @@ const [green, resubmit] = await Promise.all([
     baseRef: repo.sha,
     template: RUNNER,
     named: [RESUBMIT],
-    replacements: [{ path: RESUBMIT, bytes: Buffer.from(RESUBMITTED), frozenHash: sha256(RED_ORIGINAL) }],
+    replacements: [
+      { path: RESUBMIT, bytes: Buffer.from(RESUBMITTED), frozenHash: sha256(RED_ORIGINAL) },
+    ],
   }),
 ]);
 
@@ -102,7 +108,9 @@ const borrowed = await judgeRepairSubmission({
   baseRef: repo.sha,
   template: RUNNER,
   named: [RESUBMIT],
-  replacements: [{ path: RESUBMIT, bytes: Buffer.from(BORROWED), frozenHash: sha256(RED_ORIGINAL) }],
+  replacements: [
+    { path: RESUBMIT, bytes: Buffer.from(BORROWED), frozenHash: sha256(RED_ORIGINAL) },
+  ],
 });
 
 assert(green.accepted === false, "(1) the green-at-base replacement is refused");
@@ -126,10 +134,7 @@ assert(
   borrowedWhy.includes("the frozen file already had"),
   `(2) the last judgement still carries ITS OWN reason (${borrowedWhy || "accepted"})`,
 );
-assert(
-  greenWhy !== resubmitWhy,
-  "(2) the two refusals do not read the same reason slot",
-);
+assert(greenWhy !== resubmitWhy, "(2) the two refusals do not read the same reason slot");
 
 console.log(exit === 0 ? "\nlean oracle repair judge refusal: OK" : "\nFAILED");
 process.exit(exit);

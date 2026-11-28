@@ -17,7 +17,7 @@ import type { WorkConfig } from "./lean/config.ts";
 import type { PiSpec } from "./lean/spec.ts";
 import { SpecifyCommitError, commitTestFiles, committedBlob } from "./lean/specify-commit.ts";
 import { fileProblem, normaliseRelPath } from "./lean/specify-path.ts";
-import { runTestFile, sha256 } from "./lean/specify-proof.ts";
+import { TEST_TIMEOUT_MS, runTestFile, sha256 } from "./lean/specify-proof.ts";
 import { writeCaptured } from "./lean/specify-reset.ts";
 import { SpecifyInfraError } from "./lean/specify-reset.ts";
 import type { ensureSpecifyWorktreeWithProvision } from "./lean/specify-tree.ts";
@@ -33,6 +33,7 @@ import { repairPrompt } from "./oracle-repair-brief.ts";
 import { readRepairSubmission } from "./oracle-repair-capture.ts";
 import type { EvidenceRow, HeadEvidenceRow } from "./oracle-repair-evidence.ts";
 import { RepairJudgeError, judgeRepairSubmission } from "./oracle-repair-judge.ts";
+import { LoopBudget, runLimits } from "./oracle-repair-prove.ts";
 import { statReporterPath } from "./reporter-preflight.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -71,6 +72,8 @@ export interface RepairRoundDeps {
   ) => Promise<{ wt: string; linked: string[]; problem?: string }>;
   /** Preflight for the `submit_tests` companion; `statReporterPath` in production. */
   statReporter?: (p: string) => Promise<unknown>;
+  /** Shortened by a test to watch a hung head run refuse rather than hold the cycle. */
+  headRunBudgetMs?: number;
 }
 
 /** Everything the round needs to know about the run and the blocked verdict it answers. */
@@ -217,8 +220,16 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
   if (template === undefined || template.trim() === "")
     return refuse("no verify.test runner is configured to judge the replacement with");
 
+  // ONE budget for both runner sweeps of the round — the judge's base runs and the head runs alike — the
+  // way `blockedProved` bounds its re-run loop with a single `LoopBudget`. A project command that never
+  // returns then costs the round its budget rather than the cycle its timeout.
+  const runnerBudget = new LoopBudget(
+    (judgedCount(o.named.length) + judgedCount(o.named.length)) *
+      (deps.headRunBudgetMs ?? HEAD_RUN_MS),
+  );
   // 4. The mechanical judge, in the caller's real checkout of the run's own base.
   const judged = await judgeRepairSubmission({
+    budget: runnerBudget,
     exec: deps.exec,
     baseTree: deps.baseTree,
     baseRef: o.baseSha,
@@ -256,6 +267,10 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
     throw new SpecifyInfraError(`repair freeze: ${(err as Error).message}`);
   }
 
+  // ONE budget for the whole replacements sweep, the way `blockedProved` bounds its re-run loop: each head
+  // run gets the runner's own kill ceiling AND the sweep's aggregate wall clock, so a project command that
+  // never returns costs the round its budget rather than the cycle its timeout.
+  const headBudget = runnerBudget;
   const originalHashes: Record<string, string> = {};
   const passedAtHead: Record<string, boolean> = {};
   let headObserved = true;
@@ -268,7 +283,15 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
       );
     frozen[v.path] = sha256(blob);
     originalHashes[v.path] = v.originalHash;
-    const atHead = await passesAtHead(deps.exec, deps.baseTree, o.headBefore, v.path, template);
+    const atHead = await passesAtHead(
+      deps.exec,
+      deps.baseTree,
+      o.headBefore,
+      v.path,
+      template,
+      v.bytes,
+      headBudget,
+    );
     passedAtHead[v.path] = atHead.passed;
     if (!atHead.observed) headObserved = false;
   }
@@ -306,12 +329,26 @@ interface HeadRun {
   observed: boolean;
 }
 
+/** The ceiling one head run gets when nothing shorter is injected: the runner's own default. */
+const HEAD_RUN_MS = TEST_TIMEOUT_MS;
+
+/**
+ * The wall clock for the whole head sweep: each replacement's own ceiling, so a sweep of N replacements can
+ * never exceed N runs' worth of waiting. `LoopBudget` enforces it at BOTH ends of a runner, which is what
+ * makes it an aggregate rather than a per-run bound.
+ */
+function judgedCount(count: number): number {
+  return Math.max(1, count);
+}
+
 async function passesAtHead(
   exec: BuildExec,
   baseTree: string,
   head: string,
   rel: string,
   template: string,
+  replacement: Buffer,
+  budget: LoopBudget,
 ): Promise<HeadRun> {
   const unanswered: HeadRun = { passed: false, observed: false };
   // Which files the builder committed at `head`, read against its own parent: the source it wrote, and no
@@ -342,8 +379,19 @@ async function passesAtHead(
     const bytes = await blobAt(exec, baseTree, head, rel2).catch(() => undefined);
     if (bytes !== undefined && bytes.length > 0) laid.set(rel2, bytes);
   }
+  // The corrected file is the one this run judges, so its own bytes — not the head's — are what the head
+  // run must see. The freeze wrote them into the seat's tree; this lays them over the judge's checkout.
+  laid.set(rel, replacement);
   writeCaptured(baseTree, laid);
-  const proof = await runTestFile(exec, { wt: baseTree, template, file: rel });
+  // The same limits the round's base runs carry, from the same helper: the scrubbed environment and a kill
+  // ceiling drawn from the sweep's ONE budget. A head run with neither is a project command that runs on the
+  // driver's own knobs and holds the cycle by its own timeout.
+  const proof = await runTestFile(exec, {
+    wt: baseTree,
+    template,
+    file: rel,
+    limits: runLimits(budget),
+  });
   return {
     passed: proof.kind === "green",
     observed: proof.kind === "green" || proof.kind === "red",
