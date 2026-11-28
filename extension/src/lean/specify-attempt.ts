@@ -11,11 +11,7 @@
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
-import {
-  allPreserved,
-  malformedDeclarations,
-  preservedCoverage,
-} from "../lean-preserved-coverage.ts";
+import { allPreserved, malformedDeclarations } from "../lean-preserved-coverage.ts";
 import { droppedLabel } from "../lean-preserved-notes.ts";
 import { preservedCriteria } from "../lean-preserved-step.ts";
 import { verdictReasonClause } from "../lean-step-bound.ts";

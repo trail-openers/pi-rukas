@@ -168,7 +168,7 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",
-  // `specify` alone froze a declared criterion as must-pass; no other step may carry the list.
+  // No other step may carry the list; the rules are `preserved-record.ts`.
   preserved: "specify",
   // The build step's own account of which frozen tests it proved cannot all pass together;
   // `handback` prints it as the run's cause.

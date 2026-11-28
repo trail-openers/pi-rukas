@@ -189,7 +189,7 @@ export async function runTestPipeline(
     Object.fromEntries(kept.map((row) => [row.criterionId, row.testFiles])),
   );
   const skippedNote = skipped > 0 ? ` (${skipped} malformed submit_tests call(s))` : "";
-  // The preservation rule, and the reason one declared file keeps its bytes: `lean-preserved-step.ts`.
+  // The preservation rule and its wording: `lean-preserved-step.ts`, `lean-preserved-coverage.ts`.
   const isPreserved = declaredPreserved(kept);
   if (candidates.length === 0) {
     return {
@@ -280,7 +280,7 @@ export async function runTestPipeline(
 
   // 5. Prove red on exactly these bytes, per file, against `headBefore`. A green or unclear file is dropped
   //    and DELETED from the tree; only an unrunnable runner is infrastructure. Each verdict is kept so the
-  //    preservation rule reads it from this one run, never from a second run.
+  //    preservation rule reads this one run, never a second one.
   const kinds = new Map<string, ProvedKind>();
   let red: DeclaredPath[] = [];
   for (const cand of candidates) {
@@ -297,8 +297,8 @@ export async function runTestPipeline(
       continue;
     }
     assertRan(proof, cand.path);
-    // A declared file keeps its bytes ONLY where the rule freezes it: the rule is decided from all proofs at
-    // once, below, so anything it does not keep is deleted here and never reaches the commit or the tree.
+    // The rule is decided from ALL proofs at once, below: a file it does not keep is deleted here and never
+    // reaches the commit or leaves the tree unclean.
     if (isPreserved(cand.criterionId) && !preservedKeepsFile(candidates, kinds, cand)) continue;
     notes.push(noteFor(cand, proof));
     const why = removeRejected(wt, cand.path);
@@ -373,8 +373,7 @@ export async function runTestPipeline(
   }
 
   // 6. Coverage. ONLY `"all-criteria"` refuses a gap: `specify` needs a red for every test criterion, while
-  //    `challenge` keeps whatever red it earned. Only a DECLARED preserved criterion is excused, and the
-  //    computation is `../lean-preserved-coverage.ts`.
+  //    `challenge` keeps whatever red it earned. Only a DECLARED preserved criterion is excused (see below).
   const coverage = preservedCoverage({ candidates, kinds, rows: kept, wanted: args.wanted });
   const { mustPass, preservedIds } = coverage;
   if (args.coverage === "all-criteria") {

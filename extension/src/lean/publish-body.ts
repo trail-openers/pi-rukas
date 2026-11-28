@@ -83,7 +83,7 @@ export interface PublishBodyInput {
    * base commit and which tests without parsing a sentence the gate composed.
    */
   preexistingFailures?: Record<string, PreexistingTierRecord>;
-  /** The criteria this run PRESERVED, off the specify record — its own clause, never the dropped-file list. */
+  /** The criteria this run PRESERVED — its own clause, never the dropped-file list. */
   preserved?: string[];
   /** The challenge round's own ceiling, when the log carries a `budget` outcome — so a reader tells "the contract was never attacked" from "it was attacked and held". */
   challengeBudget?: { limit: "minutes" | "turns" | "tokens" | "stall"; value: number };
