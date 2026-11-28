@@ -44,6 +44,16 @@ const { assert, failures } = makeAssert();
 const SWITCH = "PI_ENSEMBLE_LEAN_PREFIX_HEAD";
 /** The off arm's digest, captured by running `prefixHeadRun` against the base commit's source. */
 const GOLDEN_OFF = "7720f19fb245e2b29ee70db08f9b28fecd42352c41c5eff58a7c7c2dfb8edb0e";
+/**
+ * The other default-on lean switch that reads this scenario's bytes, pinned off for every
+ * golden comparison. The golden was captured from a build that had no such knob, and #2667's
+ * route legitimately adds a `handback` record to a run whose `review` threw over a certified
+ * head, which is exactly this scenario. So the golden pins the PREFIX-HEAD switch's off arm,
+ * and the neighbouring knob has to hold still for it: case (3) compares against it at `0`,
+ * and case (7) pins what the neighbour's own arm adds. Off, this scenario's digest equals the
+ * golden on this tree and on the base commit alike.
+ */
+const INCOMPLETE_HEAD = "PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_HEAD";
 
 /** The undecided review step's saved head in the state file on disk, or undefined. */
 function savedHead(repoRoot: string): string | undefined {
@@ -93,7 +103,7 @@ await withEnv({ [SWITCH]: undefined }, async () => {
 });
 
 // ── (3) OFF: THE PRE-CHANGE BYTES ────────────────────────────────────────────
-await withEnv({ [SWITCH]: "0" }, async () => {
+await withEnv({ [SWITCH]: "0", [INCOMPLETE_HEAD]: "0" }, async () => {
   const atDispatch: (string | undefined)[] = [];
   const off = await prefixHeadRun("off", { onFixer: (root) => atDispatch.push(savedHead(root)) });
   assert(atDispatch[0] === undefined, "(3) off, nothing is saved before the fixer");
@@ -210,6 +220,62 @@ assert(
   progressProblem({ preFixHead: sha }, "verify") !== undefined,
   "(6) and another state's field",
 );
+
+// ── (7) THE NEIGHBOURING KNOB CANNOT MOVE THE GOLDEN UNSEEN ──────────────────
+// Case (3) pins bytes only while the other default-on switch is held still. Held still is not
+// assumed: the same scenario at the neighbour's DEFAULT must differ from the golden, and differ
+// from the pinned run only by the routed report. Anything else in the delta means the off-arm
+// pin above is hiding a change.
+{
+  const at = async (head: "0" | undefined): Promise<string> => {
+    let normalised = "";
+    await withEnv({ [SWITCH]: "0", [INCOMPLETE_HEAD]: head }, async () => {
+      normalised = (await prefixHeadRun("neighbour")).normalised;
+    });
+    return normalised;
+  };
+  const offRun = await at("0");
+  const onRun = await at(undefined);
+  assert(
+    digest(offRun) === GOLDEN_OFF && digest(onRun) !== GOLDEN_OFF,
+    "(7) the scenario at the neighbour's default differs from the golden the off arm equals",
+  );
+  const diff = (from: string, notIn: Set<string>): string[] =>
+    from.split("\n").filter((l) => !notIn.has(l));
+  const added = diff(onRun, new Set(offRun.split("\n")));
+  const dropped = diff(offRun, new Set(onRun.split("\n")));
+  // The routing writes the report's record (its key, state, verdict, reason, delivery claim,
+  // body and head fields), re-stamps the run's reason, and re-renders the host document around
+  // them. It also reads origin to say where the branch stands, the read the plain stamp never
+  // made, so the fixer's push can gain its own normalised token. Anything the report did not
+  // write, and did not read, must survive byte for byte.
+  const reportLine = (l: string): boolean =>
+    /"(key|state|kind|reason|posted|report|shippedHead|shippedVerified|unshippedReason)":/.test(
+      l,
+    ) ||
+    l.includes("handback") ||
+    l.includes("is handed back") ||
+    l.includes("no verified head was recorded") ||
+    l.includes("the review did not complete") ||
+    l.includes("Fix range");
+  assert(
+    added.length > 0 &&
+      added.filter((l) => !reportLine(l)).length === 0 &&
+      added.some((l) => l.includes('"key": "7:handback:0"')) && // the routed record itself
+      added.some((l) => l.includes('"unshippedReason"')) && // why origin was not moved
+      added.some((l) => l.includes('"shippedHead"')) &&
+      added.some((l) => l.includes('"shippedVerified": false')),
+    `(7) at the neighbour's default the report did not add exactly its own record: ${JSON.stringify(
+      added.map((l) => l.trim().slice(0, 90)),
+    )}`,
+  );
+  assert(
+    dropped.every(reportLine),
+    `(7) at the neighbour's default, lines the report never wrote disappeared: ${JSON.stringify(
+      dropped.filter((l) => !reportLine(l)).map((l) => l.trim().slice(0, 90)),
+    )}`,
+  );
+}
 
 cleanupRoots();
 process.exit(failures());
