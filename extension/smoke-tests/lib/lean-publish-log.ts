@@ -30,6 +30,8 @@ export function logFor(
     verify?: { kind: "green" | "red"; head?: string; reason?: string } | undefined;
     commandCriteria?: Record<string, string>;
     preexistingFailures?: Record<string, PreexistingTierRecord>;
+    /** The criteria the run's specify PRESERVED, recorded on that step as the step records them. */
+    preserved?: string[];
     extraSteps?: Step[];
   },
   head: string,
@@ -50,6 +52,7 @@ export function logFor(
           "tests/AC2-bound.test.sh": sha(TEST_FILE_CONTENT),
         },
         tests: { AC1: ["tests/AC1-retry.test.sh"], AC2: ["tests/AC2-bound.test.sh"] },
+        ...(o.preserved === undefined ? {} : { preserved: o.preserved }),
       },
     },
     {

@@ -265,8 +265,10 @@ export function publishBody(o: PublishBodyInput): string {
   // learns which part of it was green only because the base was already red.
   const preexisting = leanPreexistingFailuresSection(o.preexistingFailures);
   if (preexisting !== "") lines.push(preexisting);
+  // A blank line before the clause, as every other break in this list has: pushed bare, the clause sits
+  // against the bullet above it and markdown reads the run's bullet list as two lists.
   const preserved = preservedLine(o);
-  if (preserved !== "") lines.push(preserved);
+  if (preserved !== "") lines.push("", preserved);
   // One line, only when the log records the stop. The counter pair is the one
   // the run carries into verify either way, so this is the only place the fact
   // survives into the PR; `value`/`limit` are typed numbers/enums off the step
