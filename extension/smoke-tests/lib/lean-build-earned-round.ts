@@ -52,7 +52,8 @@ export type EarnedRoundOpts = boolean | { reason?: string; [field: string]: unkn
  *
  * Empty when the case asked for nothing: absent leaves the log the release wrote, which is what keeps
  * an off arm from quietly widening its record.
- */export function earnedRepairStep(issue: number, earned: EarnedRoundOpts | undefined): Step[] {
+ */
+export function earnedRepairStep(issue: number, earned: EarnedRoundOpts | undefined): Step[] {
   if (!earned) return [];
   const over = typeof earned === "object" ? earned : {};
   return [
