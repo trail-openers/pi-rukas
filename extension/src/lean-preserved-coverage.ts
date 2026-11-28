@@ -1,3 +1,4 @@
+import { type DropLabel, dropNote } from "./lean-preserved-notes.ts";
 import { type ProvedFile, preservedCriteria, preservedFiles } from "./lean-preserved-step.ts";
 /**
  * lean-preserved-coverage — what the `specify` step must freeze once a run declared criteria preserved.
@@ -12,6 +13,7 @@ import { type ProvedFile, preservedCriteria, preservedFiles } from "./lean-prese
  * only for verdicts, so a caller cannot accidentally skip the side effect a step owes.
  */
 import type { DeclaredPath } from "./lean/specify-tree.ts";
+import { preservedReasonClause } from "./specify-preserves.ts";
 
 /** One path's proof verdict, as the caller read it. */
 export type ProvedKind = Pick<ProvedFile, "kind">;
@@ -106,4 +108,34 @@ export function allPreserved(wanted: readonly string[], preserved: readonly stri
 /** A declaration of the wrong type is a malformed call, counted with the skipped-call accounting. */
 export function malformedDeclarations(rows: readonly CoverageRow[]): number {
   return rows.filter((r) => r.preserves !== undefined && typeof r.preserves !== "boolean").length;
+}
+
+/**
+ * The committed verdict's reason: what was frozen, what was preserved, what was refused, and the tree's own
+ * caveat. Composed outside the engine so the clauses live with the rule they describe, and the step keeps
+ * only the call.
+ */
+export function preservedCommitReason(input: {
+  frozen: number;
+  criteria: number;
+  preservedIds: readonly string[];
+  skipped: number;
+  droppedNote: string;
+  dropped: DropLabel[];
+  checkNote: string;
+  treeProblem?: string;
+}): string {
+  return [
+    `froze ${String(input.frozen)} red test file(s) for ${String(input.criteria)} criterion/criteria`,
+    preservedReasonClause(input.preservedIds),
+    input.skipped > 0
+      ? `${String(input.skipped)} submit_tests call(s) skipped or refused as malformed`
+      : "",
+    input.droppedNote,
+    dropNote(input.dropped),
+    input.checkNote,
+    input.treeProblem ?? "",
+  ]
+    .filter((s) => s !== "")
+    .join("; ");
 }

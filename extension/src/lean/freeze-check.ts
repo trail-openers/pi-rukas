@@ -1,3 +1,4 @@
+import type { DropLabel } from "../lean-preserved-notes.ts";
 /**
  * lean/freeze-check — a candidate acceptance test run against the project's own cheap content checks, BEFORE
  * it becomes frozen.
@@ -22,7 +23,6 @@
  */
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { neverStarted, wasKilled } from "./specify-proof.ts";
-import type { DropLabel } from "./specify-run.ts";
 import type { VerifyExec } from "./verify-types.ts";
 
 /** What a freeze check said. `unknown` is not a colour: it never blocks. */

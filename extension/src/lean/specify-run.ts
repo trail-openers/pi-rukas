@@ -28,11 +28,12 @@ import {
   type ProvedKind,
   allPreserved,
   malformedDeclarations,
+  preservedCommitReason,
   preservedCoverage,
   preservedKeepsFile,
 } from "../lean-preserved-coverage.ts";
+import { type DropLabel, dropNote, noteClause } from "../lean-preserved-notes.ts";
 import { preservedCriteria } from "../lean-preserved-step.ts";
-import { preservedReasonClause } from "../specify-preserves.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { FreezeCheck } from "./freeze-check.ts";
 import { freezeCheckDrops, freezeCheckNote, runFreezeCheck } from "./freeze-check.ts";
@@ -125,47 +126,6 @@ interface RunTestsArgs {
   formatTemplate?: string;
 }
 
-/** How many per-file notes an outcome reason carries before it says `(+N more)`. */
-const NOTE_CAP = 8;
-/** How long one note's detail may run before the reason clips it. */
-const NOTE_DETAIL_MAX = 200;
-
-/** A note's detail, clipped: one chatty runner must not drown the reason. */
-function clip(detail: string): string {
-  const one = detail.replace(/\s+/g, " ").trim();
-  return one.length > NOTE_DETAIL_MAX ? `${one.slice(0, NOTE_DETAIL_MAX)}…` : one;
-}
-
-/** A capped `label N: a; b; c` clause — every note family needs the same bound. */
-export function noteClause(label: string, notes: string[]): string {
-  if (notes.length === 0) return "";
-  const shown = notes.slice(0, NOTE_CAP).map(clip);
-  const more = notes.length - shown.length;
-  return `${label} ${notes.length}: ${shown.join("; ")}${more > 0 ? ` (+${more} more)` : ""}`;
-}
-
-/** A dropped row as the boundary reports it: the criterion, the path if it had one, the reason. */
-export interface DropLabel {
-  criterionId: string;
-  path?: string;
-  reason: string;
-}
-
-/** The attributed form of one drop, `<criterionId> <path>: <reason>`, path omitted when there is none. */
-export function droppedLabel(d: DropLabel): string {
-  return `${d.criterionId}${d.path === undefined ? "" : ` ${d.path}`}: ${d.reason}`;
-}
-
-/**
- * A `dropped N (…) — a; b; c` clause with NO leading space: each call site supplies its own separator.
- */
-function dropNote(dropped: DropLabel[]): string {
-  if (dropped.length === 0) return "";
-  const parts = dropped.slice(0, NOTE_CAP).map((d) => clip(droppedLabel(d)));
-  const more = dropped.length - parts.length;
-  return `dropped ${dropped.length}${more > 0 ? ` (+${more} more)` : ""} — ${parts.join("; ")}`;
-}
-
 /** Remove a non-red file the step refused; the reason it is still there, if any. */
 function removeRejected(wt: string, rel: string): string | undefined {
   if (!existsSync(path.join(wt, rel))) return undefined;
@@ -178,9 +138,12 @@ function removeRejected(wt: string, rel: string): string | undefined {
   return undefined;
 }
 
+/** A note's detail, clipped to the step's bound. */
+import { noteClip } from "../lean-preserved-notes.ts";
+
 /** The classification of one non-red file, per the proof's own words. */
 function noteFor(cand: DeclaredPath, proof: Proof): string {
-  return clip(`${cand.criterionId} ${cand.path}: ${proof.detail}`);
+  return noteClip(`${cand.criterionId} ${cand.path}: ${proof.detail}`);
 }
 
 /**
@@ -451,16 +414,15 @@ export async function runTestPipeline(
     tests[criterionId] = list;
   }
 
-  const reason = [
-    `froze ${Object.keys(frozen).length} red test file(s) for ${Object.keys(tests).length} criterion/criteria`,
-    preservedReasonClause(preservedIds),
-    skipped > 0 ? `${skipped} submit_tests call(s) skipped or refused as malformed` : "",
+  const reason = preservedCommitReason({
+    frozen: Object.keys(frozen).length,
+    criteria: Object.keys(tests).length,
+    preservedIds,
+    skipped,
     droppedNote,
-    dropNote(dropped),
+    dropped,
     checkNote,
-    treeProblem ?? "",
-  ]
-    .filter((s) => s !== "")
-    .join("; ");
+    ...(treeProblem === undefined ? {} : { treeProblem }),
+  });
   return { kind: "committed", frozen, tests, reason };
 }

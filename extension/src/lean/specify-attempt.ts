@@ -16,6 +16,7 @@ import {
   malformedDeclarations,
   preservedCoverage,
 } from "../lean-preserved-coverage.ts";
+import { droppedLabel } from "../lean-preserved-notes.ts";
 import { preservedCriteria } from "../lean-preserved-step.ts";
 import { verdictReasonClause } from "../lean-step-bound.ts";
 import { statReporterPath } from "../reporter-preflight.ts";
@@ -41,7 +42,7 @@ import {
   withReaskNote,
 } from "./specify-reask.ts";
 import { SpecifyInfraError } from "./specify-reset.ts";
-import { droppedLabel, runTestPipeline } from "./specify-run.ts";
+import { runTestPipeline } from "./specify-run.ts";
 import { ensureSpecifyWorktreeWithProvision, validateSubmitRows } from "./specify-tree.ts";
 import type { SpecifyDeps } from "./specify.ts";
 import type { Outcome } from "./state.ts";
