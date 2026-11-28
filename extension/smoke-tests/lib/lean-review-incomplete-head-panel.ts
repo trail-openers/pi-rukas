@@ -398,9 +398,14 @@ function summarise(
   const { doc } = leanResultDocument(r.run, r.code);
   const handbackStep = r.run.steps.find((s) => s.state === "handback");
   // The stranger is what the reporting step found on origin and refused to overwrite; the
-  // record has to name it. It is read back from origin, never passed in as a literal.
+  // record has to name it. It is read back from origin, never passed in as a literal, and only
+  // on the arm where the step named a head IT MOVED: a step that moved nothing already says so
+  // in its own words, and putting origin's value in its mouth would assert a head the step
+  // never displaced.
   const handback =
-    handbackStep?.outcome === undefined || headAtReport === undefined
+    handbackStep?.outcome === undefined ||
+    headAtReport === undefined ||
+    typeof handbackStep.outcome.shippedHead !== "string"
       ? handbackStep?.outcome
       : { ...handbackStep.outcome, unshippedHead: headAtReport };
   const review = r.run.steps.find((s) => s.state === "review")?.outcome;

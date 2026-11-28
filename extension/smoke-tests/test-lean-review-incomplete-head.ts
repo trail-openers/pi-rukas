@@ -206,9 +206,14 @@ function checkHeadFacts(cause: ReviewCause, row: PanelRun): void {
       headless.handback?.unshippedHead === undefined,
     "a green that named no head: no head field is written anywhere",
   );
+  // The feature's boundary, stated on the record: a throw behind a green that named no commit
+  // is handed back, and the comment is the run's own sentence with the throw's cause in it. The
+  // rule's head finding is deliberately absent — the rule names no head, so it writes no head
+  // line, and the ordinary handback keeps its bytes. See `test-lean-review-incomplete-head-off-arm.ts`.
   assert(
-    headless.posts[0]?.includes("the green verify recorded no head") === true,
-    `a green that named no head is disclosed in the rule's own words (${headless.posts[0]?.slice(0, 220)})`,
+    headless.posts[0]?.includes("the review did not complete") === true &&
+      headless.posts[0]?.includes("the green verify recorded no head") === false,
+    `a green that named no head is handed back on the run's own sentence, with no head line (${headless.posts[0]?.slice(0, 200)})`,
   );
 
   // The gate's own words for "nothing was ever certified", which a throw behind a red gate

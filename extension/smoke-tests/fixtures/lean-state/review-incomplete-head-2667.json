@@ -545,11 +545,11 @@
           "kind": "done",
           "reason": "handback comment posted",
           "posted": true,
-          "report": "work-lean: issue #2667 is handed back \u2014 this is still needed:\n\n```text\nall frozen tests green at <sha>\n```\n\nFrozen acceptance tests:\n- tests/AC1-review-head.test.sh\n\nBranch: `lean/issue-2667`\nPR: https://forge.invalid/o/r/pull/1"
+          "report": "work-lean: issue #2667 is handed back — this is still needed:\n\n```text\nall frozen tests green at <sha>\n```\n\nFrozen acceptance tests:\n- tests/AC1-review-head.test.sh\n\nBranch: `lean/issue-2667`\nPR: https://forge.invalid/o/r/pull/1"
         }
       }
     ],
-    "handbackBody": "work-lean: issue #2667 is handed back \u2014 this is still needed:\n\n```text\nall frozen tests green at <sha>\n```\n\nFrozen acceptance tests:\n- tests/AC1-review-head.test.sh\n\nBranch: `lean/issue-2667`\nPR: https://forge.invalid/o/r/pull/1",
+    "handbackBody": "work-lean: issue #2667 is handed back — this is still needed:\n\n```text\nall frozen tests green at <sha>\n```\n\nFrozen acceptance tests:\n- tests/AC1-review-head.test.sh\n\nBranch: `lean/issue-2667`\nPR: https://forge.invalid/o/r/pull/1",
     "issues": [
       {
         "issue": 2667,

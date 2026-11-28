@@ -301,18 +301,12 @@ interface Heads {
  * includes `alreadyAtVerified`, where the rewind's pre-move `unshippedHead` is withheld rather than printed
  * as a head this step moved.
  */
-function headFacts(
-  rewind: Rewind,
-  originHead: string | undefined,
-  /** The head rule's own finding, for the arm where the rewind brought no reason of its own. */
-  ruleFinding?: string,
-): Heads {
+function headFacts(rewind: Rewind, originHead: string | undefined): Heads {
   const shippedHead = originHead ?? rewind.unshippedHead;
   // The arm with nothing to move: origin keeps the head the fix wave pushed, uncertified.
   if (rewind.unshippedHead === undefined && !rewind.shipped) {
-    const why = rewind.noHeadReason ?? rewind.reason ?? ruleFinding;
-    if (originHead === undefined)
-      return why === undefined ? { render: false } : { render: true, unshippedReason: why };
+    if (originHead === undefined) return { render: false };
+    const why = rewind.noHeadReason ?? rewind.reason;
     return {
       render: true,
       shippedHead: originHead,
@@ -372,11 +366,11 @@ export async function handbackOutcome(
     // the line that says the head is unverified.
     const facts: Heads = heads.shippedHead
       ? { render: true, shippedHead: heads.shippedHead, shippedVerified: false }
-      : // The rule spoke and named no head to move. Its finding IS the head line: a handback
-        // over bytes no gate of this run certified has to say so, and the rule's words are the
-        // only place that answer is written. `NO_HEAD`'s line, carried by the rewind it came
-        // through, says the same thing in the rewind's own voice and outranks it.
-        headFacts(moved ?? NO_HEAD, originHead, heads.reason);
+      : // The rule fired and named no head to move, so no rewind ran: the plain `NO_HEAD` stamp,
+        // exactly as this step printed it before #2667. A run whose gate named no head at all is
+        // the one shape the feature adds here, and it is answered by the errored arm's own line
+        // (`erroredReviewLine`), not by re-wording a stamp the ordinary runs already carry.
+        headFacts(moved ?? NO_HEAD, originHead);
     const { render, ...record } = facts;
     body = handbackBody(ctx.issue, {
       needed: neededFromLog(ctx.steps),
