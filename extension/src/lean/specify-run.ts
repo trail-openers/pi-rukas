@@ -375,10 +375,10 @@ export async function runTestPipeline(
   // 6. Coverage. ONLY `"all-criteria"` refuses a gap: `specify` needs a red for every test criterion, while
   //    `challenge` keeps whatever red it earned. Only a DECLARED criterion is excused.
   const coverage = preservedCoverage({ candidates, kinds, rows: kept, wanted: args.wanted });
-  const { mustPass, preservedIds } = coverage;
+  const { mustPass, preservedIds, missing } = coverage;
   if (args.coverage === "all-criteria") {
-    if (coverage.missing.length > 0) {
-      const rules = gapFor(coverage.missing, true);
+    if (missing.length > 0) {
+      const rules = gapFor(missing, true);
       return {
         kind: "uncovered",
         uncovered: rules,
