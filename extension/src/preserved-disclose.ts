@@ -61,6 +61,10 @@ export function preservedLine(o: {
  * The whole gap cause: each failed rule the reason does not already quote, the reason, the other reading
  * of a test that passed on the base, and the preserved clause. Composed off the record's fields so the
  * handback keeps one call site.
+ *
+ * The second reading is keyed on the record's own `preserved` list, NOT on the reason's wording: the
+ * all-preserved run's reason is its own stable sentence and never contains the red proof's phrase, so a
+ * clause keyed on that phrase disclosed nothing for exactly the run that most needs the hint.
  */
 const GAP_READING =
   "A test that passes on the base may also mean the criterion already holds there.";
@@ -71,7 +75,10 @@ export function gapCauseLines(
   const rules = oc.failedRules ?? [];
   const reason = oc.reason ?? "";
   const lead = [...rules.filter((r) => !reason.includes(r)), reason];
-  const second = reason.includes("exited 0 on base") ? [GAP_READING, PRESERVES_HINT] : [];
+  const second =
+    reason.includes("exited 0 on base") || (preservedIds(oc.preserved).length ?? 0) > 0
+      ? [GAP_READING, PRESERVES_HINT]
+      : [];
   const kept = preservedClause(oc.preserved, oc.tests);
   return [...lead, ...second, kept].filter((s) => s !== "").join("\n");
 }

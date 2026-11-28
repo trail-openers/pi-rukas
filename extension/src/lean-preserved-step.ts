@@ -38,16 +38,21 @@ export function preservedCriteria(rows: readonly PreservesRowInput[]): string[] 
 /**
  * The paths a run with these proofs must freeze BEYOND its red files.
  *
- * A declared file whose proof came back not-red is the declaration's own claim — a criterion that states
- * behaviour which already holds has no red test to write — so it joins the contract as a must-pass file.
+ * A declared file whose proof classified it GREEN at the base is the declaration's own claim — a criterion
+ * that states behaviour which already holds has no red test to write — so it joins the contract as a
+ * must-pass file. Only `green` qualifies: that verdict is the step's OBSERVATION that the runner exited 0
+ * on the base, which is the whole content of the claim a must-pass file makes. An `unclear` verdict (a
+ * non-zero exit that never named the file) observes nothing about the base, so freezing on it would assert
+ * an unobserved fact and bill `verify` for it at head; it is dropped like the non-red file it is.
+ *
  * A declared criterion whose proof came back RED is an ordinary red test and the declaration changes nothing
  * about it, so a criterion with one red file contributes only that file.
  */
-export function preservedFiles(files: readonly ProvedFile[]): string[] {
+export function mustPassFiles(files: readonly ProvedFile[]): string[] {
   const redIds = new Set(files.filter((f) => f.kind === "red").map((f) => f.criterionId));
   const out: string[] = [];
   for (const f of files) {
-    if (f.kind === "red" || redIds.has(f.criterionId) || !f.preserves) continue;
+    if (f.kind !== "green" || redIds.has(f.criterionId) || !f.preserves) continue;
     if (!out.includes(f.path)) out.push(f.path);
   }
   return out;

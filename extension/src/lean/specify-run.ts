@@ -60,6 +60,12 @@ type PipelineVerdict =
       frozen: Record<string, string>;
       tests: Record<string, string[]>;
       reason: string;
+      /**
+       * The criteria whose must-pass file this commit actually holds. The caller records these as the run's
+       * preserved list — never the raw declarations, which include a row that turned out to be an ordinary
+       * red test and froze no must-pass file at all.
+       */
+      preserved: string[];
     }
   /** No submitted row survived validation, capture and the red proof. */
   | { kind: "empty"; reason: string }
@@ -409,7 +415,9 @@ export async function runTestPipeline(
   }
 
   const reason = preservedCommitReason({
-    frozen,
+    // The RED count, not the frozen map's size: the map also holds the must-pass files, and a reason that
+    // counted them as red would say the step proved red a file it froze for being green at the base.
+    redCount: red.length,
     tests,
     preservedIds,
     skipped,
@@ -418,5 +426,5 @@ export async function runTestPipeline(
     checkNote,
     ...(treeProblem === undefined ? {} : { treeProblem }),
   });
-  return { kind: "committed", frozen, tests, reason };
+  return { kind: "committed", frozen, tests, reason, preserved: preservedIds };
 }

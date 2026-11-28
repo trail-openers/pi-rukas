@@ -362,8 +362,10 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
           kind: "ok",
           frozen: pipeline.frozen,
           tests: pipeline.tests,
-          // Absent, never empty: `preserved-record.ts` refuses an empty list.
-          ...(preservedRows.length === 0 ? {} : { preserved: preservedRows }),
+          // Absent, never empty: `preserved-record.ts` refuses an empty list. Read off what the pipeline
+          // FROZE, not off the child's declarations: a `preserves: true` row that turned out to be an
+          // ordinary red test froze no must-pass file, and the disclosure may not claim one.
+          ...(pipeline.preserved.length === 0 ? {} : { preserved: pipeline.preserved }),
           reason: pipeline.reason,
           dispatches: rows,
         },
@@ -384,6 +386,11 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
           kind: gapKind,
           failedRules: wanted.map((c) => `criterion ${c.id} has no red test`),
           reason: allPreservedReason(preservedRows),
+          // The record carries its own preserved list: the handback's second reading and its hint key on
+          // this field, and this gap's reason is its own stable sentence that never quotes the red proof.
+          // A gap that discloses its cause but not the move it implies is the half-disclosure this field
+          // exists to close.
+          ...(preservedRows.length === 0 ? {} : { preserved: preservedRows }),
           dispatches: rows,
         },
         note,

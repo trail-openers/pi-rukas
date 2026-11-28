@@ -1,5 +1,5 @@
 import { type DropLabel, dropNote } from "./lean-preserved-notes.ts";
-import { type ProvedFile, preservedCriteria, preservedFiles } from "./lean-preserved-step.ts";
+import { type ProvedFile, mustPassFiles } from "./lean-preserved-step.ts";
 /**
  * lean-preserved-coverage — what the `specify` step must freeze once a run declared criteria preserved.
  *
@@ -36,11 +36,11 @@ export interface PreservedCoverageInput {
 }
 
 export interface PreservedCoverage {
-  /** Paths to commit BEYOND the red ones: a declared file that is green at the base. */
+  /** Paths to commit BEYOND the red ones: a declared file the proof classified GREEN at the base. */
   mustPass: string[];
   /** Every file the frozen contract holds: red plus must-pass, in candidate order. */
   contract: DeclaredPath[];
-  /** The criteria the run preserved, deduplicated, in candidate order. */
+  /** The criteria whose must-pass file ACTUALLY froze, deduplicated, in candidate order. */
   preservedIds: string[];
   /** The ids still owed a red file, once the preserved ones are excused. */
   missing: string[];
@@ -55,11 +55,15 @@ export interface ProofRule {
 }
 
 /**
- * The proof pass's rule, built from the kept rows and the verdicts the loop collects. A declared file the
- * proof refused keeps its place ONLY when NO file of its criterion proved red: a criterion with a real red
- * is an ordinary red test, so a second, green file under the same declaration is one the step never froze.
- * The verdicts are read at the END of the pass — a file whose own criterion proved red later still counts,
- * which is why the rule is asked after each verdict rather than at the refusal it produces.
+ * The proof pass's rule, built from the kept rows and the verdicts the loop collects.
+ *
+ * A declared file keeps its place ONLY when the proof classified it green at the base AND no file of its
+ * criterion proved red. Both halves matter: the green verdict is the step's observation that the runner
+ * exited 0 on the base, which is the claim a must-pass file makes; and a criterion with a real red is an
+ * ordinary red test, so a second, green file under the same declaration is one the step never froze. An
+ * `unclear` verdict observes nothing about the base, so it keeps nothing — the file is deleted and noted
+ * like any other non-red. The verdicts are read at the END of the pass — a file whose own criterion proved
+ * red later still counts — which is why the rule is asked after each verdict rather than at the refusal.
  */
 export function proofRule(
   kept: readonly CoverageRow[],
@@ -70,6 +74,7 @@ export function proofRule(
   return {
     isPreserved: (criterionId) => declared.has(criterionId),
     keeps: (cand) =>
+      kinds.get(cand.path)?.kind === "green" &&
       candidates.some(
         (c) => c.criterionId === cand.criterionId && kinds.get(c.path)?.kind === "red",
       ),
@@ -80,6 +85,10 @@ export function proofRule(
  * The coverage computation for a run that may have declared preservation. `red` is what the proof pass
  * returned; the must-pass set is decided from ALL verdicts at once, so a green file under a criterion that
  * has a real red is an ordinary refusal and is deleted like any other green.
+ *
+ * `preservedIds` names what FROZE, not what was declared: only a criterion with a must-pass file in the
+ * contract is named. A declaration on a row that proved red is an ordinary red test and the step froze
+ * nothing as must-pass for it, so naming it would disclose a guard that does not exist.
  */
 export function preservedCoverage(input: PreservedCoverageInput): PreservedCoverage {
   const { candidates, kinds, rows, wanted } = input;
@@ -97,19 +106,22 @@ export function preservedCoverage(input: PreservedCoverageInput): PreservedCover
     });
     if (kind === "red") red.add(c.path);
   }
-  const mustPass = new Set(preservedFiles(provedFiles));
+  const mustPass = new Set(mustPassFiles(provedFiles));
   const contract: DeclaredPath[] = [];
-  const covered: CoverageRow[] = [];
+  const preservedIds: string[] = [];
   for (const c of candidates) {
     if (!red.has(c.path) && !mustPass.has(c.path)) continue;
     contract.push(c);
-    covered.push({ criterionId: c.criterionId, preserves: declared.has(c.criterionId) });
+    // A criterion earns its place in the list by the file that froze, not by its own declaration: a
+    // criterion with only red files declared `preserves: true` froze no must-pass file for it.
+    if (mustPass.has(c.path) && !preservedIds.includes(c.criterionId))
+      preservedIds.push(c.criterionId);
   }
   const held = new Set(contract.map((c) => c.criterionId));
   return {
     mustPass: [...mustPass],
     contract,
-    preservedIds: preservedCriteria(covered),
+    preservedIds,
     missing: wanted.filter((id) => !held.has(id)),
   };
 }
@@ -128,9 +140,14 @@ export function malformedDeclarations(rows: readonly CoverageRow[]): number {
  * The committed verdict's reason: what was frozen, what was preserved, what was refused, and the tree's own
  * caveat. Composed outside the engine so the clauses live with the rule they describe, and the step keeps
  * only the call.
+ *
+ * The first clause counts the files the RED PROOF proved, not the files in the frozen map: that map also
+ * holds the must-pass files, so counting it would tell a reader that N guards were proved red when some of
+ * them were frozen precisely because they were green at the base. `redCount` is the step's own red total
+ * and the preserved ids are named beside it, so the two populations are never added together.
  */
 export function preservedCommitReason(input: {
-  frozen: Record<string, string>;
+  redCount: number;
   tests: Record<string, string[]>;
   preservedIds: readonly string[];
   skipped: number;
@@ -140,7 +157,7 @@ export function preservedCommitReason(input: {
   treeProblem?: string;
 }): string {
   return [
-    `froze ${String(Object.keys(input.frozen).length)} red test file(s) for ` +
+    `froze ${String(input.redCount)} red test file(s) for ` +
       `${String(Object.keys(input.tests).length)} criterion/criteria`,
     preservedReasonClause(input.preservedIds),
     input.skipped > 0
