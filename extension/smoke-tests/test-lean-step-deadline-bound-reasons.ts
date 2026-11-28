@@ -32,8 +32,8 @@ import {
   redScript,
   runSpecify,
   submit,
-  writeTest,
 } from "./lib/lean-specify-fixture.ts";
+import { writeTest } from "./lib/lean-specify-shared.ts";
 import { PANEL_START_MS } from "./lib/lean-step-bound-arms.ts";
 import { GOLDEN_ALLOWANCE_MS, GOLDEN_GRACE_MS } from "./lib/lean-step-deadline-bound-off-arm.ts";
 import {
