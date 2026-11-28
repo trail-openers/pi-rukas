@@ -33,7 +33,6 @@ export const SUBMIT_TESTS_REPORTER_PATH = path.join(
   "submit-tests-reporter.ts",
 );
 
-/** The declaration's own description, so the schema text is one string the off arm simply omits. */
 import { PRESERVES_SCHEMA_DESCRIPTION } from "../submit-tests-preserves.ts";
 
 interface SubmitTestsInput {

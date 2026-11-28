@@ -24,6 +24,7 @@
  */
 import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
+import { declaredPreserved } from "../lean-preserved-cap.ts";
 import {
   type ProvedKind,
   allPreserved,
@@ -192,8 +193,7 @@ export async function runTestPipeline(
   );
   const skippedNote = skipped > 0 ? ` (${skipped} malformed submit_tests call(s))` : "";
   // The preservation rule, and the reason one declared file keeps its bytes: `lean-preserved-step.ts`.
-  const declaredPreserves = new Map(kept.map((row) => [row.criterionId, row.preserves === true]));
-  const isPreserved = (id: string): boolean => declaredPreserves.get(id) === true;
+  const isPreserved = declaredPreserved(kept);
   if (candidates.length === 0) {
     return {
       kind: "empty",

@@ -18,9 +18,8 @@ import { PRESERVES_FIELD } from "./submit-tests-preserves.ts";
  * rather than that prompt with a line missing — which is what makes the field unreadable there, not unused.
  */
 export function preservesPromptLines(testsAreSubmitted: boolean): string[] {
-  return leanSpecifyPreservesEnabled() && testsAreSubmitted
-    ? [preservesPromptClause(), ""]
-    : ["", ""];
+  if (testsAreSubmitted && leanSpecifyPreservesEnabled()) return [preservesPromptClause(), ""];
+  return testsAreSubmitted ? [""] : ["", ""];
 }
 
 /**
