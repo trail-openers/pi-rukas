@@ -12,10 +12,11 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import {
-  nothingToBuild,
-  preservedCriteria,
-  preservesDeclarationMalformed,
-} from "../lean-preserved-step.ts";
+  allPreserved,
+  malformedDeclarations,
+  preservedCoverage,
+} from "../lean-preserved-coverage.ts";
+import { preservedCriteria } from "../lean-preserved-step.ts";
 import { verdictReasonClause } from "../lean-step-bound.ts";
 import { statReporterPath } from "../reporter-preflight.ts";
 import { makeRunId } from "../spawn-support.ts";
@@ -308,11 +309,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   const declaredRows = reask === undefined ? first.rows : [...first.rows, ...reask.rows];
   const preservedRows = preservedCriteria(declaredRows);
   const wantedIds = wanted.map((c) => c.id);
-  const skipped =
-    first.skipped +
-    (reask?.skipped ?? 0) +
-    // A declaration of the wrong type is a malformed call, counted where the malformed calls are counted.
-    declaredRows.filter((r) => preservesDeclarationMalformed(r.preserves)).length;
+  const skipped = first.skipped + (reask?.skipped ?? 0) + malformedDeclarations(declaredRows);
   const note = reask?.note;
   /** The attributed drops whose reason is a size refusal — see `SIZE_REFUSAL`. */
   const sizeRefused: string[] = [];
@@ -382,7 +379,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
   const gapKind = leanSpecifyGapHandbackEnabled() ? RED_TEST_GAP : "no-red-test";
   // A spec whose every test criterion is preserved has nothing to build: its own stable reason, never a
   // freeze of a contract made of guards alone.
-  if (nothingToBuild(wantedIds, preservedRows)) {
+  if (allPreserved(wantedIds, preservedRows)) {
     const rule = allPreservedReason(preservedRows);
     return {
       outcome: withReaskNote(

@@ -25,10 +25,14 @@
 import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import {
-  preservedCriteria,
-  preservedFiles,
-  uncoveredExcludingPreserved,
-} from "../lean-preserved-step.ts";
+  allPreserved,
+  malformedDeclarations,
+  preservedCoverage,
+  preservedKeepsFile,
+  type ProvedKind,
+} from "../lean-preserved-coverage.ts";
+import { preservedCriteria } from "../lean-preserved-step.ts";
+import { preservedReasonClause } from "../specify-preserves.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { FreezeCheck } from "./freeze-check.ts";
 import { freezeCheckDrops, freezeCheckNote, runFreezeCheck } from "./freeze-check.ts";
@@ -175,21 +179,6 @@ function removeRejected(wt: string, rel: string): string | undefined {
 }
 
 /** The classification of one non-red file, per the proof's own words. */
-/**
- * Does a declared file the proof refused still earn its keep? Only when NO file of its criterion proved red:
- * a criterion with a real red is an ordinary red test, so a second, green file under the same declaration is
- * a file the step never froze. Asked after the proof, so a file whose own criterion failed already counts.
- */
-function redForCriterion(
-  candidates: readonly DeclaredPath[],
-  proved: Map<string, Proof>,
-  cand: DeclaredPath,
-): boolean {
-  return candidates.some(
-    (c) => c.criterionId === cand.criterionId && proved.get(c.path)?.kind === "red",
-  );
-}
-
 function noteFor(cand: DeclaredPath, proof: Proof): string {
   return clip(`${cand.criterionId} ${cand.path}: ${proof.detail}`);
 }
@@ -332,7 +321,7 @@ export async function runTestPipeline(
   // 5. Prove red on exactly these bytes, per file, against `headBefore`. A green or unclear file is dropped
   //    and DELETED from the tree; only an unrunnable runner is infrastructure. Each verdict is kept so the
   //    preservation rule reads it from this one run, never from a second run.
-  const proved = new Map<string, Proof>();
+  const kinds = new Map<string, ProvedKind>();
   let red: DeclaredPath[] = [];
   for (const cand of candidates) {
     if (!captured.has(cand.path)) continue; // dropped at capture — never run
@@ -342,7 +331,7 @@ export async function runTestPipeline(
       file: cand.path,
       ...(args.testLimits === undefined ? {} : { limits: args.testLimits }),
     });
-    proved.set(cand.path, proof);
+    kinds.set(cand.path, proof);
     if (proof.kind === "red") {
       red.push(cand);
       continue;
@@ -351,7 +340,7 @@ export async function runTestPipeline(
     // A declared file keeps its bytes ONLY where the preservation rule freezes it: a file the proof refused
     // and the rule does not keep is deleted, so nothing the step did not freeze can ride into the commit or
     // leave the tree unclean. The rule is decided from all proofs at once, below, so this pass defers to it.
-    if (isPreserved(cand.criterionId) && !redForCriterion(candidates, proved, cand)) continue;
+    if (isPreserved(cand.criterionId) && !preservedKeepsFile(candidates, kinds, cand)) continue;
     notes.push(noteFor(cand, proof));
     const why = removeRejected(wt, cand.path);
     if (why !== undefined) notes.push(why);
@@ -425,24 +414,12 @@ export async function runTestPipeline(
   }
 
   // 6. Coverage. ONLY `"all-criteria"` refuses a gap: `specify` needs a red for every test criterion, while
-  //    `challenge` keeps whatever red it earned. Only a DECLARED preserved criterion is excused here.
-  const provedFiles = candidates
-    .filter((c) => captured.has(c.path))
-    .map((c) => ({
-      path: c.path,
-      criterionId: c.criterionId,
-      kind: proved.get(c.path)?.kind ?? "green",
-      preserves: isPreserved(c.criterionId),
-    }));
-  const mustPass = preservedFiles(provedFiles);
-  const covered = [...new Set([...red, ...provedFiles.filter((f) => mustPass.includes(f.path))])];
-  const preservedIds = preservedCriteria(covered);
+  //    `challenge` keeps whatever red it earned. Only a DECLARED preserved criterion is excused here, and
+  //    the whole computation lives in `../lean-preserved-coverage.ts`.
+  const coverage = preservedCoverage({ candidates, kinds, rows: kept, wanted: args.wanted });
+  const { mustPass, preservedIds } = coverage;
   if (args.coverage === "all-criteria") {
-    const missing = uncoveredExcludingPreserved(
-      args.wanted,
-      [...new Set(covered.map((c) => c.criterionId))],
-      preservedIds,
-    );
+    const missing = coverage.missing;
     if (missing.length > 0) {
       const rules = gapFor(missing, true);
       return {
@@ -468,7 +445,7 @@ export async function runTestPipeline(
   //    describe the commit, not whatever was on disk when the step looked.
   const frozen: Record<string, string> = {};
   const tests: Record<string, string[]> = {};
-  const contract = [...red, ...candidates.filter((c) => mustPass.includes(c.path))];
+  const contract = coverage.contract;
   for (const { criterionId, path: rel } of contract) {
     frozen[rel] = sha256(await committedBlob(exec, wt, rel));
     const list = tests[criterionId] ?? [];
@@ -478,9 +455,7 @@ export async function runTestPipeline(
 
   const reason = [
     `froze ${Object.keys(frozen).length} red test file(s) for ${Object.keys(tests).length} criterion/criteria`,
-    preservedIds.length > 0
-      ? `preserved ${preservedIds.length} criterion/criteria (${preservedIds.join(", ")}), frozen as must-pass at head`
-      : "",
+    preservedReasonClause(preservedIds),
     skipped > 0 ? `${skipped} submit_tests call(s) skipped or refused as malformed` : "",
     droppedNote,
     dropNote(dropped),

@@ -33,3 +33,13 @@ export const PRESERVES_HINT =
 export function allPreservedReason(preserved: readonly string[]): string {
   return `every test criterion is preserved (${preserved.join(", ")}); at least one criterion must be red on the base, or there is nothing to build`;
 }
+
+/**
+ * The committed reason's own clause, or `""` when nothing was preserved. The must-pass files are frozen
+ * beside the red ones, so the reason names the criteria it froze rather than leaving a reader to diff them.
+ */
+export function preservedReasonClause(preserved: readonly string[]): string {
+  return preserved.length === 0
+    ? ""
+    : `preserved ${String(preserved.length)} criterion/criteria (${preserved.join(", ")}), frozen as must-pass at head`;
+}

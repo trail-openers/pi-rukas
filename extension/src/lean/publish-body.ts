@@ -15,7 +15,7 @@
  * Every line is emitted unconditionally except where stated: a reader must tell "not
  * run" apart from "not applicable".
  */
-import { preservedClause } from "../preserved-disclose.ts";
+import { preservedLine } from "../preserved-disclose.ts";
 import type { SpecSource } from "./spec-for.ts";
 import type { PiSpec } from "./spec.ts";
 import { PREEXISTING_NAMES_CAP, type PreexistingTierRecord } from "./state-outcome-maps.ts";
@@ -265,8 +265,8 @@ export function publishBody(o: PublishBodyInput): string {
   // learns which part of it was green only because the base was already red.
   const preexisting = leanPreexistingFailuresSection(o.preexistingFailures);
   if (preexisting !== "") lines.push(preexisting);
-  const preserved = preservedClause(o.preserved, o.tests);
-  if (preserved !== "") lines.push(`- preserved: ${preserved}`);
+  const preserved = preservedLine(o);
+  if (preserved !== "") lines.push(preserved);
   // One line, only when the log records the stop. The counter pair is the one
   // the run carries into verify either way, so this is the only place the fact
   // survives into the PR; `value`/`limit` are typed numbers/enums off the step

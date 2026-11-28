@@ -8,6 +8,7 @@
  */
 import { leanSpecifyPreservesEnabled } from "./lean-specify-preserves-switch.ts";
 import { oneLine } from "./lean/text-fence.ts";
+import { PRESERVES_HINT } from "./specify-preserves.ts";
 
 /** How many ids one clause names before it says `(+N more)`. */
 const PRESERVED_CAP = 8;
@@ -44,4 +45,30 @@ export function preservedClause(
   const more = ids.length - shown.length;
   const files = preservedFiles(ids, tests).map((f) => oneLine(f, 120));
   return `preserved ${String(ids.length)}: ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}${files.length === 0 ? "" : ` (${files.join(", ")})`}; each is frozen and must pass at head`;
+}
+
+/** The PR body's own line, or `""` for nothing to disclose. */
+export function preservedLine(o: {
+  preserved?: readonly string[];
+  tests?: Record<string, string[]>;
+}): string {
+  const clause = preservedClause(o.preserved, o.tests);
+  return clause === "" ? "" : `- preserved: ${clause}`;
+}
+
+/**
+ * The whole gap cause: each failed rule the reason does not already quote, the reason, the other reading
+ * of a test that passed on the base, and the preserved clause. Composed off the record's fields so the
+ * handback keeps one call site.
+ */
+export function gapCauseLines(
+  reading: string,
+  rules: readonly string[],
+  reason: string,
+  preserved: readonly string[] | undefined,
+  tests?: Record<string, string[]>,
+): string {
+  const lead = [...rules.filter((r) => !reason.includes(r)), reason];
+  const second = reason.includes("exited 0 on base") ? [reading, PRESERVES_HINT] : [];
+  return [...lead, ...second, preservedClause(preserved, tests)].filter((s) => s !== "").join("\n");
 }
