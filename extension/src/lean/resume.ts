@@ -108,18 +108,12 @@ export function foldLog(
       break;
     }
     if (!hasTransition(s.state, s.outcome.kind)) {
-      // A thrown handler or a kind with no arrow: the engine ends the run itself, so this is the
-      // last entry. #2667's route is the one shape where the run did NOT end there — the engine
-      // handed the run on to the reporting step, so the throw is followed by the report's entry.
-      // The exception is stated as narrowly as the move's own: exactly one report entry, with
-      // nothing of the walk between it and the throw, and the head rule holding that an errored
-      // review over a certified head owes that report. Anything else about a no-arrow entry, the
-      // snapshot or the counters, is refused below, so a record cannot widen the shape by claiming it.
-      // #2667's routed record: the throw the engine saved, then the report entry the route wrote
-      // after it. The throw may sit before the log's end only under that shape — and ONLY on the
-      // side of the knob the routing runs on, so a record cannot read as a routed run that the
-      // shipped build never routed. `reportRouteFor` (over the log up to the throw) and the head
-      // rule are the judges; both are consulted here rather than approximated.
+      // A thrown handler or a kind with no arrow: the engine ends the run itself, so this is
+      // normally the last entry. #2667's route is the exception, stated as narrowly as the move:
+      // the throw's entry, then exactly one report entry with nothing of the walk between them,
+      // the head rule holding that an errored review over a certified head owes that report, and
+      // only on the side of the knob the routing runs on. `reportRouteFor` (over the log up to the
+      // throw) and the head rule are the judges, consulted rather than approximated.
       const routed =
         s.state === "review" &&
         s.outcome.kind === "error" &&
@@ -132,16 +126,10 @@ export function foldLog(
         handbackHeads(log.slice(0, i + 1)).applies;
       if (i !== log.length - 1 && !routed)
         at(`step ${s.key} + ${JSON.stringify(s.outcome.kind)} has no arrow and is not last`);
-      // #2667's route is the one shape where a no-arrow entry does NOT end the run: the runner
-      // saved the throw and then handed the run to the reporting step, so a record whose newest
-      // entry is that throw is still OWING the report — the shape a crash between the two saves
-      // leaves, with the run not yet stamped.
-      // The fold ends the run where the record says it ended. A run the route left owing its
-      // report (a crash between the runner's two saves) still stands at `review` and has to be
-      // read as UNDECIDED: a decided fold lets a forged `handed-back` snapshot past the one-step
-      // lag the snapshot is allowed, which is exactly the move the routing's own exemption would
-      // be handing a record that never ran. Anywhere else, a no-arrow entry is the outcome a drive
-      // halts on and the run is stamped.
+      // A routed throw is a run still OWING its report (a crash between the runner's two saves):
+      // it folds UNDECIDED, still standing at `review`. A decided fold would let a forged
+      // `handed-back` snapshot past the one-step lag the snapshot is allowed. Anywhere else the
+      // no-arrow entry is the outcome a drive halts on, and the run has to be stamped.
       if (routed && run.result === undefined) {
         if (run.state !== "review")
           at(`step ${s.key} is a throw the route handed on, but the run says ${run.state}`);
@@ -188,12 +176,8 @@ function isReportRoute(log: Step[]): boolean {
 }
 
 /**
- * Does the newest work step `newest` make the report entry at the end of `log` the engine's route?
- *
- * Split out because the fold has to ask the same question twice, about two different logs: at the
- * MOVE (the walk stands at `review` and the log's newest entry is the report's) and at the no-arrow
- * entry (#2667's routed record, whose newest entry is the throw itself and whose report entry
- * follows it). Both ask it of the log up to the entry they judge, never of the entry itself.
+ * Does the newest work step `newest` make the report entry the engine's route? The fold asks it
+ * twice, about two logs: at the MOVE, and at a no-arrow entry (#2667's routed record).
  */
 function reportRouteFor(newest: Step, log: Step[]): boolean {
   const at = log.indexOf(newest);

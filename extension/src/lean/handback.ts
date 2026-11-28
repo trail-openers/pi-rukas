@@ -64,14 +64,9 @@ function newestReason(steps: Step[], state: "verify" | "ci", kind: "red" | "gree
 }
 
 /**
- * Why the run is ending, in the record's own words.
- *
- * The step that ENDED the run, read as the newest decided step that was WORK: its reason is
- * the cause the run died on (an errored `review` quoting its own throw, a refused land
- * naming its refusal). A decided `handback` entry is excluded — it is the report of an
- * earlier ending, either the deadline's route or the report of a run that resumed and walked
- * on to its own handback — and a report's own bookkeeping line is never the reason the run
- * needs something.
+ * The cause the run ended on: the newest decided WORK step's own reason. A decided `handback`
+ * entry is excluded — it is a report, not a cause — and a cause on any other step is one that
+ * already spoke for itself.
  */
 function endedBy(steps: Step[]): string | undefined {
   const ended = newestDecidedWorkStep(steps);
@@ -367,9 +362,8 @@ export async function handbackOutcome(
     const facts: Heads = heads.shippedHead
       ? { render: true, shippedHead: heads.shippedHead, shippedVerified: false }
       : // The rule fired and named no head to move, so no rewind ran: the plain `NO_HEAD` stamp,
-        // exactly as this step printed it before #2667. A run whose gate named no head at all is
-        // the one shape the feature adds here, and it is answered by the cause line the errored
-        // arm carries (`endedBy`), not by re-wording a stamp the ordinary runs already carry.
+        // as this step printed it before #2667; the errored arm's own cause line (`endedBy`) says
+        // why the review never completed.
         headFacts(moved ?? NO_HEAD, originHead);
     const { render, ...record } = facts;
     body = handbackBody(ctx.issue, {

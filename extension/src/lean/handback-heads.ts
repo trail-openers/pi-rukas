@@ -77,9 +77,6 @@ function newestDecidedThrough(
   return undefined;
 }
 
-/** Whether an errored review is a handback shape at all: the #2667 switch, read at CALL time. */
-const incompleteHeadOn = leanReviewIncompleteHeadEnabled;
-
 /**
  * The head a handback of this log should ship, or the reason it cannot. A log whose newest work step is
  * neither a `fixed` review, an errored review over a certified head, nor a draft publish gets
@@ -105,7 +102,10 @@ export function handbackHeads(steps: Step[]): HandbackHeads {
   // same standing a `fixed` review the gate has not spoken for has. Off, or for any kind outside the pair,
   // the rule is silent exactly as it was before the knob: an errored review is not a handback shape.
   const errored = review && newest.outcome.kind === "error";
-  if (!review || (newest.outcome.kind !== "fixed" && !(errored && incompleteHeadOn())))
+  if (
+    !review ||
+    (newest.outcome.kind !== "fixed" && !(errored && leanReviewIncompleteHeadEnabled()))
+  )
     return { applies: false };
   const at = steps.indexOf(newest);
   const trailing = newestStateStepAfter(steps, "verify", at);
