@@ -34,8 +34,7 @@ export const SUBMIT_TESTS_REPORTER_PATH = path.join(
 );
 
 /** The declaration's own description, so the schema text is one string the off arm simply omits. */
-const PRESERVES_SCHEMA_DESCRIPTION =
-  "True when this criterion states behaviour that must KEEP working, so its test passes on the base by design. The file is then frozen and must pass at head. Omit or false for an ordinary red test.";
+import { PRESERVES_SCHEMA_DESCRIPTION } from "../submit-tests-preserves.ts";
 
 interface SubmitTestsInput {
   criterionId: string;
