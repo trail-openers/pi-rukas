@@ -44,6 +44,11 @@ import {
 // The git contract and the bytes a child leaves live in `lean-build-git.ts`, the bottom of the
 // fixture family's dependency order; the re-export names them, so a case imports one module.
 import { type ReaskOpts, dispatchActs } from "./lean-build-reask-fixture.ts";
+import {
+  type BuildFixtureOpts,
+  type EarnedRoundOpts,
+  earnedRepairStep,
+} from "./lean-build-earned-round.ts";
 import { git, gitEnv, headOf, putCommitted } from "./lean-build-git.ts";
 export {
   childCommit, git, gitEnvFor, hardlinkFromOutside, put, putCommitted, putOutside, symlink,
@@ -113,41 +118,10 @@ export interface Built {
  * worktree holds), so leaving the branch where the worktree was created —
  * detached at the frozen commit — keeps `repoRoot` on `main` and the case can
  * dismantle its own tree from inside the child callback.
+ *
+ * Every option mirrors the same-named `RunOpts` field and is documented there.
  */
-export function buildFixture(
-  issue: number,
-  opts?: {
-    frozenSha?: string;
-    frozenText?: string | Buffer;
-    /**
-     * Extra frozen files (path -> bytes) to commit on the run's head, hash to, and
-     * record in the step log under a `challenge:new-tests` step. A case that asks
-     * for the adversary's files gets blobs git really holds, so the step's
-     * frozen-integrity check passes for the right reason.
-     */
-    extraFrozen?: Record<string, string>;
-    childOwnsBranch?: boolean;
-    /** See {@link RunOpts.earned}: a log already holding a decided repair round. */
-    earned?: boolean;
-    buildStartedAt?: number; // #2660 — the start a deadline-derived bound measures from
-    /**
-     * Files committed into the BASE commit only, as `path -> bytes`: never hashed,
-     * never in the frozen record. A case whose subject is the base tree — a project
-     * check that must find a byte there — uses this rather than `extraFrozen`,
-     * which also puts its files on the hashed head and into the record.
-     */
-    baseFiles?: Record<string, string>;
-    /**
-     * Build the run's worktree under `lean-<this>` rather than `lean-<issue>`.
-     * The run's `issue`, branch and step-log keys stay `issue`: only the tree
-     * directory moves. It is what lets a second fixture for another issue share
-     * THIS repo without the two runs landing in one worktree — which matters
-     * because `challenge`/`specify` derive their tree path from `repoRoot` plus
-     * their own issue number, so a shared repo otherwise means a shared tree.
-     */
-    worktreeIssue?: number;
-  },
-): Built {
+export function buildFixture(issue: number, opts?: BuildFixtureOpts): Built {
   const frozenText = opts?.frozenText ?? TEST;
   const frozenSha = opts?.frozenSha ?? sha(frozenText);
   const extraFrozen = opts?.extraFrozen ?? {};
@@ -232,18 +206,8 @@ export function buildFixture(
             outcome: { kind: "new-tests" as const, frozen: shaAll(extraFrozen) },
           },
         ]),
-    // A round the run already spent, when the case asks for one: the log shape whose blocked record is the
-    // round's own evidence (`build-repair-fields.ts`). Its outcome is the minimum a decided round holds.
-    ...(opts?.earned === true
-      ? [
-          {
-            key: `${issue}:repair:0`,
-            state: "repair" as const,
-            startedAt: 3,
-            outcome: { kind: "repaired" as const, reason: "repaired 1 frozen test file(s)" },
-          },
-        ]
-      : []),
+    // A round the run already spent, when the case asked for one (`lean-build-earned-round.ts`).
+    ...earnedRepairStep(issue, opts?.earned),
     // The position the log folds to: one build round owed.
     {
       key: `${issue}:build:0`,
@@ -294,7 +258,7 @@ export interface RunResult {
    * died. Read off the `BuildInfraError` itself so a case asserts the rows
    * survived the throw rather than re-deriving them from a message.
    */
-  deadDispatches?: DispatchUsageRow[];
+  deadDispatches?: DispatchUsageRow[]; // rows the infra error carried, so a case asserts they survived
   dispatched: number;
   /**
    * How many times the step read the issue. ONE is the contract — the body the
@@ -320,8 +284,8 @@ export interface RunResult {
 
 /**
  * What one case asks the harness to do: the child's acts, the tree it plants, the
- * artifacts the fake dispatch hands back, and the clock the step reads. Most knobs
- * are single-line; the four multi-sentence ones are documented where they are read.
+ * artifacts the fake dispatch hands back, and the clock the step reads. Each knob is
+ * documented where it is read; the ones needing prose live on their own module.
  */
 export interface RunOpts {
   issue: number;
@@ -343,24 +307,15 @@ export interface RunOpts {
   built?: Built;
   /** Leave the run's branch to the worktree so a case can dismantle that tree. */
   childOwnsBranch?: boolean;
-  /**
-   * Put a decided `repair` round in the log before the build round the case runs: the shape of a run the round
-   * already ran on, the only shape whose blocked record carries the judged head and the executed red
-   * (`build-repair-fields.ts`). Absent leaves the log the release wrote, which is what keeps an off arm from
-   * quietly widening its record.
-   */
-  earned?: boolean;
+  /** See {@link earnedRepairStep}: a decided `repair` round before the build round the case runs. */
+  earned?: EarnedRoundOpts;
   /** A config load that refuses (case o); the step must treat it as infrastructure. */
   loadConfigError?: string;
   /** A child whose dispatch did not succeed — the infra case, as in `challenge`. */
   dispatchOk?: boolean;
   /** The issue body the step re-reads; defaults to `SPEC_BODY` (a bare spec fence). */
   specBody?: string;
-  /**
-   * The whole `DispatchResult` of the nth child (0-based), verbatim, or a rule
-   * for it — see {@link resultOverride}. The shape a case needs to hand its dead
-   * child real `usage.turns` / `toolUses` / `killCause` fields.
-   */
+  /** The nth child's whole `DispatchResult`, verbatim or by rule — see {@link resultOverride}. */
   dispatchResults?: DispatchResultOverride;
   /** Drives the child's progress feed, the way `spawn.ts` does at `message_end`. */
   onProgressTick?: (onProgress: BudgetOpts["onProgress"]) => void;
