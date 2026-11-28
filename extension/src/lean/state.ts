@@ -49,8 +49,8 @@ export type LeanState =
   | "ready"
   | "specify"
   | "build"
-  /** The repair round: one blind adversary correcting the frozen tests the driver PROVED unsatisfiable. A
-   *  handler state, so a step that dies before it decides re-decides on resume instead of re-buying. */
+  /** One blind adversary correcting the frozen tests the driver PROVED unsatisfiable. A handler state, so a
+   *  step that dies before deciding re-decides on resume instead of re-buying. */
   | "repair"
   | "challenge"
   | "verify"
@@ -127,8 +127,7 @@ export interface RunCounters {
   reviewDone: boolean;
   ciFixUsed: boolean;
   draft: boolean;
-  /** Repair rounds the run PAID for, billed on the edge ENTERING the step, so a refused or crashed round is
-   *  still spent and cannot be re-bought. Absent on an old record: zero. */
+  /** Repair rounds paid for, billed on entering the step: a refused round cannot be re-bought. Absent: 0. */
   repairsSpent: number;
 }
 
@@ -169,8 +168,8 @@ export interface LeanRun {
    * files keep loading — same schema version.
    */
   derivedSpec?: DerivedSpec;
-  /** The run's reading of `PI_ENSEMBLE_LEAN_ORACLE_REPAIR`, stamped at creation and persisted: a run is
-   *  judged by the rules it started under. Absent reads as OFF; read only by `repairRoundDue`. */
+  /** The switch's reading, stamped at creation and persisted: a run is judged by the rules it started under.
+   *  Absent reads as OFF; read only by `repairRoundDue`. */
   oracleRepair?: boolean;
 }
 

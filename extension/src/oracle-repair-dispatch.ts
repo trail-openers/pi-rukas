@@ -1,33 +1,21 @@
 /**
  * oracle-repair-dispatch — the one child the repair round pays for, and the freeze it earns.
  *
- * The seat is the specify adversary (`developer`); the tree is the run's specify worktree, reset to
- * `baseSha` so the implementation the seat must not copy is not there to copy; the arms come from the
- * SPECIFY step budget, clamped by the run's deadline through the shared helpers — the same
- * `armsStepBudget`/`stepDispatchArms` pair #2660 put behind every dispatching step. The round never extends
- * a budget: it inherits specify's row and the deadline that already binds the cycle.
+ * The seat is the specify adversary (`developer`); the tree is the run's specify worktree, reset to the BUILD
+ * HEAD the blocked report was judged at; the arms come from the SPECIFY step budget, clamped by the run's
+ * deadline through the same `armsStepBudget`/`stepDispatchArms` pair #2660 put behind every dispatching step.
+ * The round never extends a budget: it inherits specify's row and the deadline that already binds the cycle.
  *
- * The order below is the whole safety of the round:
- *
- *   1. reset the seat's tree to `baseSha` BEFORE the child is paid (blindness, performed);
- *   2. dispatch the seat on the blind brief (`oracle-repair-brief.ts`);
- *   3. read its `submit_tests` calls and capture only those bytes, refusing any file outside the named set;
- *   4. judge them mechanically in a real checkout of `baseSha` (`oracle-repair-judge.ts`) — a replacement
- *      that is green at base, identical to the frozen file, or red only on a case the frozen file already
- *      had, refuses the round;
- *   5. FREEZE the accepted bytes the way `specify` froze the originals: `writeCaptured` into the base tree,
- *      one commit whose diff is exactly the replaced paths, and hashes taken from the COMMITTED blobs. The
- *      step that replaces a contract must freeze its replacement with the same primitive that froze the
- *      original, or the run's tamper evidence describes bytes git never held.
- *
- * A refusal is a verdict with a reason, never a throw. Only a tree or git the step cannot account for
- * throws, and then as `SpecifyInfraError`, which the engine turns into a handback.
- */
-import { type StepArmsCtx, armsStepBudget, stepDispatchArms } from "./lean-step-bound.ts";
+ * The order below is the whole safety of the round, and each step's rule lives with its own module: the reset
+ * and the dispatch (the head carries the frozen test as the record hashes it and none of the builder's
+ * implementation, since a builder the driver honoured had produced nothing the named test could pass
+ * against); the capture of the seat's `submit_tests` bytes, nothing else; the mechanical judgement in a real
+ * checkout of `baseSha`; and the freeze, which is `specify`'s own primitive.
+ */import { type StepArmsCtx, armsStepBudget, stepDispatchArms } from "./lean-step-bound.ts";
 import type { BuildExec } from "./lean/build-types.ts";
 import type { WorkConfig } from "./lean/config.ts";
 import type { PiSpec } from "./lean/spec.ts";
-import { commitTestFiles, committedBlob } from "./lean/specify-commit.ts";
+import { SpecifyCommitError, commitTestFiles, committedBlob } from "./lean/specify-commit.ts";
 import { fileProblem, normaliseRelPath } from "./lean/specify-path.ts";
 import { runTestFile, sha256 } from "./lean/specify-proof.ts";
 import { writeCaptured } from "./lean/specify-reset.ts";
@@ -44,7 +32,7 @@ import { SUBMIT_TESTS_REPORTER_PATH } from "./lean/submit-tests-reporter.ts";
 import { repairPrompt } from "./oracle-repair-brief.ts";
 import { readRepairSubmission } from "./oracle-repair-capture.ts";
 import type { EvidenceRow, HeadEvidenceRow } from "./oracle-repair-evidence.ts";
-import { judgeRepairSubmission } from "./oracle-repair-judge.ts";
+import { RepairJudgeError, judgeRepairSubmission } from "./oracle-repair-judge.ts";
 import { statReporterPath } from "./reporter-preflight.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchResult } from "./types.ts";
@@ -91,14 +79,15 @@ export interface RepairRoundOpts {
   ctx: StepArmsCtx;
   config: WorkConfig;
   spec: PiSpec;
-  headless: boolean;
   /** The run's permission stamp, threaded the way every dispatching step threads it. */
-  childOpts: (headless: boolean) => { workCycleTrust: boolean };
+  /** The child's trust stamp, from the release's own helper (`cycleChildOpts`) at the call site. */
+  childOpts: { workCycleTrust: boolean };
   repoRoot: string;
   issue: number;
   baseSha: string;
   /** The build head the replacements are re-run at for the record. */
-  headBefore: string /** The seat's tree: the run's specify worktree, which this round resets. */;
+  headBefore: string;
+  /** The seat's tree: the run's specify worktree, which this round resets. */
   wt: string;
   /** The run's branch, which the reset puts the frozen commit ON. */
   branch: string;
@@ -119,6 +108,22 @@ function refused(issue: number, why: string, rows: DispatchUsageRow[]): RepairOu
 }
 
 /**
+ * Ask the tree to sit ON the build head before anything is written, and refuse the round if it does not.
+ *
+ * `commitTestFiles` proves a freeze by diffing against the commit it names, so that commit has to be HEAD's
+ * parent for the proof to mean what the round needs: the correction sits on the run's own change, and the
+ * diff holds the named files and nothing else. A tree that came back anywhere else is a tree this round does
+ * not understand, and a freeze made on the wrong parent is a contract no later check can read.
+ */
+async function commitOnHead(exec: BuildExec, wt: string, headBefore: string): Promise<void> {
+  const { headDescendsFrom } = await import("./lean/build-git.ts");
+  if (!(await headDescendsFrom(exec, wt, headBefore)))
+    throw new SpecifyCommitError(
+      `the seat's tree does not sit on the build head ${headBefore} — refusing to freeze there`,
+    );
+}
+
+/**
  * Run the round. The caller owns the base checkout; everything else about the round happens here.
  */
 export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome> {
@@ -126,15 +131,18 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
   const rows: DispatchUsageRow[] = [];
   const refuse = (why: string): RepairOutcome => refused(issue, why, rows);
 
-  // 1. The seat is paid for only after its tree is at the base, so the implementation is absent rather
-  //    merely unmentioned. `ensureSpecifyWorktreeWithProvision` is the specify step's own primitive: it
-  //    refuses a tree this run does not own BEFORE it resets, and re-provisions the dependency links a
-  //    `clean -fdx` took, which is what lets the project's runner execute here at all.
+  // 1. The seat is paid for only after its tree is at a commit that carries the frozen test it is being
+  //    asked to correct, and holds none of the builder's implementation. That commit is the BUILD HEAD the
+  //    blocked report was judged at, not the run's base: the run's contract lives on the builder's commits,
+  //    and a reset to `baseSha` would delete them along with the implementation — the round would "repair"
+  //    the oracle of a run whose change had silently vanished. `headBefore` is the head the driver ran the
+  //    frozen tests at, so the file the seat must edit is there byte-for-byte as the record hashes it, and
+  //    `specify`'s own primitive puts the tree at exactly that commit with the dependency links rebuilt.
   const prepared = await deps
     .ensureTree({
       repoRoot: o.repoRoot,
       issue,
-      fromRef: baseSha,
+      fromRef: o.headBefore,
       branch: o.branch,
       allowAheadOfBase: true,
     })
@@ -170,11 +178,16 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
         writeFence: { root: wt, repo: o.repoRoot, scratch: o.scratch },
         extraArgs: ["--no-skills", "--extension", SUBMIT_TESTS_REPORTER_PATH],
         ...budget.opts,
-        ...o.childOpts(o.headless),
+        ...o.childOpts,
       },
     );
   } catch (err) {
-    throw new SpecifyInfraError(`repair child: ${(err as Error).message}`);
+    // A seat the harness could not run at all is a REFUSAL, not a thrown error, and that is a safety property
+    // rather than tidiness: the round is billed on the edge that ENTERED this step, so an outcome that left
+    // the state machine (an `error`) would hand back with the counter spent for nothing, while a `refused`
+    // puts the builder back on the same contract with the red marker standing, which is where a run that
+    // cannot answer the question belongs.
+    return refuse(`the repair child could not run: ${(err as Error).message}`);
   }
   rows.push(dispatchUsageRow(result));
   const read = readDispatched(result);
@@ -218,17 +231,23 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
   });
   if (!judged.accepted) return refuse(judged.why);
 
-  // 5. Freeze, by the release's own rules: write the accepted bytes into the seat's tree (which is still at
-  //    the base — the child committed nothing and the judge ran elsewhere), then make ONE commit whose diff
-  //    is exactly the replaced paths, and hash the committed blobs. A run cannot hold a frozen map for bytes
-  //    no commit carries, because every later tamper check reads a blob.
+  // 5. Freeze, by the release's own rules: write the accepted bytes into the seat's tree, then make ONE
+  //    commit whose diff is exactly the replaced paths, and hash the committed blobs. A run cannot hold a
+  //    frozen map for bytes no commit carries, because every later tamper check reads a blob.
+  //
+  //    The commit is made on the BUILD HEAD, and the primitive that proves a freeze names the commit it sits
+  //    on — so the build head is asked for as an ancestor, and its own implementation commit stays under the
+  //    correction. `specify`'s primitive has already put HEAD there and cleaned the tree, which is what makes
+  //    "no other change" provable: any path the commit carried beyond the named ones is work this round
+  //    invented, and the round that replaces a contract may not also write a feature.
   const replaced = judged.verdicts.map((v) => v.path);
   try {
+    await commitOnHead(deps.exec, wt, o.headBefore);
     writeCaptured(wt, new Map(judged.verdicts.map((v) => [v.path, v.bytes])));
     await commitTestFiles(
       deps.exec,
       wt,
-      baseSha,
+      o.headBefore,
       replaced,
       `test(oracle): repair frozen acceptance tests for issue #${String(issue)}`,
     );
@@ -238,6 +257,7 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
 
   const originalHashes: Record<string, string> = {};
   const passedAtHead: Record<string, boolean> = {};
+  let headObserved = true;
   const frozen: Record<string, string> = { ...o.frozen };
   for (const v of judged.verdicts) {
     const blob = await committedBlob(deps.exec, wt, v.path).catch(() => undefined);
@@ -247,8 +267,17 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
       );
     frozen[v.path] = sha256(blob);
     originalHashes[v.path] = v.originalHash;
-    passedAtHead[v.path] = await passesAtHead(deps.exec, wt, o.headBefore, v.path, template);
+    const atHead = await passesAtHead(deps.exec, deps.baseTree, o.headBefore, v.path, template);
+    passedAtHead[v.path] = atHead.passed;
+    if (!atHead.observed) headObserved = false;
   }
+  // The freeze is committed and the contract corrected whatever the head run said, so the one reading the
+  // step may NOT take is a green no runner showed: when the project's own command gave no answer this step
+  // could classify, the round cannot vouch for the corrected oracle passing anywhere.
+  if (!headObserved)
+    throw new RepairJudgeError(
+      `the project's runner gave no verdict on the corrected test at the build head ${o.headBefore}`,
+    );
   return {
     kind: "repaired",
     frozen,
@@ -265,16 +294,54 @@ export async function runRepairRound(o: RepairRoundOpts): Promise<RepairOutcome>
  * observed nothing, is `false`: the record says it did not pass, which is the honest reading of a run that
  * could not show that it did.
  */
+/**
+ * The builder's own implementation, laid over the judge's checkout of the base, and the replacement read as
+ * the project's runner saw it. The second return value is not decoration: an `unclear` runner (exit 0 while
+ * naming a failure) is a runner whose verdict nobody read, and a record claiming the corrected oracle
+ * PASSED there would be a claim about output the driver could not classify.
+ */
+interface HeadRun {
+  passed: boolean;
+  observed: boolean;
+}
+
 async function passesAtHead(
   exec: BuildExec,
-  wt: string,
+  baseTree: string,
   head: string,
   rel: string,
   template: string,
-): Promise<boolean> {
-  const { blobAt } = await import("./lean/build-git.ts");
-  const bytes = await blobAt(exec, wt, head, rel).catch(() => undefined);
-  if (bytes === undefined || bytes.length === 0) return false;
-  const proof = await runTestFile(exec, { wt, template, file: rel });
-  return proof.kind === "green";
+): Promise<HeadRun> {
+  const unanswered: HeadRun = { passed: false, observed: false };
+  // Which files the builder committed at `head`, read against its own parent: the source it wrote, and no
+  // frozen file (its report having been honoured, it changed none). They go into the round's throwaway
+  // checkout of the base, a tree of the SAME repository that is deleted when the step ends. Asking the
+  // seat's tree instead would run the corrected test where nothing is implemented, which is the question the
+  // judge already refused a weakened file for. A git this round cannot ask answers `unanswered` — the
+  // disclosure "did NOT pass at head" — rather than a claim the round could not verify.
+  const { blobAt, commitDiff } = await import("./lean/build-git.ts");
+  let changed: string[];
+  try {
+    const parent = (
+      await exec("git", {
+        argv: ["rev-parse", `${head}^`],
+        cwd: baseTree,
+        timeout: 30_000,
+        maxBuffer: 1024 * 1024,
+      }).catch(() => undefined)
+    )?.stdout?.trim();
+    changed =
+      parent === undefined || parent === "" ? [] : await commitDiff(exec, baseTree, parent, head);
+  } catch {
+    return unanswered;
+  }
+  const laid = new Map<string, Buffer>();
+  for (const rel2 of changed) {
+    if (rel2 === rel) continue;
+    const bytes = await blobAt(exec, baseTree, head, rel2).catch(() => undefined);
+    if (bytes !== undefined && bytes.length > 0) laid.set(rel2, bytes);
+  }
+  writeCaptured(baseTree, laid);
+  const proof = await runTestFile(exec, { wt: baseTree, template, file: rel });
+  return { passed: proof.kind === "green", observed: proof.kind === "green" || proof.kind === "red" };
 }

@@ -17,13 +17,24 @@ import type { BuildExec } from "./lean/build-types.ts";
 import { leanChildOpts } from "./lean/child-opts.ts";
 import { type WorkConfig, loadWorkConfig } from "./lean/config.ts";
 import { fetchIssueBody } from "./lean/io.ts";
-import type { RepairDeps } from "./lean/repair.ts";
+/** What the `repair` step needs from the outside world; this module wires the production values. */
 import { NO_HOOKS } from "./lean/specify-reset.ts";
 import { ensureSpecifyWorktreeWithProvision } from "./lean/specify-tree.ts";
 import type { BudgetOpts } from "./lean/step-budget.ts";
 import { spawnSpecialist } from "./spawn.ts";
 import { traceWarn } from "./trace.ts";
 import type { DispatchSpec } from "./types.ts";
+import type { RepairRoundDeps } from "./oracle-repair-dispatch.ts";
+
+export interface RepairDeps extends Omit<RepairRoundDeps, "baseTree" | "ensureTree"> {
+  /** A throwaway detached checkout of the run's base, made for this step and removed after it. */
+  withBaseTree: <T>(fn: (tree: string) => Promise<T>) => Promise<T>;
+  /** The specify step's tree primitive — the reset the seat is judged in, and the freeze's tree. */
+  ensureTree: RepairRoundDeps["ensureTree"];
+  loadConfig: (repoRoot: string, baseSha: string) => Promise<WorkConfig>;
+  fetchIssueBody: (repoRoot: string, issue: number) => Promise<string>;
+}
+
 import { verifyHostEnv } from "./work-driver-verify-cmd.ts";
 import type { WriteFence } from "./write-fence-contract.ts";
 
@@ -70,13 +81,13 @@ export async function withRepairBaseTree<T>(
 /** The `repair` step's production deps, built with THIS run's trust stamp.
  *
  * `repoRoot` and `issue` are passed in because the base tree's path is derived from both, and the step's
- * `HandlerCtx` — where they live — belongs to the caller.
+ * `HandlerCtx` belongs to the caller.
  */
 export function repairDeps(
   headless: boolean,
   repoRoot: string,
   issue: number,
-  baseSha: () => string,
+  ctx: { run: { baseSha: string } },
 ): RepairDeps {
   const exec: BuildExec = (cmd, o) => execp(cmd, o ?? {});
   return {
@@ -101,7 +112,7 @@ export function repairDeps(
         ...leanChildOpts(headless),
       }),
     ensureTree: (o) => ensureSpecifyWorktreeWithProvision(exec, o),
-    withBaseTree: (fn) => withRepairBaseTree(exec, repoRoot, issue, baseSha(), fn),
+    withBaseTree: (fn) => withRepairBaseTree(exec, repoRoot, issue, ctx.run.baseSha, fn),
     loadConfig: (root, sha) => loadWorkConfig(execp, root, sha),
     fetchIssueBody,
   };

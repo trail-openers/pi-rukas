@@ -9,10 +9,11 @@
  * Loop guards, all counters in the run so a resumed run sees the same caps: `buildAttempts` caps build rounds
  * DISPATCHED (billed on entering `build`, never leaving); `challengeDone` and `reviewDone` make each step run
  * at most once; `ciFixUsed` gives a red CI one fix round; `repairsSpent` gives a proven-wrong oracle one
- * repair, billed on entering it.
+ * repair.
  */
 import { type LeanRun, type LeanState, type Outcome, newestDecided } from "./state.ts";
 import { type Transition, to, viaBuild } from "./transitions.ts";
+import { repairRoundDue } from "../oracle-repair-due.ts";
 
 /** Outcome kinds per state. The handler for a state may return only these; the pair enumeration in
  * `test-lean-machine.ts` asserts each entry equals the registry's set. */
@@ -29,8 +30,8 @@ export const OUTCOME_KINDS = {
   // `blocked` is the child's own "these frozen tests cannot all pass together", honoured only after the
   // driver re-ran the named tests itself. It is not `exhausted`: the route must never reach `publish`.
   build: ["ok", "exhausted", "budget", "blocked"],
-  // Repair's verdicts: `repaired` rebuilds against the corrected contract, `refused` against the same one
-  // with the red marker standing. Both spend the round.
+  // `repaired` rebuilds against the corrected contract, `refused` against the same one with the red marker
+  // standing. Both spend the round.
   repair: ["repaired", "refused"],
   challenge: ["new-tests", "none", "budget", "skipped"],
   verify: ["green", "red"],
@@ -73,15 +74,6 @@ export const REPORT_FAILED_KIND = "report-failed";
 
 /** A step's own budget ended the child: a verdict, not a crash. */
 const BUDGET_KIND = "budget";
-
-/**
- * Does this blocked verdict earn a repair round? Both facts are read off the RUN, not the environment or the
- * working tree, so a resume cannot answer differently: the switch stamped at creation, and the spent counter.
- * The table stays a pure function of `(run, outcome)`, which is what lets the log be the record of a run.
- */
-export function repairRoundDue(run: LeanRun): boolean {
-  return run.oracleRepair === true && run.counters.repairsSpent < 1;
-}
 
 /** Is this pair in the table? `next()` throws on a pair it does not have, so ask first. */
 export function hasTransition(state: LeanState, kind: string): boolean {
@@ -150,9 +142,9 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
           if (c.buildAttempts >= MAX_BUILD_ATTEMPTS) return to(run, "verify");
           return to(run, c.challengeDone ? "verify" : "challenge");
         case "blocked":
-          // With the switch on and the run's one round unspent, that is a question for the adversary who
-          // wrote the tests, not the end of the run. Otherwise the release's route, and never through
-          // `exhausted`: publishing over tests the driver proved unsatisfiable is how a contract lands broken.
+          // The adversary who wrote the tests gets the question first, when the run has a round to spend;
+          // otherwise the release's route. Never through `exhausted`: publishing over tests the driver
+          // proved unsatisfiable is how a contract lands broken.
           if (repairRoundDue(run)) return viaBuild(run, "repair");
           return to(run, "handback");
         case "exhausted":
@@ -170,12 +162,14 @@ export function next(run: LeanRun, outcome: Outcome): Transition {
       switch (outcome.kind) {
         case "repaired":
           // The corrected oracle is the contract now, so the builder rebuilds against it with no red marker.
-          // This edge DISPATCHES the round, so it bills the attempt.
-          return viaBuild(run, "build");
+          // Both edges DISPATCH a round and so BILL it: an unspent round could be bought again by the next
+          // blocked report.
+          return viaBuild(run, "build", undefined, { repairsSpent: c.repairsSpent + 1 });
         case "refused":
-          // Nothing was corrected, so this round ships as a draft if the builder still cannot meet the
-          // contract, with nothing later clearing the marker: a run must not land over a proven-bad oracle.
-          return viaBuild(run, "build", true);
+          // Nothing was corrected, so the red marker stands: a run must not land over a proven-bad oracle.
+          // Billed like its sibling — the seat was paid for even when nothing came back the judge could
+          // accept, and a re-buyable round would loop on the same refusal.
+          return viaBuild(run, "build", true, { repairsSpent: c.repairsSpent + 1 });
       }
       break;
 

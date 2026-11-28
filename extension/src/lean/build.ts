@@ -61,7 +61,8 @@ import type { DispatchResult, DispatchSpec } from "../types.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { WriteFence } from "../write-fence-contract.ts";
-import { foldStoppedBuild, judgeBlockedReport } from "./build-blocked.ts";
+import { judgeBlockedReport } from "./build-blocked.ts";
+import { foldStoppedBuild } from "./build-fold.ts";
 import { buildWriteFence, dispatchBuilder } from "./build-dispatch.ts";
 import { BuildInfraError } from "./build-errors.ts";
 import { headSha } from "./build-git.ts";
@@ -346,8 +347,8 @@ export async function buildOutcome(
     ...(deps.blockedTimeoutMs === undefined ? {} : { timeoutMs: deps.blockedTimeoutMs }),
   });
   if (blocked !== undefined) {
-    // No commit: `verify` never judges a tree this step cannot account for. The head and the executed red
-    // ride beside the cause: the repair round re-runs at THAT commit and quotes only what the driver watched.
+    // No commit: `verify` never judges a tree this step cannot account for. The head and the executed red ride
+    // beside the cause, since the round resets to that commit and quotes only what the driver saw.
     return {
       kind: "blocked",
       reason: blocked.reason,
@@ -420,9 +421,9 @@ export async function buildOutcome(
     } catch {
       again = undefined;
     }
-    if (again !== undefined && again.files.length > 0) return okVerdict(again, rows, waitNote);
+    if (again !== undefined && again.files.length > 0) return okVerdict(again, rows, waitNote, headBefore);
   }
-  if (!noChange) return okVerdict(report, rows, waitNote);
+  if (!noChange) return okVerdict(report, rows, waitNote, headBefore);
   return {
     kind: "exhausted",
     reason: joinNotes([
@@ -443,6 +444,7 @@ function okVerdict(
   report: NormaliseReport,
   rows: DispatchUsageRow[],
   waitNote: () => string,
+  headBefore: string,
 ): Outcome {
   return {
     kind: "ok",
@@ -451,6 +453,8 @@ function okVerdict(
       ...foldClauses(report),
       waitNote(),
     ]),
+    // The range this round changed, lower-bounded: what a repair round runs its replacement against.
+    headBefore,
     dispatches: rows,
   };
 }

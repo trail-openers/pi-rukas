@@ -364,6 +364,11 @@ export function originRepo(
     withLocalMain?: boolean;
     workJson?: boolean | object | string;
     /**
+     * Extra files for the repo's FIRST commit, as `path → contents`: a case whose run base must already
+     * hold a source file cannot write it after this returns, because the base is the commit made here.
+     */
+    files?: Record<string, string>;
+    /**
      * Stand in for `git` on the PATH while the returned `gitBin` is installed
      * (see `withGitBin`): `"<ref>=<sha>"` answers one exact
      * `git rev-parse --verify --quiet <ref>` with `<sha>` (`<sha>` empty is
@@ -411,6 +416,14 @@ export function originRepo(
     // Keep `.pi/` in the commit so the directory exists and a later case can
     // tell "no config file" from "no config directory".
     writeFileSync(path.join(repoRoot, ".pi", "README"), "no config\n", "utf8");
+  }
+  setup(["add", "-A"]);
+  // The extra files go in BEFORE the first commit for the reason on the option: the run's base is that
+  // commit, so anything the base must hold cannot be added later by the caller.
+  for (const [rel, text] of Object.entries(opts.files ?? {})) {
+    const target = path.join(repoRoot, rel);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, text, "utf8");
   }
   setup(["add", "-A"]);
   if (withLocalMain) {

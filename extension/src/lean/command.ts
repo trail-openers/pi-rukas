@@ -377,11 +377,7 @@ export function phase1Handlers(
   handlers.specify = (ctx) => specifyOutcome(ctx, specifyDeps(headless));
   handlers.build = (ctx) => buildOutcome(ctx, buildDeps(headless), headless);
   handlers.repair = (ctx) =>
-    repairOutcome(
-      ctx,
-      repairDeps(headless, repoRoot, issue, () => ctx.run.baseSha),
-      headless,
-    );
+    repairOutcome(ctx, repairDeps(headless, repoRoot, issue, ctx), headless);
   handlers.challenge = (ctx) => challengeOutcome(ctx, challengeDeps(headless));
   handlers.verify = (ctx) => verifyOutcome(ctx, verifyDeps());
   // The two post-publish steps, in the same one-line shape as the ones above: the step body is
@@ -430,14 +426,9 @@ export async function runWorkLean(
     repoRoot,
     issue,
     handlers: handlersFor(repoRoot, issue, opts, seed),
-    seed: {
-      version: seed.version,
-      baseSha: seed.baseSha,
-      // The switch is read ONCE, when the run is created, and persisted on the record: a run is judged by
-      // the rules it started under, so an operator flipping the knob mid-cycle cannot decide whether THIS
-      // run gets a repair round. A resume ignores the seed, so it keeps the value its first visit stamped.
-      ...(leanOracleRepairEnabled() ? { oracleRepair: true } : {}),
-    },
+    // The switch is read ONCE, at creation, and persisted: a run is judged by the rules it started under, and
+    // a resume ignores the seed, so it keeps the value its first visit stamped.
+    seed: { version: seed.version, baseSha: seed.baseSha, oracleRepair: leanOracleRepairEnabled() },
     // The flag travels as a VALUE (`flagBudgetMs` mints the brand from the verb's parsed
     // minutes), never as an env write: one run's `--timeout` must not become the deadline of every
     // later dispatch this process makes.

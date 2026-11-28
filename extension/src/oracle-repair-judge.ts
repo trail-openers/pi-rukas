@@ -24,6 +24,7 @@ import type { BuildExec } from "./lean/build-types.ts";
  * judgement over a checkout, not engine state, and it never imports the machine.
  */
 import { runTestFile, sha256 } from "./lean/specify-proof.ts";
+import { writeCaptured } from "./lean/specify-reset.ts";
 import { verifyChildEnv } from "./work-driver-verify-cmd.ts";
 
 /** The case the driver watched fail at the base, and the facts a reader needs to audit the acceptance. */
@@ -97,6 +98,14 @@ export async function judgeRepairSubmission(opts: {
 /** The reason the last refusal happened, set by `judgeOne` on its reject path. */
 let lastRefusal = "";
 
+/** A run that could not answer the question, as opposed to one that answered it. */
+export class RepairJudgeError extends Error {
+  constructor(why: string) {
+    super(`oracle-repair judge: ${why}`);
+    this.name = "RepairJudgeError";
+  }
+}
+
 /** One file, or `undefined` when it is refused — `lastRefusal` then carries why. */
 async function judgeOne(
   opts: { exec: BuildExec; baseTree: string; template: string; timeoutMs?: number },
@@ -110,6 +119,9 @@ async function judgeOne(
   if (r.bytes.length === 0) return refuse("the replacement is empty");
   if (sha256(r.bytes) === r.frozenHash)
     return refuse("the replacement is byte-identical to the frozen file");
+  // The runner classifies what it finds under the submitted path, so the submitted bytes go into the driver's
+  // throwaway base checkout first; judging the base's own copy would answer a question nobody asked.
+  writeCaptured(opts.baseTree, new Map([[r.path, r.bytes]]));
   const proof = await runTestFile(opts.exec, {
     wt: opts.baseTree,
     template: opts.template,
@@ -123,7 +135,11 @@ async function judgeOne(
     return refuse(
       "every case of the replacement passes at the base, so it tests nothing the run must build",
     );
-  if (proof.kind !== "red") return refuse(`the base run observed nothing (${proof.detail})`);
+  // An unclear or infra verdict is NOT a refusal: the judge never saw the replacement run, so it holds no
+  // evidence about it, and a round whose judge could not read a runner would be refused on an accident of the
+  // toolchain. It throws, and the run hands back naming the cause — the same direction the release's own
+  // blocked gate takes for a file it could not classify.
+  if (proof.kind !== "red") throw new RepairJudgeError(`the base run observed nothing (${proof.detail})`);
   if (!caseIsNew(r.bytes, proof.output))
     return refuse("the replacement's failing case is one the frozen file already had");
   return {

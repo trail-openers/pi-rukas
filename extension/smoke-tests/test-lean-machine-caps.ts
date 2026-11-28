@@ -160,6 +160,10 @@ const DISPATCHING_PAIRS = [
   "challenge + new-tests",
   "verify + red",
   "ci + red",
+  // The repair round's two exits both put the builder back on the wire, so both buy a round — and both also
+  // bill the round itself (`repairsSpent`), which is a separate counter this walk does not read.
+  "repair + repaired",
+  "repair + refused",
 ];
 
 // The dispatch cap binds on the TABLE, not only on what a handler chooses to

@@ -1,0 +1,1261 @@
+{
+  "off": {
+    "state": "handed-back",
+    "code": 10,
+    "reason": "handback comment posted",
+    "steps": [
+      {
+        "state": "ready",
+        "key": "2700:ready:0",
+        "outcome": {
+          "kind": "ok"
+        }
+      },
+      {
+        "state": "specify",
+        "key": "2700:specify:0",
+        "outcome": {
+          "kind": "ok",
+          "frozen": {
+            "tests/AC1-retry.test.sh": "a0abcb22bf67000f66631ea5e5f6b47c98a644d4df307971ee18d321f13b7151"
+          },
+          "tests": {
+            "AC1": [
+              "tests/AC1-retry.test.sh"
+            ]
+          },
+          "reason": "froze 1 red test file(s) for 1 criterion/criteria",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "build",
+        "key": "2700:build:0",
+        "outcome": {
+          "kind": "blocked",
+          "reason": "frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+          "blockedBy": {
+            "tests/AC1-retry.test.sh": "the frozen assertion contradicts the problem statement"
+          },
+          "headBefore": "<sha>",
+          "blockedEvidence": [
+            {
+              "path": "tests/AC1-retry.test.sh",
+              "cmd": "sh tests/AC1-retry.test.sh",
+              "output": "not ok - tests/AC1-retry.test.sh"
+            }
+          ],
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "handback",
+        "key": "2700:handback:0",
+        "outcome": {
+          "kind": "done",
+          "reason": "handback comment posted",
+          "posted": true,
+          "report": "work-lean: issue #2700 is handed back — this is still needed:\n\n```text\nthe frozen tests cannot all pass together:\n- tests/AC1-retry.test.sh: the frozen assertion contradicts the problem statement\n```\n\nFrozen acceptance tests:\n- tests/AC1-retry.test.sh\n\nPR: no PR yet"
+        }
+      }
+    ],
+    "comments": [
+      "work-lean: issue #2700 is handed back — this is still needed:\n\n```text\nthe frozen tests cannot all pass together:\n- tests/AC1-retry.test.sh: the frozen assertion contradicts the problem statement\n```\n\nFrozen acceptance tests:\n- tests/AC1-retry.test.sh\n\nPR: no PR yet"
+    ],
+    "failure": {
+      "kind": "verify",
+      "message": "frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+      "step": "handoff",
+      "role": "developer"
+    }
+  },
+  "repaired": {
+    "state": "landed",
+    "code": 0,
+    "reason": "merged",
+    "steps": [
+      {
+        "state": "ready",
+        "key": "2701:ready:0",
+        "outcome": {
+          "kind": "ok"
+        }
+      },
+      {
+        "state": "specify",
+        "key": "2701:specify:0",
+        "outcome": {
+          "kind": "ok",
+          "frozen": {
+            "tests/AC1-retry.test.sh": "a0abcb22bf67000f66631ea5e5f6b47c98a644d4df307971ee18d321f13b7151"
+          },
+          "tests": {
+            "AC1": [
+              "tests/AC1-retry.test.sh"
+            ]
+          },
+          "reason": "froze 1 red test file(s) for 1 criterion/criteria",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "build",
+        "key": "2701:build:0",
+        "outcome": {
+          "kind": "blocked",
+          "reason": "frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+          "blockedBy": {
+            "tests/AC1-retry.test.sh": "the frozen assertion contradicts the problem statement"
+          },
+          "headBefore": "<sha>",
+          "blockedEvidence": [
+            {
+              "path": "tests/AC1-retry.test.sh",
+              "cmd": "sh tests/AC1-retry.test.sh",
+              "output": "not ok - tests/AC1-retry.test.sh"
+            }
+          ],
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "repair",
+        "key": "2701:repair:0",
+        "outcome": {
+          "kind": "repaired",
+          "reason": "repaired 1 frozen test file(s): tests/AC1-retry.test.sh (does NOT pass at head)",
+          "frozen": {
+            "tests/AC1-retry.test.sh": "f6e80bec37d65538e54f94cd4cc79ec13c3200e5a8310955141a29fbed050432"
+          },
+          "repair": {
+            "round": 1,
+            "baseSha": "<sha>",
+            "originalHashes": {
+              "tests/AC1-retry.test.sh": "a0abcb22bf67000f66631ea5e5f6b47c98a644d4df307971ee18d321f13b7151"
+            },
+            "passedAtHead": {
+              "tests/AC1-retry.test.sh": false
+            }
+          },
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "build",
+        "key": "2701:build:1",
+        "outcome": {
+          "kind": "ok",
+          "reason": "1 file(s) changed",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "verify",
+        "key": "2701:verify:0",
+        "outcome": {
+          "kind": "green",
+          "reason": "frozen tests and project tiers passed",
+          "verifiedHead": "<sha>"
+        }
+      },
+      {
+        "state": "publish",
+        "key": "2701:publish:0",
+        "outcome": {
+          "kind": "ok",
+          "prUrl": "https://example.invalid/pr/1"
+        }
+      },
+      {
+        "state": "review",
+        "key": "2701:review:0",
+        "outcome": {
+          "kind": "done"
+        }
+      },
+      {
+        "state": "ci",
+        "key": "2701:ci:0",
+        "outcome": {
+          "kind": "green"
+        }
+      },
+      {
+        "state": "land",
+        "key": "2701:land:0",
+        "outcome": {
+          "kind": "merged"
+        }
+      }
+    ],
+    "comments": [],
+    "failure": {
+      "kind": "verify",
+      "message": "frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+      "step": "handoff",
+      "role": "developer"
+    },
+    "repair": {
+      "prompts": [
+        "## Repair the named frozen tests\n\nYou are the adversary for issue #2701. The driver PROVED, by running them itself, that the frozen acceptance tests below cannot do their job. Your one task is to correct THOSE FILES and nothing else.\n\n## The spec\n\n- **AC1** [test] retries a transient failure twice\n\n\n## The files the driver named\n\n- `tests/AC1-retry.test.sh`\n\nThe driver's reason for each:\n\n- `tests/AC1-retry.test.sh` — the frozen assertion contradicts the problem statement\n\n## What the driver executed\n\nThese are the driver's own runs of the named files with the project's runner, on the builder's tree. They are the evidence, not your opinion of it.\n\n- `tests/AC1-retry.test.sh` run as `sh tests/AC1-retry.test.sh` came back red:\n\n  ```\n  not ok - tests/AC1-retry.test.sh\n  ```\n\n## Your working tree\n\nYou are in `/var/tmp/pytest-janni/pi-rukas-A8YibM/lean-seed-1261Ov/.worktrees/lean-2701`, a checkout of the run's BASE commit — the code as it stood before anyone implemented the feature. Your replacements must be red HERE, because a test the base already passes tests nothing. Do not look for the implementation: it is deliberately not in this tree.\n\nThe project runs one test file with `sh {file}` — the literal `{file}` is replaced by the file's path.\n\n## What you may submit\n\nCall `submit_tests` for the named files ONLY, one call per criterion, with that criterion's id and the path(s) you rewrote. A submission that touches any other file is refused whole, and the run hands back. Do not add a new test file to cover a gap you noticed: this round corrects the named oracle, it does not extend the contract.\n\nDo not commit. Leave the bytes in the working tree; the parent hashes, freezes and commits them if they pass the driver's checks.\n"
+      ],
+      "cwd": [
+        "/var/tmp/pytest-janni/pi-rukas-A8YibM/lean-seed-1261Ov/.worktrees/lean-2701"
+      ],
+      "roles": [
+        "developer"
+      ],
+      "arms": [
+        {}
+      ],
+      "atBuildHead": [
+        true
+      ],
+      "treeFiles": [
+        [
+          "tests/AC1-retry.test.sh"
+        ]
+      ],
+      "specSeen": [
+        [
+          "tests/AC1-retry.test.sh"
+        ]
+      ],
+      "judgedInBaseCheckout": true
+    }
+  },
+  "weakened": {
+    "state": "landed",
+    "code": 0,
+    "reason": "merged",
+    "steps": [
+      {
+        "state": "ready",
+        "key": "2702:ready:0",
+        "outcome": {
+          "kind": "ok"
+        }
+      },
+      {
+        "state": "specify",
+        "key": "2702:specify:0",
+        "outcome": {
+          "kind": "ok",
+          "frozen": {
+            "tests/AC1-retry.test.sh": "a0abcb22bf67000f66631ea5e5f6b47c98a644d4df307971ee18d321f13b7151"
+          },
+          "tests": {
+            "AC1": [
+              "tests/AC1-retry.test.sh"
+            ]
+          },
+          "reason": "froze 1 red test file(s) for 1 criterion/criteria",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "build",
+        "key": "2702:build:0",
+        "outcome": {
+          "kind": "blocked",
+          "reason": "frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+          "blockedBy": {
+            "tests/AC1-retry.test.sh": "the frozen assertion contradicts the problem statement"
+          },
+          "headBefore": "<sha>",
+          "blockedEvidence": [
+            {
+              "path": "tests/AC1-retry.test.sh",
+              "cmd": "sh tests/AC1-retry.test.sh",
+              "output": "not ok - tests/AC1-retry.test.sh"
+            }
+          ],
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "repair",
+        "key": "2702:repair:0",
+        "outcome": {
+          "kind": "refused",
+          "reason": "the repair round was refused: tests/AC1-retry.test.sh: every case of the replacement passes at the base, so it tests nothing the run must build; frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "build",
+        "key": "2702:build:1",
+        "outcome": {
+          "kind": "ok",
+          "reason": "1 file(s) changed; restored: tests/AC1-retry.test.sh",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "verify",
+        "key": "2702:verify:0",
+        "outcome": {
+          "kind": "green",
+          "reason": "frozen tests and project tiers passed",
+          "verifiedHead": "<sha>"
+        }
+      },
+      {
+        "state": "publish",
+        "key": "2702:publish:0",
+        "outcome": {
+          "kind": "ok",
+          "prUrl": "https://example.invalid/pr/1"
+        }
+      },
+      {
+        "state": "review",
+        "key": "2702:review:0",
+        "outcome": {
+          "kind": "done"
+        }
+      },
+      {
+        "state": "ci",
+        "key": "2702:ci:0",
+        "outcome": {
+          "kind": "green"
+        }
+      },
+      {
+        "state": "land",
+        "key": "2702:land:0",
+        "outcome": {
+          "kind": "merged"
+        }
+      }
+    ],
+    "comments": [],
+    "failure": {
+      "kind": "process",
+      "message": "the repair round was refused: tests/AC1-retry.test.sh: every case of the replacement passes at the base, so it tests nothing the run must build; frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+      "step": "handoff",
+      "role": "developer"
+    },
+    "repair": {
+      "prompts": [
+        "## Repair the named frozen tests\n\nYou are the adversary for issue #2702. The driver PROVED, by running them itself, that the frozen acceptance tests below cannot do their job. Your one task is to correct THOSE FILES and nothing else.\n\n## The spec\n\n- **AC1** [test] retries a transient failure twice\n\n\n## The files the driver named\n\n- `tests/AC1-retry.test.sh`\n\nThe driver's reason for each:\n\n- `tests/AC1-retry.test.sh` — the frozen assertion contradicts the problem statement\n\n## What the driver executed\n\nThese are the driver's own runs of the named files with the project's runner, on the builder's tree. They are the evidence, not your opinion of it.\n\n- `tests/AC1-retry.test.sh` run as `sh tests/AC1-retry.test.sh` came back red:\n\n  ```\n  not ok - tests/AC1-retry.test.sh\n  ```\n\n## Your working tree\n\nYou are in `/var/tmp/pytest-janni/pi-rukas-A8YibM/lean-seed-HOObg2/.worktrees/lean-2702`, a checkout of the run's BASE commit — the code as it stood before anyone implemented the feature. Your replacements must be red HERE, because a test the base already passes tests nothing. Do not look for the implementation: it is deliberately not in this tree.\n\nThe project runs one test file with `sh {file}` — the literal `{file}` is replaced by the file's path.\n\n## What you may submit\n\nCall `submit_tests` for the named files ONLY, one call per criterion, with that criterion's id and the path(s) you rewrote. A submission that touches any other file is refused whole, and the run hands back. Do not add a new test file to cover a gap you noticed: this round corrects the named oracle, it does not extend the contract.\n\nDo not commit. Leave the bytes in the working tree; the parent hashes, freezes and commits them if they pass the driver's checks.\n"
+      ],
+      "cwd": [
+        "/var/tmp/pytest-janni/pi-rukas-A8YibM/lean-seed-HOObg2/.worktrees/lean-2702"
+      ],
+      "roles": [
+        "developer"
+      ],
+      "arms": [
+        {}
+      ],
+      "atBuildHead": [
+        true
+      ],
+      "treeFiles": [
+        [
+          "tests/AC1-retry.test.sh"
+        ]
+      ],
+      "specSeen": [
+        [
+          "tests/AC1-retry.test.sh"
+        ]
+      ],
+      "judgedInBaseCheckout": true
+    }
+  },
+  "outside": {
+    "state": "landed",
+    "code": 0,
+    "reason": "merged",
+    "steps": [
+      {
+        "state": "ready",
+        "key": "2703:ready:0",
+        "outcome": {
+          "kind": "ok"
+        }
+      },
+      {
+        "state": "specify",
+        "key": "2703:specify:0",
+        "outcome": {
+          "kind": "ok",
+          "frozen": {
+            "tests/AC1-retry.test.sh": "a0abcb22bf67000f66631ea5e5f6b47c98a644d4df307971ee18d321f13b7151"
+          },
+          "tests": {
+            "AC1": [
+              "tests/AC1-retry.test.sh"
+            ]
+          },
+          "reason": "froze 1 red test file(s) for 1 criterion/criteria",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "build",
+        "key": "2703:build:0",
+        "outcome": {
+          "kind": "blocked",
+          "reason": "frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+          "blockedBy": {
+            "tests/AC1-retry.test.sh": "the frozen assertion contradicts the problem statement"
+          },
+          "headBefore": "<sha>",
+          "blockedEvidence": [
+            {
+              "path": "tests/AC1-retry.test.sh",
+              "cmd": "sh tests/AC1-retry.test.sh",
+              "output": "not ok - tests/AC1-retry.test.sh"
+            }
+          ],
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "repair",
+        "key": "2703:repair:0",
+        "outcome": {
+          "kind": "refused",
+          "reason": "the repair round was refused: the repair replaced 1 file(s) the blocked report never named: tests/AC2-extra.test.sh; frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "build",
+        "key": "2703:build:1",
+        "outcome": {
+          "kind": "ok",
+          "reason": "2 file(s) changed",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "verify",
+        "key": "2703:verify:0",
+        "outcome": {
+          "kind": "green",
+          "reason": "frozen tests and project tiers passed",
+          "verifiedHead": "<sha>"
+        }
+      },
+      {
+        "state": "publish",
+        "key": "2703:publish:0",
+        "outcome": {
+          "kind": "ok",
+          "prUrl": "https://example.invalid/pr/1"
+        }
+      },
+      {
+        "state": "review",
+        "key": "2703:review:0",
+        "outcome": {
+          "kind": "done"
+        }
+      },
+      {
+        "state": "ci",
+        "key": "2703:ci:0",
+        "outcome": {
+          "kind": "green"
+        }
+      },
+      {
+        "state": "land",
+        "key": "2703:land:0",
+        "outcome": {
+          "kind": "merged"
+        }
+      }
+    ],
+    "comments": [],
+    "failure": {
+      "kind": "process",
+      "message": "the repair round was refused: the repair replaced 1 file(s) the blocked report never named: tests/AC2-extra.test.sh; frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+      "step": "handoff",
+      "role": "developer"
+    },
+    "repair": {
+      "prompts": [
+        "## Repair the named frozen tests\n\nYou are the adversary for issue #2703. The driver PROVED, by running them itself, that the frozen acceptance tests below cannot do their job. Your one task is to correct THOSE FILES and nothing else.\n\n## The spec\n\n- **AC1** [test] retries a transient failure twice\n\n\n## The files the driver named\n\n- `tests/AC1-retry.test.sh`\n\nThe driver's reason for each:\n\n- `tests/AC1-retry.test.sh` — the frozen assertion contradicts the problem statement\n\n## What the driver executed\n\nThese are the driver's own runs of the named files with the project's runner, on the builder's tree. They are the evidence, not your opinion of it.\n\n- `tests/AC1-retry.test.sh` run as `sh tests/AC1-retry.test.sh` came back red:\n\n  ```\n  not ok - tests/AC1-retry.test.sh\n  ```\n\n## Your working tree\n\nYou are in `/var/tmp/pytest-janni/pi-rukas-A8YibM/lean-seed-l3bJKd/.worktrees/lean-2703`, a checkout of the run's BASE commit — the code as it stood before anyone implemented the feature. Your replacements must be red HERE, because a test the base already passes tests nothing. Do not look for the implementation: it is deliberately not in this tree.\n\nThe project runs one test file with `sh {file}` — the literal `{file}` is replaced by the file's path.\n\n## What you may submit\n\nCall `submit_tests` for the named files ONLY, one call per criterion, with that criterion's id and the path(s) you rewrote. A submission that touches any other file is refused whole, and the run hands back. Do not add a new test file to cover a gap you noticed: this round corrects the named oracle, it does not extend the contract.\n\nDo not commit. Leave the bytes in the working tree; the parent hashes, freezes and commits them if they pass the driver's checks.\n"
+      ],
+      "cwd": [
+        "/var/tmp/pytest-janni/pi-rukas-A8YibM/lean-seed-l3bJKd/.worktrees/lean-2703"
+      ],
+      "roles": [
+        "developer"
+      ],
+      "arms": [
+        {}
+      ],
+      "atBuildHead": [
+        true
+      ],
+      "treeFiles": [
+        [
+          "tests/AC2-extra.test.sh"
+        ]
+      ],
+      "specSeen": [
+        [
+          "tests/AC2-extra.test.sh"
+        ]
+      ],
+      "judgedInBaseCheckout": true
+    }
+  },
+  "verifyRed": {
+    "state": "handed-back",
+    "code": 10,
+    "reason": "handback comment posted",
+    "steps": [
+      {
+        "state": "ready",
+        "key": "2704:ready:0",
+        "outcome": {
+          "kind": "ok"
+        }
+      },
+      {
+        "state": "specify",
+        "key": "2704:specify:0",
+        "outcome": {
+          "kind": "ok",
+          "frozen": {
+            "tests/AC1-retry.test.sh": "a0abcb22bf67000f66631ea5e5f6b47c98a644d4df307971ee18d321f13b7151"
+          },
+          "tests": {
+            "AC1": [
+              "tests/AC1-retry.test.sh"
+            ]
+          },
+          "reason": "froze 1 red test file(s) for 1 criterion/criteria",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "build",
+        "key": "2704:build:0",
+        "outcome": {
+          "kind": "blocked",
+          "reason": "frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+          "blockedBy": {
+            "tests/AC1-retry.test.sh": "the frozen assertion contradicts the problem statement"
+          },
+          "headBefore": "<sha>",
+          "blockedEvidence": [
+            {
+              "path": "tests/AC1-retry.test.sh",
+              "cmd": "sh tests/AC1-retry.test.sh",
+              "output": "not ok - tests/AC1-retry.test.sh"
+            }
+          ],
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "repair",
+        "key": "2704:repair:0",
+        "outcome": {
+          "kind": "repaired",
+          "reason": "repaired 1 frozen test file(s): tests/AC1-retry.test.sh (does NOT pass at head)",
+          "frozen": {
+            "tests/AC1-retry.test.sh": "f6e80bec37d65538e54f94cd4cc79ec13c3200e5a8310955141a29fbed050432"
+          },
+          "repair": {
+            "round": 1,
+            "baseSha": "<sha>",
+            "originalHashes": {
+              "tests/AC1-retry.test.sh": "a0abcb22bf67000f66631ea5e5f6b47c98a644d4df307971ee18d321f13b7151"
+            },
+            "passedAtHead": {
+              "tests/AC1-retry.test.sh": false
+            }
+          },
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "build",
+        "key": "2704:build:1",
+        "outcome": {
+          "kind": "ok",
+          "reason": "1 file(s) changed",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "verify",
+        "key": "2704:verify:0",
+        "outcome": {
+          "kind": "red",
+          "reason": "the repaired oracle failed its own assertion"
+        }
+      },
+      {
+        "state": "handback",
+        "key": "2704:handback:0",
+        "outcome": {
+          "kind": "done",
+          "reason": "handback comment posted",
+          "posted": true,
+          "report": "work-lean: issue #2704 is handed back — this is still needed:\n\n```text\nthe repaired oracle failed its own assertion\n```\n\nFrozen acceptance tests:\n- tests/AC1-retry.test.sh\n\nPR: no PR yet"
+        }
+      }
+    ],
+    "comments": [
+      "work-lean: issue #2704 is handed back — this is still needed:\n\n```text\nthe repaired oracle failed its own assertion\n```\n\nFrozen acceptance tests:\n- tests/AC1-retry.test.sh\n\nPR: no PR yet"
+    ],
+    "failure": {
+      "kind": "verify",
+      "message": "the repaired oracle failed its own assertion",
+      "step": "handoff",
+      "role": "developer"
+    },
+    "repair": {
+      "prompts": [
+        "## Repair the named frozen tests\n\nYou are the adversary for issue #2704. The driver PROVED, by running them itself, that the frozen acceptance tests below cannot do their job. Your one task is to correct THOSE FILES and nothing else.\n\n## The spec\n\n- **AC1** [test] retries a transient failure twice\n\n\n## The files the driver named\n\n- `tests/AC1-retry.test.sh`\n\nThe driver's reason for each:\n\n- `tests/AC1-retry.test.sh` — the frozen assertion contradicts the problem statement\n\n## What the driver executed\n\nThese are the driver's own runs of the named files with the project's runner, on the builder's tree. They are the evidence, not your opinion of it.\n\n- `tests/AC1-retry.test.sh` run as `sh tests/AC1-retry.test.sh` came back red:\n\n  ```\n  not ok - tests/AC1-retry.test.sh\n  ```\n\n## Your working tree\n\nYou are in `/var/tmp/pytest-janni/pi-rukas-A8YibM/lean-seed-SnS3Wu/.worktrees/lean-2704`, a checkout of the run's BASE commit — the code as it stood before anyone implemented the feature. Your replacements must be red HERE, because a test the base already passes tests nothing. Do not look for the implementation: it is deliberately not in this tree.\n\nThe project runs one test file with `sh {file}` — the literal `{file}` is replaced by the file's path.\n\n## What you may submit\n\nCall `submit_tests` for the named files ONLY, one call per criterion, with that criterion's id and the path(s) you rewrote. A submission that touches any other file is refused whole, and the run hands back. Do not add a new test file to cover a gap you noticed: this round corrects the named oracle, it does not extend the contract.\n\nDo not commit. Leave the bytes in the working tree; the parent hashes, freezes and commits them if they pass the driver's checks.\n"
+      ],
+      "cwd": [
+        "/var/tmp/pytest-janni/pi-rukas-A8YibM/lean-seed-SnS3Wu/.worktrees/lean-2704"
+      ],
+      "roles": [
+        "developer"
+      ],
+      "arms": [
+        {}
+      ],
+      "atBuildHead": [
+        true
+      ],
+      "treeFiles": [
+        [
+          "tests/AC1-retry.test.sh"
+        ]
+      ],
+      "specSeen": [
+        [
+          "tests/AC1-retry.test.sh"
+        ]
+      ],
+      "judgedInBaseCheckout": true
+    }
+  },
+  "crashed": {
+    "state": "handed-back",
+    "code": 10,
+    "reason": "handback comment posted",
+    "steps": [
+      {
+        "state": "ready",
+        "key": "2705:ready:0",
+        "outcome": {
+          "kind": "ok"
+        }
+      },
+      {
+        "state": "specify",
+        "key": "2705:specify:0",
+        "outcome": {
+          "kind": "ok",
+          "frozen": {
+            "tests/AC1-retry.test.sh": "a0abcb22bf67000f66631ea5e5f6b47c98a644d4df307971ee18d321f13b7151"
+          },
+          "tests": {
+            "AC1": [
+              "tests/AC1-retry.test.sh"
+            ]
+          },
+          "reason": "froze 1 red test file(s) for 1 criterion/criteria",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "build",
+        "key": "2705:build:0",
+        "outcome": {
+          "kind": "blocked",
+          "reason": "frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+          "blockedBy": {
+            "tests/AC1-retry.test.sh": "the frozen assertion contradicts the problem statement"
+          },
+          "headBefore": "<sha>",
+          "blockedEvidence": [
+            {
+              "path": "tests/AC1-retry.test.sh",
+              "cmd": "sh tests/AC1-retry.test.sh",
+              "output": "not ok - tests/AC1-retry.test.sh"
+            }
+          ],
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "repair",
+        "key": "2705:repair:0",
+        "outcome": {
+          "kind": "refused",
+          "reason": "the repair round was refused: the repair child could not run: REPAIR-DISPATCH-THREW; frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement"
+        }
+      },
+      {
+        "state": "build",
+        "key": "2705:build:1",
+        "outcome": {
+          "kind": "blocked",
+          "reason": "frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+          "blockedBy": {
+            "tests/AC1-retry.test.sh": "the frozen assertion contradicts the problem statement"
+          },
+          "headBefore": "<sha>",
+          "blockedEvidence": [
+            {
+              "path": "tests/AC1-retry.test.sh",
+              "cmd": "sh tests/AC1-retry.test.sh",
+              "output": "not ok - tests/AC1-retry.test.sh"
+            }
+          ],
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "handback",
+        "key": "2705:handback:0",
+        "outcome": {
+          "kind": "done",
+          "reason": "handback comment posted",
+          "posted": true,
+          "report": "work-lean: issue #2705 is handed back — this is still needed:\n\n```text\nthe frozen tests cannot all pass together:\n- tests/AC1-retry.test.sh: the frozen assertion contradicts the problem statement\n```\n\nFrozen acceptance tests:\n- tests/AC1-retry.test.sh\n\nPR: no PR yet"
+        }
+      }
+    ],
+    "comments": [
+      "work-lean: issue #2705 is handed back — this is still needed:\n\n```text\nthe frozen tests cannot all pass together:\n- tests/AC1-retry.test.sh: the frozen assertion contradicts the problem statement\n```\n\nFrozen acceptance tests:\n- tests/AC1-retry.test.sh\n\nPR: no PR yet"
+    ],
+    "failure": {
+      "kind": "verify",
+      "message": "frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+      "step": "handoff",
+      "role": "developer"
+    },
+    "repair": {
+      "prompts": [],
+      "cwd": [],
+      "roles": [],
+      "arms": [],
+      "atBuildHead": [],
+      "treeFiles": [],
+      "specSeen": [],
+      "judgedInBaseCheckout": true
+    }
+  },
+  "leak": {
+    "state": "landed",
+    "code": 0,
+    "reason": "merged",
+    "steps": [
+      {
+        "state": "ready",
+        "key": "2706:ready:0",
+        "outcome": {
+          "kind": "ok"
+        }
+      },
+      {
+        "state": "specify",
+        "key": "2706:specify:0",
+        "outcome": {
+          "kind": "ok",
+          "frozen": {
+            "tests/AC1-retry.test.sh": "a0abcb22bf67000f66631ea5e5f6b47c98a644d4df307971ee18d321f13b7151"
+          },
+          "tests": {
+            "AC1": [
+              "tests/AC1-retry.test.sh"
+            ]
+          },
+          "reason": "froze 1 red test file(s) for 1 criterion/criteria",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "build",
+        "key": "2706:build:0",
+        "outcome": {
+          "kind": "blocked",
+          "reason": "frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+          "blockedBy": {
+            "tests/AC1-retry.test.sh": "the frozen assertion contradicts the problem statement"
+          },
+          "headBefore": "<sha>",
+          "blockedEvidence": [
+            {
+              "path": "tests/AC1-retry.test.sh",
+              "cmd": "sh tests/AC1-retry.test.sh",
+              "output": "not ok - tests/AC1-retry.test.sh"
+            }
+          ],
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "repair",
+        "key": "2706:repair:0",
+        "outcome": {
+          "kind": "repaired",
+          "reason": "repaired 1 frozen test file(s): tests/AC1-retry.test.sh (does NOT pass at head)",
+          "frozen": {
+            "tests/AC1-retry.test.sh": "f6e80bec37d65538e54f94cd4cc79ec13c3200e5a8310955141a29fbed050432"
+          },
+          "repair": {
+            "round": 1,
+            "baseSha": "<sha>",
+            "originalHashes": {
+              "tests/AC1-retry.test.sh": "a0abcb22bf67000f66631ea5e5f6b47c98a644d4df307971ee18d321f13b7151"
+            },
+            "passedAtHead": {
+              "tests/AC1-retry.test.sh": false
+            }
+          },
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "build",
+        "key": "2706:build:1",
+        "outcome": {
+          "kind": "ok",
+          "reason": "1 file(s) changed",
+          "dispatches": [
+            {
+              "role": "developer",
+              "ms": 1,
+              "ok": true,
+              "usage": {
+                "input": 5,
+                "output": 6,
+                "cacheRead": 1,
+                "cacheWrite": 2,
+                "cost": 0.125,
+                "turns": 3
+              }
+            }
+          ]
+        }
+      },
+      {
+        "state": "verify",
+        "key": "2706:verify:0",
+        "outcome": {
+          "kind": "green",
+          "reason": "frozen tests and project tiers passed",
+          "verifiedHead": "<sha>"
+        }
+      },
+      {
+        "state": "publish",
+        "key": "2706:publish:0",
+        "outcome": {
+          "kind": "ok",
+          "prUrl": "https://example.invalid/pr/1"
+        }
+      },
+      {
+        "state": "review",
+        "key": "2706:review:0",
+        "outcome": {
+          "kind": "done"
+        }
+      },
+      {
+        "state": "ci",
+        "key": "2706:ci:0",
+        "outcome": {
+          "kind": "green"
+        }
+      },
+      {
+        "state": "land",
+        "key": "2706:land:0",
+        "outcome": {
+          "kind": "merged"
+        }
+      }
+    ],
+    "comments": [],
+    "failure": {
+      "kind": "verify",
+      "message": "frozen tests cannot all pass together: tests/AC1-retry.test.sh — the frozen assertion contradicts the problem statement",
+      "step": "handoff",
+      "role": "developer"
+    },
+    "repair": {
+      "prompts": [
+        "## Repair the named frozen tests\n\nYou are the adversary for issue #2706. The driver PROVED, by running them itself, that the frozen acceptance tests below cannot do their job. Your one task is to correct THOSE FILES and nothing else.\n\n## The spec\n\n- **AC1** [test] retries a transient failure twice\n\n\n## The files the driver named\n\n- `tests/AC1-retry.test.sh`\n\nThe driver's reason for each:\n\n- `tests/AC1-retry.test.sh` — the frozen assertion contradicts the problem statement\n\n## What the driver executed\n\nThese are the driver's own runs of the named files with the project's runner, on the builder's tree. They are the evidence, not your opinion of it.\n\n- `tests/AC1-retry.test.sh` run as `sh tests/AC1-retry.test.sh` came back red:\n\n  ```\n  not ok - tests/AC1-retry.test.sh\n  ```\n\n## Your working tree\n\nYou are in `/var/tmp/pytest-janni/pi-rukas-A8YibM/lean-seed-qq2a3W/.worktrees/lean-2706`, a checkout of the run's BASE commit — the code as it stood before anyone implemented the feature. Your replacements must be red HERE, because a test the base already passes tests nothing. Do not look for the implementation: it is deliberately not in this tree.\n\nThe project runs one test file with `sh {file}` — the literal `{file}` is replaced by the file's path.\n\n## What you may submit\n\nCall `submit_tests` for the named files ONLY, one call per criterion, with that criterion's id and the path(s) you rewrote. A submission that touches any other file is refused whole, and the run hands back. Do not add a new test file to cover a gap you noticed: this round corrects the named oracle, it does not extend the contract.\n\nDo not commit. Leave the bytes in the working tree; the parent hashes, freezes and commits them if they pass the driver's checks.\n"
+      ],
+      "cwd": [
+        "/var/tmp/pytest-janni/pi-rukas-A8YibM/lean-seed-qq2a3W/.worktrees/lean-2706"
+      ],
+      "roles": [
+        "developer"
+      ],
+      "arms": [
+        {}
+      ],
+      "atBuildHead": [
+        true
+      ],
+      "treeFiles": [
+        [
+          "tests/AC1-retry.test.sh"
+        ]
+      ],
+      "specSeen": [
+        [
+          "tests/AC1-retry.test.sh"
+        ]
+      ],
+      "judgedInBaseCheckout": true
+    }
+  }
+}

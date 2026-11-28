@@ -62,8 +62,7 @@ function usableConflicts(rows: Array<{ path: string; reason: string }>): string[
 
 /** What the gate decided, and the sentence the caller traces when it refused. */
 export type BlockedVerdict =
-  /** `ran` is every file the driver executed, up to and including the `red`; `output` is what the runner
-   *  printed on it — the only failure evidence a repair brief may quote. */
+  /** `ran` is every file the driver executed, up to the `red`; `output` is what the runner printed on it. */
   | { honoured: true; red: string; ran: string[]; output: string }
   /** Why the report was ignored, for the trace line. */
   | { honoured: false; why: string };
@@ -146,7 +145,7 @@ export async function blockedProved(opts: {
  * A loop's ONE budget, read on two clocks: a `setTimeout` race every runner loses to, and a wall-clock deadline.
  * Node's timers fire early or late against `Date.now()`, so a start needs BOTH to say time is left.
  */
-class LoopBudget {
+export class LoopBudget {
   private spent = false;
   readonly expired: Promise<void>;
   private readonly deadline: number;
@@ -177,7 +176,7 @@ class LoopBudget {
  * One frozen file's verdict under the loop's ONE budget. A runner that swallows the SIGKILL, or one a grandchild
  * holds open, is ABANDONED when the budget expires and counts `infra` — the step refuses at its bound.
  */
-async function runFrozen(
+export async function runFrozen(
   exec: BuildExec,
   run: { wt: string; template: string; file: string },
   budget: LoopBudget,
@@ -202,52 +201,6 @@ function abandoned(run: { template: string; file: string }, budgetMs: number): P
     cmd: renderTestCommand(run.template, run.file),
     detail: `gave up at the ${String(budgetMs)}ms re-run budget`,
   };
-}
-
-/**
- * Fold a budget-stopped builder's work into its attempt's commit, then say what is still red on the tree that
- * commit made — one function because the probe must read the RESET tree the fold produced. The sweep shares
- * {@link runFrozen}.
- */
-export async function foldStoppedBuild(opts: {
-  exec: BuildExec;
-  wt: string;
-  repoRoot: string;
-  branch: string;
-  headBefore: string;
-  frozen: Record<string, string>;
-  attempt: number;
-  issue: number;
-  template: string | undefined;
-  ceiling?: number;
-  /** The project's configured protected globs, from the run's base-commit config — the
-   *  same list `build`'s own fold gets, so one arm of this step cannot keep what the other
-   *  reverts. */
-  protected?: readonly string[];
-  /** Bounds the whole sweep of frozen tests; a test shortens it to watch a hang. */
-  timeoutMs?: number;
-}): Promise<{ kept: NormaliseReport; failing: string[] }> {
-  const { exec, wt, frozen, template } = opts;
-  // `protected` rides the spread into `normaliseBuild` untouched.
-  const kept = await normaliseBuild({ ...opts, budget: new CaptureBudget(opts.ceiling) });
-  // Only a runner that ANSWERED counts, and only bytes the freeze hashed — the tree is whatever the killed
-  // child left, so each file comes out of HEAD.
-  const failing: string[] = [];
-  if (!template?.trim()) return { kept, failing };
-  const budget = new LoopBudget(opts.timeoutMs ?? TEST_TIMEOUT_MS);
-  try {
-    for (const file of Object.keys(frozen)) {
-      // ONE budget for the sweep: once spent, no later file starts at all.
-      if (budget.over()) break;
-      const bytes = await blobAt(exec, wt, "HEAD", file);
-      if (bytes === undefined || bytes.length === 0 || sha256(bytes) !== frozen[file]) continue;
-      if ((await runFrozen(exec, { wt, template, file }, budget)).kind === "red")
-        failing.push(file);
-    }
-  } finally {
-    budget.dispose();
-  }
-  return { kept, failing };
 }
 
 /** The child's report judged end to end. `undefined` says "not honoured". */
@@ -294,8 +247,7 @@ export async function judgeBlockedReport(opts: {
   }
   const red = proved.red;
   if (!(red in blockedBy)) return undefined;
-  // The executed red the driver watched: bounded and sanitised where it is built, because this durable
-  // record prints into a child's prompt.
+  // Bounded and sanitised where it is built: this durable record prints into a child's prompt.
   const evidence = executedEvidence(opts.template ?? "", proved);
   // The cause line leads with the file the driver watched fail; the map carries all.
   return {
@@ -308,10 +260,8 @@ export async function judgeBlockedReport(opts: {
   };
 }
 
-/**
- * The driver's own run of the file under dispute: the command it rendered, and what came back. Only the RED
- * file's output is carried — the other vetted files came back green, which argues nothing about the conflict
- * and would only widen a child's prompt.
+/** The driver's own run of the file under dispute: the command it rendered, and what came back. Only the RED
+ * file's output is carried — the greens argue nothing about the conflict and would only widen a prompt.
  */
 function executedEvidence(
   template: string,

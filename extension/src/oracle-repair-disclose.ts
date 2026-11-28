@@ -1,11 +1,8 @@
 import { newestDecidedWorkStep } from "./lean/handback-heads.ts";
 /**
- * oracle-repair-disclose — what a run says about a repair round it spent.
- *
- * A corrected oracle and an unmet contract want different repairs, and only the latter was reportable before
- * the round existed, so a handback on a repaired run leads with this line. Both facts printed are the
- * record's own: the hash of the file that was replaced, and whether the replacement passed where the
- * builder's code stands. Lives outside `src/lean/` with the round's other readers.
+ * oracle-repair-disclose — the handback line for a run that spent its repair round and still cannot meet the
+ * contract. Both facts it prints are the record's own: the hash of the file that was replaced, and whether the
+ * replacement passed where the builder's code stands. Outside `src/lean/` with the round's other readers.
  */
 import { BLOCKED_PATH_CAP } from "./lean/state-outcome-maps.ts";
 import type { Step } from "./lean/state.ts";

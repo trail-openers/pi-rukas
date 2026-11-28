@@ -11,11 +11,20 @@ import { RED_REASON_CLIP, clipReason } from "./lean/verify-deps.ts";
 /** How many names one reason line lists before it says "and N more". */
 const LIST_CLIP = 20;
 
-/** A step that froze tests: a decided `specify:ok` or `challenge:new-tests`. */
+/**
+ * A step that froze tests: a decided `specify:ok`, a `challenge:new-tests`, or a `repair:repaired`.
+ *
+ * The repair round is a freeze like the other two — its bytes went through the same capture, the same
+ * one-commit path, and hashes read back from the committed blobs — and the run's contract from that point
+ * IS its replacement. A reader that skipped it would hand `build` the ORIGINAL hashes for a file the tree
+ * no longer holds, and the step's own frozen-intact check would refuse the very correction the round was
+ * bought to make.
+ */
 function frozeTests(step: Step): boolean {
   return (
     (step.state === "specify" && step.outcome?.kind === "ok") ||
-    (step.state === "challenge" && step.outcome?.kind === "new-tests")
+    (step.state === "challenge" && step.outcome?.kind === "new-tests") ||
+    (step.state === "repair" && step.outcome?.kind === "repaired")
   );
 }
 
