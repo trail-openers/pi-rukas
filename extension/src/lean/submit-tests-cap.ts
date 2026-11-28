@@ -8,6 +8,7 @@
  * work rather than the call's cost, and are applied here, where a submitted path is finally a file.
  */
 import path from "node:path";
+import { keptCapRows, rowDeclaredPreserves } from "../lean-preserved-cap.ts";
 import { type TestLocation, testLocationProblem } from "./config-test-location.ts";
 import type { PiSpec } from "./spec.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
@@ -132,7 +133,7 @@ export async function validateSubmitRows(
   },
 ): Promise<{ kept: SubmitTestsRow[]; dropped: DroppedRow[] }> {
   const testable = new Set(opts.spec.criteria.filter((c) => c.verify === "test").map((c) => c.id));
-  const keptByCriterion = new Map<string, string[]>();
+  const keptByCriterion = new Map<string, [string[], boolean]>();
   // ONE counter per criterion: the quota is RUN-level, so a criterion starts at what the run froze.
   const quota = new Map<string, number>();
   for (const [id, files] of Object.entries(opts.frozenByCriterion ?? {})) {
@@ -156,7 +157,7 @@ export async function validateSubmitRows(
       });
       continue;
     }
-    const files = keptByCriterion.get(row.criterionId) ?? [];
+    const files = keptByCriterion.get(row.criterionId)?.[0] ?? [];
     if (row.testFiles.length > MAX_TEST_FILES_PER_ROW) {
       dropped.push({
         criterionId: row.criterionId,
@@ -268,11 +269,8 @@ export async function validateSubmitRows(
       keptRels.set(row.criterionId, seen);
       quota.set(row.criterionId, (quota.get(row.criterionId) ?? 0) + 1);
     }
-    if (files.length > 0) keptByCriterion.set(row.criterionId, files);
+    if (files.length > 0) keptByCriterion.set(row.criterionId, [files, rowDeclaredPreserves(row)]);
   }
-  const kept: SubmitTestsRow[] = [...keptByCriterion.entries()].map(([criterionId, testFiles]) => ({
-    criterionId,
-    testFiles,
-  }));
+  const kept: SubmitTestsRow[] = keptCapRows([...keptByCriterion.entries()]);
   return { kept, dropped };
 }

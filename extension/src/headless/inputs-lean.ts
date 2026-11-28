@@ -115,6 +115,16 @@ export const HEADLESS_INPUTS_LEAN: readonly HostInput[] = [
   // decline byte for byte. The reader is `leanSpecifyGapHandbackEnabled` in
   // lean/specify-gap-switch.ts.
   flag("LEAN_SPECIFY_GAP_HANDBACK", true),
+  // A `specify` child may declare a criterion it intends to KEEP working — `submit_tests` carries
+  // `preserves: true` — and the file the step froze for it is then a must-pass file rather than the
+  // coverage gap that ended the run: a criterion that states behaviour which already holds has no red
+  // test to write. The declaration is untrusted like every other submitted field, a run whose every
+  // criterion is preserved still hands back, and the ids are disclosed by name in the handback and the
+  // PR body. `0` is the ONLY off value: the `submit_tests` schema, the specify prompt and the step's
+  // recorded outcome are then the bytes from before the field existed, so the declaration is neither
+  // offered nor read. The reader is `leanSpecifyPreservesEnabled` in
+  // lean-specify-preserves-switch.ts; the rule is specify-preserves.ts.
+  flag("LEAN_SPECIFY_PRESERVES", true),
   // A specify child that submitted some test criteria and not others is asked once, on its
   // own session, for the rest before readiness is judged. `0` dispatches as before: the
   // unsubmitted criteria end the run. The reader is `leanSpecifyReaskEnabled` in

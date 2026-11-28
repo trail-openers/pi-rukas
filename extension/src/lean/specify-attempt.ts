@@ -11,9 +11,13 @@
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { allPreserved, malformedDeclarations } from "../lean-preserved-coverage.ts";
+import { droppedLabel } from "../lean-preserved-notes.ts";
+import { preservedCriteria } from "../lean-preserved-step.ts";
 import { verdictReasonClause } from "../lean-step-bound.ts";
 import { statReporterPath } from "../reporter-preflight.ts";
 import { makeRunId } from "../spawn-support.ts";
+import { allPreservedReason } from "../specify-preserves.ts";
 import { traceWarn } from "../trace.ts";
 import type { DispatchResult } from "../types.ts";
 import { didNoWork } from "./build-dispatch.ts";
@@ -34,7 +38,7 @@ import {
   withReaskNote,
 } from "./specify-reask.ts";
 import { SpecifyInfraError } from "./specify-reset.ts";
-import { droppedLabel, runTestPipeline } from "./specify-run.ts";
+import { runTestPipeline } from "./specify-run.ts";
 import { ensureSpecifyWorktreeWithProvision, validateSubmitRows } from "./specify-tree.ts";
 import type { SpecifyDeps } from "./specify.ts";
 import type { Outcome } from "./state.ts";
@@ -300,7 +304,10 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       dispatched: rows,
     };
   const declaredRows = reask === undefined ? first.rows : [...first.rows, ...reask.rows];
-  const skipped = first.skipped + (reask?.skipped ?? 0);
+  const wantedIds = wanted.map((c) => c.id);
+  // A declaration of the wrong type is a malformed call, counted where the malformed calls are counted.
+  const skipped = first.skipped + (reask?.skipped ?? 0) + malformedDeclarations(declaredRows);
+  const preservedRows = preservedCriteria(declaredRows);
   const note = reask?.note;
   /** The attributed drops whose reason is a size refusal — see `SIZE_REFUSAL`. */
   const sizeRefused: string[] = [];
@@ -316,7 +323,7 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
       // `specify`'s claim is that EVERY test criterion is falsifiable, so one uncovered criterion
       // refuses the run — what `coverage: "all-criteria"` asks the shared pipeline for.
       coverage: "all-criteria",
-      wanted: wanted.map((c) => c.id),
+      wanted: wantedIds,
       extract: () => ({ rows: declaredRows, skipped }),
       validate: async (rows) => {
         const verdict = await validateSubmitRows(rows, boundary);
@@ -355,6 +362,10 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
           kind: "ok",
           frozen: pipeline.frozen,
           tests: pipeline.tests,
+          // Absent, never empty: `preserved-record.ts` refuses an empty list. Read off what the pipeline
+          // FROZE, not off the child's declarations: a `preserves: true` row that turned out to be an
+          // ordinary red test froze no must-pass file, and the disclosure may not claim one.
+          ...(pipeline.preserved.length === 0 ? {} : { preserved: pipeline.preserved }),
           reason: pipeline.reason,
           dispatches: rows,
         },
@@ -366,6 +377,28 @@ export async function runSpecifyAttempt(args: SpecifyAttemptArgs): Promise<Speci
     };
   // The child's own gap — not a refused spec — so the switch picks its kind (see `specify-gap-switch.ts`).
   const gapKind = leanSpecifyGapHandbackEnabled() ? RED_TEST_GAP : "no-red-test";
+  // A spec whose every test criterion is preserved has nothing to build: its own stable reason, never a
+  // freeze of a contract made of guards alone.
+  if (allPreserved(wantedIds, preservedRows))
+    return {
+      outcome: withReaskNote(
+        {
+          kind: gapKind,
+          failedRules: wanted.map((c) => `criterion ${c.id} has no red test`),
+          reason: allPreservedReason(preservedRows),
+          // The record carries its own preserved list: the handback's second reading and its hint key on
+          // this field, and this gap's reason is its own stable sentence that never quotes the red proof.
+          // A gap that discloses its cause but not the move it implies is the half-disclosure this field
+          // exists to close.
+          ...(preservedRows.length === 0 ? {} : { preserved: preservedRows }),
+          dispatches: rows,
+        },
+        note,
+      ),
+      refused,
+      silent: false,
+      dispatched: rows,
+    };
   if (pipeline.kind === "uncovered")
     return {
       outcome: withReaskNote(

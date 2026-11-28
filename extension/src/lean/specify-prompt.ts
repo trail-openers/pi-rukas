@@ -1,3 +1,4 @@
+import { preservesPromptLines } from "../specify-preserves-prompt.ts";
 /**
  * lean/specify-prompt — the adversary's instructions for the specify step.
  *
@@ -237,7 +238,7 @@ export function specifyPrompt(opts: SpecifyPromptOpts): string {
           : testLocationInstruction(opts.testLocation),
         "",
         tests.length === 0 ? "" : TEST_SCOPE_CONTRACT,
-        "",
+        ...preservesPromptLines(tests.length > 0),
         tests.length === 0 ? "" : IMPLIED_REQUIREMENTS,
         "",
         "**Do not edit, create or delete any non-test file.** No source changes, no config, no fixtures outside your test files, no package-manifest edits. The parent reverts anything you touch that you did not submit as a test.",

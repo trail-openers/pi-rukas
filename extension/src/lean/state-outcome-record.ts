@@ -28,6 +28,8 @@ export interface Outcome {
   frozen?: Record<string, string>;
   /** `specify` only: criterion id -> the kept test files that cover it. */
   tests?: Record<string, string[]>;
+  /** `specify` only: the criteria it froze as must-pass at head. Absent, never empty: `preserved-record.ts`. */
+  preserved?: string[];
   /** `verify` only: the 40-hex commit whose tree produced this verdict — what the land gate matches to the PR head, so "green" is a claim about a named commit and not about whatever tree was on disk. */
   verifiedHead?: string;
   /** `verify` only: the `command` criteria the gate EXECUTED and that exited 0, by id. A criterion absent from the map was never run, and the body says so. Bare id->word, so the validator checks every value. */

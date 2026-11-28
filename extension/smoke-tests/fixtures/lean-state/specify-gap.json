@@ -96,12 +96,12 @@
           "kind": "done",
           "reason": "handback comment posted",
           "posted": true,
-          "report": "work-lean: issue #2360 is handed back — this is still needed:\n\n```text\ncriterion AC1 has no red test; no submitted test was red against <sha>; criterion AC1 has no red test; dropped 1: AC1 tests/AC1-child.test.sh: exited 0 on base\nA test that passes on the base may also mean the criterion already holds there.\n```\n\nFrozen acceptance tests:\n- none were recorded\n\nPR: no PR yet"
+          "report": "work-lean: issue #2360 is handed back — this is still needed:\n\n```text\ncriterion AC1 has no red test; no submitted test was red against <sha>; criterion AC1 has no red test; dropped 1: AC1 tests/AC1-child.test.sh: exited 0 on base\nA test that passes on the base may also mean the criterion already holds there.\nIf this criterion must keep holding, declare it as preserved when submitting.\n```\n\nFrozen acceptance tests:\n- none were recorded\n\nPR: no PR yet"
         }
       }
     ],
     "comments": [
-      "work-lean: issue #2360 is handed back — this is still needed:\n\n```text\ncriterion AC1 has no red test; no submitted test was red against <sha>; criterion AC1 has no red test; dropped 1: AC1 tests/AC1-child.test.sh: exited 0 on base\nA test that passes on the base may also mean the criterion already holds there.\n```\n\nFrozen acceptance tests:\n- none were recorded\n\nPR: no PR yet"
+      "work-lean: issue #2360 is handed back — this is still needed:\n\n```text\ncriterion AC1 has no red test; no submitted test was red against <sha>; criterion AC1 has no red test; dropped 1: AC1 tests/AC1-child.test.sh: exited 0 on base\nA test that passes on the base may also mean the criterion already holds there.\nIf this criterion must keep holding, declare it as preserved when submitting.\n```\n\nFrozen acceptance tests:\n- none were recorded\n\nPR: no PR yet"
     ],
     "failure": {
       "kind": "red-test-gap",

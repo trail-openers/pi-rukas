@@ -1,0 +1,174 @@
+/**
+ * lean-preserved-coverage — what the `specify` step must freeze once a run declared criteria preserved.
+ *
+ * The sibling `lean-preserved-step.ts` reads the submitted rows; this file reads the step's own proof
+ * verdicts and answers the questions the engine would otherwise compute inline, under the lean line cap:
+ * which files the proof pass deletes rather than refuses, which files join the contract beyond the red
+ * ones, which ids the run may name, and which ids it still owes a red. Nothing here reads git or the
+ * tree, and the rule each arm implements is documented once in `specify-preserves.ts`.
+ *
+ * Every entry is PURE — the engine keeps the loop, the runner call and the deletes, and asks this file
+ * only for verdicts, so a caller cannot accidentally skip the side effect a step owes.
+ */
+
+import { type DropLabel, dropNote } from "./lean-preserved-notes.ts";
+import { type ProvedFile, mustPassFiles } from "./lean-preserved-step.ts";
+import type { DeclaredPath } from "./lean/specify-tree.ts";
+import { preservedReasonClause } from "./specify-preserves.ts";
+
+/** One path's proof verdict, as the caller read it. */
+export type ProvedKind = Pick<ProvedFile, "kind">;
+
+/** One submitted row, as far as these verdicts care: the criterion and its declaration. */
+export interface CoverageRow {
+  criterionId: string;
+  preserves?: boolean;
+}
+
+export interface PreservedCoverageInput {
+  /** Every declared candidate, in the order the child submitted them. */
+  candidates: readonly DeclaredPath[];
+  /** The proof's verdict per path, from the one proof pass the step already ran. */
+  kinds: ReadonlyMap<string, ProvedKind>;
+  /** The kept rows' declarations, so `preservedIds` reports only what a child really declared. */
+  rows: readonly CoverageRow[];
+  /** The ids `all-criteria` coverage asked for. */
+  wanted: readonly string[];
+}
+
+export interface PreservedCoverage {
+  /** Paths to commit BEYOND the red ones: a declared file the proof classified GREEN at the base. */
+  mustPass: string[];
+  /** Every file the frozen contract holds: red plus must-pass, in candidate order. */
+  contract: DeclaredPath[];
+  /** The criteria whose must-pass file ACTUALLY froze, deduplicated, in candidate order. */
+  preservedIds: string[];
+  /** The ids still owed a red file, once the preserved ones are excused. */
+  missing: string[];
+}
+
+/** The proof pass's own verdicts, plus the declaration the run read from the submitted rows. */
+export interface ProofRule {
+  /** Does this criterion's own rows declare it preserved? */
+  isPreserved: (criterionId: string) => boolean;
+  /** Does a file the proof refused still earn its keep under its criterion's declaration? */
+  keeps: (cand: DeclaredPath) => boolean;
+}
+
+/**
+ * The proof pass's rule, built from the kept rows and the verdicts the loop collects.
+ *
+ * A declared file keeps its place ONLY when the proof classified it green at the base AND no file of its
+ * criterion proved red. Both halves matter: the green verdict is the step's observation that the runner
+ * exited 0 on the base, which is the claim a must-pass file makes; and a criterion with a real red is an
+ * ordinary red test, so a second, green file under the same declaration is one the step never froze. An
+ * `unclear` verdict observes nothing about the base, so it keeps nothing — the file is deleted and noted
+ * like any other non-red. The verdicts are read at the END of the pass — a file whose own criterion proved
+ * red later still counts — which is why the rule is asked after each verdict rather than at the refusal.
+ */
+export function proofRule(
+  kept: readonly CoverageRow[],
+  candidates: readonly DeclaredPath[],
+  kinds: ReadonlyMap<string, ProvedKind>,
+): ProofRule {
+  const declared = new Set(kept.filter((r) => r.preserves === true).map((r) => r.criterionId));
+  return {
+    isPreserved: (criterionId) => declared.has(criterionId),
+    keeps: (cand) =>
+      kinds.get(cand.path)?.kind === "green" &&
+      candidates.some(
+        (c) => c.criterionId === cand.criterionId && kinds.get(c.path)?.kind === "red",
+      ),
+  };
+}
+
+/**
+ * The coverage computation for a run that may have declared preservation. `red` is what the proof pass
+ * returned; the must-pass set is decided from ALL verdicts at once, so a green file under a criterion that
+ * has a real red is an ordinary refusal and is deleted like any other green.
+ *
+ * `preservedIds` names what FROZE, not what was declared: only a criterion with a must-pass file in the
+ * contract is named. A declaration on a row that proved red is an ordinary red test and the step froze
+ * nothing as must-pass for it, so naming it would disclose a guard that does not exist.
+ */
+export function preservedCoverage(input: PreservedCoverageInput): PreservedCoverage {
+  const { candidates, kinds, rows, wanted } = input;
+  const declared = new Set(rows.filter((r) => r.preserves === true).map((r) => r.criterionId));
+  const red = new Set<string>();
+  const provedFiles: ProvedFile[] = [];
+  for (const c of candidates) {
+    const kind = kinds.get(c.path)?.kind;
+    if (kind === undefined) continue; // dropped at capture — never proved, never kept
+    provedFiles.push({
+      path: c.path,
+      criterionId: c.criterionId,
+      kind,
+      preserves: declared.has(c.criterionId),
+    });
+    if (kind === "red") red.add(c.path);
+  }
+  const mustPass = new Set(mustPassFiles(provedFiles));
+  const contract: DeclaredPath[] = [];
+  const preservedIds: string[] = [];
+  for (const c of candidates) {
+    if (!red.has(c.path) && !mustPass.has(c.path)) continue;
+    contract.push(c);
+    // A criterion earns its place in the list by the file that froze, not by its own declaration: a
+    // criterion with only red files declared `preserves: true` froze no must-pass file for it.
+    if (mustPass.has(c.path) && !preservedIds.includes(c.criterionId))
+      preservedIds.push(c.criterionId);
+  }
+  const held = new Set(contract.map((c) => c.criterionId));
+  return {
+    mustPass: [...mustPass],
+    contract,
+    preservedIds,
+    missing: wanted.filter((id) => !held.has(id)),
+  };
+}
+
+/** Is every criterion the spec asked for one this run preserved? Then there is nothing to build. */
+export function allPreserved(wanted: readonly string[], preserved: readonly string[]): boolean {
+  return wanted.length > 0 && wanted.every((id) => preserved.includes(id));
+}
+
+/** A declaration of the wrong type is a malformed call, counted with the skipped-call accounting. */
+export function malformedDeclarations(rows: readonly CoverageRow[]): number {
+  return rows.filter((r) => r.preserves !== undefined && typeof r.preserves !== "boolean").length;
+}
+
+/**
+ * The committed verdict's reason: what was frozen, what was preserved, what was refused, and the tree's own
+ * caveat. Composed outside the engine so the clauses live with the rule they describe, and the step keeps
+ * only the call.
+ *
+ * The first clause counts the files the RED PROOF proved, not the files in the frozen map: that map also
+ * holds the must-pass files, so counting it would tell a reader that N guards were proved red when some of
+ * them were frozen precisely because they were green at the base. `redCount` is the step's own red total
+ * and the preserved ids are named beside it, so the two populations are never added together.
+ */
+export function preservedCommitReason(input: {
+  redCount: number;
+  tests: Record<string, string[]>;
+  preservedIds: readonly string[];
+  skipped: number;
+  droppedNote: string;
+  dropped: DropLabel[];
+  checkNote: string;
+  treeProblem?: string;
+}): string {
+  return [
+    `froze ${String(input.redCount)} red test file(s) for ` +
+      `${String(Object.keys(input.tests).length)} criterion/criteria`,
+    preservedReasonClause(input.preservedIds),
+    input.skipped > 0
+      ? `${String(input.skipped)} submit_tests call(s) skipped or refused as malformed`
+      : "",
+    input.droppedNote,
+    dropNote(input.dropped),
+    input.checkNote,
+    input.treeProblem ?? "",
+  ]
+    .filter((s) => s !== "")
+    .join("; ");
+}

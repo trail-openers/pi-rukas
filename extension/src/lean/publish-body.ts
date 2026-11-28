@@ -15,6 +15,7 @@
  * Every line is emitted unconditionally except where stated: a reader must tell "not
  * run" apart from "not applicable".
  */
+import { preservedLine } from "../preserved-disclose.ts";
 import type { SpecSource } from "./spec-for.ts";
 import type { PiSpec } from "./spec.ts";
 import { PREEXISTING_NAMES_CAP, type PreexistingTierRecord } from "./state-outcome-maps.ts";
@@ -82,6 +83,8 @@ export interface PublishBodyInput {
    * base commit and which tests without parsing a sentence the gate composed.
    */
   preexistingFailures?: Record<string, PreexistingTierRecord>;
+  /** The criteria this run PRESERVED — its own clause, never the dropped-file list. */
+  preserved?: string[];
   /** The challenge round's own ceiling, when the log carries a `budget` outcome — so a reader tells "the contract was never attacked" from "it was attacked and held". */
   challengeBudget?: { limit: "minutes" | "turns" | "tokens" | "stall"; value: number };
   /** The pre-verify bound's reason, when the log carries a `skipped` outcome — nothing was paid for, so the line says the round was never bought, not that it stopped at a ceiling. */
@@ -262,6 +265,10 @@ export function publishBody(o: PublishBodyInput): string {
   // learns which part of it was green only because the base was already red.
   const preexisting = leanPreexistingFailuresSection(o.preexistingFailures);
   if (preexisting !== "") lines.push(preexisting);
+  // A blank line before the clause, as every other break in this list has: pushed bare, the clause sits
+  // against the bullet above it and markdown reads the run's bullet list as two lists.
+  const preserved = preservedLine(o);
+  if (preserved !== "") lines.push("", preserved);
   // One line, only when the log records the stop. The counter pair is the one
   // the run carries into verify either way, so this is the only place the fact
   // survives into the PR; `value`/`limit` are typed numbers/enums off the step

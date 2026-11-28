@@ -25,13 +25,7 @@ import { DEFAULT_BUDGETS } from "../src/lean/config.ts";
 import { reaskMissing, reaskPrompt } from "../src/lean/specify-reask.ts";
 import type { DispatchResult } from "../src/types.ts";
 import { withEnv } from "./lib/env-scope.ts";
-import {
-  CONFIG,
-  REASKED,
-  ROOTS,
-  report as reportShared,
-  submit,
-} from "./lib/lean-specify-fixture.ts";
+import { ROOTS, submit } from "./lib/lean-specify-fixture.ts";
 import {
   IDS,
   MISSING,
@@ -42,6 +36,7 @@ import {
   submitted,
   writeAll,
 } from "./lib/lean-specify-reask-golden.ts";
+import { CONFIG, REASKED, report as reportShared } from "./lib/lean-specify-shared.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {

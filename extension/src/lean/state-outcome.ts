@@ -12,10 +12,9 @@
  */
 import { isFullCommitSha } from "../commit-sha.ts";
 import { repairOutcomeProblem, validatedRepairFields } from "../oracle-repair-fields.ts";
+import { preservedOutcomeField, preservedOutcomeProblem } from "../preserved-record.ts";
 import { HANDOFF_CHANNELS } from "../work-driver-handoff-channel.ts";
 import { normaliseRelPath, pathProblem } from "./specify-path.ts";
-import { canonicalDerivedSpec } from "./state-derived-spec.ts";
-import type { DerivedSpec } from "./state-derived-spec.ts";
 import { derivedSpecProblem } from "./state-derived-spec.ts";
 import { reviewBoundProblem, validatedReviewBound } from "./state-dispatches.ts";
 import { dispatchesProblem, isCount, validatedDispatches } from "./state-dispatches.ts";
@@ -37,6 +36,7 @@ import {
   validatedPreexistingFailures,
   validatedProjectRoster,
 } from "./state-outcome-maps.ts";
+import { derivedSpecOutcomeFields } from "./state-outcome-spec-fields.ts";
 import type { LeanState, Outcome } from "./state.ts";
 import type { DispatchUsageRow } from "./step-budget.ts";
 
@@ -167,6 +167,7 @@ const OWNER_OF_FIELD: Readonly<Record<string, LeanState | readonly LeanState[]>>
   verifiedHead: "verify",
   commandCriteria: "verify",
   commandNotRunnable: "verify",
+  preserved: "specify",
   // The build step's own account of which frozen tests it proved cannot all pass together;
   // `handback` prints it as the run's cause.
   blockedBy: "build",
@@ -347,9 +348,12 @@ export function outcomeProblem(oc: Record<string, unknown>, state?: LeanState): 
   }
   if (oc.headBefore !== undefined && !SHA1_HEX.test(String(oc.headBefore)))
     return "outcome headBefore must be a full commit sha";
-  // The repair round's fields: rules in `oracle-repair-fields.ts`.
   const repairProblem = repairOutcomeProblem(oc);
   if (repairProblem !== undefined) return repairProblem;
+  // The specific problem, not a collapsed one: an operator reading a refused record has to be able to
+  // tell a non-list from an empty list from an id that is not `AC<n>`.
+  const preservedProblem = preservedOutcomeProblem(oc);
+  if (preservedProblem !== undefined) return preservedProblem;
   if (oc.preexistingFailures !== undefined) {
     const problem = preexistingFailuresProblem(oc.preexistingFailures);
     if (problem !== undefined) return problem;
@@ -424,8 +428,6 @@ export function progressProblem(
  */
 export function buildOutcome(oc: Record<string, unknown>): Outcome {
   const tests = oc.tests as Record<string, string[]> | undefined;
-  // Computed ONCE so the two clauses below cannot disagree about which arm they are on.
-  const derived: DerivedSpec | undefined = canonicalDerivedSpec(oc.derivedSpec);
   return {
     kind: oc.kind as string,
     ...(typeof oc.reason === "string" ? { reason: oc.reason } : {}),
@@ -480,20 +482,12 @@ export function buildOutcome(oc: Record<string, unknown>): Outcome {
     // `ready`'s two run-level facts, at the END of the spread: the key order above is what the
     // handback key-list case pins, and a field inserted mid-list rewrites those bytes. Only
     // `ready` may carry either field, and `outcomeProblem` has refused it anywhere else BEFORE
-    // this runs — so each clause here rebuilds only what that judgement already passed. The
-    // contract goes through the reader that canonicalises it rather than carrying the file's
-    // shape, so the executed document is the reader's shape rather than the file's.
-    ...(derived === undefined ? {} : { derivedSpec: derived }),
-    ...(derived === undefined
-      ? {}
-      : {
-          // `baseSha` is `ready`'s too and the two are written by one save, so the knob gates
-          // the pair together — the off arm is the release's outcome, which carried neither.
-          // The sha is taken only as a full oid, the same shape `state.ts` holds the run's own
-          // to; a truncated one is dropped rather than reaching a reader.
-          ...(typeof oc.baseSha === "string" && isFullCommitSha(oc.baseSha)
-            ? { baseSha: oc.baseSha }
-            : {}),
-        }),
+    // this runs. `preserved` sits here for the same reason: it is a `specify`-owned field a resumed run
+    // reads back, so a state file written by an older build reloads in the same order, and the record's
+    // own rule (absent, never empty) is applied by the rebuild rather than assumed. The pair of
+    // `ready`'s facts is rebuilt in `state-outcome-spec-fields.ts`, which canonicalises the contract
+    // through the contract's own reader rather than carrying the file's shape.
+    ...preservedOutcomeField(oc),
+    ...derivedSpecOutcomeFields(oc),
   };
 }

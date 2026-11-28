@@ -11,6 +11,7 @@
 import { execp } from "../exec.ts";
 import { frozenFromLog } from "../lean-log.ts";
 import { repairCause } from "../oracle-repair-disclose.ts";
+import { gapCauseLines } from "../preserved-disclose.ts";
 import { assertSafeRef } from "../worktree-loss.ts";
 import type { HandlerCtx } from "./engine.ts";
 import { NO_GATE_VERDICT, handbackHeads, newestDecidedWorkStep } from "./handback-heads.ts";
@@ -96,19 +97,10 @@ function blockedCause(steps: Step[]): string | undefined {
   return `the frozen tests cannot all pass together:\n${named}${more}`;
 }
 
-/** The other reading of a test that passed on the base, which the gap's evidence cannot rule out. */
-const GAP_READING =
-  "A test that passes on the base may also mean the criterion already holds there.";
-/** `specify`'s child left a criterion with no red test: each rule once, the per-file evidence, and the
- * second reading only where a test really passed on the base. */
 function gapCause(steps: Step[]): string | undefined {
   const oc = newestDecidedWorkStep(steps)?.outcome;
   if (oc?.kind !== RED_TEST_GAP) return undefined;
-  const rules = oc.failedRules ?? [];
-  const reason = oc.reason ?? "";
-  const lead = [...rules.filter((r) => !reason.includes(r)), reason];
-  const reading = reason.includes("exited 0 on base") ? [GAP_READING] : [];
-  return [...lead, ...reading].filter((s) => s !== "").join("\n");
+  return gapCauseLines(oc);
 }
 
 /**

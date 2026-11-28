@@ -11,7 +11,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
-  CONFIG,
   type RunOpts,
   type RunResult,
   makeRepo,
@@ -19,6 +18,7 @@ import {
   runSpecify,
   submit,
 } from "./lean-specify-fixture.ts";
+import { CONFIG } from "./lean-specify-shared.ts";
 
 export const IDS = ["AC1", "AC2", "AC3", "AC4", "AC5", "AC6", "AC7", "AC8"];
 export const SUBMITTED = IDS.slice(0, 4);

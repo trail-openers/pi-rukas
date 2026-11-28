@@ -12,11 +12,15 @@
  * validator in specify.ts owns them. This module's job ends at "is this a readable submit_tests
  * call, and what did it say".
  */
+import { readPreservesArgument } from "../submit-tests-preserves.ts";
+
 /** One `submit_tests` call, as read. */
 export interface SubmitTestsRow {
   criterionId: string;
   testFiles: string[];
   note?: string;
+  /** Absent, never empty: a non-boolean is a malformed call and an empty list is refused at the record. */
+  preserves?: boolean;
 }
 
 interface SubmitTestsExtraction {
@@ -43,7 +47,8 @@ export function extractSubmitTests(toolUses: unknown[]): SubmitTestsExtraction {
     const testFiles = rawFiles.filter(usablePath).map((p) => p.trim());
     // A call that lost every one of its paths is not a partial row: an empty row would read as
     // "this criterion has no tests", a verdict the child did not give. It is a malformed call.
-    if (criterionId === "" || testFiles.length === 0) {
+    const declared = readPreservesArgument(a);
+    if (criterionId === "" || testFiles.length === 0 || declared.problem !== undefined) {
       skipped++;
       continue;
     }
@@ -51,6 +56,7 @@ export function extractSubmitTests(toolUses: unknown[]): SubmitTestsExtraction {
       criterionId,
       testFiles,
       ...(typeof a.note === "string" && a.note.trim() !== "" ? { note: a.note.trim() } : {}),
+      ...(declared.preserves === undefined ? {} : { preserves: declared.preserves }),
     });
   }
   return { rows, skipped };

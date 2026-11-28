@@ -34,6 +34,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { execp } from "../exec.ts";
 import { frozenFromLog, testsFromLog } from "../lean-log.ts";
+import { noteClause } from "../lean-preserved-notes.ts";
 import {
   armsStepBudget,
   stepBoundOf,
@@ -62,7 +63,7 @@ import { existsInCommit, fileProblem, pathProblem } from "./specify-path.ts";
 import { testCriteria } from "./specify-prompt.ts";
 import type { TestRunLimits } from "./specify-proof.ts";
 import { SpecifyResetError, resetWorktreeToBase } from "./specify-reset.ts";
-import { noteClause, runTestPipeline } from "./specify-run.ts";
+import { runTestPipeline } from "./specify-run.ts";
 import { type SubmoduleNote, submoduleNoteClause } from "./specify-submodules.ts";
 import { changedPaths } from "./specify-tree.ts";
 import {

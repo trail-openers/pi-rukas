@@ -39,14 +39,16 @@ import {
   redScript,
   runSpecify,
   submit,
-  report as reportShared,
-  TEST_REL,
+} from "./lib/lean-specify-fixture.ts";
+import {
+  CONFIG,
   NEVER_SUBMITTED,
   NUDGE,
   RETRY_NOTE,
-  CONFIG,
+  TEST_REL,
+  report as reportShared,
   writeTest,
-} from "./lib/lean-specify-fixture.ts";
+} from "./lib/lean-specify-shared.ts";
 
 let exit = 0;
 function assert(cond: boolean, msg: string): void {
@@ -349,7 +351,8 @@ ${JSON.stringify(
   assert(
     verdicts.length === 2 &&
       verdicts.every(
-        (v) => v.refused.some((x) => x.includes(NOT_A_TEST_CRITERION)) === true && v.silent === false,
+        (v) =>
+          v.refused.some((x) => x.includes(NOT_A_TEST_CRITERION)) === true && v.silent === false,
       ),
     `(6) each attempt made a drop and neither was silent (got ${JSON.stringify(verdicts)})`,
   );

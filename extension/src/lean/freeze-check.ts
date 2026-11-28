@@ -20,9 +20,10 @@
  * Attribution runs the same command at the base with no candidates in place: the only "the gate was fine and
  * your files were not" the step will assert.
  */
+
+import type { DropLabel } from "../lean-preserved-notes.ts";
 import { verifyChildEnv } from "../work-driver-verify-cmd.ts";
 import { neverStarted, wasKilled } from "./specify-proof.ts";
-import type { DropLabel } from "./specify-run.ts";
 import type { VerifyExec } from "./verify-types.ts";
 
 /** What a freeze check said. `unknown` is not a colour: it never blocks. */

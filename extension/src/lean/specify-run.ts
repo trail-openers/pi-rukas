@@ -24,6 +24,14 @@
  */
 import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
+import {
+  type ProofRule,
+  type ProvedKind,
+  preservedCommitReason,
+  preservedCoverage,
+  proofRule,
+} from "../lean-preserved-coverage.ts";
+import { dropNote, noteClause, noteClip } from "../lean-preserved-notes.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { FreezeCheck } from "./freeze-check.ts";
 import { freezeCheckDrops, freezeCheckNote, runFreezeCheck } from "./freeze-check.ts";
@@ -52,6 +60,12 @@ type PipelineVerdict =
       frozen: Record<string, string>;
       tests: Record<string, string[]>;
       reason: string;
+      /**
+       * The criteria whose must-pass file this commit actually holds. The caller records these as the run's
+       * preserved list — never the raw declarations, which include a row that turned out to be an ordinary
+       * red test and froze no must-pass file at all.
+       */
+      preserved: string[];
     }
   /** No submitted row survived validation, capture and the red proof. */
   | { kind: "empty"; reason: string }
@@ -116,47 +130,6 @@ interface RunTestsArgs {
   formatTemplate?: string;
 }
 
-/** How many per-file notes an outcome reason carries before it says `(+N more)`. */
-const NOTE_CAP = 8;
-/** How long one note's detail may run before the reason clips it. */
-const NOTE_DETAIL_MAX = 200;
-
-/** A note's detail, clipped: one chatty runner must not drown the reason. */
-function clip(detail: string): string {
-  const one = detail.replace(/\s+/g, " ").trim();
-  return one.length > NOTE_DETAIL_MAX ? `${one.slice(0, NOTE_DETAIL_MAX)}…` : one;
-}
-
-/** A capped `label N: a; b; c` clause — every note family needs the same bound. */
-export function noteClause(label: string, notes: string[]): string {
-  if (notes.length === 0) return "";
-  const shown = notes.slice(0, NOTE_CAP).map(clip);
-  const more = notes.length - shown.length;
-  return `${label} ${notes.length}: ${shown.join("; ")}${more > 0 ? ` (+${more} more)` : ""}`;
-}
-
-/** A dropped row as the boundary reports it: the criterion, the path if it had one, the reason. */
-export interface DropLabel {
-  criterionId: string;
-  path?: string;
-  reason: string;
-}
-
-/** The attributed form of one drop, `<criterionId> <path>: <reason>`, path omitted when there is none. */
-export function droppedLabel(d: DropLabel): string {
-  return `${d.criterionId}${d.path === undefined ? "" : ` ${d.path}`}: ${d.reason}`;
-}
-
-/**
- * A `dropped N (…) — a; b; c` clause with NO leading space: each call site supplies its own separator.
- */
-function dropNote(dropped: DropLabel[]): string {
-  if (dropped.length === 0) return "";
-  const parts = dropped.slice(0, NOTE_CAP).map((d) => clip(droppedLabel(d)));
-  const more = dropped.length - parts.length;
-  return `dropped ${dropped.length}${more > 0 ? ` (+${more} more)` : ""} — ${parts.join("; ")}`;
-}
-
 /** Remove a non-red file the step refused; the reason it is still there, if any. */
 function removeRejected(wt: string, rel: string): string | undefined {
   if (!existsSync(path.join(wt, rel))) return undefined;
@@ -171,7 +144,7 @@ function removeRejected(wt: string, rel: string): string | undefined {
 
 /** The classification of one non-red file, per the proof's own words. */
 function noteFor(cand: DeclaredPath, proof: Proof): string {
-  return clip(`${cand.criterionId} ${cand.path}: ${proof.detail}`);
+  return noteClip(`${cand.criterionId} ${cand.path}: ${proof.detail}`);
 }
 
 /**
@@ -219,6 +192,10 @@ export async function runTestPipeline(
     Object.fromEntries(kept.map((row) => [row.criterionId, row.testFiles])),
   );
   const skippedNote = skipped > 0 ? ` (${skipped} malformed submit_tests call(s))` : "";
+  // The rule, its reason and its wording live outside this file: `lean-preserved-coverage.ts`,
+  // `lean-preserved-step.ts`, `specify-preserves.ts`.
+  const kinds = new Map<string, ProvedKind>();
+  const rule = proofRule(kept, candidates, kinds);
   if (candidates.length === 0) {
     return {
       kind: "empty",
@@ -307,7 +284,8 @@ export async function runTestPipeline(
   }
 
   // 5. Prove red on exactly these bytes, per file, against `headBefore`. A green or unclear file is dropped
-  //    and DELETED from the tree; only an unrunnable runner is infrastructure.
+  //    and DELETED from the tree; only an unrunnable runner is infrastructure. Each verdict is kept, so the
+  //    preservation rule reads this one pass rather than a second one.
   let red: DeclaredPath[] = [];
   for (const cand of candidates) {
     if (!captured.has(cand.path)) continue; // dropped at capture — never run
@@ -317,11 +295,14 @@ export async function runTestPipeline(
       file: cand.path,
       ...(args.testLimits === undefined ? {} : { limits: args.testLimits }),
     });
+    kinds.set(cand.path, proof);
     if (proof.kind === "red") {
       red.push(cand);
       continue;
     }
     assertRan(proof, cand.path);
+    // Decided from ALL proofs at once: a file the rule does not keep is deleted like any other green.
+    if (rule.isPreserved(cand.criterionId) && !rule.keeps(cand)) continue;
     notes.push(noteFor(cand, proof));
     const why = removeRejected(wt, cand.path);
     if (why !== undefined) notes.push(why);
@@ -395,9 +376,10 @@ export async function runTestPipeline(
   }
 
   // 6. Coverage. ONLY `"all-criteria"` refuses a gap: `specify` needs a red for every test criterion, while
-  //    `challenge` keeps whatever red it earned.
+  //    `challenge` keeps whatever red it earned. Only a DECLARED criterion is excused.
+  const coverage = preservedCoverage({ candidates, kinds, rows: kept, wanted: args.wanted });
+  const { mustPass, preservedIds, missing } = coverage;
   if (args.coverage === "all-criteria") {
-    const missing = args.wanted.filter((id) => !red.some((r) => r.criterionId === id));
     if (missing.length > 0) {
       const rules = gapFor(missing, true);
       return {
@@ -410,10 +392,12 @@ export async function runTestPipeline(
     }
   }
 
-  // 7. COMMIT the red files, and assert the commit is exactly them.
-  const paths = [...new Set(red.map((r) => r.path))];
+  // 7. COMMIT them, and assert the commit is exactly them. The freeze check may have pruned red files
+  //    AFTER the coverage set was decided, so the contract is filtered to what the commit still holds.
+  const keptPaths = new Set([...red.map((r) => r.path), ...mustPass]);
+  const contract = coverage.contract.filter((c) => keptPaths.has(c.path));
   try {
-    await commitTestFiles(exec, wt, headBefore, paths, args.commitMessage);
+    await commitTestFiles(exec, wt, headBefore, [...keptPaths], args.commitMessage);
   } catch (err) {
     if (err instanceof SpecifyCommitError) throw new SpecifyInfraError(err.message);
     throw new SpecifyInfraError(`could not commit the acceptance tests: ${(err as Error).message}`);
@@ -423,22 +407,24 @@ export async function runTestPipeline(
   //    describe the commit, not whatever was on disk when the step looked.
   const frozen: Record<string, string> = {};
   const tests: Record<string, string[]> = {};
-  for (const { criterionId, path: rel } of red) {
+  for (const { criterionId, path: rel } of contract) {
     frozen[rel] = sha256(await committedBlob(exec, wt, rel));
     const list = tests[criterionId] ?? [];
     if (!list.includes(rel)) list.push(rel);
     tests[criterionId] = list;
   }
 
-  const reason = [
-    `froze ${Object.keys(frozen).length} red test file(s) for ${Object.keys(tests).length} criterion/criteria`,
-    skipped > 0 ? `${skipped} submit_tests call(s) skipped or refused as malformed` : "",
+  const reason = preservedCommitReason({
+    // The RED count, not the frozen map's size: the map also holds the must-pass files, and a reason that
+    // counted them as red would say the step proved red a file it froze for being green at the base.
+    redCount: red.length,
+    tests,
+    preservedIds,
+    skipped,
     droppedNote,
-    dropNote(dropped),
+    dropped,
     checkNote,
-    treeProblem ?? "",
-  ]
-    .filter((s) => s !== "")
-    .join("; ");
-  return { kind: "committed", frozen, tests, reason };
+    ...(treeProblem === undefined ? {} : { treeProblem }),
+  });
+  return { kind: "committed", frozen, tests, reason, preserved: preservedIds };
 }

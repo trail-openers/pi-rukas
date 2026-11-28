@@ -351,6 +351,18 @@ export async function publishOutcome(ctx: HandlerCtx, deps: PublishDeps): Promis
           };
           return Object.keys(excused).length === 0 ? {} : { preexistingFailures: excused };
         })(),
+        // The criteria this run preserved, off the NEWEST decided `specify` — the record the tests
+        // column is read from, so table and clause cannot name two different freezes. The files come from
+        // that record's own `tests`, never the merged map: an older specify's files are not this run's
+        // preserved ones. Absent key when nothing was preserved, so a normal run's body is unchanged.
+        ...(() => {
+          const specify = newestDecided(ctx.steps, "specify")?.outcome;
+          const preserved = specify?.preserved;
+          const frozen = specify?.tests;
+          return preserved === undefined || preserved.length === 0 || frozen === undefined
+            ? {}
+            : { preserved, tests: frozen };
+        })(),
         // Read off the log, not a closure, so a resumed run prints the same line a live one would.
         // The readers' objects are WRAPPED here, never spread: spreading would hand `publishBody`
         // fields it never reads and drop the line without a sound.

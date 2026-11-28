@@ -20,6 +20,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { leanSpecifyPreservesEnabled } from "../lean-specify-preserves-switch.ts";
+import { PRESERVES_SCHEMA_DESCRIPTION } from "../submit-tests-preserves.ts";
 
 /**
  * Where this file lives — the source directory of the extension — so `--extension` gets the real
@@ -36,6 +38,7 @@ interface SubmitTestsInput {
   criterionId: string;
   testFiles: string[];
   note?: string;
+  preserves?: boolean;
 }
 
 export default function (pi: ExtensionAPI) {
@@ -61,6 +64,11 @@ export default function (pi: ExtensionAPI) {
           description: "One line on what the test asserts and why it fails today.",
         }),
       ),
+      ...(leanSpecifyPreservesEnabled()
+        ? {
+            preserves: Type.Optional(Type.Boolean({ description: PRESERVES_SCHEMA_DESCRIPTION })),
+          }
+        : {}),
     }),
     async execute(_id, raw) {
       const params = raw as SubmitTestsInput;
