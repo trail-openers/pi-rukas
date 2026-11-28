@@ -227,8 +227,12 @@ for (const seam of [...SEAMS, ...SEAMS_1454]) {
     if (PENDING_PRODUCTION_CALLER.has(f.name)) continue;
     if (!/^export /m.test(f.text)) continue;
     const spec = f.name.replace(".ts", "\\.ts");
-    const imported = allFiles.some(
-      (o) => o.name !== f.name && new RegExp(`from "\\./${spec}"`).test(o.text),
+    // Every source under src/, subdirectories included: a module that lives at the top of `src/` is
+    // imported by a subdirectory file as `../<name>.ts`, and a scan of the top level alone cannot see
+    // that specifier — it reported such a module as dead in production while files inside `src/lean/`
+    // imported it on every run.
+    const imported = allSources.some(
+      (o) => o.name !== f.name && new RegExp(`from "[^"]*/${spec}"`).test(o.text),
     );
     const testImported = testFiles.some((t) => new RegExp(`/${spec}"`).test(t));
     if (!imported && testImported) orphans.push(f.name);

@@ -23,7 +23,7 @@ export function preservedIds(preserved: readonly string[] | undefined): string[]
 }
 
 /** The frozen files of those criteria, when the caller has the criterion -> files map at hand. */
-export function preservedCriterionFiles(
+export function preservedFiles(
   preserved: readonly string[],
   tests: Record<string, string[]> | undefined,
 ): string[] {
@@ -44,7 +44,7 @@ export function preservedClause(
   if (ids.length === 0) return "";
   const shown = ids.slice(0, PRESERVED_CAP).map((id) => oneLine(id, PRESERVED_ID_MAX));
   const more = ids.length - shown.length;
-  const files = preservedCriterionFiles(ids, tests).map((f) => oneLine(f, 120));
+  const files = preservedFiles(ids, tests).map((f) => oneLine(f, 120));
   return `preserved ${String(ids.length)}: ${shown.join(", ")}${more > 0 ? ` (+${more} more)` : ""}${files.length === 0 ? "" : ` (${files.join(", ")})`}; each is frozen and must pass at head`;
 }
 
