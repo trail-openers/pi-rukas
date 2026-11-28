@@ -12,8 +12,19 @@ import { leanSpecifyPreservesEnabled } from "./lean-specify-preserves-switch.ts"
 import { PRESERVES_FIELD } from "./submit-tests-preserves.ts";
 
 /**
- * The preservation clause, or `""` when the switch is off — off, the prompt is the bytes from before the
- * field existed, which is what makes the field unreadable on that arm rather than merely unused.
+ * The clause and its own blank line, as a pair: when the switch is on and the spec has test criteria, the
+ * clause and the blank line are both emitted; when either is absent, both lines are empty, which is what the
+ * prompt held before the field existed. Present or absent as ONE unit, so the off arm is the pre-field bytes
+ * rather than that prompt with a line missing — which is what makes the field unreadable there, not unused.
+ */
+export function preservesPromptLines(testsAreSubmitted: boolean): string[] {
+  return leanSpecifyPreservesEnabled() && testsAreSubmitted
+    ? [preservesPromptClause(), ""]
+    : ["", ""];
+}
+
+/**
+ * The preservation clause, or `""` when the switch is off.
  */
 export function preservesPromptClause(): string {
   if (!leanSpecifyPreservesEnabled()) return "";
