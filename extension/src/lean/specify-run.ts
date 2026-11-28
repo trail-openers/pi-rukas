@@ -33,7 +33,7 @@ import {
   preservedCoverage,
   preservedKeepsFile,
 } from "../lean-preserved-coverage.ts";
-import { type DropLabel, dropNote, noteClause } from "../lean-preserved-notes.ts";
+import { type DropLabel, dropNote, noteClause, noteClip } from "../lean-preserved-notes.ts";
 import { preservedCriteria } from "../lean-preserved-step.ts";
 import type { ExecFn } from "../worktree.ts";
 import type { FreezeCheck } from "./freeze-check.ts";
@@ -138,9 +138,6 @@ function removeRejected(wt: string, rel: string): string | undefined {
   if (existsSync(path.join(wt, rel))) return `the rejected test ${rel} could not be removed`;
   return undefined;
 }
-
-/** A note's detail, clipped to the step's bound. */
-import { noteClip } from "../lean-preserved-notes.ts";
 
 /** The classification of one non-red file, per the proof's own words. */
 function noteFor(cand: DeclaredPath, proof: Proof): string {
