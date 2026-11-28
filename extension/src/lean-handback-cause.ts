@@ -14,10 +14,11 @@ import type { Step } from "./lean/state.ts";
  * The two "no verified head" findings the reporting step quotes, and the reading an errored `review`
  * gets from the head rule. The wordings live here, outside the lean tree, so the lean reader stays a
  * thin caller: it hands these readers the gate's newest DECIDED verdict and the newest unanswered
- * gate visit, and quotes what comes back. The switch reads through `incompleteHeadOn`, so the rule,
- * the routing and the fold consult one knob.
+ * gate visit, and quotes what comes back. The rule, the routing and the fold read the switch through
+ * `lean-review-incomplete-head-switch.ts`, so the three consult one knob.
  */
-import { incompleteHeadOn, isVerifiedHeadName } from "./lean-review-incomplete-head.ts";
+import { leanReviewIncompleteHeadEnabled } from "./lean-review-incomplete-head-switch.ts";
+import { isVerifiedHeadName } from "./lean-review-incomplete-head.ts";
 
 /** The only places those answers are worded; the reporting step quotes a finding, never re-words it. */
 export const NO_GATE_VERDICT =
@@ -82,7 +83,7 @@ export function gateFindings(
  * shipped nothing this step could ship, so it keeps the plain stamp the engine writes where it stands.
  */
 export function erroredReviewFindings(green: Step | undefined): HandbackFindings {
-  if (!incompleteHeadOn()) return { applies: false };
+  if (!leanReviewIncompleteHeadEnabled()) return { applies: false };
   if (green?.outcome?.kind !== "green") return { applies: false };
   return isVerifiedHeadName(green.outcome.verifiedHead)
     ? { applies: true, verifiedHead: green.outcome.verifiedHead }

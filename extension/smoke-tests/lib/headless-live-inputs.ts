@@ -254,7 +254,8 @@ export const LIVE_INPUTS: [string, () => unknown][] = [
   // #2667 — a review that threw over a certified head hands that head back. The reader is
   // `v !== "0"`, so the gate's LIVE loop (env deleted) pins "unset means on"; the truth
   // table, the panel of throw sites and the off-arm bytes are pinned by
-  // test-lean-review-incomplete-head.ts and test-lean-review-incomplete-head-off-arm.ts.
+  // test-lean-review-incomplete-head.ts, test-lean-review-incomplete-head-errors.ts and
+  // test-lean-review-incomplete-head-off-arm.ts.
   ["PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_HEAD", leanReviewIncompleteHeadEnabled],
   ["PI_ENSEMBLE_ISSUE_IMAGES", () => issueImagesEnabled()],
   ["PI_ENSEMBLE_LENS_EVIDENCE", evidenceSupplyEnabled],

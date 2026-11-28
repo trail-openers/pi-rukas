@@ -4886,9 +4886,11 @@ handed back as incomplete; only an operator restart does. `PI_ENSEMBLE_LEAN_REVI
 restores the pre-knob behaviour, where the throw is stamped where it stands and the certified head
 is neither shipped nor named.
 
-Source: `extension/src/lean-review-incomplete-head.ts`, `extension/src/lean-errored-review-report.ts`,
-`extension/src/lean/handback-heads.ts`, `extension/src/lean/handback.ts`; pinned by
+Source: `extension/src/lean-handback-cause.ts`, `extension/src/lean-errored-review-report.ts`,
+`extension/src/lean/handback-heads.ts`, `extension/src/lean/handback.ts`,
+`extension/src/lean-review-incomplete-head-switch.ts`; pinned by
 `extension/smoke-tests/test-lean-review-incomplete-head.ts`,
+`test-lean-review-incomplete-head-errors.ts`,
 `test-lean-review-incomplete-head-resume.ts` and
 `test-lean-review-incomplete-head-off-arm.ts`.
 

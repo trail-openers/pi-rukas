@@ -571,8 +571,9 @@ terminal cause line and the handback comment both carry it, and `issues[].review
 string. `PI_ENSEMBLE_LEAN_REVIEW_INCOMPLETE_HEAD=0` is the only off value; off, the throw is
 stamped where it stands, which is the behaviour of the release before the knob. A resumed run does
 not re-dispatch `review` for a head it already handed back as incomplete; only an operator restart
-does. Sources: `extension/src/lean-review-incomplete-head.ts` (the arm and its switch reads),
-`extension/src/lean-errored-review-report.ts` (the routing) and `extension/src/lean/handback-heads.ts`.
+does. Sources: `extension/src/lean-handback-cause.ts` (the arm's finding and its NEEDING line),
+`extension/src/lean-errored-review-report.ts` (the routing), `extension/src/lean/handback-heads.ts`
+(the rule) and `extension/src/lean-review-incomplete-head-switch.ts` (the switch, its only reader).
 
 **The two steps before the first verify share a wall.** `specify` and `challenge`
 are each bounded per CHILD and were never bounded together, so a cell could spend
