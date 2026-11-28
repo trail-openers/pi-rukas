@@ -273,6 +273,13 @@ export function assertRunFile(obj: unknown, file: string): LeanRun {
   // Both repair facts are validated by the round's own module.
   const spend = countersRepairProblem(c);
   if (spend !== undefined) bad(spend);
+  // The stamp is the run's copy of a switch the environment holds, written once at
+  // creation so a resume answers as the first visit did. Carried by a cast it would
+  // reach the table as any truthy value, and `"yes"` — the shape an operator types,
+  // and the shape every other reader of this knob calls false — would buy a round the
+  // run was never created to spend. Refused like the booleans beside it.
+  if (r.oracleRepair !== undefined && typeof r.oracleRepair !== "boolean")
+    bad("oracleRepair must be a boolean when present");
   const models = r.models as Record<string, unknown> | undefined;
   if (!models || typeof models !== "object" || Array.isArray(models))
     bad("models must be an object");

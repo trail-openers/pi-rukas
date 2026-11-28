@@ -146,6 +146,10 @@ function sameCounters(a: RunCounters, b: RunCounters): boolean {
     a.challengeDone === b.challengeDone &&
     a.reviewDone === b.reviewDone &&
     a.ciFixUsed === b.ciFixUsed &&
-    a.draft === b.draft
+    a.draft === b.draft &&
+    // The spent repair round is as much a cap as the others, and the one statement that
+    // a run may not buy the round again. Left out, a hand-edited file could carry any
+    // value here and the fold would agree with it, which is a second round for free.
+    a.repairsSpent === b.repairsSpent
   );
 }
